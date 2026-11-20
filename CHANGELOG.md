@@ -3,6 +3,18 @@
 What changed for someone who runs the converter. The measurements behind each
 entry are in the pull request named beside it and in `docs/performance.md`.
 
+## Unreleased
+
+- **A directory's case-sensitive mark is carried over on Windows Server
+  2025**: for a data volume converted there, every directory of the new
+  volume is made with the mark its source directory has, and the mark is
+  read back and verified. Everywhere else the mark is still not set, and the
+  run and `--check` now say why: on Windows 11 build 26300 Windows itself
+  stops with a bugcheck when a ReFS volume holding such a directory is taken
+  offline. A volume whose root directory is itself marked converts without
+  any mark, as before. Two names that differ only by case are still refused
+  (#103, #120).
+
 ## 0.0.1
 
 The first release. The builds before it, 0.0.1-alpha to 0.3.0-beta.1, were

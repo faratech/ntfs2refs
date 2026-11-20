@@ -512,6 +512,8 @@ fn read(
     // above; one that does not answer is left to the frozen source.
     let case = n2r_win32::directory_case::DirectoryCaseProbe::open(&root)?;
     let (mut case_sensitive, mut case_unknown, mut case_example) = (0u64, 0u64, None);
+    // Whether the root directory (FILE 5) is marked: no mark is set then.
+    let mut case_mark_on_root = false;
     let (mut files, mut directories, mut streams, mut logical_bytes) = (0u64, 0u64, 0u64, 0u64);
     // Where NTFS keeps what was deleted while a program still had it open.
     let mut deleted_directory = None;
@@ -539,6 +541,7 @@ fn read(
                 Ok(0) => {}
                 Ok(1) => {
                     case_sensitive += 1;
+                    case_mark_on_root |= file.record_number == 5;
                     if case_example.is_none() {
                         case_example = ntfs_admission::paged::refused_object_path(&raw, &file)
                             .map(|path| format!("\\{}", path.join("\\")));
@@ -556,12 +559,16 @@ fn read(
             }
         }
     }
-    // Two names that differ only by case would have stopped the reading;
-    // the mark alone is not carried over, and a conversion says so.
+    // Two names that differ only by case would have stopped the reading.
+    // Whether the mark alone is set on the new volume depends on the
+    // running Windows, and a conversion says which, as this does. (A check
+    // reads data volumes only.)
     if case_sensitive != 0 {
         report.notes.push(ntfs_admission::case_mark_note(
             case_sensitive,
             case_example.as_deref(),
+            n2r_win32::directory_case::CaseMarkCarry::of_this_windows(false)?
+                .with_source_root(case_mark_on_root),
         ));
     }
     if case_unknown != 0 {

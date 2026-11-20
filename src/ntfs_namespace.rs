@@ -530,7 +530,7 @@ fn reconcile_domains_with_link_counter_hint(
                             // A decision about names that were read in
                             // full, not a structure that could not be read.
                             return Err(anyhow::Error::new(n2r_win32::refusal::Refusal(format!(
-                                "the directory at MFT record {} holds two names that differ only by case, {:?} and {:?}: it is case-sensitive, which the converter does not carry over. Rename one of them and turn case sensitivity off with `fsutil file setCaseSensitiveInfo <directory> disable`",
+                                "the directory at MFT record {} holds two names that differ only by case, {:?} and {:?}: it is case-sensitive, and two such names are not carried over, whether or not the converter sets the directory's case-sensitive mark on the new volume. Rename one of them and turn case sensitivity off with `fsutil file setCaseSensitiveInfo <directory> disable`",
                                 parent & 0x0000_ffff_ffff_ffff,
                                 String::from_utf16_lossy(&entry.name),
                                 String::from_utf16_lossy(&name.name_utf16)

@@ -53,6 +53,12 @@ enum Command {
         /// difference. Nothing else is allowed that is not allowed anyway.
         #[arg(long, conflicts_with = "exact")]
         short_names_dropped: bool,
+        /// For a run that said it does not set the case-sensitive mark on
+        /// the new volume: a directory whose mark is gone is counted
+        /// (`case_marks_not_carried`) instead of being a difference. Without
+        /// this, as for a run that carries the mark over, it is one.
+        #[arg(long, conflicts_with = "exact")]
+        case_marks_not_carried: bool,
     },
 }
 
@@ -117,14 +123,20 @@ fn main() -> Result<ExitCode> {
             report,
             exact,
             short_names_dropped,
+            case_marks_not_carried,
         } => {
             let (before, after) = (read(&before)?, read(&after)?);
             let comparison = if exact {
                 volume_manifest::compare_exact(&before, &after)
-            } else if short_names_dropped {
-                volume_manifest::compare_without_short_names(&before, &after)
             } else {
-                volume_manifest::compare(&before, &after)
+                volume_manifest::compare_declared(
+                    &before,
+                    &after,
+                    volume_manifest::Declared {
+                        short_names_dropped,
+                        case_marks_not_carried,
+                    },
+                )
             };
             let mut out = BufWriter::new(
                 File::create(&report).with_context(|| format!("creating {}", report.display()))?,
@@ -139,6 +151,7 @@ fn main() -> Result<ExitCode> {
                     "after_objects": comparison.after_objects,
                     "short_names_as_links": comparison.short_names_as_links,
                     "short_names_dropped": comparison.short_names_dropped,
+                    "case_marks_not_carried": comparison.case_marks_not_carried,
                     "allowed": comparison.allowed,
                     "differences": comparison.difference_count,
                     "kinds": comparison.difference_kinds,

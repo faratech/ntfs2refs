@@ -622,6 +622,7 @@ mod workspace_tests {
             expected_api_security: None,
             extended_attributes: None,
             reparse: None,
+            case_sensitive: None,
             payload: &[],
             expected_length: Some(length),
             expected_sha256: None,

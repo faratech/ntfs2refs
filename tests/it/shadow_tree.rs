@@ -326,6 +326,51 @@ fn expected_tree_requires_parent_before_child_and_unique_source_identity() {
 }
 
 #[test]
+fn expected_tree_carries_the_case_mark_for_every_directory_or_for_none() {
+    let tree = shadow_tree::derive_ordinary(&model()).unwrap();
+    let expected = shadow_tree::ExpectedTree::from(&tree);
+    // A tree that carries no mark, as every tree was before.
+    assert!(expected.objects.iter().all(|o| o.case_sensitive.is_none()));
+    expected.validate().unwrap();
+
+    // Every directory states its own, marked or not.
+    let mut carried = expected.clone();
+    let mut marked = false;
+    for object in carried.objects.iter_mut().filter(|o| o.directory) {
+        object.case_sensitive = Some(marked);
+        marked = !marked;
+    }
+    carried.validate().unwrap();
+    let bytes = serde_json::to_vec(&carried).unwrap();
+    let replay: shadow_tree::ExpectedTree = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(replay.objects, carried.objects);
+
+    // One directory that says nothing would keep whatever its parent gave it.
+    let mut partial = carried.clone();
+    partial
+        .objects
+        .iter_mut()
+        .find(|o| o.directory)
+        .unwrap()
+        .case_sensitive = None;
+    let directories = partial.objects.iter().filter(|o| o.directory).count();
+    if directories > 1 {
+        let error = partial.validate().unwrap_err().to_string();
+        assert!(error.contains("all of them or none"), "{error}");
+    }
+
+    // A file has no such mark.
+    let mut file = expected.clone();
+    file.objects
+        .iter_mut()
+        .find(|o| !o.directory)
+        .unwrap()
+        .case_sensitive = Some(false);
+    let error = file.validate().unwrap_err().to_string();
+    assert!(error.contains("only a directory has"), "{error}");
+}
+
+#[test]
 fn ordinary_expected_tree_accepts_internal_spaces_in_a_filename() {
     let tree = shadow_tree::derive_ordinary(&model()).unwrap();
     let mut expected = shadow_tree::ExpectedTree::from(&tree);

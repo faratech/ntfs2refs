@@ -171,6 +171,7 @@ pub(in crate::shadow_native) fn require_private_security(
         expected_api_security: None,
         extended_attributes: None,
         reparse: None,
+        case_sensitive: None,
         payload: &[],
         expected_length: None,
         expected_sha256: None,

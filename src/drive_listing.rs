@@ -88,6 +88,15 @@ fn describe(comparison: &Comparison, report: &Path) -> Vec<String> {
             comparison.short_names_dropped
         )
     };
+    // Marks the run said it does not set on the new volume.
+    let unmarked = if comparison.case_marks_not_carried == 0 {
+        String::new()
+    } else {
+        format!(
+            " {} directory(ies) no longer carry the case-sensitive mark, as the run said before it began.",
+            comparison.case_marks_not_carried
+        )
+    };
     let accepted = if comparison.allowed.is_empty() {
         String::new()
     } else {
@@ -103,7 +112,7 @@ fn describe(comparison: &Comparison, report: &Path) -> Vec<String> {
     };
     if comparison.identical() {
         lines.push(format!(
-            "The volume lists as it did before the conversion: {} object(s) then, {} now{}.{accepted}{dropped} Report: {}",
+            "The volume lists as it did before the conversion: {} object(s) then, {} now{}.{accepted}{dropped}{unmarked} Report: {}",
             comparison.before_objects,
             comparison.after_objects,
             if comparison.short_names_as_links == 0 {
@@ -144,19 +153,40 @@ fn describe(comparison: &Comparison, report: &Path) -> Vec<String> {
     lines
 }
 
+/// Whether a listing shows the volume's root directory as marked
+/// case-sensitive.
+fn root_marked(listing: &[Record]) -> bool {
+    listing
+        .iter()
+        .any(|record| record.path == "\\" && record.directory && record.case_sensitive)
+}
+
 /// Lists the converted volume, compares it with the listing taken before,
 /// keeps the report and says what it found. `Ok(true)` when the two agree.
-pub(super) fn after(root: &str, run: &Path) -> Result<bool> {
+/// `case_marks` is whether a run on this Windows, of this kind of volume,
+/// sets the directories' case-sensitive marks on the new volume; a root
+/// that the listing taken before shows as marked leaves the volume without.
+pub(super) fn after(
+    root: &str,
+    run: &Path,
+    case_marks: n2r_win32::directory_case::CaseMarkCarry,
+) -> Result<bool> {
     println!("Listing the converted volume and comparing it with the listing taken before.");
     let now = list(root, &run.join(AFTER))?;
     let then = read(&run.join(BEFORE))?;
-    // A run that was asked to leave short names behind is held to
-    // exactly that: a short name that is gone is counted, not a difference.
-    let comparison = if crate::short_name_disposition::dropped() {
-        volume_manifest::compare_without_short_names(&then, &now)
-    } else {
-        volume_manifest::compare(&then, &now)
-    };
+    let case_marks = case_marks.with_source_root(root_marked(&then));
+    // A run is held to exactly what it said it leaves behind: a short name
+    // it was asked to drop, and a case-sensitive mark where it said it does
+    // not set one, are counted when they are gone, not differences. Where
+    // the mark is carried over, a directory that lost it is a difference.
+    let comparison = volume_manifest::compare_declared(
+        &then,
+        &now,
+        volume_manifest::Declared {
+            short_names_dropped: crate::short_name_disposition::dropped(),
+            case_marks_not_carried: !case_marks.carried(),
+        },
+    );
     let report = run.join(REPORT);
     let mut out = BufWriter::new(
         File::create(&report).with_context(|| format!("creating {}", report.display()))?,
@@ -204,6 +234,41 @@ mod tests {
         let text = describe(&windows, report).join("\n");
         assert!(
             text.contains("of which 15620 are the 8.3 names as links"),
+            "{text}"
+        );
+
+        // A root the listing shows as marked, and only the root.
+        let directory = |path: &str, case_sensitive: bool| Record {
+            path: path.to_owned(),
+            directory: true,
+            case_sensitive,
+            ..Record::default()
+        };
+        assert!(root_marked(&[
+            directory("\\", true),
+            directory("\\src", false)
+        ]));
+        assert!(!root_marked(&[
+            directory("\\", false),
+            directory("\\src", true)
+        ]));
+        assert!(!root_marked(&[]));
+
+        // Marks the run said it leaves behind are counted in what it says,
+        // and nothing is said of them where none was left.
+        assert!(!text.contains("case-sensitive"), "{text}");
+        let unmarked = Comparison {
+            before_objects: 75,
+            after_objects: 75,
+            case_marks_not_carried: 2,
+            ..Comparison::default()
+        };
+        let text = describe(&unmarked, report).join("\n");
+        assert!(
+            text.starts_with("The volume lists as it did before the conversion")
+                && text.contains(
+                    "2 directory(ies) no longer carry the case-sensitive mark, as the run said before it began."
+                ),
             "{text}"
         );
 

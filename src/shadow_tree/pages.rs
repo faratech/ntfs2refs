@@ -773,7 +773,8 @@ impl MemorySeed<'_> {
                 | "sequence_number"
                 | "directory"
                 | "attributes"
-                | "ntfs_compression_normalized",
+                | "ntfs_compression_normalized"
+                | "case_sensitive",
             ) => Scalar,
             (Object | Named, "source_offset" | "length" | "source_evidence") => Scalar,
             (Named, "name_utf16") => Units,
@@ -2541,5 +2542,91 @@ impl Serialize for PagedExpectedTree {
             counts: None,
         }
         .serialize(serializer)
+    }
+}
+
+#[cfg(test)]
+mod case_mark_tests {
+    use super::*;
+
+    fn directory(case_sensitive: Option<bool>) -> Object {
+        Object {
+            record_number: 40,
+            sequence_number: 2,
+            path: vec!["src".into(), "linux".into()],
+            additional_names: Vec::new(),
+            directory: true,
+            stored_times: [1, 2, 3, 4],
+            attributes: 16,
+            ntfs_compression_normalized: false,
+            security: vec![1, 0, 4, 128],
+            api_security: None,
+            extended_attributes: None,
+            reparse: None,
+            case_sensitive,
+            source_offset: None,
+            source_extents: Vec::new(),
+            length: 0,
+            sha256: None,
+            source_evidence: None,
+            named_streams: Vec::new(),
+            sparse: None,
+        }
+    }
+
+    /// The decoder that charges a large row's memory refuses a field it
+    /// does not know: the mark has to pass it, stated either way.
+    fn charged(object: &Object) -> std::result::Result<(), serde_json::Error> {
+        let bytes = serde_json::to_vec(object).unwrap();
+        let used = Cell::new(0);
+        let mut decoder = serde_json::Deserializer::from_slice(&bytes);
+        serde::de::DeserializeSeed::deserialize(
+            MemorySeed {
+                kind: MemoryKind::Object,
+                used: &used,
+                limit: 1 << 20,
+            },
+            &mut decoder,
+        )?;
+        decoder.end()
+    }
+
+    #[test]
+    fn a_directory_states_its_case_mark_only_where_it_is_carried_over() {
+        // A tree that carries no mark is written as it always was, so what
+        // was saved before the field existed is the same tree.
+        let silent = directory(None);
+        let text = serde_json::to_string(&silent).unwrap();
+        assert!(!text.contains("case_sensitive"), "{text}");
+        assert_eq!(serde_json::from_str::<Object>(&text).unwrap(), silent);
+        charged(&silent).unwrap();
+
+        for marked in [true, false] {
+            let stated = directory(Some(marked));
+            let text = serde_json::to_string(&stated).unwrap();
+            assert!(
+                text.contains(&format!("\"case_sensitive\":{marked}")),
+                "{text}"
+            );
+            assert_eq!(serde_json::from_str::<Object>(&text).unwrap(), stated);
+            assert_ne!(stated, silent);
+            charged(&stated).unwrap();
+        }
+    }
+
+    #[test]
+    fn the_new_volume_is_asked_for_the_mark_of_directories_only() {
+        use n2r_win32::shadow_native::input_domain::ObjectInput;
+        for stated in [None, Some(true), Some(false)] {
+            let object = directory(stated);
+            assert_eq!(object.input().case_sensitive, stated);
+            // A file never states one, whatever its record says.
+            let file = Object {
+                directory: false,
+                attributes: 32,
+                ..object
+            };
+            assert_eq!(file.input().case_sensitive, None);
+        }
     }
 }

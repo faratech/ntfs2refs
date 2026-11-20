@@ -75,6 +75,33 @@ fn capabilities_report_what_the_executable_enforces() {
         capabilities["windows_builds"]["confirmed_builds"],
         serde_json::json!(n2r_win32::windows_build::LAB_BUILDS)
     );
+    // Where a directory's case-sensitive mark is set on the new volume is
+    // the table the converter decides by, edition included.
+    let set_on = data_volume["case_sensitive_mark"]["set_on"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        set_on.len(),
+        n2r_win32::windows_build::CASE_MARK_BUILDS.len()
+    );
+    for (announced, shown) in set_on
+        .iter()
+        .zip(n2r_win32::windows_build::CASE_MARK_BUILDS)
+    {
+        assert_eq!(announced["build"], shown.build);
+        assert_eq!(announced["server_edition"], shown.server);
+        assert_eq!(announced["windows"], shown.name);
+        assert!(n2r_win32::windows_build::carries_case_mark(
+            [10, 0, shown.build],
+            shown.server
+        ));
+    }
+    assert!(
+        data_volume["case_sensitive_mark"]["not_set"][0]
+            .as_str()
+            .unwrap()
+            .contains("bugcheck")
+    );
 
     // The geometry announced is the geometry the admission gate accepts.
     let geometry = |sector: u16, cluster: u32, file_record: u32, index_record: u32| {

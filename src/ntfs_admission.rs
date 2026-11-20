@@ -635,15 +635,31 @@ pub(crate) const CLEAN_VOLUME_REQUIREMENT: &str = "the volume is marked dirty, o
 pub(crate) const VOLUME_FLAGS_REQUIREMENT: &str = "the volume carries state flags the converter does not take over (a pending chkdsk or upgrade), or 8.3 short-name creation is enabled on it: run `chkdsk <drive>: /f`, and turn short-name creation off with `fsutil 8dot3name set <drive>: 1`";
 
 /// What a run says of directories that are marked case-sensitive and hold
-/// no two names that differ only by case. `example` is one of them.
-pub(crate) fn case_mark_note(marked: u64, example: Option<&str>) -> String {
-    format!(
-        "{marked} director{} marked case-sensitive{} (WSL and Git mark the directories they make). None holds two names that differ only by case, so every name stays reachable. The converter does not set the mark on the new volume; the directories are listed in the run's records.",
+/// no two names that differ only by case. `example` is one of them, and
+/// `carry` whether this run sets the mark on the new volume, with the
+/// reason where it does not.
+pub(crate) fn case_mark_note(
+    marked: u64,
+    example: Option<&str>,
+    carry: n2r_win32::directory_case::CaseMarkCarry,
+) -> String {
+    use n2r_win32::directory_case::CaseMarkCarry;
+    let found = format!(
+        "{marked} director{} marked case-sensitive{} (WSL and Git mark the directories they make). None holds two names that differ only by case",
         if marked == 1 { "y is" } else { "ies are" },
         example
             .map(|path| format!(", for example {path}"))
             .unwrap_or_default()
-    )
+    );
+    match carry {
+        CaseMarkCarry::Carried => format!(
+            "{found}. The converter sets the mark on the same directories of the new volume as it makes them, and reads it back; the directories are listed in the run's records."
+        ),
+        CaseMarkCarry::NotCarried(why) => format!(
+            "{found}, so every name stays reachable. The converter does not set the mark on the new volume; the directories are listed in the run's records. {}",
+            why.sentence()
+        ),
+    }
 }
 
 /// What the `native_directory_case_sensitivity` gate requires, as a refusal
@@ -839,7 +855,12 @@ mod refusal_tests {
 
     #[test]
     fn the_case_mark_is_announced_and_an_unanswered_directory_is_refused() {
-        let one = case_mark_note(1, Some("\\src\\linux"));
+        use n2r_win32::directory_case::{CaseMarkCarry, WhyNotCarried};
+        let windows_11 = CaseMarkCarry::NotCarried(WhyNotCarried::Windows {
+            version: [10, 0, 26300],
+            server: false,
+        });
+        let one = case_mark_note(1, Some("\\src\\linux"), windows_11);
         assert!(
             one.starts_with("1 directory is marked case-sensitive, for example \\src\\linux (WSL"),
             "{one}"
@@ -848,14 +869,47 @@ mod refusal_tests {
             one.contains("does not set the mark")
                 && one.contains("two names that differ only by case")
                 && one.contains("listed in the run's records")
+                // Why not, and where it is set.
+                && one.contains("this is Windows 10.0.26300")
+                && one.contains("Windows Server 2025 (build 26100)")
                 // Not something to send a user to: see docs/feature-matrix.md.
                 && !one.contains("fsutil"),
             "{one}"
         );
-        let many = case_mark_note(2412, None);
+        let many = case_mark_note(2412, None, windows_11);
         assert!(
             many.starts_with("2412 directories are marked case-sensitive (WSL"),
             "{many}"
+        );
+        let on_windows = case_mark_note(
+            1,
+            None,
+            CaseMarkCarry::NotCarried(WhyNotCarried::WindowsVolume),
+        );
+        assert!(
+            on_windows.contains("does not set the mark")
+                && on_windows.contains("data volumes only"),
+            "{on_windows}"
+        );
+        // A marked root: the same words a harness reads, and why.
+        let root = case_mark_note(2, Some("\\"), CaseMarkCarry::Carried.with_source_root(true));
+        assert!(
+            root.contains("The converter does not set the mark on the new volume")
+                && root.contains("root directory is itself marked")
+                && root.contains("listed in the run's records"),
+            "{root}"
+        );
+        // Where it is carried over, the note says so and gives no reason
+        // for the opposite.
+        let carried = case_mark_note(3, Some("\\src"), CaseMarkCarry::Carried);
+        assert!(
+            carried.starts_with("3 directories are marked case-sensitive, for example \\src (WSL")
+                && carried.contains("sets the mark on the same directories of the new volume")
+                && carried.contains("reads it back")
+                && carried.contains("listed in the run's records")
+                && !carried.contains("does not set")
+                && !carried.contains("bugcheck"),
+            "{carried}"
         );
 
         let unanswered = case_answer_requirement(3, 40);

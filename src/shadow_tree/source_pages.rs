@@ -174,6 +174,7 @@ fn stream_evidence(
         _ => anyhow::bail!("source stream evidence is incomplete"),
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn build_object(
     source: &PagedInspection,
     native: &impl NativeObservationDomain,
@@ -182,6 +183,7 @@ fn build_object(
     admission: SourceResourceAdmission,
     aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
     object_ids: Option<&crate::object_id_disposition::DataObjectIds>,
+    carry_case_marks: bool,
 ) -> Result<(
     Object,
     Option<crate::ntfs_extended_attributes::WindowsKernelPurgeEaNormalization>,
@@ -271,6 +273,29 @@ fn build_object(
         .after
         .as_ref()
         .context("source native after snapshot absent")?;
+    // Where the mark is carried over, every directory states the source's:
+    // the new directory is made with it, set or not, and held to it. The
+    // flags are those the admission read, asked of Windows twice.
+    let case_sensitive = if carry_case_marks && file.is_directory {
+        Some(
+            crate::ntfs_attestation::check_directory_case_observation(
+                file,
+                source.header().geometry.serial_number,
+                observed,
+            )
+            .with_context(|| {
+                format!(
+                    "the case-sensitive mark of the directory at FILE {} ({})",
+                    file.record_number,
+                    ntfs_admission::paged::refused_object_path(source, file)
+                        .map(|path| format!("\\{}", path.join("\\")))
+                        .unwrap_or_else(|| "its path was not read".to_owned())
+                )
+            })?,
+        )
+    } else {
+        None
+    };
     let check_metadata = if aliases.is_some() {
         ensure!(
             source.is_windows_conversion(),
@@ -411,6 +436,7 @@ fn build_object(
             },
             extended_attributes: Some(extended_attributes),
             reparse,
+            case_sensitive,
             source_offset,
             source_extents,
             length,
@@ -488,6 +514,8 @@ impl SourceExpectedDomain {
                 admission,
                 Some(aliases),
                 None,
+                // A volume that holds a Windows carries no mark over.
+                false,
             )?;
             let hash: [u8; 32] = Sha256::digest(serde_json::to_vec(&object)?).into();
             ensure!(
@@ -527,10 +555,16 @@ impl SourceExpectedDomain {
         output: &Path,
         scratch: &SourceScratch,
     ) -> Result<Self> {
-        Self::derive_scoped(source, native, admission, output, scratch, None, None)
+        Self::derive_scoped(
+            source, native, admission, output, scratch, None, None, false,
+        )
     }
     /// The tree of a data volume whose object IDs, if it has any, have been
-    /// matched and archived and are not carried over.
+    /// matched and archived and are not carried over. With
+    /// `carry_case_marks`, every directory of the tree states its
+    /// case-sensitive mark, set or not: the run's decision, taken where the
+    /// source has a marked directory and the running Windows is one the
+    /// mark is carried on (`n2r_win32::directory_case::CaseMarkCarry`).
     pub fn derive_data(
         source: &PagedInspection,
         native: &impl NativeObservationDomain,
@@ -538,8 +572,18 @@ impl SourceExpectedDomain {
         output: &Path,
         scratch: &SourceScratch,
         object_ids: Option<&crate::object_id_disposition::DataObjectIds>,
+        carry_case_marks: bool,
     ) -> Result<Self> {
-        Self::derive_scoped(source, native, admission, output, scratch, None, object_ids)
+        Self::derive_scoped(
+            source,
+            native,
+            admission,
+            output,
+            scratch,
+            None,
+            object_ids,
+            carry_case_marks,
+        )
     }
     pub fn derive_windows(
         source: &PagedInspection,
@@ -558,8 +602,10 @@ impl SourceExpectedDomain {
             scratch,
             Some(aliases),
             None,
+            false,
         )
     }
+    #[allow(clippy::too_many_arguments)]
     fn derive_scoped(
         source: &PagedInspection,
         native: &impl NativeObservationDomain,
@@ -568,8 +614,13 @@ impl SourceExpectedDomain {
         scratch: &SourceScratch,
         aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
         object_ids: Option<&crate::object_id_disposition::DataObjectIds>,
+        carry_case_marks: bool,
     ) -> Result<Self> {
         admission.validate()?;
+        ensure!(
+            !carry_case_marks || aliases.is_none(),
+            "a volume that holds a Windows carries no case-sensitive mark over"
+        );
         ensure!(
             aliases.is_none() || source.is_windows_conversion(),
             "Windows projection requires its actual inspection purpose"
@@ -673,7 +724,14 @@ impl SourceExpectedDomain {
                 continue;
             }
             let (object, ea_normalization) = build_object(
-                source, native, ordinal, &file, admission, aliases, object_ids,
+                source,
+                native,
+                ordinal,
+                &file,
+                admission,
+                aliases,
+                object_ids,
+                carry_case_marks,
             )?;
             if aliases
                 .map(|owner| owner.windows_txf_accounted(source, &file))

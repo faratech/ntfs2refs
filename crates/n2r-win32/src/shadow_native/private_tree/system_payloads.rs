@@ -359,6 +359,7 @@ pub(super) fn run_domain(
                 expected_api_security: None,
                 extended_attributes: None,
                 reparse: None,
+                case_sensitive: None,
                 payload: &[],
                 expected_length: item.expected_length,
                 expected_sha256: item.expected_sha256,

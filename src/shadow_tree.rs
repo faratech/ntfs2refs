@@ -109,6 +109,13 @@ pub struct Object {
     pub extended_attributes: Option<n2r_win32::extended_attributes::Set>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reparse: Option<n2r_win32::reparse_layout::Point>,
+    /// A directory whose case-sensitive mark is carried over: whether the
+    /// source's directory is marked, as Windows said twice. The new
+    /// directory is made with that mark and held to it. Absent for a file,
+    /// and for every directory of a tree that does not carry the mark over
+    /// (`n2r_win32::directory_case::CaseMarkCarry`), which claims nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub case_sensitive: Option<bool>,
     pub source_offset: Option<u64>,
     /// Fragmented, aligned NTFS payload runs. Mutually exclusive with the
     /// single-run source_offset; absent in older frozen tree requests.
@@ -344,6 +351,7 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
         }
     }
     let mut directories = 0usize;
+    let mut case_stated = 0usize;
     let mut roots = 0usize;
     let mut paths = BTreeMap::new();
     let mut identities = BTreeSet::new();
@@ -359,6 +367,12 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
         let object = owned.as_ref();
         directories += usize::from(object.directory);
         roots += usize::from(object.path.is_empty());
+        ensure!(
+            object.case_sensitive.is_none() || object.directory,
+            "\\{} is a file and states a case-sensitive mark, which only a directory has",
+            object.path.join("\\")
+        );
+        case_stated += usize::from(object.case_sensitive.is_some());
         if object.source_evidence.is_some()
             || object
                 .named_streams
@@ -611,6 +625,14 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
     ensure!(
         roots == 1,
         "expected tree must contain exactly one canonical root"
+    );
+    // A tree carries the case-sensitive mark over for all of its
+    // directories or for none: a directory that says nothing in a tree
+    // that carries it would be made and left with whatever mark it took
+    // from its parent.
+    ensure!(
+        case_stated == 0 || case_stated == directories,
+        "{case_stated} of the expected tree's {directories} directories state a case-sensitive mark, where all of them or none do"
     );
     validate_source_overlap(&mut source_ranges)?;
     if let Some(ranges) = resource_ranges {
@@ -1015,6 +1037,9 @@ fn derive_profile(
             api_security: None,
             extended_attributes: Some(crate::ntfs_extended_attributes::file_set(f)?),
             reparse,
+            // This derivation admits only directories whose flags are
+            // zero, and carries no mark.
+            case_sensitive: None,
             source_offset,
             source_extents,
             length,

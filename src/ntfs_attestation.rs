@@ -493,13 +493,15 @@ fn directory_case_flags_with_serial(
 }
 
 /// What Windows says of a directory's case sensitivity, asked twice:
-/// whether the directory is marked case-sensitive. The converter does not
-/// set the mark on the target, and says so. (ReFS 3.14 takes the mark in
-/// the lab's controls, on builds 26100 and 26300; on 26300 Windows then
-/// stopped with a bugcheck when the volume was taken offline.) What a
-/// conversion cannot do without the mark is keep two names that differ
-/// only by case apart, and such a pair is refused where the directory's
-/// names are reconciled, whether the mark is set or not.
+/// whether the directory is marked case-sensitive. The converter sets the
+/// mark on the target where `n2r_win32::directory_case::CaseMarkCarry` says
+/// the running Windows was shown to hold such a directory, and says which
+/// it did. (ReFS 3.14 takes the mark in the lab's controls, on Windows
+/// Server 2025 and on Windows 11 build 26300; on the latter Windows then
+/// stopped with a bugcheck when the volume was taken offline.) Two names
+/// that differ only by case are a separate matter: such a pair is refused
+/// where the directory's names are reconciled, whether the mark is carried
+/// over or not.
 /// Flags other than 0 and 1, and an answer that differs between the two
 /// queries, are refused here.
 #[cfg(windows)]

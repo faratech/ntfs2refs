@@ -152,7 +152,8 @@ fn adopt_verify_first(recorded: Option<bool>, route_verifies_first: bool) -> Res
         None => Ok(false),
         Some(true) if route_verifies_first => Ok(true),
         Some(_) => anyhow::bail!(
-            "the recovery publication records a handoff after the verification, which this              recovery route does not have"
+            "the recovery publication records a handoff after the verification, which this \
+             recovery route does not have"
         ),
     }
 }

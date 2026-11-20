@@ -366,7 +366,8 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
     {
         ensure!(
             crate::review::chosen() || crate::verify_first::chosen(),
-            "apply: ending before the handoff requires a run that chose --review or the              handoff after its verification"
+            "apply: ending before the handoff requires a run that chose --review or the \
+             handoff after its verification"
         );
         match self.apply_until(
             events,

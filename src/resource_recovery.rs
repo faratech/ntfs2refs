@@ -146,7 +146,8 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
                 recovery.runtime_scratch(),
             )
             .context(
-                "rollback: the fingerprint of the source as it was frozen, which the restored                  volume is checked against, could not be reopened; nothing was written",
+                "rollback: the fingerprint of the source as it was frozen, which the restored \
+                 volume is checked against, could not be reopened; nothing was written",
             )?,
         )
     } else {

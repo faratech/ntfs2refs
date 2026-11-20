@@ -455,7 +455,11 @@ impl HeldFile {
         }
         let _ram = scratch.lease_ram(4 * 1024 * 1024)?;
         // Hashed when it was reopened and held open, denying writers, since.
-        if n2r_win32::verify_policy::checks_once() {
+        // That is so in a recovery as well, which does not check once until
+        // its replay is over: under `repeat_once` it repeats this complete
+        // read, of the bytes `open` read through this very handle, no more
+        // than a route that checks once does.
+        if n2r_win32::verify_policy::checks_once() || n2r_win32::verify_policy::repeats_once() {
             ensure!(
                 n2r_win32::reference_file::observe_reference_file_handle_with_limit(
                     &self.file,

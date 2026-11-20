@@ -91,7 +91,11 @@ static REPEAT_ONCE: AtomicBool = AtomicBool::new(false);
 ///   its identity, its lifecycle markers, its index and the refusal of a
 ///   second writer, and rebuilds its index from the record descriptors; the
 ///   body is read again only by an owner that opens the journal again
-///   ([`crate::bulk_digest::JournalBodyHold`]).
+///   ([`crate::bulk_digest::JournalBodyHold`]);
+/// - the complete read of each recovery file (the publication, the expected
+///   pages and their binding, the maps, the alias records), when it is
+///   reopened read-only, denying writers. Every later step still holds the
+///   same open file to its identity, length, attributes and timestamp.
 ///
 /// It is not [`check_once`], and a recovery never calls that when it starts.
 /// `check_once` leaves every full re-read to the [`Gate`] in front of the

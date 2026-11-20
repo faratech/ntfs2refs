@@ -53,8 +53,10 @@ static VERIFY_ONCE: AtomicBool = AtomicBool::new(false);
 ///   back against its NEW digest after it is written;
 /// - the short-name links of a converted Windows volume probed once.
 ///
-/// A run with `--verify thorough`, a diagnosis, a recovery and every route
-/// that never calls this (and every test) keep every check as it was.
+/// A run with `--verify thorough`, a diagnosis and every route that never
+/// calls this (and every test) keep every check as it was. A recovery never
+/// calls it either: what a recovery makes once is said by [`repeat_once`]
+/// and [`repeat_once_as_verified`].
 pub fn verify_once() {
     VERIFY_ONCE.store(true, SeqCst);
 }
@@ -81,6 +83,29 @@ static REPEAT_ONCE: AtomicBool = AtomicBool::new(false);
 ///
 /// What another process checked, the conversion being recovered among them,
 /// never stands for a check here: a recovery reads what it finds.
+///
+/// Made once under it:
+///
+/// - the complete read of the journal's body, at the scan that follows the
+///   reopening of the journal. Every later step still holds the journal to
+///   its identity, its lifecycle markers, its index and the refusal of a
+///   second writer, and rebuilds its index from the record descriptors.
+///   What one owner of the journal read never stands for another that opens
+///   it again under this switch ([`crate::bulk_digest::JournalBodyHold`]);
+///   the finalizer of a resumed recovery, which does open it again, checks
+///   once by then and is decided by that policy's rule, as before;
+/// - the complete read of each recovery file (the publication, the expected
+///   pages and their binding, the maps, the alias records), when it is
+///   reopened read-only, denying writers. Every later step still holds the
+///   same open file to its identity, length, attributes and timestamp. The
+///   finalizer of a resumed recovery reopens the same files: the recovery's
+///   handles stay open until the finalizer's own are, so that the files are
+///   at no moment unheld, and the finalizer compares the digest of that one
+///   read with the pin it was given;
+/// - the walk of the journal's index against the record descriptors in the
+///   journal's body, once for each scan of the journal and not again at
+///   every reading of the lifecycle. Each row a step uses is still held to
+///   its descriptor when it is read.
 ///
 /// It is not [`check_once`], and a recovery never calls that when it starts.
 /// `check_once` leaves every full re-read to the [`Gate`] in front of the

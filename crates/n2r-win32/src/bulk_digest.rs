@@ -339,11 +339,70 @@ pub fn held_file(
     Ok(digest)
 }
 
-type VerifiedBody = (Algorithm, [u8; 32], u64, u64);
+/// A journal body: the algorithm and digest that pin it, where it begins in
+/// its journal and how long it is.
+pub(crate) type VerifiedBody = (Algorithm, [u8; 32], u64, u64);
 static VERIFIED_JOURNAL_BODIES: std::sync::Mutex<Vec<VerifiedBody>> =
     std::sync::Mutex::new(Vec::new());
 static JOURNAL_BODY_LAST_FULL: crate::verify_policy::LastFull =
     crate::verify_policy::LastFull::new();
+
+/// One hold of a journal: its number, the body it pins, and whether that body
+/// was read in full and matched while the hold lasted.
+type HeldBody = (u64, VerifiedBody, bool);
+static HELD_JOURNAL_BODIES: std::sync::Mutex<Vec<HeldBody>> = std::sync::Mutex::new(Vec::new());
+static NEXT_JOURNAL_BODY_HOLD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Says, for as long as it lives, that this process holds a recovery journal
+/// open so that nothing else can write to it (share-zero), and writes only
+/// to the marker area in front of its body itself.
+///
+/// A recovery has no gate (`verify_policy`), so what it read in full it used
+/// to read in full again at every step: six times over a rollback. Under
+/// [`crate::verify_policy::repeat_once`] a body that was read in full and
+/// matched *while this hold lasted* is not read again until the hold ends.
+/// What was read before the hold began, through another owner of the journal
+/// or by the conversion being recovered, does not count; and when the owner
+/// of the journal is dropped, so is this, and nothing it verified stands for
+/// an owner that opens the journal again. Whoever opens the journal keeps
+/// this beside it and drops it no later.
+///
+/// The hold decides only while the process does not check once. From where
+/// a resumed recovery selects `check_once`, for its finalizer, that policy's
+/// own rule decides, as it did before there were holds: a body that matched
+/// in this process is not read again outside a gate, by the finalizer's
+/// reopening of the journal either.
+pub struct JournalBodyHold(u64);
+
+impl JournalBodyHold {
+    pub fn begin(algorithm: Algorithm, expected: &[u8; 32], offset: u64, length: u64) -> Self {
+        let hold = NEXT_JOURNAL_BODY_HOLD.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        HELD_JOURNAL_BODIES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((hold, (algorithm, *expected, offset, length), false));
+        Self(hold)
+    }
+}
+
+impl Drop for JournalBodyHold {
+    fn drop(&mut self) {
+        HELD_JOURNAL_BODIES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|(hold, ..)| *hold != self.0);
+    }
+}
+
+/// Whether a [`JournalBodyHold`] of this body is alive and the body was read
+/// in full and matched since it began.
+pub(crate) fn journal_body_verified_while_held(body: &VerifiedBody) -> bool {
+    HELD_JOURNAL_BODIES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .any(|(_, held, verified)| held == body && *verified)
+}
 
 /// Records that a recovery journal body with this digest was read in full and
 /// matched, in this process.
@@ -353,38 +412,80 @@ pub fn note_journal_body_verified(
     offset: u64,
     length: u64,
 ) {
-    let mut verified = VERIFIED_JOURNAL_BODIES
+    let body = (algorithm, *expected, offset, length);
+    {
+        let mut verified = VERIFIED_JOURNAL_BODIES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !verified.contains(&body) {
+            verified.push(body);
+        }
+    }
+    for (_, held, verified) in HELD_JOURNAL_BODIES
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if !verified.contains(&(algorithm, *expected, offset, length)) {
-        verified.push((algorithm, *expected, offset, length));
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter_mut()
+    {
+        *verified |= *held == body;
     }
 }
 
-/// Whether a full read of this journal body can be skipped: it already
-/// matched in this process under this algorithm, the route checks once, and
-/// the single full read due inside the gate before the first source write
-/// has been made (or no gate is open). The body never changes once written;
-/// only the marker area in front of it does.
+/// The rule of [`journal_body_already_verified`], apart from the switches and
+/// the memories it reads. A route that checks once is decided by its gate
+/// alone, as it always was; `known_and_no_full_read_due` is asked only then.
+pub(crate) fn journal_body_read_is_left_out(
+    checks_once: bool,
+    repeats_once: bool,
+    verified_while_held: impl FnOnce() -> bool,
+    known_and_no_full_read_due: impl FnOnce() -> bool,
+) -> bool {
+    if checks_once {
+        known_and_no_full_read_due()
+    } else {
+        repeats_once && verified_while_held()
+    }
+}
+
+/// Whether a full read of this journal body can be skipped. The body never
+/// changes once written; only the marker area in front of it does.
+///
+/// On a route that checks once: it already matched in this process under
+/// this algorithm, and the single full read due inside the gate before the
+/// first source write has been made (or no gate is open).
+///
+/// In a recovery, which has no gate and does not check once until its replay
+/// is over (`verify_policy::repeat_once`): this process read it in full, and
+/// it matched, while it held the journal, and it has held the journal since
+/// ([`JournalBodyHold`]). The first read of the journal by the recovery that
+/// opens it is therefore always complete. (Its finalizer checks once and is
+/// decided by the rule above, as before.)
+///
+/// Otherwise (`--recheck-everything`, and every route with neither switch)
+/// it is read every time.
 pub fn journal_body_already_verified(
     algorithm: Algorithm,
     expected: &[u8; 32],
     offset: u64,
     length: u64,
 ) -> bool {
-    if !crate::verify_policy::checks_once() {
-        return false;
-    }
-    let known = VERIFIED_JOURNAL_BODIES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .contains(&(algorithm, *expected, offset, length));
-    known && !crate::verify_policy::full(&JOURNAL_BODY_LAST_FULL)
+    let body = (algorithm, *expected, offset, length);
+    journal_body_read_is_left_out(
+        crate::verify_policy::checks_once(),
+        crate::verify_policy::repeats_once(),
+        || journal_body_verified_while_held(&body),
+        || {
+            let known = VERIFIED_JOURNAL_BODIES
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&body);
+            known && !crate::verify_policy::full(&JOURNAL_BODY_LAST_FULL)
+        },
+    )
 }
 
 /// The digest of a held recovery journal's immutable body, to compare with
 /// `expected`, which the journal's ticket pins by `algorithm`. Gigabytes
-/// long and compared at every step of apply and finalization; see
+/// long and compared at every step of apply, recovery and finalization; see
 /// [`journal_body_already_verified`] for when the read is skipped and
 /// `expected` returned.
 pub fn journal_body(

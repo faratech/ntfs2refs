@@ -1139,6 +1139,10 @@ pub(crate) fn recover(directory: &Path, sha: &str, rollback: bool) -> Result<u8>
             "Label and mount-path reconciliation verified. Records: {}",
             output.display()
         );
+        // The conversion is online and reconciled: its working volume
+        // serves nothing any more. A run ended after it went online and
+        // before its own cleanup leaves it attached (#216).
+        detach_after_completed_recovery(directory);
         return Ok(0);
     }
     if rollback
@@ -1157,8 +1161,17 @@ pub(crate) fn recover(directory: &Path, sha: &str, rollback: bool) -> Result<u8>
                 .unwrap_or(&serde_json::Value::Null)
         );
     }
-    // The run's working volume is not needed by a completed recovery in
-    // either direction; it stays attached until it is detached.
+    detach_after_completed_recovery(directory);
+    println!("Recovery completed. Records: {}", output.display());
+    Ok(0)
+}
+
+/// The run's working volume is not needed by a completed recovery in either
+/// direction, nor by one that found the conversion already online; it stays
+/// attached until it is detached. `directory` is the run's conversion
+/// directory, beside its working volume. What could not be detached is said,
+/// with how to detach it by hand.
+fn detach_after_completed_recovery(directory: &Path) {
     if let Some(run) = directory.parent() {
         let (_, _, disks) = left_behind(run);
         for disk in detach_working_volumes(disks) {
@@ -1168,8 +1181,6 @@ pub(crate) fn recover(directory: &Path, sha: &str, rollback: bool) -> Result<u8>
             );
         }
     }
-    println!("Recovery completed. Records: {}", output.display());
-    Ok(0)
 }
 
 #[cfg(test)]

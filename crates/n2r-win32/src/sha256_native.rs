@@ -368,7 +368,10 @@ pub fn hash_next(reader: &mut impl Read, length: u64) -> io::Result<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bulk_digest::{Algorithm, journal_body, journal_body_already_verified};
+    use crate::bulk_digest::{
+        Algorithm, JournalBodyHold, journal_body, journal_body_already_verified,
+        journal_body_read_is_left_out, journal_body_verified_while_held,
+    };
     use sha2::Digest;
 
     struct CountingReader {
@@ -389,6 +392,8 @@ mod tests {
 
     // The process-wide "check once" switch is off in tests, as it is for
     // every route that does not run a gate before its first source write.
+    // So is the recovery's "repeat once": its rule is held to here without
+    // the switch, and the switch alone must not be enough.
     #[test]
     fn a_journal_body_is_read_every_time_unless_the_route_checks_once() {
         let data: Vec<u8> = (0..8192u32).map(|value| value as u8).collect();
@@ -417,6 +422,83 @@ mod tests {
             reader.reads > first,
             "the second comparison must read the body again"
         );
+
+        // A recovery repeats a complete read once: only of a body it read in
+        // full while it held the journal, and only while it still holds it.
+        let body = (Algorithm::Sha256, expected, 1024, 7168);
+        assert!(
+            !journal_body_verified_while_held(&body),
+            "two complete reads, but nobody said it held the journal"
+        );
+        let hold = JournalBodyHold::begin(Algorithm::Sha256, &expected, 1024, 7168);
+        assert!(
+            !journal_body_verified_while_held(&body),
+            "what was read before the hold began does not stand for it"
+        );
+        let other = JournalBodyHold::begin(Algorithm::Sha256, &expected, 1024, 7167);
+        let before = reader.reads;
+        assert_eq!(
+            journal_body(Algorithm::Sha256, &mut reader, 1024, 7168, &expected).unwrap(),
+            expected
+        );
+        assert!(
+            reader.reads > before,
+            "the first read under a hold is complete"
+        );
+        assert!(journal_body_verified_while_held(&body));
+        assert!(
+            !journal_body_verified_while_held(&(Algorithm::Sha256, expected, 1024, 7167)),
+            "a hold of another body is not verified by this one"
+        );
+        assert!(
+            !journal_body_verified_while_held(&(Algorithm::Blake3, expected, 1024, 7168)),
+            "nor is the same digest of another algorithm"
+        );
+        assert!(
+            !journal_body_already_verified(Algorithm::Sha256, &expected, 1024, 7168),
+            "held and verified, but no switch is selected: it is read again"
+        );
+        let before = reader.reads;
+        assert_eq!(
+            journal_body(Algorithm::Sha256, &mut reader, 1024, 7168, &expected).unwrap(),
+            expected
+        );
+        assert!(reader.reads > before);
+        // The rule the switches select.
+        let held = || journal_body_verified_while_held(&body);
+        assert!(
+            !journal_body_read_is_left_out(false, false, held, || true),
+            "neither switch (and --recheck-everything): every read is made"
+        );
+        assert!(
+            journal_body_read_is_left_out(false, true, held, || false),
+            "a recovery leaves out the repeat of what it read while holding"
+        );
+        assert!(
+            !journal_body_read_is_left_out(false, true, || false, || true),
+            "a recovery reads what it only knows from elsewhere"
+        );
+        assert!(
+            !journal_body_read_is_left_out(true, true, held, || false),
+            "a route that checks once is decided by its gate alone"
+        );
+        assert!(journal_body_read_is_left_out(
+            true,
+            false,
+            || false,
+            || true
+        ));
+        drop(hold);
+        assert!(
+            !journal_body_verified_while_held(&body),
+            "a journal that was released is read in full again"
+        );
+        let _reopened = JournalBodyHold::begin(Algorithm::Sha256, &expected, 1024, 7168);
+        assert!(
+            !journal_body_verified_while_held(&body),
+            "and so is one that is opened again"
+        );
+        drop(other);
     }
 
     #[test]
@@ -478,6 +560,7 @@ mod tests {
         let expected: [u8; 32] = sha2::Sha256::digest(&data[..]).into();
         data[100] ^= 1;
         let mut reader = io::Cursor::new(data);
+        let _hold = JournalBodyHold::begin(Algorithm::Sha256, &expected, 0, 4096);
         assert_ne!(
             journal_body(Algorithm::Sha256, &mut reader, 0, 4096, &expected).unwrap(),
             expected
@@ -488,5 +571,9 @@ mod tests {
             0,
             4096
         ));
+        assert!(
+            !journal_body_verified_while_held(&(Algorithm::Sha256, expected, 0, 4096)),
+            "a body that differed is never one a holder verified"
+        );
     }
 }

@@ -76,6 +76,57 @@ fn a_file_this_process_wrote_opens_without_being_read_and_answers_any_order() {
             );
         }
     }
+
+    // A file this process did not write (a copy is another file) is read
+    // completely the first time it is opened. From then on it is known as
+    // one written here is: it opens again without being read, and its pages
+    // are checked by the checksum taken at that complete read. Its owners
+    // are still told that no writer here produced it.
+    let copy = fixture(&directory, "copy.bin");
+    std::fs::copy(&path, &copy).unwrap();
+    let mut first = Reader::open(&copy, &sha, PURPOSE, budget()).unwrap();
+    let opened = first.page_cache_statistics();
+    assert_eq!(
+        opened.page_loads,
+        first.page_count(),
+        "the first open of a file written elsewhere reads every page"
+    );
+    assert!(opened.page_hash_bytes > 0, "and holds each to its digest");
+    assert!(!first.written_by_this_process());
+    let mut second = Reader::open(&copy, &sha, PURPOSE, budget()).unwrap();
+    assert_eq!(
+        second.page_cache_statistics().page_loads,
+        0,
+        "a file read completely here opens again without being read"
+    );
+    assert!(
+        !second.written_by_this_process(),
+        "but it is not a file this process wrote"
+    );
+    for ordinal in (0..RECORDS).map(|step| (step * 211) % RECORDS) {
+        for reader in [&mut first, &mut second] {
+            let record = reader.get(ordinal).unwrap();
+            assert_eq!(
+                (record.key, record.payload),
+                (key(ordinal), payload(ordinal))
+            );
+        }
+    }
+    assert_eq!(
+        first.page_cache_statistics().page_hash_bytes,
+        opened.page_hash_bytes,
+        "the reader that read it completely digests no page a second time"
+    );
+    assert_eq!(second.page_cache_statistics().page_hash_bytes, 0);
+    // Inside the gate it is read completely again, like any other file.
+    let gate = verify_policy::Gate::enter();
+    let third = Reader::open(&copy, &sha, PURPOSE, budget()).unwrap();
+    assert_eq!(
+        third.page_cache_statistics().page_loads,
+        third.page_count(),
+        "the gate validates every page of a file read here before"
+    );
+    drop(gate);
 }
 
 #[test]
@@ -201,6 +252,43 @@ fn a_file_changed_after_it_was_written_is_refused() {
                 error
                     .to_string()
                     .contains("differs from the page this process wrote"),
+                "{error}"
+            );
+        }
+    }
+
+    // A file this process did not write but read completely is held to the
+    // same: a page changed behind an unchanged length and timestamp is
+    // refused the moment it is loaded, against the checksum of the page that
+    // passed its digest.
+    let other = fixture(&directory, "other.bin");
+    let other_sha = write(&other);
+    let copy = fixture(&directory, "copy.bin");
+    std::fs::copy(&other, &copy).unwrap();
+    drop(Reader::open(&copy, &other_sha, PURPOSE, budget()).unwrap());
+    let modified = std::fs::metadata(&copy).unwrap().modified().unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&copy)
+        .unwrap();
+    file.seek(SeekFrom::Start(64 + 64 + 40)).unwrap();
+    file.read_exact(&mut byte).unwrap();
+    byte[0] ^= 0x01;
+    file.seek(SeekFrom::Start(64 + 64 + 40)).unwrap();
+    file.write_all(&byte).unwrap();
+    drop(file);
+    let file = std::fs::OpenOptions::new().write(true).open(&copy).unwrap();
+    file.set_modified(modified).unwrap();
+    drop(file);
+    match Reader::open(&copy, &other_sha, PURPOSE, budget()) {
+        Err(error) => assert!(error.to_string().contains("SHA differs"), "{error}"),
+        Ok(mut reader) => {
+            let error = reader.get(0).err().unwrap();
+            assert!(
+                error
+                    .to_string()
+                    .contains("differs from the page this process read"),
                 "{error}"
             );
         }

@@ -139,7 +139,7 @@ pub struct DriveArgs {
     /// possible. For a data volume on a disk of its own.
     #[arg(long, requires = "drive", conflicts_with_all = [
         "list", "recover", "windows_boot_volume", "offline_recovery_media",
-        "check", "diagnose", "compare_listing",
+        "check", "diagnose", "compare_listing", "minimize_scratch",
     ])]
     pub review: bool,
     /// What the run verifies: `fast` (the default) proves data that stays in
@@ -1224,6 +1224,14 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                 mode == crate::execution_mode::ExecutionMode::Convert,
                 "--review is for a conversion, not with --diagnose. Nothing was changed."
             );
+            // A rollback of a review run is held to the fingerprint of the
+            // frozen source; with --minimize-scratch no rollback restores
+            // what unused space held, and that has not been shown to stay
+            // outside the fingerprint.
+            ensure!(
+                !args.minimize_scratch,
+                "--review is not offered with --minimize-scratch. Nothing was changed."
+            );
             crate::review::choose();
         }
         let source_role = if args.windows_boot_volume {
@@ -1252,6 +1260,17 @@ The machine restarts, possibly more than once. Do not switch it off while the co
         ensure!(
             before.filesystem == "NTFS",
             "selected partition must currently be NTFS"
+        );
+        // The review stop puts the whole disk online read-only: every other
+        // partition on it would come back write-protected for as long as the
+        // review lasts, and one made writable would forfeit both directions.
+        ensure!(
+            !args.review
+                || before.binding.layout_profile
+                    == n2r_win32::general_layout::GeneralDiskLayoutProfile::DedicatedData,
+            "--review is for a data volume on a disk of its own; disk {} has other partitions, \
+             which the review would leave read-only. Nothing was changed.",
+            before.binding.disk_number
         );
         // A disk the volume shares with other partitions: what else is on
         // it, for the lines before the prompt. Refused here where the
@@ -2216,6 +2235,7 @@ mod tests {
             &["--check"],
             &["--diagnose"],
             &["--compare-listing"],
+            &["--minimize-scratch"],
         ] {
             let mut arguments = vec!["--review"];
             arguments.extend_from_slice(refused);

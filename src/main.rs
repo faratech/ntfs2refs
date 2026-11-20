@@ -230,7 +230,7 @@ fn run() -> Result<u8> {
                         "refuses_both_once_writable": true,
                         "restored_ntfs_held_to_source_fingerprint": true,
                         "for": "a data volume on a disk of its own",
-                        "refused_with": ["--windows-boot-volume", "--restart-media", "--check", "--diagnose", "--compare-listing", "a partition on the running Windows disk"],
+                        "refused_with": ["--windows-boot-volume", "--restart-media", "--check", "--diagnose", "--compare-listing", "--minimize-scratch", "a partition on the running Windows disk", "a disk with other partitions"],
                         "lab_evidence": false,
                     },
                     "verification_modes": [

@@ -748,9 +748,11 @@ ntfs2refs refuses both directions: neither the journal's old content nor its
 handoff fits a volume that was written to. Close Explorer windows on the
 volume before you run the command: it has to be dismounted.
 
-`--review` is for a data volume on a disk of its own. It is refused with
+`--review` is for a data volume on a disk of its own (no other partitions:
+the review leaves the whole disk read-only). It is refused with
 `--windows-boot-volume`, `--restart-media`, for a partition on the disk of the
-running Windows, and with `--check`, `--diagnose` and `--compare-listing`. A
+running Windows, and with `--check`, `--diagnose`, `--compare-listing` and
+`--minimize-scratch`. A
 review run whose preparation is cut off is cancelled with `--rollback` and
 started again; it is not resumed without its review. The fingerprint costs a
 full read of the volume at the stop and another at the decision. The

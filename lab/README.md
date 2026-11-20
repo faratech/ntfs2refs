@@ -214,6 +214,12 @@ left offline and read-only. The cases, each on the 1-in-40 fixture or a
 | `-Review -InterruptAt review-recorded`, resume / rollback | the same, and the stop's fingerprint is compared |
 | `-Review -InterruptAt review-sealed -InterruptKind vm`, resume / rollback | as the process case |
 | `-Review` with Explorer open on `V:`, commit | refused with the dismount message; closed, it commits |
+| `-Review`, the control OS restarted at the stop, then commit / rollback | the disk comes back online read-only by itself; `resumed` / `rolled-back` |
+| `-Review`, the recovery ended after it sealed the disk again, then recovery again (both directions) | the second recovery compares the fingerprint and finishes |
+| `-Review`, the recovery ended after it made the disk writable (offline), then recovery again | as above, from offline writable |
+| `-Review -Content lived-in`, `--rollback` | `rolled-back`, `compare --exact` |
+| `-Review -Siblings` | refused before anything is opened (a disk of its own only) |
+| `-Review` with `--minimize-scratch` | refused by the parser |
 | a default run at `apply-activated`, `handoff-sealed` | unchanged from today |
 
 `-StopDuringPreparation <phase>` ends the converter as soon as its progress

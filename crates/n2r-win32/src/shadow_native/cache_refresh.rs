@@ -560,6 +560,21 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     // decode every paged object for every native directory entry.
     let mut namespace_index = BTreeMap::new();
     let mut expected_children: BTreeMap<Vec<String>, BTreeSet<Vec<String>>> = BTreeMap::new();
+    const DIRECTORY: u8 = 1;
+    const EXTENDED_ATTRIBUTES: u8 = 2;
+    const REPARSE: u8 = 4;
+    // Reuse the existing prepaid scalar slot; the feature flags add no index
+    // allocation. The held InputDomain is immutable throughout completion.
+    const _: () = assert!(
+        std::mem::size_of::<(usize, usize, u8)>() == std::mem::size_of::<(usize, usize, bool)>()
+    );
+    // What the passes that restore metadata go by: every object with its
+    // depth and what it has to restore, and the files with more than one
+    // name (see the listing refresh further down). Both are noted where the
+    // objects are decoded for their shape, in the objects' order. A pass of
+    // its own decoded every object once more for them.
+    let mut ordered = Vec::new();
+    let mut linked = Vec::new();
     let metadata_progress = |pass, completed| {
         input.progress(
             crate::progress::Update::new(
@@ -653,6 +668,13 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 let ((_, item), shape) = asked
                     .next()
                     .ok_or_else(|| invalid("an object's handle was not asked for its shape"))?;
+                let flags = (u8::from(item.directory) * DIRECTORY)
+                    | (u8::from(item.extended_attributes.is_some()) * EXTENDED_ATTRIBUTES)
+                    | (u8::from(item.reparse.is_some()) * REPARSE);
+                ordered.push((index, item.components.len(), flags));
+                if !item.directory && !item.additional_names.is_empty() {
+                    linked.push(index);
+                }
                 if resource_admission.map_or(item.components.len() > 16, |_| {
                     !super::hard_links::resource_path_valid(&resource_root, item.components)
                 }) || item
@@ -824,28 +846,8 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     crate::perf::step("metadata: check directory listings");
     namespace(false, aliases.as_deref())?;
     crate::perf::step("metadata: restore security");
-    const DIRECTORY: u8 = 1;
-    const EXTENDED_ATTRIBUTES: u8 = 2;
-    const REPARSE: u8 = 4;
-    // Reuse the existing prepaid scalar slot; the feature flags add no index
-    // allocation. The held InputDomain is immutable throughout completion.
-    const _: () = assert!(
-        std::mem::size_of::<(usize, usize, u8)>() == std::mem::size_of::<(usize, usize, bool)>()
-    );
-    let mut ordered = Vec::new();
-    // Files with more than one name; see the listing refresh further down.
-    let mut linked = Vec::new();
-    input.for_each(|index, item| {
-        metadata_progress(2, index as u64);
-        let flags = (u8::from(item.directory) * DIRECTORY)
-            | (u8::from(item.extended_attributes.is_some()) * EXTENDED_ATTRIBUTES)
-            | (u8::from(item.reparse.is_some()) * REPARSE);
-        ordered.push((index, item.components.len(), flags));
-        if !item.directory && !item.additional_names.is_empty() {
-            linked.push(index);
-        }
-        Ok(())
-    })?;
+    // Pass 2 gathered `ordered` and `linked`; they come from the first pass
+    // now, and this says that there is nothing left of it to wait for.
     metadata_progress(2, input.len() as u64);
     ordered.sort_by_key(|(_, depth, _)| *depth);
     let mut dacl_protection_updates = 0usize;

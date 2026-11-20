@@ -124,7 +124,10 @@ pub struct DriveArgs {
     #[arg(long, requires = "recover")]
     pub recovery_sha256: Option<String>,
     /// Continue prepublication preparation on a different independent local
-    /// volume. Saved source evidence and the existing shadow are reused.
+    /// volume. Saved source evidence and the existing shadow are reused. A
+    /// preparation whose --verify fast run left the contents of plain
+    /// streams unread through Windows is not continued (a resumed run does
+    /// not verify once): it is cancelled with --rollback and started again.
     #[arg(long, requires = "recover", conflicts_with = "rollback")]
     pub resume_workspace: Option<PathBuf>,
     /// With --recover: put the NTFS volume back as it was, or cancel a
@@ -198,9 +201,10 @@ pub struct DriveArgs {
     /// Re-read every working file and the whole source at every checkpoint
     /// instead of once, immediately before the first write to the source.
     /// With --verify fast it also leaves nothing out: Windows reads the
-    /// contents of every source stream again, the new volume is read back
-    /// before the changes are captured and its short-name links are probed
-    /// twice. Much slower; the result is the same.
+    /// contents of every source stream its extents do not prove, the new
+    /// volume is read back before the changes are captured and its
+    /// short-name links are probed twice. Much slower; the result is the
+    /// same.
     #[arg(long, requires = "drive", conflicts_with_all = ["list", "recover", "rollback"])]
     pub recheck_everything: bool,
     /// A ceiling on the memory the run may use, in MiB. Without it a run

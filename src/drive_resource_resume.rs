@@ -72,17 +72,29 @@ fn refuse_unread_saved_contents(
     source: &crate::general_source_admission::resource::SourceCacheOriginPins,
     directory: &Path,
     sha: [u8; 32],
+    already_cancelled: bool,
 ) -> Result<()> {
     if let Some(skipped) = source.windows_content_reads_skipped()? {
+        let rollback = format!(
+            "ntfs2refs --recover \"{}\" --recovery-sha256 {} --rollback",
+            directory.display(),
+            hex::encode(sha)
+        );
+        // A legacy origin is resumed only once its preparation is cancelled.
+        let remedy = if already_cancelled {
+            format!(
+                "Its preparation is already cancelled: start the conversion again. If the volume is still offline, {rollback} gives it back."
+            )
+        } else {
+            format!("Cancel it with: {rollback}, then start the conversion again.")
+        };
         anyhow::bail!(
-            "The preparation in {} cannot be resumed. It was made by a --verify fast run, which verifies once: Windows did not read the contents of {} plain stream(s) of {} object(s) ({} bytes) and held only where they lie to the raw reading (see windows_content_reads_skipped in {}). A resumed preparation does not verify once and needs every stream read through Windows. Cancel it with: ntfs2refs --recover \"{}\" --recovery-sha256 {} --rollback, then start the conversion again.",
+            "The preparation in {} cannot be resumed. It was made by a --verify fast run, which verifies once: Windows did not read the contents of {} plain stream(s) of {} object(s) ({} bytes) and held only where they lie to the raw reading (see windows_content_reads_skipped in {}). A resumed preparation does not verify once and needs every stream its extents do not prove read through Windows. {remedy}",
             directory.display(),
             skipped["streams"],
             skipped["objects"],
             skipped["logical_bytes"],
             source.native_witness.path.display(),
-            directory.display(),
-            hex::encode(sha)
         );
     }
     Ok(())
@@ -149,7 +161,7 @@ pub(super) fn resume_preparation_in_workspace(
             && origin.parent_resources.resources == parent.resources,
         "legacy budget/root changed during resume discovery"
     );
-    refuse_unread_saved_contents(&origin.origin, directory, old_sha)?;
+    refuse_unread_saved_contents(&origin.origin, directory, old_sha, true)?;
     let backing_guard = resume_backing_guard(&origin.pair)?;
     println!(
         "Resume saved preparation: disk {}, partition {}.\nReusing the expected tree and existing private ReFS shadow.\n{SAVED_SOURCE_EVIDENCE}\nThe remaining placement is planned from current native mappings.",
@@ -535,7 +547,7 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32], workspace: Option<&Pat
             && session.saved.parent_resources.resources == bootstrap.parent_resources.resources,
         "saved session bootstrap changed before paid adoption"
     );
-    refuse_unread_saved_contents(&session.source, directory, intent_sha)?;
+    refuse_unread_saved_contents(&session.source, directory, intent_sha, false)?;
     println!(
         "Resume checkpoint: {}\nSource: disk {}, partition {}.\n{SAVED_SOURCE_EVIDENCE}",
         directory.display(),

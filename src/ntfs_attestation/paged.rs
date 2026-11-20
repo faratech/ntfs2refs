@@ -555,7 +555,7 @@ fn compare_domain_with_header(
     if let Some(skipped) = header.content_reads_skipped {
         ensure!(
             policy.verifies_once(),
-            "the Windows view of this source did not read the contents of {} plain stream(s) of {} object(s) ({} bytes), as a --verify fast run that verifies once does; this process does not verify once and needs every stream read through Windows. A preparation resumed with --recover cannot use that view: cancel it with the same --recover command and --rollback, then start the conversion again",
+            "the Windows view of this source did not read the contents of {} plain stream(s) of {} object(s) ({} bytes), as a --verify fast run that verifies once does; this process does not verify once and needs every stream its extents do not prove read through Windows. A preparation resumed with --recover cannot use that view: cancel it with the same --recover command and --rollback, then start the conversion again",
             skipped.streams,
             skipped.objects,
             skipped.logical_bytes

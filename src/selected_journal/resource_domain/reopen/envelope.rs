@@ -597,22 +597,30 @@ fn reseal_after_interrupted_verification(
 
 /// The same for a run whose handoff follows its verification (#148): its
 /// verification runs under the apply intent alone, after the seal is
-/// recorded, with the disk online and read-only meanwhile. A review run's
-/// stop is in the same state and is sealed by `reseal_review_stop` below,
-/// which also refuses what a review must refuse; it is left to that.
+/// recorded, with the disk online and read-only meanwhile.
+///
+/// A review run whose stop is recorded is in the same state at its stop, and
+/// is sealed by `reseal_review_stop` below, which also refuses what a review
+/// must refuse; it is left to that. A review run whose stop was never
+/// recorded never put its volume online for the review (the stop is recorded
+/// before that): its disk is online and read-only only because the
+/// verification of its commit was cut off, and it is sealed again here as
+/// any such run's. `reseal_review_stop` then finds it sealed. A review run
+/// without the record of its seal is still left to `reseal_review_stop`,
+/// which refuses it online as before.
+#[allow(clippy::too_many_arguments)]
 fn reseal_after_interrupted_verification_before_handoff(
+    publication_path: &Path,
+    publication_sha256: [u8; 32],
     source: &GeneralDiskBinding,
+    new_selected_sha256: [u8; 32],
     verify_before_handoff: bool,
     review: bool,
     lifecycle: SelectedLifecycle,
     seal_recorded: bool,
     events: &mut Vec<NativeEvent>,
 ) -> Result<()> {
-    if review
-        || !verify_before_handoff
-        || lifecycle != SelectedLifecycle::ApplyIntent
-        || !seal_recorded
-    {
+    if !verify_before_handoff || lifecycle != SelectedLifecycle::ApplyIntent || !seal_recorded {
         return Ok(());
     }
     let state = n2r_win32::observe_general_disk_state_readonly(source.clone(), events)
@@ -624,6 +632,26 @@ fn reseal_after_interrupted_verification_before_handoff(
         seal_recorded,
     ) {
         return Ok(());
+    }
+    if review {
+        let record_path = crate::review::record_path(publication_path)?;
+        let stop_recorded = crate::review::read_record(
+            &record_path,
+            publication_sha256,
+            source,
+            new_selected_sha256,
+        )
+        .with_context(|| {
+            format!(
+                "disk {} holds a review run online and read-only with its seal recorded: \
+                 deciding whether its review stop was recorded",
+                source.disk_number
+            )
+        })?
+        .is_some();
+        if stop_recorded {
+            return Ok(());
+        }
     }
     let (sealed, _) = GeneralFrozenPartition::restore_exclusion(source.clone(), events)
         .with_context(|| {
@@ -2629,7 +2657,10 @@ impl ReopenedResourceRecovery {
                     // reseal below: a verification before the handoff that
                     // did not finish left the disk online and read-only.
                     reseal_after_interrupted_verification_before_handoff(
+                        path,
+                        independently_supplied_sha256,
                         &publication.source,
+                        locator.ticket().new_selected_sha256,
                         verify_first,
                         publication.review_before_handoff == Some(true),
                         initial_lifecycle,

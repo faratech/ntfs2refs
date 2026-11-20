@@ -4,7 +4,12 @@ use super::{
     paged_storage::{PagedMetadataRange, SourcePagePin, SourceRamLease, SourceScratch},
     record_store::{RecordStorePin, SortedRecordStore},
 };
-use std::{cell::RefCell, collections::BTreeMap, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::BTreeMap,
+    rc::Rc,
+    sync::Arc,
+};
 
 struct CachedDirectory {
     // Shared, so that a caller can be lent the row after the cache's borrow
@@ -68,6 +73,90 @@ struct LastRow {
     _ram: SourceRamLease,
 }
 
+/// The rows of the file store decoded so far, by ordinal.
+///
+/// A conversion goes through the whole store some twenty-seven times, and
+/// every pass decoded every row from its JSON again: between two and five
+/// decodes an object in each phase, 340,000 to 680,000 of them a phase on
+/// the full Windows volume. The store cannot change while it is open and its
+/// pages are checked as they are loaded, so a row decoded once is kept and
+/// handed out shared. The memory is optional
+/// ([`SourceScratch::lease_optional_ram`]), paid for a block at a time and
+/// charged by what each row holds; when a block is refused, what is kept
+/// stays, the other rows are decoded as before (the row decoded last and the
+/// directories are still held as they were), and a block is asked for again
+/// a few thousand rows later. Inside the gate before the first write to the
+/// source, and without the check-once policy, nothing is served from here
+/// and nothing is added.
+#[derive(Default)]
+struct DecodedRows {
+    // Declared before the blocks, so the rows are dropped before the
+    // credit that pays for them.
+    rows: Vec<Option<Arc<FileInventory>>>,
+    leases: Vec<SourceRamLease>,
+    unspent: u64,
+    // Rows still to pass by before a block is asked for again.
+    refused_for: u32,
+}
+/// The decoded rows as a cache of the run: given up, with the blocks that
+/// pay for them, when memory is short ([`n2r_win32::evict`]).
+struct DecodedRowCache {
+    state: RefCell<DecodedRows>,
+    last_used: Cell<u64>,
+    // The record number and ordinal of the row served last from here: who
+    // asks for that record next by its number needs no search for its place.
+    last_served: Cell<Option<(u64, u64)>>,
+}
+impl DecodedRowCache {
+    /// Gives up every row and block, for a store whose rows are replaced or
+    /// whose memory is wanted back.
+    fn clear(&self) {
+        self.last_served.set(None);
+        let taken = {
+            let mut decoded = self.state.borrow_mut();
+            decoded.unspent = 0;
+            decoded.refused_for = 0;
+            (
+                std::mem::take(&mut decoded.rows),
+                std::mem::take(&mut decoded.leases),
+            )
+        };
+        // The rows before the blocks that paid for them.
+        drop(taken);
+    }
+}
+impl n2r_win32::evict::Evict for DecodedRowCache {
+    fn last_used(&self) -> u64 {
+        self.last_used.get()
+    }
+    fn evict(&self) -> bool {
+        // Borrowed means in use at this moment: left alone. What is taken
+        // is dropped after the borrow has ended, the rows before the blocks
+        // that paid for them.
+        let taken = match self.state.try_borrow_mut() {
+            Ok(mut decoded) if !decoded.leases.is_empty() => {
+                decoded.unspent = 0;
+                // Memory was short: not asked for again at once.
+                decoded.refused_for = DECODED_ROW_RETRY_ROWS;
+                Some((
+                    std::mem::take(&mut decoded.rows),
+                    std::mem::take(&mut decoded.leases),
+                ))
+            }
+            _ => None,
+        };
+        if taken.is_some() {
+            self.last_served.set(None);
+        }
+        taken.is_some()
+    }
+}
+const DECODED_ROW_BLOCK_BYTES: u64 = 16 * 1024 * 1024;
+const DECODED_ROW_RETRY_ROWS: u32 = 4096;
+/// Beside what a row holds on the heap: the row itself, the counts it is
+/// shared by and what the allocator keeps for it.
+const DECODED_ROW_OVERHEAD_BYTES: u64 = std::mem::size_of::<FileInventory>() as u64 + 64;
+
 pub(super) fn file_key(number: u64) -> [u8; 16] {
     let mut key = [0; 16];
     key[..8].copy_from_slice(&number.to_be_bytes());
@@ -83,6 +172,9 @@ pub struct PagedRawFiles {
     scratch: SourceScratch,
     directory_rows: RefCell<DirectoryRowCache>,
     last_row: RefCell<Option<LastRow>>,
+    // Rows already decoded from the store, while the run can spare the
+    // memory.
+    decoded: Rc<DecodedRowCache>,
 }
 impl PagedRawFiles {
     pub(super) fn from_live_bitmap(
@@ -108,6 +200,15 @@ impl PagedRawFiles {
             scratch: scratch.clone(),
             directory_rows: RefCell::new(DirectoryRowCache::default()),
             last_row: RefCell::new(None),
+            decoded: {
+                let decoded = Rc::new(DecodedRowCache {
+                    state: RefCell::new(DecodedRows::default()),
+                    last_used: Cell::new(n2r_win32::evict::now()),
+                    last_served: Cell::new(None),
+                });
+                n2r_win32::evict::register(&decoded);
+                decoded
+            },
         };
         value.validate_complete_files()?;
         Ok(value)
@@ -130,6 +231,10 @@ impl PagedRawFiles {
             self.files.clear_resident_cache();
         }
         self.last_row.get_mut().take();
+        // The decoded rows are memory of the same kind: returned before the
+        // projection pays for its rows and sorters, and kept again as its
+        // passes decode them.
+        self.decoded.clear();
     }
     pub(super) fn set_header(&mut self, header: SourceHeader) -> Result<()> {
         ensure!(
@@ -151,6 +256,7 @@ impl PagedRawFiles {
         // and return optional cache credit before opening replacement pages.
         self.directory_rows.get_mut().clear();
         self.last_row.get_mut().take();
+        self.decoded.clear();
         self.files.clear_resident_cache();
         let replacement = SortedRecordStore::open(pin, &self.scratch)?;
         for ordinal in 0..replacement.len() {
@@ -187,8 +293,79 @@ impl PagedRawFiles {
     pub(super) fn ordinal_wire_bytes(&self, ordinal: u64) -> Result<u64> {
         self.files.record_bytes(ordinal)
     }
-    /// The row at `ordinal` if it is held, as one of the directories or as
-    /// the row decoded last, and the key that the row at `ordinal` must have.
+    /// Whether decoded rows are kept and served again: under the check-once
+    /// policy, outside its gate.
+    fn serves_decoded(&self) -> bool {
+        !n2r_win32::verify_policy::full_unremembered()
+    }
+    /// Keeps `file`, decoded from the row at `ordinal` and held to its key,
+    /// to be served again. Returns whether it is kept: a refusal leaves the
+    /// row to its caller as before.
+    fn keep_decoded(&self, ordinal: u64, file: &Arc<FileInventory>) -> bool {
+        if !self.serves_decoded() {
+            return false;
+        }
+        let (Ok(index), Ok(count)) = (usize::try_from(ordinal), usize::try_from(self.files.len()))
+        else {
+            return false;
+        };
+        if index >= count {
+            return false;
+        }
+        self.decoded.last_used.set(n2r_win32::evict::now());
+        let mut decoded = self.decoded.state.borrow_mut();
+        if decoded.rows.get(index).is_some_and(Option::is_some) {
+            return true;
+        }
+        if decoded.refused_for > 0 {
+            decoded.refused_for -= 1;
+            return false;
+        }
+        let Some(mut bytes) = file_heap_bytes(file)
+            .ok()
+            .and_then(|heap| heap.checked_add(DECODED_ROW_OVERHEAD_BYTES))
+        else {
+            return false;
+        };
+        let slots = decoded.rows.is_empty();
+        if slots {
+            bytes = bytes.saturating_add(
+                (count as u64)
+                    .saturating_mul(std::mem::size_of::<Option<Arc<FileInventory>>>() as u64),
+            );
+        }
+        if decoded.unspent < bytes {
+            let block = DECODED_ROW_BLOCK_BYTES.max(bytes);
+            // Optional cache pressure must not become a source admission
+            // limit: a refusal is the ordinary answer of a full ledger.
+            match self.scratch.lease_optional_ram(block) {
+                Ok(lease) => {
+                    decoded.leases.push(lease);
+                    decoded.unspent += block;
+                }
+                Err(_) => {
+                    decoded.refused_for = DECODED_ROW_RETRY_ROWS;
+                    return false;
+                }
+            }
+        }
+        if slots {
+            if decoded.rows.try_reserve_exact(count).is_err() {
+                decoded.refused_for = DECODED_ROW_RETRY_ROWS;
+                return false;
+            }
+            decoded.rows.resize_with(count, || None);
+        }
+        decoded.unspent -= bytes;
+        decoded.rows[index] = Some(Arc::clone(file));
+        self.decoded
+            .last_served
+            .set(Some((file.record_number, ordinal)));
+        true
+    }
+    /// The row at `ordinal` if it is held, as one of the rows decoded
+    /// before, as one of the directories or as the row decoded last, and the
+    /// key that the row at `ordinal` must have.
     fn held_row(&self, ordinal: u64) -> Result<(Option<Arc<FileInventory>>, [u8; 16])> {
         // Ordinal callers (notably ancestry DFS parent visits) must share the
         // same bounded directory cache as record-number callers. The complete
@@ -199,6 +376,26 @@ impl PagedRawFiles {
             key == file_key(number),
             "canonical ordinal key is not a file identity"
         );
+        if self.serves_decoded() {
+            let held = usize::try_from(ordinal).ok().and_then(|index| {
+                self.decoded
+                    .state
+                    .borrow()
+                    .rows
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .map(Arc::clone)
+            });
+            if let Some(row) = held {
+                ensure!(
+                    row.record_number == number,
+                    "decoded row differs from its canonical ordinal"
+                );
+                self.decoded.last_used.set(n2r_win32::evict::now());
+                self.decoded.last_served.set(Some((number, ordinal)));
+                return Ok((Some(row), key));
+            }
+        }
         {
             let mut cache = self.directory_rows.borrow_mut();
             cache.clock = cache.clock.saturating_add(1);
@@ -236,10 +433,11 @@ impl PagedRawFiles {
         Ok(file)
     }
     /// The row at `ordinal`, shared: a held one, or the row decoded now,
-    /// which is then held in its turn. For callers that are lent the row and
-    /// for those that look a record up by its number: both come back to the
-    /// same row. A caller that goes through every row once and wants each for
-    /// itself uses [`RootFileDomain::file`], which holds nothing for it.
+    /// which is then held in its turn. For callers that are lent the row,
+    /// for those that keep it shared and for those that look a record up by
+    /// its number: all come back to the same row. A caller that wants a row
+    /// of its own to change uses [`RootFileDomain::file`], which copies a
+    /// held one for it.
     fn row(&self, ordinal: u64) -> Result<Arc<FileInventory>> {
         let (held, key) = self.held_row(ordinal)?;
         if let Some(row) = held {
@@ -247,17 +445,32 @@ impl PagedRawFiles {
         }
         let file = Arc::new(self.decode_row(ordinal, key)?);
         self.retain_directory(ordinal, &file)?;
-        self.retain_last(ordinal, &file)?;
+        // A row kept with the decoded rows is not held as the last one as
+        // well: it is found there, and its place is remembered with it.
+        if !self.keep_decoded(ordinal, &file) {
+            self.retain_last(ordinal, &file)?;
+        }
         Ok(file)
     }
-    /// The ordinal of the row decoded last, if it is the record `number`:
-    /// asking for that record again needs no search for its place.
+    /// The ordinal of the row decoded or served last, if it is the record
+    /// `number`: asking for that record again needs no search for its place.
     fn last_ordinal_of(&self, number: u64) -> Option<u64> {
-        self.last_row
+        if let Some(ordinal) = self
+            .last_row
             .borrow()
             .as_ref()
             .filter(|last| last.file.record_number == number)
             .map(|last| last.ordinal)
+        {
+            return Some(ordinal);
+        }
+        // The pair was read from the held index when the row was served, and
+        // the row that is then asked for is held to that index again.
+        self.decoded
+            .last_served
+            .get()
+            .filter(|(served, _)| *served == number && self.serves_decoded())
+            .map(|(_, ordinal)| ordinal)
     }
     /// Holds `file` as the row decoded last, in place of the one before. A
     /// directory is held with the directories and not here as well.
@@ -430,6 +643,11 @@ impl PagedRawFiles {
                 "one source row exceeds its resource working window"
             );
             previous = Some(file.record_number);
+            // Every row is decoded here and held to its key: the first pass
+            // that asks for it need not decode it again.
+            if self.serves_decoded() {
+                self.keep_decoded(ordinal, &Arc::new(file));
+            }
         }
         self.revalidate()
     }
@@ -443,19 +661,31 @@ impl RootFileDomain for PagedRawFiles {
     }
     fn file(&self, ordinal: u64) -> Result<FileInventory> {
         // A held row is copied for a caller that wants one of its own. A row
-        // that is not held is decoded and handed over as it is: only a
-        // directory is kept, with the directories.
+        // that is not held is decoded; it is kept with the decoded rows
+        // where they are kept, and a directory with the directories. A row
+        // that nothing kept is handed over as it is, without a copy.
         let (held, key) = self.held_row(ordinal)?;
         if let Some(row) = held {
             return Ok(FileInventory::clone(&row));
         }
         let file = self.decode_row(ordinal, key)?;
-        if !file.is_directory {
+        if !file.is_directory && !self.serves_decoded() {
             return Ok(file);
         }
         let file = Arc::new(file);
         self.retain_directory(ordinal, &file)?;
+        self.keep_decoded(ordinal, &file);
         Ok(Arc::unwrap_or_clone(file))
+    }
+    /// The row the store holds decoded, not a copy of it: a pass that reads
+    /// every row and changes none is handed the same row as the pass before
+    /// it. Where decoded rows are not served (inside the gate, without the
+    /// check-once policy) this is [`file`](Self::file), as it was.
+    fn file_shared(&self, ordinal: u64) -> Result<Arc<FileInventory>> {
+        if !self.serves_decoded() {
+            return self.file(ordinal).map(Arc::new);
+        }
+        self.row(ordinal)
     }
     fn with_file<T>(
         &self,
@@ -493,6 +723,43 @@ impl RootFileDomain for PagedRawFiles {
         } else {
             None
         })
+    }
+    /// As [`find_record`](Self::find_record), handing out the row the store
+    /// holds and not a copy of it. Where decoded rows are not served this is
+    /// `find_record`, as it was.
+    fn find_record_shared(
+        &self,
+        number: u64,
+        sequence: Option<u16>,
+    ) -> Result<Option<Arc<FileInventory>>> {
+        if !self.serves_decoded() {
+            return Ok(self.find_record(number, sequence)?.map(Arc::new));
+        }
+        let held = {
+            let mut cache = self.directory_rows.borrow_mut();
+            cache.clock = cache.clock.saturating_add(1);
+            let last_used = cache.clock;
+            cache.rows.get_mut(&number).map(|row| {
+                row.last_used = last_used;
+                Arc::clone(&row.file)
+            })
+        };
+        let file = match held {
+            Some(file) => file,
+            None => {
+                let ordinal = match self.last_ordinal_of(number) {
+                    Some(ordinal) => ordinal,
+                    None => match self.ordinal(number)? {
+                        Some(ordinal) => ordinal,
+                        None => return Ok(None),
+                    },
+                };
+                self.row(ordinal)?
+            }
+        };
+        Ok(sequence
+            .is_none_or(|wanted| wanted == file.sequence_number)
+            .then_some(file))
     }
     /// A directory row that is held is lent, not copied. Building one path
     /// asks for every directory above the object, and a copy of a row is a

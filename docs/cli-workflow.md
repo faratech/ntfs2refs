@@ -760,9 +760,14 @@ it to its run.
   the new volume is examined, which is where a conversion makes the checks it
   leaves out earlier. A recovery (`--recover`) and a partition on the disk of
   the running Windows never leave anything out either. A fast run's
-  preparation that was cut off is therefore not resumed: `--recover` says
-  so and gives the command that cancels it, and the conversion is started
-  again.
+  preparation that was cut off is therefore not resumed. Once it has read
+  the source, a fast run that left plain streams unread says that its
+  preparation cannot be resumed, and writes no resume checkpoint: if it is
+  cut off, it is cancelled with the `--rollback` command it printed at its
+  start ([A run that is cut off while it
+  prepares](#a-run-that-is-cut-off-while-it-prepares)), and the conversion
+  is started again. `--recover` on a checkpoint such a run wrote with an
+  earlier version says so too and gives the command that cancels it.
 - **`--verify thorough`** changes *what* is checked: every stream's complete
   contents are read and hashed, and every check a fast run leaves out is made:
   Windows reads the contents of every stream and they are compared with the

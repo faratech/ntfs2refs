@@ -9,6 +9,10 @@ use resource::Limits as PlacementLimits;
 pub use resource::{PlacementEvidenceSink, ResourcePlacementReport};
 
 const MOVE_BYTES: u64 = 512 * 1024 * 1024;
+/// What working out the move records' bounds holds at once: one widest
+/// record of two pages and one extent, as typed values, as JSON and as its
+/// text (`the_move_template_fits_what_is_reserved_for_it` measures it).
+const MOVE_TEMPLATE_RAM: u64 = 1024 * 1024;
 
 /// Bytes in one cluster of the shadow volume.
 fn cluster() -> u64 {
@@ -531,10 +535,33 @@ impl Reservation {
     fn new() -> Result<Self, String> {
         Self::with_pages(crate::retrieval_paging::max_pages())
     }
+    /// The bounds for records of `pages` retrieval pages, worked out from
+    /// records of one and two pages and one extent.
+    ///
+    /// Every page of the widest record is the same text at the same depth
+    /// (each of its fields at its widest), and so is every extent, so the
+    /// saved size grows by the same number of bytes with each page from the
+    /// first on, and with each extent. The record used to be built at
+    /// `pages` pages to be measured: 3.5 KiB of memory a page, for as many
+    /// pages as the budget's largest row admits (187,245 with a ledger of
+    /// 10 GiB), and prepaid at 8,192 bytes a page, about a seventh of the
+    /// ledger, at the start of placement (#129). The bounds are the same to the byte
+    /// (`the_move_bounds_are_those_of_the_record_built_whole`).
     fn with_pages(pages: usize) -> Result<Self, String> {
-        let base = saved_size(&widest_move_record(0, pages)?)?;
-        let per_extent = saved_size(&widest_move_record(1, pages)?)?
-            .checked_sub(base)
+        let one = saved_size(&widest_move_record(0, 1)?)?;
+        let per_page = saved_size(&widest_move_record(0, 2)?)?
+            .checked_sub(one)
+            .ok_or("placement evidence page reservation differs")?;
+        let base = match pages.checked_sub(1) {
+            // No page: the list is empty, not a page shorter.
+            None => saved_size(&widest_move_record(0, 0)?)?,
+            Some(more) => per_page
+                .checked_mul(more)
+                .and_then(|n| n.checked_add(one))
+                .ok_or("placement evidence reservation overflow")?,
+        };
+        let per_extent = saved_size(&widest_move_record(1, 1)?)?
+            .checked_sub(one)
             .ok_or("placement evidence reservation differs")?;
         let empty_destination = saved_size(&serde_json::json!({
             "proof":{"destination_bitmap":serde_json::Value::Null}
@@ -1891,15 +1918,12 @@ fn run_domain_inner(
         let query = crate::retrieval_paging::Limits::for_resource_bytes(
             usize::try_from(admission.budget.max_row_bytes).map_err(io::Error::other)?,
         )?;
+        // The bounds are worked out from records of one and two pages,
+        // whatever the page limit (`Reservation::with_pages`).
         let _memory = payer
             .as_deref()
             .ok_or_else(|| invalid("reservation payer absent"))?
-            .reserve(
-                (query.max_pages as u64)
-                    .checked_mul(8192)
-                    .and_then(|n| n.checked_add(1024 * 1024))
-                    .ok_or_else(|| invalid("reservation template RAM overflow"))?,
-            )?;
+            .reserve(MOVE_TEMPLATE_RAM)?;
         Reservation::with_resource_limits(query).map_err(|message| invalid(&message))?
     } else {
         Reservation::new().map_err(|message| invalid(&message))?
@@ -2829,6 +2853,55 @@ mod tests {
     }
 
     use super::*;
+
+    /// What building the widest record of `extents` extents and `pages`
+    /// pages and measuring it holds at once: the typed pages (a `Vec` of
+    /// `PageProof`, each with its input and digest on the heap), the JSON
+    /// value, and its pretty text in a `Vec` that doubles.
+    fn record_footprint(extents: usize, pages: usize) -> u64 {
+        let record = widest_move_record(extents, pages).unwrap();
+        let text = serde_json::to_vec_pretty(&record).unwrap().len() as u64;
+        let typed = pages as u64
+            * (std::mem::size_of::<crate::retrieval_paging::PageProof>() as u64 + 8 + 64);
+        memory::value_bytes(&record).unwrap() + 2 * text + typed
+    }
+
+    #[test]
+    fn the_move_bounds_are_those_of_the_record_built_whole() {
+        // The bounds as they were worked out before: the record built at
+        // its full page count and measured.
+        let built = |pages: usize| {
+            let base = saved_size(&widest_move_record(0, pages).unwrap()).unwrap();
+            let per_extent = saved_size(&widest_move_record(1, pages).unwrap()).unwrap() - base;
+            (base, per_extent)
+        };
+        for pages in [0, 1, 2, 3, 4, 17, 128, 1000, 4099] {
+            let reservation = Reservation::with_pages(pages).unwrap();
+            assert_eq!(
+                (reservation.base, reservation.per_extent),
+                built(pages),
+                "{pages} pages"
+            );
+        }
+        // And for a record of several extents, as `bound` charges it.
+        let reservation = Reservation::with_pages(300).unwrap();
+        assert_eq!(
+            reservation.base + 5 * reservation.per_extent,
+            saved_size(&widest_move_record(5, 300).unwrap()).unwrap()
+        );
+    }
+
+    #[test]
+    fn the_move_template_fits_what_is_reserved_for_it() {
+        // Working the bounds out holds one record of two pages and one
+        // extent at a time.
+        let held = record_footprint(1, 2);
+        assert!(held < MOVE_TEMPLATE_RAM / 16, "{held}");
+        // What a page of a record built whole took, which was prepaid at
+        // 8,192 bytes a page for every page the budget's row admits.
+        let page = record_footprint(0, 1001) - record_footprint(0, 1000);
+        assert!((1024..8192).contains(&page), "{page} bytes a page");
+    }
 
     #[test]
     fn moves_and_spans_are_counted_in_target_clusters() {

@@ -21,6 +21,12 @@ lists it with lab-volume-manifest, and converts it in one of these ways:
             the run had printed: the recovery command, or the command that
             gives the volume back as NTFS, or nothing if it printed neither
 
+One round of four, by its seed, converts with --verify thorough, whose apply
+step writes the handoff; the others with --verify fast, the default, whose
+handoff follows the verification of the converted volume. A held round draws
+its point from those its mode reaches, and a rollback round from those before
+the handoff.
+
 It lists the volume again and compares the two listings: with a conversion's
 allowances when the volume is ReFS, exactly when it is NTFS again. A round
 that fails stops the soak and keeps its records; the disk is deleted either
@@ -74,15 +80,22 @@ if ($Seed -eq 0) { $Seed = Get-Random -Minimum 1 -Maximum 1000000000 }
 $automountWasOff = [bool]((& mountvol.exe) -match 'automatic mounting of new volumes disabled')
 if ($automountWasOff) { $null = & mountvol.exe /E; "automatic mounting of new volumes was off on this machine; turned on for the soak (mountvol /E)" }
 
-# The points a run with the default --verify fast reaches, in order: its
-# handoff follows the verification of the converted volume (#148), so it
-# does not reach apply-handoff-durable, finalize-authenticated or
-# finalize-source-readonly, and a hold at one of them would never be reported.
-$holdPoints = @('apply-activated', 'apply-mid-ranges', 'apply-ranges-written', 'apply-before-boot-granule', 'apply-boot-granule-written',
-    'apply-before-handoff', 'apply-sealed', 'apply-seal-recorded', 'verify-authenticated', 'verify-source-readonly', 'verify-passed',
-    'handoff-sealed', 'finalize-before-online', 'finalize-online')
+# The points a run reaches, in order, by its --verify mode; a hold at a point
+# the run does not reach would never be reported. With fast, the default,
+# the handoff follows the verification of the converted volume (#148): such
+# a run does not reach apply-handoff-durable, finalize-authenticated or
+# finalize-source-readonly. With thorough the apply step writes the handoff
+# and the run does not reach the points of a verification before it.
+$holdPoints = @{
+    fast     = @('apply-activated', 'apply-mid-ranges', 'apply-ranges-written', 'apply-before-boot-granule', 'apply-boot-granule-written',
+        'apply-before-handoff', 'apply-sealed', 'apply-seal-recorded', 'verify-authenticated', 'verify-source-readonly', 'verify-passed',
+        'handoff-sealed', 'finalize-before-online', 'finalize-online')
+    thorough = @('apply-activated', 'apply-mid-ranges', 'apply-ranges-written', 'apply-before-boot-granule', 'apply-boot-granule-written',
+        'apply-before-handoff', 'apply-handoff-durable', 'handoff-sealed', 'finalize-authenticated', 'finalize-source-readonly',
+        'finalize-before-online', 'finalize-online')
+}
 # The points a rollback is designed for: before the handoff marker is durable.
-$rollbackPoints = $holdPoints[0..10]
+$rollbackPoints = @{ fast = $holdPoints.fast[0..10]; thorough = $holdPoints.thorough[0..5] }
 $recoverLine = '^To recover: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64})'
 $cancelLine = 'To get it back as NTFS: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64}) --rollback'
 
@@ -321,23 +334,29 @@ for ($round = 1; ; $round++) {
     $ntfsCluster = @(4096, 4096, 4096, 8192, 16384, 32768, 65536)[$draw.Next(0, 7)]
     $refsCluster = @(4096, 65536)[$draw.Next(0, 2)]
     $gib = if ($kind -eq 'many') { 8 } else { $draw.Next(2, 7) }
-    $hold = switch ($kind) { 'resume' { $holdPoints[$draw.Next(0, $holdPoints.Count)] } 'rollback' { $rollbackPoints[$draw.Next(0, $rollbackPoints.Count)] } default { '' } }
+    # One round of four (by its seed, so that -Seed makes it again) runs with
+    # --verify thorough, whose apply step writes the handoff: the flow every
+    # run had before #148, which a fast run no longer takes. The others run
+    # with fast, the default. Taken from the seed, not drawn, so that the
+    # draws after it come out as they did before it was added.
+    $verify = if ($roundSeed % 4 -eq 0) { 'thorough' } else { 'fast' }
+    $hold = switch ($kind) { 'resume' { $holdPoints[$verify][$draw.Next(0, $holdPoints[$verify].Count)] } 'rollback' { $rollbackPoints[$verify][$draw.Next(0, $rollbackPoints[$verify].Count)] } default { '' } }
     $endAfter = if ($kind -eq 'cancel') { [Math]::Round(0.5 + $draw.NextDouble() * 40, 1) } else { 0 }
     $name = 'r{0:d3}-{1}-{2}' -f $round, $kind, $roundSeed
     $dir = Join-Path $Records $name
     $null = New-Item -ItemType Directory -Force -Path $dir
     $vhd = Join-Path $Disks "$name.vhdx"
     $work = Join-Path $Scratch $name
-    $result = [ordered]@{ round = $round; profile = $kind; seed = $roundSeed; ntfs_cluster = $ntfsCluster; refs_cluster = $refsCluster; disk_gib = $gib
+    $result = [ordered]@{ round = $round; profile = $kind; seed = $roundSeed; verify = $verify; ntfs_cluster = $ntfsCluster; refs_cluster = $refsCluster; disk_gib = $gib
         hold_at = $hold; end_after_seconds = $endAfter; content = ''; convert_seconds = $null; recovery = ''; outcome = ''; detail = ''; findings = @() }
-    Say "round ${round}: $kind, seed $roundSeed, NTFS clusters of $ntfsCluster, ReFS clusters of $refsCluster, a $gib GiB disk$(if ($hold) { ", held at $hold" })$(if ($endAfter) { ", ended after $endAfter s" })"
+    Say "round ${round}: $kind, seed $roundSeed, --verify $verify, NTFS clusters of $ntfsCluster, ReFS clusters of $refsCluster, a $gib GiB disk$(if ($hold) { ", held at $hold" })$(if ($endAfter) { ", ended after $endAfter s" })"
     try {
         $diskNumber = New-SoakDisk $vhd $gib $ntfsCluster
         $result.content = New-SoakContent "${letter}:" $roundSeed $ntfsCluster ($kind -eq 'many') ([Math]::Min(1.5GB, [long]$gib * 1GB / 4))
         Say "  content: $($result.content)"
         Capture-Settled (Join-Path $dir 'before.jsonl') $diskNumber
         $null = New-Item -ItemType Directory -Force -Path $work
-        $arguments = @('--drive', $letter, '--scratch-directory', $work, '--target-cluster-bytes', "$refsCluster")
+        $arguments = @('--drive', $letter, '--scratch-directory', $work, '--target-cluster-bytes', "$refsCluster", '--verify', $verify)
         if ($hold) { $arguments += @('--lab-hold-at', $hold, '--acknowledge-lab-hold-never-completes') }
         $run = Invoke-Converter $arguments (Join-Path $dir 'convert') $hold $endAfter
         $result.convert_seconds = $run.seconds
@@ -422,8 +441,8 @@ for ($round = 1; ; $round++) {
     if ($failed) { break }
 }
 
-$lines = @('| Round | Profile | Seed | NTFS / ReFS clusters | Hold or end | Seconds | Outcome |', '|---|---|---|---|---|---|---|')
-foreach ($r in $results) { $lines += "| $($r.round) | $($r.profile) | $($r.seed) | $($r.ntfs_cluster) / $($r.refs_cluster) | $(if ($r.hold_at) { $r.hold_at } elseif ($r.end_after_seconds) { "$($r.end_after_seconds) s" } else { '' }) | $($r.convert_seconds) | $($r.outcome)$(if ($r.detail) { ': ' + ($r.detail -replace '\|', '/') })$(if ($r.findings) { '; findings: ' + (($r.findings -join '; ') -replace '\|', '/') }) |" }
+$lines = @('| Round | Profile | Seed | Verify | NTFS / ReFS clusters | Hold or end | Seconds | Outcome |', '|---|---|---|---|---|---|---|---|')
+foreach ($r in $results) { $lines += "| $($r.round) | $($r.profile) | $($r.seed) | $($r.verify) | $($r.ntfs_cluster) / $($r.refs_cluster) | $(if ($r.hold_at) { $r.hold_at } elseif ($r.end_after_seconds) { "$($r.end_after_seconds) s" } else { '' }) | $($r.convert_seconds) | $($r.outcome)$(if ($r.detail) { ': ' + ($r.detail -replace '\|', '/') })$(if ($r.findings) { '; findings: ' + (($r.findings -join '; ') -replace '\|', '/') }) |" }
 $findings = @($results | Where-Object { $_.findings })
 $headline = "soak: $($results.Count) rounds in $([Math]::Round(((Get-Date) - $started).TotalMinutes)) minutes, $(@($results | Where-Object outcome -ne 'FAILED').Count) passed$(if ($findings) { ", $($findings.Count) with findings" })$(if ($failed) { "; round $($failed.round) failed (reproduce: -Profile $($failed.profile) -Seed $($failed.seed) -Rounds 1)" })"
 $headline

@@ -356,58 +356,191 @@ pub fn reattach_existing(
 /// nothing detached it. Called only after a recovery or a cancellation has
 /// completed, when nothing needs that volume any more; the file is not
 /// deleted. Returns whether a detach was done.
+///
+/// Whether it is attached is asked on a query-only handle, which is closed
+/// before the detach: Windows detaches only when no other handle to the
+/// virtual disk is open. The detach goes first through the read-only handle
+/// that detached in the soak (#175). A forward recovery in the recovery
+/// environment had that open or detach refused with Access is denied, which
+/// of the two was not recorded (#182); then the detach is tried again,
+/// that handle closed, through one opened with `VIRTUAL_DISK_ACCESS_DETACH`
+/// and no write access, which Windows documents for a handle to a
+/// permanently attached virtual disk. A failure names each step tried.
 pub fn detach_left_behind(path: &Path) -> io::Result<bool> {
-    if path.file_name().and_then(|name| name.to_str()) != Some("shadow.vhdx") || !path.is_absolute()
-    {
-        return Err(invalid("only a run's own shadow.vhdx is detached"));
-    }
-    let storage = VIRTUAL_STORAGE_TYPE {
-        DeviceId: VIRTUAL_STORAGE_TYPE_DEVICE_VHDX,
-        VendorId: VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT,
-    };
-    let mut p = OPEN_VIRTUAL_DISK_PARAMETERS::default();
-    p.Version = OPEN_VIRTUAL_DISK_VERSION_2;
-    p.Anonymous = OPEN_VIRTUAL_DISK_PARAMETERS_0 {
-        Version2: OPEN_VIRTUAL_DISK_PARAMETERS_0_1 {
-            GetInfoOnly: 0,
-            ReadOnly: 1,
-            ..Default::default()
-        },
-    };
-    let name = wide(
-        path.to_str()
-            .ok_or_else(|| invalid("Unicode working-volume path required"))?,
-    )?;
-    let mut privileges = Privileges::enable_for(&["SeManageVolumePrivilege"])?;
-    let mut opened = ptr::null_mut();
-    // SAFETY: open-existing only, version2 READ_ONLY parameters with the
-    // required zero access mask; nothing is created or initialized.
-    win(unsafe {
-        OpenVirtualDisk(
-            &storage,
-            name.as_ptr(),
-            VIRTUAL_DISK_ACCESS_NONE,
-            OPEN_VIRTUAL_DISK_FLAG_NONE,
-            &p,
-            &mut opened,
-        )
-    })?;
-    if opened.is_null() || opened == INVALID_HANDLE_VALUE {
-        return Err(invalid("no working-volume provider handle"));
-    }
-    let handle = RecoveryHandle(VirtualHandle(opened));
-    // Not attached: nothing to do.
-    if handle.physical_number().is_err() {
+    let name = left_behind_name(path)?;
+    let mut privileges = Privileges::enable_for(&["SeManageVolumePrivilege"])
+        .map_err(|e| operation_error("enable SeManageVolumePrivilege to detach", e))?;
+    // Not attached: nothing to do. The query handle is closed on return.
+    if !left_behind_attached(&name)? {
         privileges.restore()?;
         return Ok(false);
     }
-    // SAFETY: the live handle opened above for this exact file.
-    win(unsafe { DetachVirtualDisk(handle.0.0, DETACH_VIRTUAL_DISK_FLAG_NONE, 0) })?;
-    if handle.physical_number().is_ok() {
+    detach_through(&name, LeftBehindOpen::ReadOnly).or_else(|first| {
+        detach_through(&name, LeftBehindOpen::Detach)
+            .map_err(|second| io::Error::new(second.kind(), format!("{first}; then {second}")))
+    })?;
+    if left_behind_attached(&name)? {
         return Err(invalid(
             "the working volume is still attached after the detach",
         ));
     }
     privileges.restore()?;
     Ok(true)
+}
+
+/// The UTF-16 name of a run's own `shadow.vhdx`; anything else is refused
+/// before Windows is asked anything.
+fn left_behind_name(path: &Path) -> io::Result<Vec<u16>> {
+    if path.file_name().and_then(|name| name.to_str()) != Some("shadow.vhdx") || !path.is_absolute()
+    {
+        return Err(invalid("only a run's own shadow.vhdx is detached"));
+    }
+    wide(
+        path.to_str()
+            .ok_or_else(|| invalid("Unicode working-volume path required"))?,
+    )
+}
+
+/// Whether Windows has this image attached, from a query-only handle that is
+/// closed before this returns.
+fn left_behind_attached(name: &[u16]) -> io::Result<bool> {
+    let handle = open_left_behind(name, LeftBehindOpen::Query)?;
+    Ok(handle.physical_number().is_ok())
+}
+
+/// How a left-behind working volume is opened. None opens it for writing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LeftBehindOpen {
+    /// Version 2, query-only and read-only: to ask whether it is attached.
+    Query,
+    /// Version 2, read-only, no access mask: the handle #175's detach used,
+    /// which detached in the soak.
+    ReadOnly,
+    /// Version 1, `VIRTUAL_DISK_ACCESS_DETACH | GET_INFO`, depth 0: what
+    /// Windows documents for a handle to a permanently attached disk.
+    Detach,
+}
+
+impl LeftBehindOpen {
+    fn phase(self) -> &'static str {
+        match self {
+            Self::Query => "open the working volume to ask whether it is attached",
+            Self::ReadOnly => "open the attached working volume read-only for detach",
+            Self::Detach => {
+                "open the attached working volume for detach (VIRTUAL_DISK_ACCESS_DETACH)"
+            }
+        }
+    }
+}
+
+/// Detaches through one kind of handle, closed before this returns; the
+/// error names the handle and the step.
+fn detach_through(name: &[u16], how: LeftBehindOpen) -> io::Result<()> {
+    let handle = open_left_behind(name, how)?;
+    // SAFETY: the live handle opened above for this exact file.
+    win(unsafe { DetachVirtualDisk(handle.0.0, DETACH_VIRTUAL_DISK_FLAG_NONE, 0) }).map_err(|e| {
+        operation_error(
+            &format!(
+                "detach the working volume through the handle of \"{}\" (another process may hold the disk or its volume open)",
+                how.phase()
+            ),
+            e,
+        )
+    })
+}
+
+/// Open-existing only, never with write access.
+fn open_left_behind(name: &[u16], how: LeftBehindOpen) -> io::Result<RecoveryHandle> {
+    let storage = VIRTUAL_STORAGE_TYPE {
+        DeviceId: VIRTUAL_STORAGE_TYPE_DEVICE_VHDX,
+        VendorId: VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT,
+    };
+    let version2 = |get_info_only| OPEN_VIRTUAL_DISK_PARAMETERS {
+        Version: OPEN_VIRTUAL_DISK_VERSION_2,
+        Anonymous: OPEN_VIRTUAL_DISK_PARAMETERS_0 {
+            Version2: OPEN_VIRTUAL_DISK_PARAMETERS_0_1 {
+                GetInfoOnly: get_info_only,
+                ReadOnly: 1,
+                ..Default::default()
+            },
+        },
+    };
+    let (p, access) = match how {
+        LeftBehindOpen::Query => (version2(1), VIRTUAL_DISK_ACCESS_NONE),
+        LeftBehindOpen::ReadOnly => (version2(0), VIRTUAL_DISK_ACCESS_NONE),
+        LeftBehindOpen::Detach => (
+            OPEN_VIRTUAL_DISK_PARAMETERS {
+                Version: OPEN_VIRTUAL_DISK_VERSION_1,
+                Anonymous: OPEN_VIRTUAL_DISK_PARAMETERS_0 {
+                    Version1: OPEN_VIRTUAL_DISK_PARAMETERS_0_0 { RWDepth: 0 },
+                },
+            },
+            VIRTUAL_DISK_ACCESS_DETACH | VIRTUAL_DISK_ACCESS_GET_INFO,
+        ),
+    };
+    let phase = how.phase();
+    let mut opened = ptr::null_mut();
+    // SAFETY: open-existing only with complete parameters for their version;
+    // nothing is created, initialized or opened for writing.
+    win(unsafe {
+        OpenVirtualDisk(
+            &storage,
+            name.as_ptr(),
+            access,
+            OPEN_VIRTUAL_DISK_FLAG_NONE,
+            &p,
+            &mut opened,
+        )
+    })
+    .map_err(|e| operation_error(phase, e))?;
+    if opened.is_null() || opened == INVALID_HANDLE_VALUE {
+        return Err(invalid("no working-volume provider handle"));
+    }
+    Ok(RecoveryHandle(VirtualHandle(opened)))
+}
+
+#[cfg(test)]
+mod left_behind_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_runs_own_shadow_is_detached_and_windows_is_not_asked_otherwise() {
+        for path in [
+            Path::new("C:\\runs\\x\\journal.vhdx"),
+            Path::new("C:\\runs\\x\\Shadow.vhdx.bak"),
+            Path::new("runs\\x\\shadow.vhdx"),
+        ] {
+            let error = detach_left_behind(path).unwrap_err();
+            assert!(
+                error.to_string().contains("only a run's own shadow.vhdx"),
+                "{path:?}: {error}"
+            );
+        }
+        assert!(left_behind_name(Path::new("C:\\runs\\x\\shadow.vhdx")).is_ok());
+    }
+
+    #[test]
+    fn each_way_of_opening_says_what_it_opened_for() {
+        let phases = [
+            LeftBehindOpen::Query,
+            LeftBehindOpen::ReadOnly,
+            LeftBehindOpen::Detach,
+        ]
+        .map(LeftBehindOpen::phase);
+        assert!(phases[0].contains("whether it is attached"));
+        assert!(phases[1].contains("read-only for detach"));
+        assert!(phases[2].contains("VIRTUAL_DISK_ACCESS_DETACH"));
+        assert!(phases[0] != phases[1] && phases[1] != phases[2]);
+    }
+
+    #[test]
+    fn a_failed_step_is_named_in_its_error() {
+        let error = operation_error(
+            "detach the working volume (another process may hold the disk or its volume open)",
+            io::Error::from_raw_os_error(5),
+        );
+        let said = error.to_string();
+        assert!(said.starts_with("detach the working volume"), "{said}");
+        assert!(said.contains("os error 5"), "{said}");
+    }
 }

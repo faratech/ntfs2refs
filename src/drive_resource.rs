@@ -542,7 +542,7 @@ pub(super) fn preparation_intent_matches(directory: &Path, sha: &str) -> Result<
         before.file_bytes,
         before.number_of_links
     );
-    let actual = n2r_win32::sha256_native::hash_range(&mut file, 0, before.file_bytes)?;
+    let actual = n2r_win32::metadata_pages::pinning_digest(&mut file, before.file_bytes)?;
     ensure!(
         n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, maximum)?
             == before,
@@ -867,7 +867,7 @@ fn route_inputs(
                 && metadata.len() <= maximum,
             "recovery route metadata exceeds observed read budget"
         );
-        let actual = n2r_win32::sha256_native::hash_range(&mut file, 0, metadata.len())?;
+        let actual = n2r_win32::metadata_pages::pinning_digest(&mut file, metadata.len())?;
         ensure!(
             actual == sha,
             "recovery route does not match independently supplied checksum"

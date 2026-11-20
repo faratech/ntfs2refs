@@ -306,7 +306,7 @@ fn check_side(
     if let Some(aggregate) = aggregate.as_deref_mut() {
         frame(aggregate, range)?;
     }
-    let mut hash = pin_hash()?;
+    let mut hash = pin_hash(immutable.algorithm())?;
     let mut left = length;
     while left != 0 {
         let n = usize::try_from(left.min(buffer.len() as u64))?;
@@ -438,7 +438,9 @@ impl<'a> JournalObservation<'a> {
         // A body that was already read in full and matched its ticket in this
         // process does not change. Rebuilding the index then needs only the
         // record descriptors, not another pass over every payload byte.
-        let descriptors_only = n2r_win32::sha256_native::journal_body_already_verified(
+        let algorithm = ticket.digest_algorithm();
+        let descriptors_only = n2r_win32::bulk_digest::journal_body_already_verified(
+            algorithm,
             &ticket.immutable_sha256,
             body,
             ticket.journal_length - body,
@@ -469,10 +471,10 @@ impl<'a> JournalObservation<'a> {
         let mut index_hash = Sha256::new();
         output.write_all(&index_head)?;
         index_hash.update(index_head);
-        let mut immutable = aggregate_pin_hash()?;
+        let mut immutable = aggregate_pin_hash(algorithm)?;
         immutable.update(&header)?;
-        let mut old = aggregate_pin_hash()?;
-        let mut new = Some(aggregate_pin_hash()?);
+        let mut old = aggregate_pin_hash(algorithm)?;
+        let mut new = Some(aggregate_pin_hash(algorithm)?);
         let mut buffer = vec![0u8; BUFFER];
         let mut selected = 0u64;
         let mut source_free = 0u64;
@@ -602,7 +604,8 @@ impl<'a> JournalObservation<'a> {
             );
         }
         if !descriptors_only {
-            n2r_win32::sha256_native::note_journal_body_verified(
+            n2r_win32::bulk_digest::note_journal_body_verified(
+                algorithm,
                 &ticket.immutable_sha256,
                 body,
                 ticket.journal_length - body,
@@ -780,12 +783,13 @@ impl<'a> JournalObservation<'a> {
     }
 
     fn validate_resolved_new(&mut self) -> Result<()> {
-        let mut selected = aggregate_pin_hash()?;
+        let algorithm = self.ticket.digest_algorithm();
+        let mut selected = aggregate_pin_hash(algorithm)?;
         let mut buffer = vec![0u8; BUFFER];
         for ordinal in 0..u64::from(self.ticket.range_count) {
             let row = self.record(ordinal)?;
             frame(&mut selected, &row.range())?;
-            let mut hash = pin_hash()?;
+            let mut hash = pin_hash(algorithm)?;
             let mut done = 0u64;
             while done < row.length {
                 let count = usize::try_from((row.length - done).min(BUFFER as u64))?;

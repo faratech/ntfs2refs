@@ -21,6 +21,7 @@ pub mod bitmap_window;
 #[cfg(windows)]
 pub mod bitmap_window_native;
 pub mod bitmap_window_transport;
+pub mod bulk_digest;
 pub mod content_digest;
 #[cfg(windows)]
 pub mod directory_case;
@@ -84,6 +85,8 @@ pub mod retention_layout;
 pub mod retrieval_paging;
 #[cfg(windows)]
 pub mod run_environment;
+#[cfg(windows)]
+pub mod run_liveness;
 pub mod security_descriptor;
 #[cfg(windows)]
 pub mod sha256_native;

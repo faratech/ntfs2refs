@@ -354,18 +354,11 @@ impl SourceScratch {
                     && n2r_win32::file_storage::file_id_info(&file)? == id,
                 "registered scratch handle identity differs"
             );
-            let mut hash = Sha256::new();
-            let mut buffer = [0u8; 65536];
-            let mut left = bytes;
-            file.seek(SeekFrom::Start(0))?;
-            while left > 0 {
-                let n = left.min(buffer.len() as u64) as usize;
-                file.read_exact(&mut buffer[..n])?;
-                hash.update(&buffer[..n]);
-                left -= n as u64;
-            }
+            // The pin is the store's own digest: of the algorithm its
+            // format names.
+            let actual = n2r_win32::metadata_pages::pinning_digest(&mut file, bytes)?;
             ensure!(
-                hex::encode(hash.finalize()) == pin.file_sha256
+                hex::encode(actual) == pin.file_sha256
                     && file.metadata()?.len() == bytes
                     && file.metadata()?.modified()? == modified,
                 "registered scratch bytes changed"

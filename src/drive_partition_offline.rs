@@ -28,7 +28,7 @@ fn input(path: PathBuf, source: &GeneralDiskBinding) -> Result<RecoveryImageInpu
             .is_some_and(|s| s.eq_ignore_ascii_case(&source_prefix)),
         "recovery inputs must be stored outside the selected source partition"
     );
-    let sha256 = n2r_win32::sha256_native::hash_range(&mut file, 0, metadata.len())?;
+    let sha256 = n2r_win32::metadata_pages::pinning_digest(&mut file, metadata.len())?;
     ensure!(
         file.metadata()?.len() == metadata.len()
             && file.metadata()?.modified()? == metadata.modified()?,

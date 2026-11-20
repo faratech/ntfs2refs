@@ -594,7 +594,7 @@ impl DurableRecoveryLocator {
             "locator must be a held ordinary single-link file"
         );
         ensure!(
-            n2r_win32::sha256_native::hash_range(&mut file, 0, snapshot.file_bytes)? == expected,
+            n2r_win32::metadata_pages::pinning_digest(&mut file, snapshot.file_bytes)? == expected,
             "recovery locator does not match the independently supplied checksum"
         );
         file.seek(SeekFrom::Start(0))?;
@@ -701,9 +701,8 @@ impl DurableRecoveryLocator {
                 self.snapshot.file_bytes
             )? == self.snapshot
                 && self.file.metadata()?.modified()? == self.modified
-                && n2r_win32::sha256_native::hash_range(
+                && n2r_win32::metadata_pages::pinning_digest(
                     &mut self.file,
-                    0,
                     self.snapshot.file_bytes
                 )? == self.external_sha256
                 && n2r_win32::reference_file::observe_reference_file_handle_with_limit(

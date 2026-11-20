@@ -620,7 +620,7 @@ impl Pinned {
             "held recovery metadata identity changed"
         );
         ensure!(
-            n2r_win32::sha256_native::hash_range(&mut self.file, 0, self.snapshot.file_bytes)?
+            n2r_win32::metadata_pages::pinning_digest(&mut self.file, self.snapshot.file_bytes)?
                 == self.sha,
             "held recovery metadata checksum changed"
         );

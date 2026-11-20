@@ -107,9 +107,10 @@ pub(super) fn check_selected<T: Read + Seek>(
     target: &mut T,
     domain: &ResourceJournalDomain<'_>,
     buffer: &mut [u8],
+    algorithm: n2r_win32::bulk_digest::Algorithm,
     expected: [u8; 32],
 ) -> Result<[u8; 32]> {
-    check_selected_reaching(target, domain, buffer, expected, |_, _| ())
+    check_selected_reaching(target, domain, buffer, algorithm, expected, |_, _| ())
 }
 
 /// [`check_selected`] for a target that reads ahead: `reach(target, end)` is
@@ -120,10 +121,11 @@ fn check_selected_reaching<T: Read + Seek>(
     target: &mut T,
     domain: &ResourceJournalDomain<'_>,
     buffer: &mut [u8],
+    algorithm: n2r_win32::bulk_digest::Algorithm,
     expected: [u8; 32],
     mut reach: impl FnMut(&mut T, u64),
 ) -> Result<[u8; 32]> {
-    let mut aggregate = aggregate_pin_hash()?;
+    let mut aggregate = aggregate_pin_hash(algorithm)?;
     let mut rows = n2r_win32::AscendingRanges::new(u64::from(domain.facts.range_count));
     while let Some((row, group_end)) = rows.next(|ordinal| {
         domain
@@ -463,6 +465,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             journal_identity: facts.identity,
             journal_path: facts.path,
             journal_profile: facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,
@@ -564,6 +567,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             &mut target,
             domain,
             &mut buffers.current,
+            ticket.digest_algorithm(),
             ticket.new_selected_sha256,
             |target, end| target.set_read_ahead_reach(end),
         );
@@ -597,6 +601,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                 &mut target,
                 domain,
                 &mut buffers.current,
+                ticket.digest_algorithm(),
                 ticket.new_selected_sha256,
             )?
         };
@@ -720,6 +725,7 @@ impl ResourceReviewedConversion<'_, '_, '_, '_, '_, '_> {
             journal_identity: facts.identity,
             journal_path: facts.path,
             journal_profile: facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,
@@ -781,6 +787,7 @@ impl ResourceAppliedConversion<'_, '_, '_, '_, '_, '_> {
             journal_identity: facts.identity,
             journal_path: facts.path,
             journal_profile: facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,

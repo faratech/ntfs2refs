@@ -34,6 +34,13 @@ refused with that way back named, and it then worked). With
 started again instead of the converter's process being ended:
 preparation-cancelled-after-power-off (the source's virtual disk was attached
 again, the same command gave the NTFS volume back, listing exactly as before).
+With -Review the run stops for review (--review): the volume has to be
+mounted read-only as ReFS and list as before, and the command the stop
+printed then commits it (resumed) or, with -RecoverMode rollback, puts NTFS
+back (rolled-back). With -Tamper as well, a file is written to the volume
+after the stop, and both commands have to be refused with the disk left
+offline and read-only and no byte of the partition changed
+(review-tampered-both-refused).
 Records land in .lab\hyperv\attempts\<Name>\.
 #>
 [CmdletBinding()]
@@ -90,6 +97,24 @@ param(
     # run is then recovered with the command it printed.
     [string]$InterruptAt,
     [ValidateSet('resume', 'rollback')][string]$RecoverMode = 'resume',
+    # Run the converter with --review (#110): it stops before its handoff with
+    # the volume mounted read-only as ReFS and exits 0. The harness holds the
+    # stop to that (a write to V: has to fail, and V: has to list as it did
+    # before the run), then runs the command the stop printed: the one that
+    # keeps the conversion, or with -RecoverMode rollback the one that puts
+    # NTFS back, and judges the result as it does a run that was interrupted
+    # and recovered (resumed, rolled-back). With -InterruptAt as well the run
+    # is ended at that hold before it stops (review-sealed and review-recorded
+    # are holds of a review run alone) and recovered as any interrupted run.
+    [switch]$Review,
+    # With -Review: after the stop the disk's read-only attribute is cleared,
+    # a file is written to V:, and the attribute is set again. Neither
+    # command may then do anything: both are run (the one -RecoverMode names
+    # first), each has to be refused with the words that say the volume is
+    # not what it was at the stop, the disk has to be offline and read-only
+    # after each, and the partition's bytes have to be what they were before
+    # the first (review-tampered-both-refused).
+    [switch]$Tamper,
     # A phase of preparation, as the converter's progress records name it (for
     # example payload_supply or recovery_journal): the converter's process is
     # ended as soon as it reports that phase, before it has printed a
@@ -237,6 +262,9 @@ foreach ($file in $Binary, $ManifestBinary) { if (-not (Test-Path -LiteralPath $
 if ($ClusterBytes -lt 512 -or $ClusterBytes -gt 2097152 -or ($ClusterBytes -band ($ClusterBytes - 1))) { throw "-ClusterBytes $ClusterBytes is not a power of two from 512 to 2097152" }
 if ($ClusterBytes -lt $SectorBytes) { throw "-ClusterBytes $ClusterBytes is smaller than the $SectorBytes-byte sector" }
 if ($StopDuringPreparation -and ($InterruptAt -or $Diagnose)) { throw '-StopDuringPreparation is a run of its own: not with -InterruptAt or -Diagnose' }
+if ($Tamper -and -not $Review) { throw '-Tamper writes to a volume that stopped for review: with -Review' }
+if ($Tamper -and ($InterruptAt -or $StopDuringPreparation)) { throw '-Tamper needs the run to reach its review stop: not with -InterruptAt or -StopDuringPreparation' }
+if ($Review -and ($NativeRefsControl -or $CheckOnly)) { throw '-Review is a conversion that stops for review: not with -NativeRefsControl or -CheckOnly' }
 if ($PowerOffDuringPreparation) {
     if (-not $StopDuringPreparation) { throw '-PowerOffDuringPreparation turns the VM off in a phase of preparation: name the phase with -StopDuringPreparation' }
     if ($SectorBytes -eq 4096) { throw '-PowerOffDuringPreparation is for a source whose virtual disk the guest attaches: the 4Kn disk of -SectorBytes 4096 is attached by the host, and comes back another way' }
@@ -418,6 +446,8 @@ try {
             bytes = $partition.Size; offset = $partition.Offset; logical_sector = (Get-Disk -Number $partition.DiskNumber).LogicalSectorSize }
     }
     Set-Content -LiteralPath (Join-Path $records 'volume.log') -Value ($made.diskpart, $made.format, $made.ntfsinfo) -Encoding UTF8
+    # Where the source is, for the steps that look at its disk while it has no letter.
+    $sourceDisk = $made.disk; $sourceOffset = $made.offset
     $field = { param($label) if ($made.ntfsinfo -match "(?m)^\s*$label\s*:\s*([0-9,]+)") { [int64]($Matches[1] -replace ',') } else { $null } }
     $verdict.source.observed = [ordered]@{ bytes_per_sector = & $field 'Bytes Per Sector'; bytes_per_cluster = & $field 'Bytes Per Cluster'
         bytes_per_file_record = & $field 'Bytes Per FileRecord Segment'; partition_bytes = $made.bytes; partition_offset = $made.offset; disk_logical_sector = $made.logical_sector }
@@ -922,6 +952,7 @@ public static class SiblingRaw {
     if ($InterruptAt) { $arguments += @('--lab-hold-at', $InterruptAt, '--acknowledge-lab-hold-never-completes') }
     if ($SampleStacks) { $arguments += @('--sample-stacks', "$guestRoot\stacks.txt") }
     if ($Diagnose) { $arguments += '--diagnose' }
+    if ($Review) { $arguments += '--review' }
     if ($CompareListing) { $arguments += '--compare-listing' }
     if ($DropShortNames) { $arguments += @('--short-names', 'drop') }
     # What --list says of the volume, as an elevated user sees it: whether a
@@ -1263,6 +1294,180 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         Say "recovery started: ntfs2refs $($recover -join ' ')"
         $ended = (Wait-Worker $guestRoot '' '').ended
     }
+    $reviewStopped = $false; $stop = $null
+    if ($Review -and -not $InterruptAt -and -not $StopDuringPreparation -and $ended) {
+        # A review run ends by itself: with exit 0 and the volume mounted
+        # read-only as ReFS, or refused as any run is (judged below).
+        $stopRoot = $guestRoot
+        $stop = Invoke-Command -Session $session -ArgumentList $stopRoot -ScriptBlock {
+            param($root)
+            $terminal = if (Test-Path "$root\native-terminal.json") { Get-Content "$root\native-terminal.json" -Raw | ConvertFrom-Json } else { $null }
+            $text = if (Test-Path "$root\stdout.log") { [string](Get-Content -LiteralPath "$root\stdout.log" -Raw -Encoding UTF8) } else { '' }
+            [pscustomobject]@{ exit = if ($terminal) { [int]$terminal.native_exit } else { $null }; seconds = if ($terminal) { [Math]::Round([double]$terminal.wall_seconds, 1) } else { $null }
+                said = [bool]($text -match '(?m)^Stopped for review: ') }
+        }
+        if ($stop.exit -eq 0 -and -not $stop.said) { $verdict.outcome = 'review-run-did-not-stop'; throw 'the run with --review ended with exit 0 and did not say "Stopped for review"' }
+    }
+    if ($stop -and $stop.exit -eq 0) {
+        foreach ($leaf in 'stdout.log', 'stderr.log') {
+            try { Copy-Item -FromSession $session -LiteralPath "$stopRoot\$leaf" -Destination (Join-Path $records "review-$leaf") } catch { }
+        }
+        # The two commands the stop printed, exactly as it printed them.
+        $shown = Join-Path $records 'review-stdout.log'
+        $keep = Select-String -LiteralPath $shown -Pattern 'keep the conversion: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64})\s*$' | Select-Object -Last 1
+        $undo = Select-String -LiteralPath $shown -Pattern 'or put NTFS back:\s+ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64}) --rollback\s*$' | Select-Object -Last 1
+        if (-not $keep -or -not $undo -or $keep.Matches[0].Groups[1].Value -ne $undo.Matches[0].Groups[1].Value -or $keep.Matches[0].Groups[2].Value -ne $undo.Matches[0].Groups[2].Value) {
+            $verdict.outcome = 'review-stop-without-its-commands'; throw 'the review stop did not print one command that keeps the conversion and one that puts NTFS back, for the same run'
+        }
+        $commands = @{ commit = @('--recover', $keep.Matches[0].Groups[1].Value, '--recovery-sha256', $keep.Matches[0].Groups[2].Value) }
+        $commands.rollback = @($commands.commit) + '--rollback'
+        if ($Unattended) { foreach ($direction in 'commit', 'rollback') { $commands[$direction] = @($commands[$direction]) + '--yes' } }
+        # What the stop left: the disk online and read-only, V: mounted as
+        # ReFS, a write to it refused, and everything on it listed as before.
+        $state = Invoke-Command -Session $session -ArgumentList $stopRoot, $sourceDisk, $sourceOffset, ([bool]$DropShortNames) -ScriptBlock {
+            param($root, $number, $offset, $dropped)
+            $disk = Get-Disk -Number $number
+            $partition = Get-Partition -DiskNumber $number -ErrorAction SilentlyContinue | Where-Object { $_.Offset -eq $offset } | Select-Object -First 1
+            $letter = if ($partition) { "$($partition.DriveLetter)".Trim([char]0) } else { '' }
+            $volume = if ($letter) { Get-Volume -DriveLetter $letter -ErrorAction SilentlyContinue } else { $null }
+            $writeRefused = $null; $writeError = ''
+            $listing = 'not-listed'; $listed = ''; $summary = ''; $differences = $null
+            if ($letter -eq 'V') {
+                try { [IO.File]::WriteAllText('V:\written at the review stop.txt', 'x'); $writeRefused = $false; Remove-Item -LiteralPath 'V:\written at the review stop.txt' -Force -ErrorAction SilentlyContinue }
+                catch { $writeRefused = $true; $writeError = "$($_.Exception.Message)" }
+                $listed = (& "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-review.jsonl" 2>&1) -join ' '
+                if ($LASTEXITCODE -eq 0) {
+                    $arguments = @('compare'); if ($dropped) { $arguments += '--short-names-dropped' }
+                    $arguments += @('--before', "$root\manifest-before.jsonl", '--after', "$root\manifest-review.jsonl", '--report', "$root\manifest-review-report.json")
+                    $summary = (& "$root\lab-volume-manifest.exe" $arguments 2>&1) -join ' '
+                    $exit = $LASTEXITCODE
+                    try { $differences = [int](Get-Content -Raw -LiteralPath "$root\manifest-review-report.json" | ConvertFrom-Json).difference_count } catch { $differences = $null }
+                    $listing = if ($exit -eq 0 -and $differences -eq 0) { 'identical' } elseif ($exit -eq 2 -and $differences -gt 0) { 'differs' } else { 'tool-failed' }
+                } else { $listing = 'tool-failed' }
+            }
+            [pscustomobject]@{ disk_offline = [bool]$disk.IsOffline; disk_read_only = [bool]$disk.IsReadOnly; letter = $letter
+                filesystem = if ($volume) { "$($volume.FileSystem)" } else { '' }; label = if ($volume) { "$($volume.FileSystemLabel)" } else { '' }
+                partition_bytes = if ($partition) { $partition.Size } else { $null }
+                write_refused = $writeRefused; write_error = $writeError; listing = $listing; listed = $listed; summary = $summary; differences = $differences }
+        }
+        foreach ($leaf in 'manifest-review.jsonl', 'manifest-review-report.json') { try { Copy-Item -FromSession $session -LiteralPath "$stopRoot\$leaf" -Destination $records } catch { } }
+        $verdict.review = [ordered]@{ exit = $stop.exit; seconds = $stop.seconds; disk_offline = $state.disk_offline; disk_read_only = $state.disk_read_only; mounted_at = $state.letter
+            filesystem = $state.filesystem; label = $state.label; partition_bytes = $state.partition_bytes; write_refused = $state.write_refused; write_error = $state.write_error
+            listing = $state.listing; listing_differences = $state.differences; listing_summary = $state.summary }
+        Say "stopped for review after $($stop.seconds) s: the disk is $(if ($state.disk_offline) { 'offline' } else { 'online' })$(if ($state.disk_read_only) { ', read-only' } else { ', WRITABLE' }); V: is $(if ($state.letter -eq 'V') { "$($state.filesystem) '$($state.label)'" } else { 'not mounted' }); a write to it $(if ($state.write_refused) { "was refused ($($state.write_error))" } elseif ($null -eq $state.write_refused) { 'was not tried' } else { 'WENT THROUGH' })"
+        Say "listing at the review stop: $($state.listed)"
+        Say "before/stop comparison: $($state.listing): $($state.summary)"
+        if ($state.disk_offline -or -not $state.disk_read_only -or $state.letter -ne 'V' -or $state.filesystem -ne 'ReFS' -or -not $state.write_refused) {
+            $verdict.outcome = 'review-stop-not-mounted-read-only-as-refs'; throw 'the review stop did not leave V: mounted read-only as ReFS on an online, read-only disk'
+        }
+        if ($state.listing -ne 'identical') { $verdict.outcome = "review-stop-listing-$($state.listing)"; throw "the volume at the review stop does not list as it did before the run: $($state.summary)" }
+        # A folder of its own for each command, so the review run's records stay as they are.
+        $stageRecovery = {
+            param($leaf)
+            $root = "$stopRoot\$leaf"
+            Invoke-Command -Session $session -ArgumentList $root, $stopRoot -ScriptBlock {
+                param($root, $from)
+                $null = New-Item -ItemType Directory -Path $root -Force
+                foreach ($file in 'ntfs2refs.exe', 'lab-volume-manifest.exe', 'worker.ps1', 'manifest-before.jsonl') { Copy-Item -LiteralPath (Join-Path $from $file) -Destination $root }
+            }
+            $root
+        }
+        if ($Tamper) {
+            # The volume is written to after the stop, as by someone who made
+            # it writable to change one thing. A volume that was mounted
+            # write-protected stays so until it is mounted again: the disk is
+            # then taken offline and brought back, writable.
+            # (The partition's bytes read through the disk, as the volumes
+            # beside a source are read: a type of its own, because that one
+            # exists only in an attempt with -Siblings.)
+            $hashPartition = {
+                param($number, $offset, $bytes)
+                if (-not ('PartitionRaw' -as [type])) {
+                    Add-Type -TypeDefinition 'using System; using System.IO; using System.Runtime.InteropServices; using System.Security.Cryptography; using Microsoft.Win32.SafeHandles; public static class PartitionRaw { [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template); public static string Sha256(string device, long offset, long bytes) { using (var handle = CreateFileW(device, 0x80000000, 7, IntPtr.Zero, 3, 0, IntPtr.Zero)) { if (handle.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error()); using (var stream = new FileStream(handle, FileAccess.Read, 1 << 20)) using (var sha = SHA256.Create()) { stream.Seek(offset, SeekOrigin.Begin); var buffer = new byte[1 << 20]; long left = bytes; while (left > 0) { int read = stream.Read(buffer, 0, (int)Math.Min(buffer.Length, left)); if (read <= 0) throw new IOException("short read of " + device + " with " + left + " bytes left"); sha.TransformBlock(buffer, 0, read, null, 0); left -= read; } sha.TransformFinalBlock(buffer, 0, 0); return BitConverter.ToString(sha.Hash).Replace("-", "").ToLowerInvariant(); } } } }'
+                }
+                $clock = [Diagnostics.Stopwatch]::StartNew()
+                try { [pscustomobject]@{ sha256 = [PartitionRaw]::Sha256("\\.\PhysicalDrive$number", $offset, $bytes); error = ''; seconds = [Math]::Round($clock.Elapsed.TotalSeconds, 1) } }
+                catch { [pscustomobject]@{ sha256 = $null; error = "$($_.Exception.Message)"; seconds = [Math]::Round($clock.Elapsed.TotalSeconds, 1) } }
+            }
+            $tampered = Invoke-Command -Session $session -ArgumentList $sourceDisk -ScriptBlock {
+                param($number)
+                $file = 'V:\written after the review stop.txt'; $wrote = $false; $said = ''; $remounts = 0
+                Set-Disk -Number $number -IsReadOnly $false
+                foreach ($try in 1..3) {
+                    try { [IO.File]::WriteAllText($file, 'written after the review stop'); $wrote = $true; break } catch { $said = "$($_.Exception.Message)" }
+                    Set-Disk -Number $number -IsOffline $true; Set-Disk -Number $number -IsOffline $false; $remounts++
+                    $until = (Get-Date).AddSeconds(30)
+                    while (-not (Test-Path -LiteralPath 'V:\') -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 500 }
+                }
+                # (Written out first: what is still in the cache when the disk becomes read-only never reaches it.)
+                if ($wrote) { Write-VolumeCache -DriveLetter V }
+                Set-Disk -Number $number -IsReadOnly $true
+                $disk = Get-Disk -Number $number
+                [pscustomobject]@{ wrote = $wrote; said = $said; remounts = $remounts; there = [bool](Test-Path -LiteralPath $file)
+                    disk_offline = [bool]$disk.IsOffline; disk_read_only = [bool]$disk.IsReadOnly }
+            }
+            $verdict.tamper = [ordered]@{ wrote = [bool]$tampered.wrote; remounts = $tampered.remounts; file_there = [bool]$tampered.there
+                disk_offline = [bool]$tampered.disk_offline; disk_read_only = [bool]$tampered.disk_read_only; commands = @() }
+            Say "tampered: the disk was made writable, a file was written to V: $(if ($tampered.wrote) { "(after $($tampered.remounts) remount(s))" } else { "COULD NOT BE WRITTEN: $($tampered.said)" }), and the disk is $(if ($tampered.disk_offline) { 'offline' } else { 'online' })$(if ($tampered.disk_read_only) { ', read-only' } else { ', WRITABLE' }) again"
+            if (-not $tampered.wrote -or -not $tampered.there -or $tampered.disk_offline -or -not $tampered.disk_read_only) {
+                $verdict.outcome = 'review-tamper-not-made'; throw 'the volume could not be written to after the review stop and its disk set read-only again'
+            }
+            $before = Invoke-Command -Session $session -ArgumentList $sourceDisk, $sourceOffset, $state.partition_bytes -ScriptBlock $hashPartition
+            $verdict.tamper.partition_sha256_before = $before.sha256
+            Say "the partition's bytes before the commands: SHA-256 $("$($before.sha256)".PadRight(12).Substring(0, 12)) ($($before.seconds) s)$(if ($before.error) { ": $($before.error)" })"
+            if (-not $before.sha256) { $verdict.outcome = 'review-tamper-partition-not-read'; throw "the tampered partition could not be read through its disk: $($before.error)" }
+            $failed = ''
+            $order = if ($RecoverMode -eq 'rollback') { 'rollback', 'commit' } else { 'commit', 'rollback' }
+            foreach ($direction in $order) {
+                $root = & $stageRecovery "recover-$direction"
+                Start-Worker $root $commands[$direction] $task
+                Say "the command that would $(if ($direction -eq 'commit') { 'keep the conversion' } else { 'put NTFS back' }): ntfs2refs $($commands[$direction] -join ' ')"
+                $over = (Wait-Worker $root '' '').ended
+                $after = Invoke-Command -Session $session -ArgumentList $root, $sourceDisk -ScriptBlock {
+                    param($root, $number)
+                    $terminal = if (Test-Path "$root\native-terminal.json") { Get-Content "$root\native-terminal.json" -Raw | ConvertFrom-Json } else { $null }
+                    $said = if (Test-Path "$root\stderr.log") { [string](Get-Content -LiteralPath "$root\stderr.log" -Encoding UTF8 | Where-Object { $_ -match '^error:' } | Select-Object -Last 1) } else { '' }
+                    $disk = Get-Disk -Number $number
+                    [pscustomobject]@{ exit = if ($terminal) { [int]$terminal.native_exit } else { $null }; error = $said
+                        worker_error = if (Test-Path "$root\worker-error.txt") { Get-Content "$root\worker-error.txt" -Raw } else { $null }
+                        disk_offline = [bool]$disk.IsOffline; disk_read_only = [bool]$disk.IsReadOnly; v_mounted = [bool](Get-Partition -DriveLetter V -ErrorAction SilentlyContinue) }
+                }
+                foreach ($leaf in 'stdout.log', 'stderr.log') {
+                    try { Copy-Item -FromSession $session -LiteralPath "$root\$leaf" -Destination (Join-Path $records "tamper-$direction-$leaf") } catch { }
+                }
+                $named = "$($after.error)" -match 'not what it was when the run stopped for review'
+                $verdict.tamper.commands += [ordered]@{ direction = $direction; arguments = $commands[$direction]; ended = [bool]$over; exit = $after.exit; error = "$($after.error)"
+                    said_it_changed = [bool]$named; disk_offline = [bool]$after.disk_offline; disk_read_only = [bool]$after.disk_read_only; v_mounted = [bool]$after.v_mounted }
+                Say "it ended with exit $($after.exit); the disk is $(if ($after.disk_offline) { 'offline' } else { 'ONLINE' })$(if ($after.disk_read_only) { ', read-only' } else { ', WRITABLE' }): $($after.error)"
+                # Both are run whatever the first did; the first thing that was not as it has to be names the outcome.
+                if ($failed) { continue }
+                if (-not $over) { $failed = 'converter-timed-out' }
+                elseif ($after.worker_error) { $verdict.error = "guest worker failed: $($after.worker_error)"; $failed = 'harness-error' }
+                elseif ($after.exit -eq 0) { $failed = "review-tampered-$direction-was-not-refused" }
+                elseif (-not $named) { $failed = "review-tampered-$direction-refused-otherwise" }
+                elseif (-not $after.disk_offline -or -not $after.disk_read_only -or $after.v_mounted) { $failed = "review-tampered-$direction-left-the-disk-unsealed" }
+            }
+            Invoke-Command -Session $session -ArgumentList $task -ScriptBlock { param($task) Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue }
+            # Neither command wrote to the partition: its bytes are what they were.
+            $afterBoth = Invoke-Command -Session $session -ArgumentList $sourceDisk, $sourceOffset, $state.partition_bytes -ScriptBlock $hashPartition
+            $verdict.tamper.partition_sha256_after = $afterBoth.sha256
+            $verdict.tamper.partition_unchanged = [bool]($afterBoth.sha256 -and $afterBoth.sha256 -eq $before.sha256)
+            Say "the partition's bytes after both: $(if ($verdict.tamper.partition_unchanged) { 'identical' } elseif ($afterBoth.sha256) { 'DIFFERENT' } else { "not read: $($afterBoth.error)" }) ($($afterBoth.seconds) s)"
+            $verdict.converter = [ordered]@{ exit = $stop.exit; seconds = $stop.seconds; error = '' }
+            $verdict.outcome = if ($failed) { $failed }
+                elseif (-not $afterBoth.sha256) { 'review-tamper-partition-not-read' }
+                elseif (-not $verdict.tamper.partition_unchanged) { 'review-tampered-refused-but-partition-changed' }
+                else { 'review-tampered-both-refused' }
+            return
+        }
+        $direction = if ($RecoverMode -eq 'rollback') { 'rollback' } else { 'commit' }
+        $verdict.recover_mode = $RecoverMode; $verdict.recovery_arguments = $commands[$direction]
+        $guestRoot = & $stageRecovery 'recover'
+        Start-Worker $guestRoot $commands[$direction] $task
+        Say "$(if ($direction -eq 'commit') { 'keeping the conversion' } else { 'putting NTFS back' }): ntfs2refs $($commands[$direction] -join ' ')"
+        $ended = (Wait-Worker $guestRoot '' '').ended
+        $reviewStopped = $true
+    }
     $run = Invoke-Command -Session $session -ArgumentList $guestRoot, $task, $unlock -ScriptBlock {
         param($root, $task, $unlock)
         Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
@@ -1387,12 +1592,12 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         elseif ($run.exit -eq 0 -and $returned -and $listing -eq 'identical') { 'restart-refused-then-cancelled' }
         elseif ($run.exit -eq 0 -and $returned) { "restart-refused-then-cancelled-but-listing-$listing" }
         else { 'restart-refused-then-cancel-failed' }
-    } elseif ($InterruptAt -and $RecoverMode -eq 'rollback') {
+    } elseif (($InterruptAt -or $reviewStopped) -and $RecoverMode -eq 'rollback') {
         # A rollback returns the NTFS volume, which must list exactly as before.
         if ($run.exit -eq 0 -and $returned -and $listing -eq 'identical') { 'rolled-back' }
         elseif ($run.exit -eq 0 -and $returned) { "rolled-back-but-listing-$listing" }
         else { 'rollback-failed' }
-    } elseif ($InterruptAt) {
+    } elseif ($InterruptAt -or $reviewStopped) {
         if ($converted -and $listing -eq 'identical') { 'resumed' }
         elseif ($converted) { "resumed-but-listing-$listing" }
         else { 'resume-failed' }
@@ -1418,6 +1623,26 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         $verdict.cancellation_said_of_what_is_left = $left
         if ($left) { Say "the cancellation said: $left" }
         elseif ($verdict.outcome -in 'preparation-cancelled', 'preparation-cancelled-after-power-off', 'restart-refused-then-cancelled') { $verdict.outcome = "$($verdict.outcome)-without-naming-what-is-left" }
+    }
+    if ($Review -and ($InterruptAt -or $reviewStopped)) {
+        # What the recovery recorded of itself (result.json in the folder it
+        # named). The rollback of a review run holds the restored NTFS volume
+        # to the fingerprint of the source taken before the conversion, and
+        # has to say that it did.
+        $recordsLine = & $said '^Recovery completed\. Records: (.+)$'
+        $result = $null
+        if ($recordsLine) {
+            # (A record that cannot be read is one that does not say it: the outcome set above must not stand on an error here.)
+            try {
+                $result = Invoke-Command -Session $session -ArgumentList "$recordsLine" -ErrorAction Stop -ScriptBlock { param($directory) $file = Join-Path $directory 'result.json'; if (Test-Path -LiteralPath $file) { [string](Get-Content -LiteralPath $file -Raw -Encoding UTF8) } }
+                if ($result) { [IO.File]::WriteAllText((Join-Path $records 'recovery-result.json'), "$result", [Text.UTF8Encoding]::new($false)) }
+            } catch { $result = $null; Say "the recovery's record could not be read: $($_.Exception.Message)" }
+        }
+        $parsed = try { "$result" | ConvertFrom-Json } catch { $null }
+        $verified = if ($parsed -and $parsed.PSObject.Properties['source_fingerprint_verified']) { [bool]$parsed.source_fingerprint_verified } else { $null }
+        $verdict.recovery_result = [ordered]@{ records = "$recordsLine"; direction = $(if ($parsed -and $parsed.PSObject.Properties['direction']) { "$($parsed.direction)" } else { $null }); source_fingerprint_verified = $verified }
+        Say "the recovery's own record: direction $($verdict.recovery_result.direction); source fingerprint verified: $(if ($null -eq $verified) { 'not said' } else { $verified })"
+        if ($verdict.outcome -eq 'rolled-back' -and $verified -ne $true) { $verdict.outcome = 'rolled-back-without-the-fingerprint-check' }
     }
     $lengthBefore = $verdict.source.observed.partition_bytes; $lengthAfter = $verdict.volume_after.partition_bytes
     if ($lengthBefore -and $lengthAfter -and $lengthAfter -ne $lengthBefore) {
@@ -1453,7 +1678,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         # The provider is passed over, and the check and the run each say so by its name.
         $named = '^Note: A shadow-copy \(VSS\) provider .*' + [regex]::Escape("`"$($verdict.vss_provider.name)`"") + '.*full backup'
         # A run that was stopped said it before it was stopped; its recovery asks nothing of the kind.
-        $spoken = @($stdout, (Join-Path $records 'interrupted-stdout.log')) | Where-Object { Test-Path -LiteralPath $_ }
+        $spoken = @($stdout, (Join-Path $records 'interrupted-stdout.log'), (Join-Path $records 'review-stdout.log')) | Where-Object { Test-Path -LiteralPath $_ }
         $verdict.vss_provider.note_in_run = [bool]($spoken | ForEach-Object { Get-Content -LiteralPath $_ -Encoding UTF8 } | Where-Object { $_ -match $named } | Select-Object -First 1)
         if ($Check) { $verdict.vss_provider.note_in_check = [bool]($checked.text | Where-Object { $_ -match $named } | Select-Object -First 1) }
         Say "provider note: in the run's output $($verdict.vss_provider.note_in_run)$(if ($Check) { ", in the check's $($verdict.vss_provider.note_in_check)" })"

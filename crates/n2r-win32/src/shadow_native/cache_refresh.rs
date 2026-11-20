@@ -511,11 +511,11 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     }
     if let Some(admission) = resource_admission {
         input.require_resource_metadata(admission)?;
-        super::hard_links::validate_resource_domain(
+        super::hard_links::validate_resource_domain_once(
             input,
             admission.maximum_namespace_names()?,
             &resource_root,
-            crate::shadow_names::valid_unicode_component,
+            super::hard_links::Names::Unicode,
         )?;
     } else {
         super::hard_links::validate_domain(

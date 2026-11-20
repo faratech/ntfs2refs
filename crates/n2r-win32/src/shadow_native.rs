@@ -5018,11 +5018,18 @@ fn run_role_content_domain_accounted(
         }
     };
     if let Some(admission) = resource_admission {
-        hard_links::validate_resource_domain(
+        // The names `valid_component` holds a path to, by name: a pass that
+        // the held input keeps is kept for these names.
+        let names = if resource_profile.is_some_and(|p| p.is_streaming()) {
+            hard_links::Names::Unicode
+        } else {
+            hard_links::Names::Shadow
+        };
+        hard_links::validate_resource_domain_once(
             input,
             admission.maximum_namespace_names()?,
             &resource_root,
-            valid_component,
+            names,
         )?;
     } else {
         hard_links::validate_domain(input, hard_links::MAX_NAMES, valid_component)?;

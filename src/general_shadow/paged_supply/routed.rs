@@ -662,6 +662,9 @@ pub(crate) struct RoutedSupplyOwner<'a, 'source, 'scope> {
     plan: RoutedPlan,
     row_window: u64,
     recovered: bool,
+    /// Whether `verify` reads the payload bytes again. It does not where the
+    /// run verifies once and this process supplied the payloads itself.
+    reread: bool,
     progress: Reporter,
     _ram: crate::ntfs_inspect::paged_storage::SourceRamLease,
 }
@@ -820,6 +823,7 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
         plan,
         row_window,
         recovered: false,
+        reread: !policy.verifies_once(),
         progress: progress.clone(),
         _ram: ram,
     })
@@ -866,6 +870,7 @@ pub(crate) fn prepare_recovered<'a, 'source, 'scope>(
         plan,
         row_window,
         recovered: true,
+        reread: true,
         progress: progress.clone(),
         _ram: ram,
     })
@@ -892,6 +897,13 @@ impl RoutedSupplyOwner<'_, '_, '_> {
         self.template.require_system_payloads_complete()?;
         phase(self.bytes, self.expected, self.template)?;
         let before_reads = self.bytes.logical_bytes_read();
+        // Every byte materialized on the shadow was read back and held to
+        // the source's when it was written (`prepare`), and a stream with a
+        // digest is read in full on the converted volume after the apply.
+        // Under "verify once" this pass therefore reads no payload: it still
+        // walks every stream's mapping on both sides, which is what the plan
+        // digest in its receipt is made from.
+        let reread = self.reread;
         let (mut logical, mut referenced, mut routed, mut materialized, mut holes) =
             (0u64, 0u64, 0u64, 0u64, 0u64);
         let mut source_buffer = vec![0u8; WINDOW];
@@ -974,6 +986,9 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                         if !matches!(piece, Piece::Materialize) && stream.sha256.is_none() {
                             return Ok(());
                         }
+                        if !reread {
+                            return Ok(());
+                        }
                         let mut done = 0u64;
                         while done < length {
                             let n = usize::try_from((length - done).min(WINDOW as u64))?;
@@ -1014,7 +1029,10 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                         Ok(())
                     })?;
                 }
-                let digest = if let Some(wanted) = stream.sha256 {
+                let digest = if !reread {
+                    // Nothing was read: no digest is claimed.
+                    None
+                } else if let Some(wanted) = stream.sha256 {
                     let actual = content.finish();
                     ensure!(
                         actual == wanted,
@@ -1078,8 +1096,7 @@ impl RoutedSupplyOwner<'_, '_, '_> {
             None,
         );
         phase(self.bytes, self.expected, self.template)?;
-        Ok(
-            serde_json::json!({"kind":"private-routed-prefix-verification", "success":true,
+        let mut receipt = serde_json::json!({"kind":"private-routed-prefix-verification", "success":true,
             "logical_bytes":logical,"same_coordinate_reference_bytes":referenced,
             "relocated_prefix_routed_bytes":routed,"shadow_materialized_bytes":materialized,
             "hole_bytes":holes,"actual_source_logical_bytes_read":self.bytes.logical_bytes_read()-before_reads,
@@ -1087,7 +1104,12 @@ impl RoutedSupplyOwner<'_, '_, '_> {
             "target_route_capture_pending":true,"journal_copy_literal_split_pending":true,
             "source_payload_writes":0,"source_admitted":false,"execution_authorized":false,
             "completed_payloads_reused":self.recovered,"payload_bytes_rematerialized":if self.recovered {Some(0u64)}else{None},
-            "conversion_qualified":false}),
-        )
+            "conversion_qualified":false});
+        if !reread {
+            receipt["payload_bytes_reread"] = false.into();
+            receipt["payload_contents_held_by"] =
+                "read-back at materialization; complete digests on the converted volume".into();
+        }
+        Ok(receipt)
     }
 }

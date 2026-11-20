@@ -1348,7 +1348,16 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         Ok(())
     };
     const READ_BACK_BATCH: usize = super::PARALLEL_BATCH;
-    let mut next = 0usize;
+    // Under "verify once" this read-back is left out of a run that restored
+    // the metadata itself: once this volume is frozen, the one observation
+    // of it that the capture is made from opens every object and holds the
+    // same facets (identity, times and attributes, both security views,
+    // extended attributes, reparse point, case mark, streams, names and
+    // mapping) to the same expectations, before anything is written to the
+    // source. A run that resumes metadata an earlier process restored still
+    // reads all of it back here.
+    let read_back = recovering || !crate::verify_policy::verifies_once();
+    let mut next = if read_back { 0usize } else { input.len() };
     while next < input.len() {
         metadata_progress(8, next as u64);
         let end = (next + READ_BACK_BATCH).min(input.len());
@@ -1442,6 +1451,11 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         "source_before":source_before,"events":events,"owner_consumed":true,
         "disposable_maintenance_scope":true,"source_prefix_contents_verified":false,
         "requires_fresh_conversion_admission":true,"conversion_qualified":false});
+    if !read_back {
+        report["metadata_objects_verified"] = 0u64.into();
+        report["metadata_readback_verified"] = false.into();
+        report["metadata_readback_left_to_frozen_shadow_observation"] = true.into();
+    }
     if security_placeholders {
         report["kind"] = "provisional-Windows-constructor-metadata-completion".into();
         report["security_readback_scope"] = "temporary-constructor-placeholder-views".into();

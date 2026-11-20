@@ -754,6 +754,31 @@ mod windows {
             !args.windows_boot_volume && args.offline_recovery_media.is_none(),
             "the running Windows converts through its own recovery environment: drop --windows-boot-volume and --restart-media. Nothing was changed."
         );
+        // What the converter in the environment would refuse is refused here,
+        // before the restart, instead of after it; what it takes is handed on
+        // (`converter_args`), and nothing the user gave is dropped silently.
+        ensure!(
+            !args.review,
+            "--review is for a data volume on a disk of its own; the running Windows is not stopped for a review. Nothing was changed."
+        );
+        ensure!(
+            args.short_names.is_none(),
+            "--short-names is for a data volume; the running Windows keeps its short names as links, as a Windows boot volume does. Nothing was changed."
+        );
+        ensure!(
+            !args.minimize_scratch,
+            "--minimize-scratch is for a data volume; the running Windows is converted with its full working storage. Nothing was changed."
+        );
+        ensure!(
+            !args.compare_listing,
+            "--compare-listing lists the volume through its drive letter, which the running Windows does not keep in its recovery environment; compare by hand with lab-volume-manifest. Nothing was changed."
+        );
+        ensure!(
+            matches!(args.target_cluster_bytes.as_deref(), None | Some("4096")),
+            "a Windows volume converts to 4096-byte ReFS clusters; drop --target-cluster-bytes. Nothing was changed."
+        );
+        let policy = args.verification_policy()?;
+        let thorough = policy.is_full_content();
         let scratch = args.scratch_directory.as_deref().context(
             "the running Windows converts through a restart, and the run needs --scratch-directory on a volume of another disk that stays connected until Windows is back. Nothing was changed.",
         )?;
@@ -888,6 +913,9 @@ mod windows {
 The machine restarts, possibly more than once. Do not switch it off while the conversion runs; keep {} connected.",
             scratch.display()
         );
+        if !diagnose {
+            println!("{}", describe_verification(policy));
+        }
         let prompt = if diagnose {
             "Restart now to diagnose this Windows without converting it? [y/N]"
         } else {
@@ -903,7 +931,9 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             scratch_directory: scratch,
             diagnose,
             target_format: args.target_format.as_deref(),
-            verify_full_content: args.verify_full_content,
+            thorough,
+            recheck_everything: args.recheck_everything,
+            memory_limit: args.memory_limit,
             boot_volume: boot,
             scratch_disk_id,
             windows_disk_id,

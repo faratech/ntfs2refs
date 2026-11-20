@@ -40,6 +40,35 @@ entry are in the pull request named beside it and in `docs/performance.md`.
   `fast`, the default, proves data that stays in place by its extents.
   `thorough` reads every byte, as `--verify-full-content` did; that spelling
   still works (#148).
+- **With `--verify fast` a rollback stays open until the converted volume has
+  passed its verification.** Every new sector is written and read back, the
+  disk is sealed again, the converted volume is mounted read-only and
+  verified, and only then is the conversion committed and the volume put
+  online. If the verification does not pass, nothing is committed and
+  nothing is rolled back: the run gives both commands, to verify again and
+  finish, or to put NTFS back. A rollback that follows checks the restored
+  NTFS volume against the fingerprint taken before the conversion. With
+  `--verify thorough` the conversion commits as before, once every new
+  sector is written and read back (#148, #110).
+- **A fast run checks each thing once**: where two checks prove the same
+  thing, it makes one. A moved extent is held to the mapping of the range it
+  moved, with each file's complete mapping compared once when placement
+  ends. A changed range is held to its old contents before the apply and
+  read back after it is written, and not read again just before. The
+  journal's stored contents are compared with their digests as they are
+  read back. Windows no longer reads again the contents of a plain stream
+  (uncompressed, not sparse, all of it on disk): it confirms where the
+  stream lies and that its data is written to its end, and every other
+  comparison of what Windows shows with the converter's own reading of the
+  volume stays. The new volume is not read back a second time before it is
+  captured, and a converted Windows volume's short-name links are probed
+  once. A fast run's preparation that was cut off is cancelled and started
+  again, not resumed. `--verify thorough` and `--recheck-everything` make
+  every check (#140).
+- **The Windows the machine runs from is converted with the verification
+  asked for**: `--verify thorough`, `--recheck-everything` and
+  `--memory-limit` reach the converter in the recovery environment, and
+  options that do not apply there are refused before the restart.
 - **`--review`**, for a data volume on a disk of its own: the conversion stops
   before the handoff, with the new ReFS volume mounted read-only. Look at it,
   then commit with `--recover`, or give the NTFS volume back with
@@ -52,6 +81,15 @@ entry are in the pull request named beside it and in `docs/performance.md`.
   refused, the report says how to detach it by hand (#175, #182).
 - **A run cut off before it started writing** gets the NTFS volume back from
   the `--recover` command it printed. There is nothing to resume (#177).
+- **A run cut off while it wrote its preparation state** can be given back:
+  the recovery takes what was last made durable of its two copies, and
+  refuses any other disagreement as before (#200).
+- **A run cut off in its first seconds** no longer leaves its working volume
+  attached: one that stops on an error detaches it, and the next run or
+  `--list` detaches what a killed run left, never one still running (#201).
+- **In the recovery environment**, a rollback finds the source's fingerprint
+  wherever the working volume is mounted now, and a marker torn there is
+  settled although every disk comes up offline and read-only (#148).
 
 ### Speed and memory
 
@@ -64,6 +102,12 @@ entry are in the pull request named beside it and in `docs/performance.md`.
 - **Less repeated work**: a working file is hashed once per check, not once
   for each record store that holds it. Extent placement costs less per move.
   Waits for a volume to appear look again sooner (#140).
+- **BLAKE3 for bulk hashing**: working files, the recovery journal and the
+  capture's file are hashed with BLAKE3 on several threads, where SHA-256
+  ran at about 250 MB/s on a processor without SHA instructions. Every
+  check is the same. A run started by an earlier build is still recovered
+  with its SHA-256 digests; a run of this build cannot be recovered by an
+  earlier build (#140).
 - **Memory follows the volume, not the budget**. The sorts, the MFT
   bootstrap, placement and the recovery audit reserve what the volume needs.
   Caches are given back before a run goes beyond its budget (#129).

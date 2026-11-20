@@ -160,7 +160,10 @@ impl DiagnosticCaptureSelection {
 #[derive(Serialize)]
 pub(crate) struct LiteralCapturePin {
     pub path: PathBuf,
+    /// The digest of the complete literal file, in hex, of the algorithm
+    /// `digest` names. The field keeps its historical name.
     pub sha256: String,
+    pub digest: n2r_win32::bulk_digest::Algorithm,
     pub snapshot: ReferenceFileSnapshot,
 }
 pub(crate) struct ClosedCaptureLiteral {
@@ -577,11 +580,13 @@ fn capture_selected_inner(
     let mut previous_free = false;
     let mut source_digest = Sha256::new();
     let mut candidate_digest = Sha256::new();
-    // SHA-256 of the literal bytes, by Windows' implementation: the same
-    // digest as before, and several times the portable code's speed on a
-    // processor without SHA instructions, where three gigabytes of literal
-    // bytes took ten seconds of this step.
-    let mut packed_digest = n2r_win32::sha256_native::Sha256::new()?;
+    // The digest of the literal bytes, as they are written: BLAKE3
+    // (`n2r_win32::bulk_digest`). On a processor without SHA instructions a
+    // SHA-256 of three gigabytes of literal bytes took ten seconds of this
+    // step, and the gate before the first write to the source reads the file
+    // again to compare it with this.
+    let literal_digest = n2r_win32::bulk_digest::Algorithm::WRITTEN;
+    let mut packed_digest = n2r_win32::bulk_digest::Hasher::new(literal_digest)?;
     let whole = selection.store.len() == 1
         && selection.range(0)?
             == ByteRange {
@@ -891,18 +896,16 @@ fn capture_selected_inner(
         snapshot.file_bytes == packed,
         "durable literal backing length differs"
     );
-    // Bytes of the volume, hashed with SHA-256 as they were written: held
-    // as that, whatever they begin with.
-    let artifact = literal_permit.verify_closed_handle_by(
-        n2r_win32::bulk_digest::Algorithm::Sha256,
-        &readonly,
-        &literal_hash,
-    )?;
+    // Bytes of the volume, hashed as they were written: held to that digest,
+    // whatever they begin with.
+    let artifact =
+        literal_permit.verify_closed_handle_by(literal_digest, &readonly, &literal_hash)?;
     let literal = ClosedCaptureLiteral {
         file: RefCell::new(readonly),
         pin: LiteralCapturePin {
             path: literal_path,
             sha256: literal_hash,
+            digest: literal_digest,
             snapshot,
         },
         limit: budget.max_literal_backing_bytes,

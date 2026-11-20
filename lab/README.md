@@ -230,6 +230,16 @@ handle closes. The check has to say that it saw one and must not refuse the
 volume for it (`check-refused-a-file-deleted-while-open` otherwise); the
 handle is closed before the run.
 
+Every listing says of each directory whether it is marked case-sensitive.
+A run says before it begins whether it sets that mark on the new volume
+(only on Windows Server 2025, #103). Where it said it does not, the listings
+are compared with `lab-volume-manifest compare --case-marks-not-carried`,
+which counts a mark that is gone and allows nothing else; no directory may
+be marked afterwards, and as many must have been counted as were marked
+before. Where the run carries the mark over, the comparison is the ordinary
+one: a directory that lost its mark, or gained one, differs, and as many
+must be marked afterwards as before (`case_marks` in the verdict).
+
 `-DropShortNames` runs the converter, and the check before it, with
 `--short-names drop`. The listings are then compared with
 `lab-volume-manifest compare --short-names-dropped`, which counts a short
@@ -288,7 +298,8 @@ entry), `ea` (extended attributes), `links` (junction and symbolic links),
 file of `-BigFileGB` GiB), `full` (a nearly full, fragmented volume), `copy`
 (a directory of the control OS, copied with its security), `usn` (a change
 journal), `casemark` (directories marked case-sensitive, none holding two
-names that differ only by case) and `shortnames-stripped` (8.3 names removed
+names that differ only by case, and an ordinary directory inside a marked
+one) and `shortnames-stripped` (8.3 names removed
 with `fsutil`, the remedy the refusal gives). `-Content lived-in` is the mixed content with `copy`,
 `objectids`, `security`, `ea`, `links`, `longpath`, `deep`, `bigdir` and `usn`.
 

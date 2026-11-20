@@ -1310,11 +1310,17 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     $returned = $run.filesystem -eq 'NTFS' -and $run.mounted -and -not $run.offline -and -not $run.read_only
     $listing = 'not-compared'
     if ($converted -or $returned) {
-        $compared = Invoke-Command -Session $session -ArgumentList $guestRoot, (-not $converted), ([bool]$DropShortNames) -ScriptBlock {
-            param($root, $exact, $dropped)
+        # A run says before it begins whether it sets the directories' case-sensitive marks on the new volume. One that
+        # said it does not is held to exactly that: a mark that is gone is counted, not a difference. One that carries
+        # the mark over gets the plain comparison, where a directory that lost its mark differs. (A run that was stopped
+        # said it before it was stopped.)
+        $marksLeft = [bool](@($stdout, (Join-Path $records 'interrupted-stdout.log')) | Where-Object { Test-Path -LiteralPath $_ } |
+            Where-Object { Select-String -LiteralPath $_ -SimpleMatch -Pattern 'The converter does not set the mark on the new volume' -Quiet } | Select-Object -First 1)
+        $compared = Invoke-Command -Session $session -ArgumentList $guestRoot, (-not $converted), ([bool]$DropShortNames), $marksLeft -ScriptBlock {
+            param($root, $exact, $dropped, $marksLeft)
             $listed = & "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-after.jsonl" 2>&1
             if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ stage = 'capture-after'; exit = $LASTEXITCODE; differences = $null; listed = ($listed -join ' '); summary = '' } }
-            $arguments = @('compare'); if ($exact) { $arguments += '--exact' } elseif ($dropped) { $arguments += '--short-names-dropped' }
+            $arguments = @('compare'); if ($exact) { $arguments += '--exact' } else { if ($dropped) { $arguments += '--short-names-dropped' }; if ($marksLeft) { $arguments += '--case-marks-not-carried' } }
             $arguments += @('--before', "$root\manifest-before.jsonl", '--after', "$root\manifest-after.jsonl", '--report', "$root\manifest-report.json")
             $summary = & "$root\lab-volume-manifest.exe" $arguments 2>&1
             $exit = $LASTEXITCODE; $differences = $null; $kinds = @{}
@@ -1328,7 +1334,10 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
             $shortBefore = @(Select-String -LiteralPath "$root\manifest-before.jsonl" -Pattern '"short_name":"' -SimpleMatch).Count
             $shortAfter = @(Select-String -LiteralPath "$root\manifest-after.jsonl" -Pattern '"short_name":"' -SimpleMatch).Count
             [pscustomobject]@{ stage = 'compare'; exit = $exit; differences = $differences; kinds = $kinds; listed = ($listed -join ' '); summary = ($summary -join ' ')
-                short_before = $shortBefore; short_after = $shortAfter; short_dropped = $(if ($report -and $report.PSObject.Properties['short_names_dropped']) { [int]$report.short_names_dropped } else { 0 }) }
+                short_before = $shortBefore; short_after = $shortAfter; short_dropped = $(if ($report -and $report.PSObject.Properties['short_names_dropped']) { [int]$report.short_names_dropped } else { 0 })
+                marks_before = @(Select-String -LiteralPath "$root\manifest-before.jsonl" -Pattern '"case_sensitive":true' -SimpleMatch).Count
+                marks_after = @(Select-String -LiteralPath "$root\manifest-after.jsonl" -Pattern '"case_sensitive":true' -SimpleMatch).Count
+                marks_left = $(if ($report -and $report.PSObject.Properties['case_marks_not_carried']) { [int]$report.case_marks_not_carried } else { 0 }) }
         }
         foreach ($leaf in 'manifest-after.jsonl', 'manifest-report.json') { try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\$leaf" -Destination $records } catch { } }
         # Exit 0 with nothing counted is identical; exit 2 with a count is a
@@ -1349,6 +1358,13 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
             $verdict.short_names = [ordered]@{ listed_before = $compared.short_before; listed_after = $compared.short_after; counted_as_dropped = $compared.short_dropped }
             Say "short names: $($compared.short_before) listed before, $($compared.short_after) after; $($compared.short_dropped) counted as dropped"
             if ($listing -eq 'identical' -and ($compared.short_after -ne 0 -or $compared.short_dropped -ne $compared.short_before)) { $listing = 'differs' }
+        }
+        if ($converted -and $compared.stage -eq 'compare' -and ($compared.marks_before -gt 0 -or $compared.marks_after -gt 0)) {
+            # Directories marked case-sensitive: all of them afterwards where the run carries the mark over, none where it said it does not.
+            $verdict.case_marks = [ordered]@{ run_said_not_set = $marksLeft; listed_before = $compared.marks_before; listed_after = $compared.marks_after; counted_as_not_carried = $compared.marks_left }
+            Say "case-sensitive marks: $($compared.marks_before) listed before, $($compared.marks_after) after; $(if ($marksLeft) { "the run said it does not set them; $($compared.marks_left) counted as not carried" } else { 'the run carries them over' })"
+            if ($listing -eq 'identical' -and $marksLeft -and ($compared.marks_after -ne 0 -or $compared.marks_left -ne $compared.marks_before)) { $listing = 'differs' }
+            if ($listing -eq 'identical' -and -not $marksLeft -and $compared.marks_after -ne $compared.marks_before) { $listing = 'differs' }
         }
         $verdict.manifest = [ordered]@{ result = $listing; exact = (-not $converted); stage = $compared.stage; exit = $compared.exit; differences = $compared.differences; listed = $compared.listed; summary = $compared.summary }
         Say "listing after the run: $($compared.listed)"

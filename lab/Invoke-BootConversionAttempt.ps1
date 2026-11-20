@@ -301,9 +301,12 @@ function Wait-Converter([string]$Root, [string]$TaskName, [string]$ScratchLetter
 # source that must not have changed (after a diagnose run or a rollback):
 # every recorded field equal, nothing accepted as an expected difference.
 # Answers identical | differs | not-compared | tool-failed.
-function Compare-Listing([string]$Exe, [string]$Letter, [string]$Directory, [switch]$Exact) {
-    $compared = Invoke-Command -Session $script:session -ArgumentList $Exe, "${Letter}:\", $Directory, ([bool]$Exact) -ScriptBlock {
-        param($exe, $root, $directory, $exact)
+# -CaseMarksNotCarried is for a run that said it does not set the directories'
+# case-sensitive marks on the new volume: a mark that is gone is then counted,
+# not a difference.
+function Compare-Listing([string]$Exe, [string]$Letter, [string]$Directory, [switch]$Exact, [switch]$CaseMarksNotCarried) {
+    $compared = Invoke-Command -Session $script:session -ArgumentList $Exe, "${Letter}:\", $Directory, ([bool]$Exact), ([bool]$CaseMarksNotCarried) -ScriptBlock {
+        param($exe, $root, $directory, $exact, $marksLeft)
         # The listing this attempt took, or the one -RecoverFrom brought with it.
         $before = "$directory\manifest-before.jsonl"
         if (-not (Test-Path -LiteralPath $before)) { $before = $null }
@@ -312,7 +315,7 @@ function Compare-Listing([string]$Exe, [string]$Letter, [string]$Directory, [swi
         if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ stage = 'capture-after'; exit = $LASTEXITCODE; differences = $null; listed = ($listed -join ' '); summary = ''; before = $before } }
         $report = "$directory\manifest-report.json"
         if (Test-Path -LiteralPath $report) { Remove-Item -LiteralPath $report -Force }
-        $arguments = @('compare'); if ($exact) { $arguments += '--exact' }
+        $arguments = @('compare'); if ($exact) { $arguments += '--exact' } elseif ($marksLeft) { $arguments += '--case-marks-not-carried' }
         $arguments += @('--before', $before, '--after', "$directory\manifest-after.jsonl", '--report', $report)
         $summary = & $exe $arguments 2>&1
         $exit = $LASTEXITCODE
@@ -1141,7 +1144,11 @@ try {
         if ($mounted.filesystem -ne 'ReFS') { $verdict.outcome = 'converter-ok-but-not-refs'; Remove-PSSession $session; return }
         if (-not $NoManifest) {
             if (-not $mounted.letter) { $verdict.outcome = 'converted-but-no-drive-letter'; Remove-PSSession $session; return }
-            $listing = Compare-Listing $manifestExe $mounted.letter $guestRoot
+            # The run says before it begins whether it sets the directories' case-sensitive marks on the new volume
+            # (it does not on a volume that holds a Windows); a run that was cut off said it in the attempt it began in.
+            $spoken = @((Join-Path $case 'stdout.log'), $(if ($RecoverFrom) { Join-Path $workspace ".lab\hyperv\attempts\$RecoverFrom\stdout.log" })) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+            $marksLeft = [bool]($spoken | Where-Object { Select-String -LiteralPath $_ -SimpleMatch -Pattern 'The converter does not set the mark on the new volume' -Quiet } | Select-Object -First 1)
+            $listing = Compare-Listing $manifestExe $mounted.letter $guestRoot -CaseMarksNotCarried:$marksLeft
             # A listing that differs is a failed conversion, but whether the result
             # boots is separate evidence worth having from the same run.
             if ($listing -ne 'identical' -and ($NoBoot -or $Diagnose)) {

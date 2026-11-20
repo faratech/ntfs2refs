@@ -1968,7 +1968,13 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                 );
                 if let Some(root) = &compare_listing {
                     // The conversion stands whatever this finds or fails at.
-                    match super::listing::after(root, &run) {
+                    // The decision the run took when it admitted the
+                    // source, for the same Windows and kind of volume.
+                    let case_marks = n2r_win32::directory_case::CaseMarkCarry::of_this_windows(
+                        before.binding.layout_profile
+                            == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows,
+                    )?;
+                    match super::listing::after(root, &run, case_marks) {
                         Ok(true) => {}
                         Ok(false) => return Ok(EXIT_LISTING_DIFFERS),
                         Err(error) => {

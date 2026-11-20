@@ -316,7 +316,15 @@ public static class ManyFiles {
             [IO.File]::WriteAllBytes("$dir\Readme.txt", (Bytes 100)); [IO.File]::WriteAllBytes("$dir\Inner\Makefile", (Bytes 300)); [IO.File]::WriteAllBytes("$dir\Inner\data.bin", (Bytes 20000))
             $marked = @($dir, "$dir\Inner" | Where-Object { "$(& fsutil.exe file queryCaseSensitiveInfo $_)" -match 'is enabled' }).Count
             if ($marked -lt 1) { throw "no directory is marked case-sensitive after fsutil file setCaseSensitiveInfo" }
-            $made[$feature] = "$marked directories marked case-sensitive, none holding two names that differ only by case"
+            # An ordinary directory inside a marked one: it takes the mark
+            # when it is made, and the mark is taken off again. A conversion
+            # that carries the mark over has to clear it there too. Recorded
+            # as it turned out, not required: the mark is the case's subject.
+            $null = New-Item -ItemType Directory -Path "$dir\Plain" -Force
+            $plainSaid = "$(& fsutil.exe file setCaseSensitiveInfo "$dir\Plain" disable 2>&1)".Trim()
+            $plain = "$(& fsutil.exe file queryCaseSensitiveInfo "$dir\Plain" 2>&1)" -match 'is disabled'
+            [IO.File]::WriteAllBytes("$dir\Plain\note.txt", (Bytes 50))
+            $made[$feature] = "$marked directories marked case-sensitive, none holding two names that differ only by case; an ordinary directory inside a marked one: $(if ($plain) { 'made' } else { "not made ($plainSaid)" })"
         }
         'casemark-control' {
             # The control for 'casemark', for a volume Windows formatted as

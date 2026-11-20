@@ -56,6 +56,11 @@ pub struct Record {
     /// configuration manager puts on a hive it loads). Counted, not hashed.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub kernel_cache_attributes: u32,
+    /// A directory Windows reports as marked case-sensitive
+    /// (FILE_CASE_SENSITIVE_INFO, as `fsutil file queryCaseSensitiveInfo`
+    /// shows it). Asked of every directory; a failed query is in `errors`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub case_sensitive: bool,
     pub links: u32,
     /// Identifies the file behind several hard links. Only meaningful within
     /// one listing; never compared across listings.
@@ -67,6 +72,9 @@ pub struct Record {
 
 fn is_zero(value: &u32) -> bool {
     *value == 0
+}
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +97,11 @@ pub struct Comparison {
     /// behind (`compare_without_short_names`): never counted otherwise.
     #[serde(default, skip_serializing_if = "none_dropped")]
     pub short_names_dropped: usize,
+    /// Directories whose case-sensitive mark is gone because the run said
+    /// it does not set the mark on the new volume
+    /// (`Declared::case_marks_not_carried`): never counted otherwise.
+    #[serde(default, skip_serializing_if = "none_dropped")]
+    pub case_marks_not_carried: usize,
     /// Expected differences, counted by kind.
     pub allowed: BTreeMap<String, usize>,
     pub difference_count: usize,
@@ -165,9 +178,24 @@ fn none_dropped(count: &usize) -> bool {
     *count == 0
 }
 
+/// What a run said it leaves behind. Each is counted by the comparison made
+/// for such a run instead of being a difference; without it, the same thing
+/// missing is a difference. Nothing here lets anything else through.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Declared {
+    /// The run was asked to leave 8.3 short names behind
+    /// (`--short-names drop`).
+    pub short_names_dropped: bool,
+    /// The run said that it does not set the directories' case-sensitive
+    /// marks on the new volume, which it does on every Windows but those of
+    /// `windows_build::CASE_MARK_BUILDS`. A directory that gained the mark
+    /// is a difference all the same.
+    pub case_marks_not_carried: bool,
+}
+
 /// Compares the listing taken before conversion with the one taken after.
 pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
-    compare_short_names(before, after, false)
+    compare_declared(before, after, Declared::default())
 }
 
 /// The same comparison for a run that was asked to leave 8.3 short names
@@ -176,10 +204,19 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
 /// else is allowed that `compare` does not allow, and a listing after the
 /// run that still shows a short name is a difference.
 pub fn compare_without_short_names(before: &[Record], after: &[Record]) -> Comparison {
-    compare_short_names(before, after, true)
+    compare_declared(
+        before,
+        after,
+        Declared {
+            short_names_dropped: true,
+            ..Declared::default()
+        },
+    )
 }
 
-fn compare_short_names(before: &[Record], after: &[Record], dropped: bool) -> Comparison {
+/// The comparison for a run that declared what it leaves behind.
+pub fn compare_declared(before: &[Record], after: &[Record], declared: Declared) -> Comparison {
+    let dropped = declared.short_names_dropped;
     let mut result = Comparison {
         before_objects: before.len(),
         after_objects: after.len(),
@@ -332,6 +369,18 @@ fn compare_short_names(before: &[Record], after: &[Record], dropped: bool) -> Co
                 "extended attributes differ",
                 "extended attributes differ".to_owned(),
             );
+        }
+        match (record.case_sensitive, now.case_sensitive) {
+            (true, false) if declared.case_marks_not_carried => result.case_marks_not_carried += 1,
+            (true, false) => differ(
+                "case-sensitive mark lost",
+                "the directory was marked case-sensitive and is not any more".to_owned(),
+            ),
+            (false, true) => differ(
+                "case-sensitive mark appeared",
+                "the directory was not marked case-sensitive and now is".to_owned(),
+            ),
+            _ => (),
         }
         if now.kernel_cache_attributes > record.kernel_cache_attributes {
             differ(
@@ -510,6 +559,15 @@ pub fn compare_exact(before: &[Record], after: &[Record]) -> Comparison {
             differ(
                 "extended attributes differ",
                 "extended attributes differ".to_owned(),
+            );
+        }
+        if record.case_sensitive != now.case_sensitive {
+            differ(
+                "case-sensitive mark changed",
+                format!(
+                    "case-sensitive mark {} became {}",
+                    record.case_sensitive, now.case_sensitive
+                ),
             );
         }
         if record.kernel_cache_attributes != now.kernel_cache_attributes {
@@ -1116,6 +1174,21 @@ mod capture {
                 Err(error) => note(&mut record, "extended attributes", &format!("{error:?}")),
             }
         }
+        if directory {
+            // Asked of every directory, on either file system. Flags other
+            // than the one Windows documents are reported, not read as a
+            // mark or as none.
+            match crate::directory_case::flags(&file) {
+                Ok(0) => (),
+                Ok(1) => record.case_sensitive = true,
+                Ok(flags) => note(
+                    &mut record,
+                    "case-sensitive mark",
+                    &format!("unknown flags {flags:#x}"),
+                ),
+                Err(error) => note(&mut record, "case-sensitive mark", &error),
+            }
+        }
         match named_streams(prefix, &record.path, &file, buffer, streams) {
             Ok(streams) => record.streams = streams,
             Err(error) => note(&mut record, "named streams", &error),
@@ -1264,6 +1337,72 @@ mod tests {
         let lost = compare(&before, &[directory("\\"), converted]);
         assert_eq!(lost.difference_count, 1);
         assert_eq!(lost.differences[0].what, "short name PROGRA~1 was lost");
+    }
+
+    #[test]
+    fn a_case_mark_that_is_gone_is_a_difference_unless_the_run_declared_it() {
+        let mut marked = directory("\\src");
+        marked.case_sensitive = true;
+        let before = vec![directory("\\"), marked.clone(), directory("\\docs")];
+        let carried = before.clone();
+        let mut unmarked = marked.clone();
+        unmarked.case_sensitive = false;
+        let left = vec![directory("\\"), unmarked, directory("\\docs")];
+        let not_carried = Declared {
+            case_marks_not_carried: true,
+            ..Declared::default()
+        };
+
+        // Carried over: identical, whatever was declared, and nothing counted.
+        for declared in [Declared::default(), not_carried] {
+            let same = compare_declared(&before, &carried, declared);
+            assert!(same.identical(), "{same:?}");
+            assert_eq!(same.case_marks_not_carried, 0);
+        }
+        // Gone: a difference for a run that carries the mark, and for the
+        // exact comparison of a volume that must not have changed.
+        let lost = compare(&before, &left);
+        assert_eq!(lost.difference_count, 1);
+        assert_eq!(lost.difference_kinds["case-sensitive mark lost"], 1);
+        assert_eq!(lost.differences[0].path, "\\src");
+        assert_eq!(lost.case_marks_not_carried, 0);
+        let exact = compare_exact(&before, &left);
+        assert_eq!(exact.difference_kinds["case-sensitive mark changed"], 1);
+        assert!(compare_exact(&before, &carried).identical());
+        // Counted for a run that said it leaves the mark behind.
+        let declared = compare_declared(&before, &left, not_carried);
+        assert!(declared.identical(), "{declared:?}");
+        assert_eq!(declared.case_marks_not_carried, 1);
+        assert!(declared.allowed.is_empty());
+        // A directory that gained the mark is a difference either way.
+        for declaration in [Declared::default(), not_carried] {
+            let gained = compare_declared(&left, &before, declaration);
+            assert_eq!(
+                gained.difference_kinds["case-sensitive mark appeared"], 1,
+                "{gained:?}"
+            );
+        }
+        // The mark and its count are written only where there is one.
+        let plain = serde_json::to_string(&directory("\\docs")).unwrap();
+        assert!(!plain.contains("case_sensitive"), "{plain}");
+        assert!(
+            serde_json::to_string(&marked)
+                .unwrap()
+                .contains("\"case_sensitive\":true")
+        );
+        assert!(
+            !serde_json::to_string(&lost)
+                .unwrap()
+                .contains("case_marks_not_carried")
+        );
+        assert!(
+            serde_json::to_string(&declared)
+                .unwrap()
+                .contains("\"case_marks_not_carried\":1")
+        );
+        // A listing written before the field existed reads as unmarked.
+        let old: Record = serde_json::from_str(&plain).unwrap();
+        assert!(!old.case_sensitive);
     }
 
     #[test]

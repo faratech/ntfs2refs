@@ -198,6 +198,14 @@ $serverCases = @(
     'std-lived-in|-Content lived-in -Acceptance -TargetFormat standard -Check'
     'devdrive|-TargetFormat dev-drive -Check'
     'server-shared|-Siblings -TargetFormat default -Check -Acceptance'
+    # The case-sensitive mark, which is set on the new volume on this
+    # Windows only (#103): converted to both formats and then used, which
+    # takes the volume offline with the marked directories on it, and
+    # interrupted half way through the writes, resumed and rolled back.
+    'std-casemark|-Content minimal -Features casemark -TargetFormat standard -Check -Acceptance'
+    'devdrive-casemark|-Content minimal -Features casemark -TargetFormat dev-drive -Check -Acceptance'
+    'std-casemark-apply-mid-resume|-Content minimal -Features casemark -TargetFormat standard -InterruptAt apply-mid-ranges -Check'
+    'std-casemark-apply-mid-rollback|-Content minimal -Features casemark -TargetFormat standard -InterruptAt apply-mid-ranges -RecoverMode rollback -Check'
     'std-apply-mid-rollback|-TargetFormat standard -InterruptAt apply-mid-ranges -RecoverMode rollback -Check'
     'std-handoff-resume|-TargetFormat standard -InterruptAt handoff-sealed -Check'
     'server-files-20k|-Content minimal -Features manyfiles -FileCount 20000 -TargetFormat default -Check'

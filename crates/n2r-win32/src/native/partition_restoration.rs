@@ -207,7 +207,12 @@ impl Artifact {
                 "preparation intent is not on actual Windows C",
             )?;
         }
-        let observed = crate::sha256_native::hash_range(&mut held, 0, actual.file_bytes)?;
+        // By the algorithm the artifact is pinned with (#140): BLAKE3 for a
+        // native metadata store of this build (its magic says so), SHA-256
+        // for an earlier build's store and for every other artifact. A plain
+        // SHA-256 here refused every partition run of this build reopened
+        // after a restart.
+        let observed = crate::metadata_pages::pinning_digest(&mut held, actual.file_bytes)?;
         need(
             observed == expected
                 && crate::reference_file::observe_reference_file_handle_with_limit(&held, limit)?
@@ -297,7 +302,12 @@ impl Artifact {
                 "preparation intent is not on actual Windows C",
             )?;
         }
-        let observed = crate::sha256_native::hash_range(&mut held, 0, actual.file_bytes)?;
+        // By the algorithm the artifact is pinned with (#140): BLAKE3 for a
+        // native metadata store of this build (its magic says so), SHA-256
+        // for an earlier build's store and for every other artifact. A plain
+        // SHA-256 here refused every partition run of this build reopened
+        // after a restart.
+        let observed = crate::metadata_pages::pinning_digest(&mut held, actual.file_bytes)?;
         need(
             observed == expected
                 && crate::reference_file::observe_reference_file_handle_with_limit(&held, limit)?
@@ -326,7 +336,7 @@ impl Artifact {
                 &self.file,
                 self.snapshot.file_bytes,
             )? == self.snapshot
-                && crate::sha256_native::hash_range(&mut self.file, 0, self.snapshot.file_bytes)?
+                && crate::metadata_pages::pinning_digest(&mut self.file, self.snapshot.file_bytes)?
                     == self.sha,
             "held restoration artifact changed",
         )

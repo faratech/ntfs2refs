@@ -1724,6 +1724,47 @@ pub fn rediscover_general_volume(
     Ok(updated)
 }
 
+/// How long a volume that Windows has been asked to publish is waited for.
+const VOLUME_PUBLICATION_SECONDS: u64 = 15;
+
+/// The pauses between looks for a volume Windows is publishing: 10 ms, then
+/// twice as long each time up to the quarter second every pause used to be,
+/// until [`VOLUME_PUBLICATION_SECONDS`] have been spent pausing.
+///
+/// A volume is usually there within a few tens of milliseconds of its disk
+/// coming online, and a fixed quarter second made every such wait at least
+/// that long. The time allowed is what it was, sixty pauses of a quarter
+/// second, and as then the looks themselves are not counted against it. A
+/// volume that takes seconds is looked for about as often as before (six
+/// more times), so a caller that records each look in a bounded batch of
+/// events records hardly more of them.
+struct PublicationWait {
+    paused: std::time::Duration,
+    pause: std::time::Duration,
+}
+impl PublicationWait {
+    fn begin() -> Self {
+        Self {
+            paused: std::time::Duration::ZERO,
+            pause: std::time::Duration::from_millis(10),
+        }
+    }
+    /// Sleeps before the next look; false when the time allowed has been
+    /// spent and the look just made was the last.
+    fn pause(&mut self) -> bool {
+        let left =
+            std::time::Duration::from_secs(VOLUME_PUBLICATION_SECONDS).saturating_sub(self.paused);
+        if left.is_zero() {
+            return false;
+        }
+        let pause = self.pause.min(left);
+        std::thread::sleep(pause);
+        self.paused += pause;
+        self.pause = (self.pause * 2).min(std::time::Duration::from_millis(250));
+        true
+    }
+}
+
 /// Wait at most 15 seconds for a newly online volume interface to appear.
 /// Only absence is retried; identity, geometry and duplicate-route failures
 /// remain immediate hard refusals.
@@ -1732,25 +1773,25 @@ pub fn rediscover_general_volume_wait(
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<GeneralDiskBinding> {
     let _timed = crate::perf::scope(crate::perf::Point::VolumeWait);
-    for attempt in 0..60 {
+    let mut wait = PublicationWait::begin();
+    loop {
         // A try looks at every volume of the machine and records each
         // query. Only the try that finds the volume leaves its record in
-        // the caller's batch: sixty tries would otherwise fill the batch on
-        // a machine with many volumes, and a full batch refuses every
-        // further query, so that no later try could find anything.
+        // the caller's batch: the tries of a wait would otherwise fill the
+        // batch on a machine with many volumes, and a full batch refuses
+        // every further query, so that no later try could find anything.
         let mut tried = Vec::new();
         match rediscover_general_volume(binding.clone(), &mut tried) {
             Ok(found) => {
                 events.append(&mut tried);
                 return Ok(found);
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound && attempt < 59 => {
-                std::thread::sleep(std::time::Duration::from_millis(250));
-            }
+            // When the time allowed has passed, the last try's own refusal
+            // is what the caller is told.
+            Err(error) if error.kind() == io::ErrorKind::NotFound && wait.pause() => (),
             Err(error) => return Err(error),
         }
     }
-    Err(invalid("volume publication retry bound exhausted"))
 }
 
 struct AlignedBuffer {
@@ -3175,7 +3216,8 @@ impl GeneralFrozenPartition {
             lease.events,
         )?;
         let mut ready = false;
-        for _ in 0..60 {
+        let mut wait = PublicationWait::begin();
+        loop {
             if attributes(lease.file, lease.events)? != READ_ONLY {
                 return Err(invalid(
                     "general source read-only observation state changed",
@@ -3188,7 +3230,9 @@ impl GeneralFrozenPartition {
                     break;
                 }
                 Err(error) if matches!(error.raw_os_error(), Some(2 | 3 | 21 | 1167)) => {
-                    std::thread::sleep(std::time::Duration::from_millis(250))
+                    if !wait.pause() {
+                        break;
+                    }
                 }
                 Err(error) => return Err(error),
             }
@@ -3665,7 +3709,8 @@ impl GeneralFrozenPartition {
                 lease.events,
             )?;
             let mut volume = None;
-            for _ in 0..60 {
+            let mut wait = PublicationWait::begin();
+            loop {
                 if attributes(lease.file, lease.events)? != READ_ONLY {
                     return Err(invalid("protected ReFS disk lost its read-only state"));
                 }
@@ -3675,7 +3720,9 @@ impl GeneralFrozenPartition {
                         break;
                     }
                     Err(error) if matches!(error.raw_os_error(), Some(2 | 3 | 21 | 1167)) => {
-                        std::thread::sleep(std::time::Duration::from_millis(250));
+                        if !wait.pause() {
+                            break;
+                        }
                     }
                     Err(error) => return Err(error),
                 }
@@ -4837,7 +4884,8 @@ impl OfflinePartition {
         // Disk attributes and volume-interface publication are distinct. Poll
         // only harmless opens, never repeat a management mutation or drop RO.
         let mut ready = false;
-        for _ in 0..60 {
+        let mut wait = PublicationWait::begin();
+        loop {
             if attributes(lease.file, lease.events)? != READ_ONLY {
                 return Err(invalid("source read-only observation state changed"));
             }
@@ -4848,7 +4896,9 @@ impl OfflinePartition {
                     break;
                 }
                 Err(e) if matches!(e.raw_os_error(), Some(2 | 3 | 21 | 1167)) => {
-                    std::thread::sleep(std::time::Duration::from_millis(250))
+                    if !wait.pause() {
+                        break;
+                    }
                 }
                 Err(e) => return Err(e),
             }

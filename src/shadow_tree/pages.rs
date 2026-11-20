@@ -153,77 +153,6 @@ pub struct ExpectedTreePageReceipt {
     pub resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
 }
 
-/// What the creation of a page file in this process made of its objects,
-/// kept for the open that follows it.
-///
-/// A preparation writes the expected pages and opens them at once, and the
-/// open derived the semantic digest and the counts once more from the
-/// file: every object read back, serialized as pretty JSON and hashed, for
-/// the two values the creation had computed from the very objects it
-/// wrote. As a record store this process wrote is opened without parsing
-/// its records again (`SortedRecordStore::open`), the open of pages this
-/// process wrote takes the two from here. Nothing is added to the receipt
-/// or to the file: this never leaves the process.
-///
-/// One creation is remembered, the last, and it is handed over once.
-struct CreatedPages {
-    file_sha256: String,
-    semantic_sha256: String,
-    counts: ExpectedTreePageCounts,
-    budget: PageBudget,
-    semantic_byte_budget: u64,
-    resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
-}
-static CREATED_HERE: std::sync::Mutex<Option<CreatedPages>> = std::sync::Mutex::new(None);
-
-/// Remembers what `created` made of the pages it wrote, under the
-/// check-once policy and outside its gate only.
-fn remember_created(created: CreatedPages) {
-    if n2r_win32::verify_policy::full_unremembered() {
-        return;
-    }
-    *CREATED_HERE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(created);
-}
-
-/// The semantic digest and the counts of the page file `file_sha256`, where
-/// all of this holds: the check-once policy is selected and no gate is
-/// open; `written_here` says the reader found the file to be exactly the
-/// one a writer of this process finished, unchanged since; this process
-/// created it last, under the same budgets and admission; and the semantic
-/// digest the caller pins is the one the creation computed. Anything else
-/// is `None`, and the open derives both from the file as it always did.
-fn created_here(
-    file_sha256: &str,
-    pinned_semantic_sha256: Option<&str>,
-    written_here: bool,
-    budget: PageBudget,
-    semantic_byte_budget: u64,
-    resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
-) -> Option<(String, ExpectedTreePageCounts)> {
-    if n2r_win32::verify_policy::full_unremembered() || !written_here {
-        return None;
-    }
-    let created = {
-        let mut slot = CREATED_HERE
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if slot
-            .as_ref()
-            .is_none_or(|created| created.file_sha256 != file_sha256)
-        {
-            return None;
-        }
-        slot.take()?
-    };
-    (pinned_semantic_sha256 == Some(created.semantic_sha256.as_str())
-        && created.budget == budget
-        && created.semantic_byte_budget == semantic_byte_budget
-        && created.resource_admission == resource_admission)
-        .then_some((created.semantic_sha256, created.counts))
-}
-
 pub struct PagedExpectedTree {
     reader: RefCell<Reader>,
     alias_projection: RefCell<Option<AliasProjection>>,
@@ -1347,16 +1276,6 @@ impl PagedExpectedTree {
             summary.records >= records,
             "written expected-tree record domain differs"
         );
-        // For the open that follows in this process: the digest and the
-        // counts of exactly the objects that were written.
-        remember_created(CreatedPages {
-            file_sha256: summary.sha256.clone(),
-            semantic_sha256: semantic_sha256.clone(),
-            counts,
-            budget,
-            semantic_byte_budget,
-            resource_admission,
-        });
         Ok(ExpectedTreePageReceipt {
             schema_version: if resource_admission.is_some() { 3 } else { 2 },
             path: path.to_owned(),
@@ -1795,9 +1714,6 @@ impl PagedExpectedTree {
         // this payment on every later opening/validation error path.
         let mut second_page_ram = None;
         let mut reader = Reader::open(path, file_sha256, PURPOSE, budget)?;
-        // Whether the reader found exactly the file a writer of this
-        // process finished, unchanged since (never inside a gate).
-        let written_here = reader.written_by_this_process();
         if let Some(owner) = &memory {
             if let Some(artifact) = &owner.artifact {
                 ensure!(
@@ -2027,43 +1943,22 @@ impl PagedExpectedTree {
             _directory_ram: directory_ram,
             _header_ram: header_ram,
         };
-        // Pages this process has just created and found unchanged carry the
-        // semantic digest and the counts their creation computed from the
-        // objects it wrote (`created_here`, which holds that digest to the
-        // caller's pin). Every other file has both derived from it here.
-        let handed_over = if allow_original_source_header {
-            None
-        } else {
-            created_here(
-                file_sha256,
-                legacy_semantic_sha256,
-                written_here,
-                budget,
-                semantic_byte_budget,
-                resource_admission,
-            )
-        };
-        if let Some((semantic_sha256, counts)) = handed_over {
-            view.semantic_sha256 = semantic_sha256;
-            view.counts = counts;
-        } else {
-            let counts = Cell::new(ExpectedTreePageCounts::default());
-            let mut semantic = SemanticHash::new(semantic_byte_budget)?;
-            serde_json::to_writer_pretty(
-                &mut semantic,
-                &LegacyView {
-                    tree: &view,
-                    counts: Some(&counts),
-                },
-            )?;
-            let derived_semantic_sha256 = semantic.finish()?;
-            ensure!(
-                legacy_semantic_sha256.is_none_or(|expected| derived_semantic_sha256 == expected),
-                "paged objects do not reproduce the pinned legacy expectation JSON"
-            );
-            view.semantic_sha256 = derived_semantic_sha256;
-            view.counts = counts.get();
-        }
+        let counts = Cell::new(ExpectedTreePageCounts::default());
+        let mut semantic = SemanticHash::new(semantic_byte_budget)?;
+        serde_json::to_writer_pretty(
+            &mut semantic,
+            &LegacyView {
+                tree: &view,
+                counts: Some(&counts),
+            },
+        )?;
+        let derived_semantic_sha256 = semantic.finish()?;
+        ensure!(
+            legacy_semantic_sha256.is_none_or(|expected| derived_semantic_sha256 == expected),
+            "paged objects do not reproduce the pinned legacy expectation JSON"
+        );
+        view.semantic_sha256 = derived_semantic_sha256;
+        view.counts = counts.get();
         ensure!(
             view.counts.objects == view.header.total_objects,
             "typed object count differs from the complete header domain"

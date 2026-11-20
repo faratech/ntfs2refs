@@ -9,6 +9,13 @@ pub trait PlacementEvidenceSink {
     fn maximum_bytes(&self) -> u64;
     fn reserve_next(&mut self, maximum_json_bytes: u64) -> io::Result<()>;
     fn push(&mut self, kind: &'static str, value: &serde_json::Value) -> io::Result<()>;
+    /// Push a record already serialized as compact JSON: the bytes `push`
+    /// would write for the value they encode. The default decodes them and
+    /// pushes the value; a sink that stores bytes writes them as they are.
+    fn push_compact(&mut self, kind: &'static str, json: &[u8]) -> io::Result<()> {
+        let value: serde_json::Value = serde_json::from_slice(json).map_err(io::Error::other)?;
+        self.push(kind, &value)
+    }
     fn finish(&mut self) -> io::Result<serde_json::Value>;
 }
 
@@ -311,7 +318,12 @@ impl std::ops::Deref for MoveProof {
 }
 impl serde::Serialize for MoveProof {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serde::Serialize::serialize(&**self, serializer)
+        // A resource proof derefs to its fields without the mapping; only
+        // its own Serialize writes the whole proof.
+        match self {
+            Self::Legacy(value) => serde::Serialize::serialize(value, serializer),
+            Self::Resource(value) => serde::Serialize::serialize(value, serializer),
+        }
     }
 }
 pub(super) fn move_slot(

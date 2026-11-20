@@ -59,6 +59,12 @@ impl Write for Count {
         Ok(())
     }
 }
+/// A proof as a JSON value, or as the compact bytes serde_json writes for one.
+#[derive(Clone, Copy)]
+enum Json<'a> {
+    Value(&'a serde_json::Value),
+    Compact(&'a [u8]),
+}
 fn key(proof: u64) -> [u8; 16] {
     let mut key = [0; 16];
     key[..8].copy_from_slice(&proof.to_be_bytes());
@@ -233,6 +239,9 @@ impl PagedPlacementEvidence {
         Ok(())
     }
     fn append(&mut self, kind: &'static str, value: &serde_json::Value) -> Result<()> {
+        self.append_json(kind, Json::Value(value))
+    }
+    fn append_json(&mut self, kind: &'static str, json: Json<'_>) -> Result<()> {
         ensure!(
             !self.poisoned && self.closed.is_none(),
             "placement sink state differs"
@@ -249,7 +258,10 @@ impl PagedPlacementEvidence {
                 bytes: 0,
                 maximum: self.maximum,
             };
-            serde_json::to_writer(&mut count, value)?;
+            match json {
+                Json::Value(value) => serde_json::to_writer(&mut count, value)?,
+                Json::Compact(bytes) => count.write_all(bytes)?,
+            }
             self.reserve(count.bytes)?;
         }
         let maximum = self.pending.context("placement proof prepayment absent")?;
@@ -272,10 +284,14 @@ impl PagedPlacementEvidence {
         // already frames/base64-encodes bytes; no inner encoding is necessary.
         // The serializer writes every token separately; collect them 64 KiB
         // at a time so the hash and the store see blocks, not single digits.
-        {
-            let mut blocks = io::BufWriter::with_capacity(64 * 1024, &mut writer);
-            serde_json::to_writer(&mut blocks, value)?;
-            blocks.flush()?;
+        match json {
+            Json::Value(value) => {
+                let mut blocks = io::BufWriter::with_capacity(64 * 1024, &mut writer);
+                serde_json::to_writer(&mut blocks, value)?;
+                blocks.flush()?;
+            }
+            // Already serialized, compact, by the placement: written whole.
+            Json::Compact(bytes) => writer.write_all(bytes)?,
         }
         let bytes = writer.bytes;
         ensure!(bytes > 0, "empty placement proof");
@@ -404,7 +420,110 @@ impl PlacementEvidenceSink for PagedPlacementEvidence {
     fn push(&mut self, kind: &'static str, value: &serde_json::Value) -> io::Result<()> {
         self.append(kind, value).map_err(io::Error::other)
     }
+    fn push_compact(&mut self, kind: &'static str, json: &[u8]) -> io::Result<()> {
+        self.append_json(kind, Json::Compact(json))
+            .map_err(io::Error::other)
+    }
     fn finish(&mut self) -> io::Result<serde_json::Value> {
         self.close().map_err(io::Error::other)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        artifact_arena::{ArtifactArena, ArtifactGroup},
+        ntfs_inspect::SourceMetadataBudget,
+    };
+
+    /// The records pushed, the stored payload and each record's index row.
+    fn stored(
+        compact: bool,
+        records: &[(&'static str, serde_json::Value)],
+    ) -> (Vec<u8>, Vec<String>) {
+        let directory = tempfile::tempdir().unwrap();
+        let arena = ArtifactArena::new(
+            directory.path(),
+            n2r_win32::tree_resources::ResourceBudget {
+                schema_version: 1,
+                ram_bytes: 64 * 1024 * 1024,
+                scratch_bytes: 256 * 1024 * 1024,
+                page_bytes: 65536,
+                max_row_bytes: 65536,
+                retained_index_bytes: 4 * 1024 * 1024,
+                handle_slots: 1024,
+            },
+            &[],
+        )
+        .unwrap();
+        let group = arena
+            .reserve_group(ArtifactGroup::Capture, 64 * 1024 * 1024)
+            .unwrap();
+        let scratch = SourceScratch::new_bounded_auxiliary_in_arena(
+            SourceMetadataBudget {
+                ram_bytes: 16 * 1024 * 1024,
+                scratch_bytes: 64 * 1024 * 1024,
+                page_bytes: 4096,
+                record_bytes: 64 * 1024,
+                merge_fan_in: 8,
+            },
+            group,
+        )
+        .unwrap();
+        let mut sink =
+            PagedPlacementEvidence::create(&directory.path().join("evidence"), scratch).unwrap();
+        for (kind, value) in records {
+            if *kind == "move" {
+                sink.reserve_next(1 << 20).unwrap();
+            }
+            if compact {
+                sink.push_compact(kind, &serde_json::to_vec(value).unwrap())
+                    .unwrap();
+            } else {
+                sink.push(kind, value).unwrap();
+            }
+        }
+        sink.finish().unwrap();
+        let (payload, index) = sink.closed.as_ref().unwrap();
+        let mut bytes = vec![0; sink.logical_bytes as usize];
+        payload.read_exact_at(0, &mut bytes).unwrap();
+        let rows = (0..sink.proofs)
+            .map(|n| {
+                let row: ProofRecord = index.get(n).unwrap();
+                serde_json::to_string(&row).unwrap()
+            })
+            .collect();
+        (bytes, rows)
+    }
+
+    #[test]
+    fn a_record_pushed_as_compact_json_is_stored_as_its_value_was() {
+        let mapping: Vec<u8> = (0..70_000u32).map(|n| (n * 37 % 251) as u8).collect();
+        let records = [
+            (
+                "section",
+                serde_json::json!({"strategy":"sparse-carrier-coordinate-map","n":1}),
+            ),
+            (
+                "move",
+                serde_json::json!({"object_index":3,"phase":"original-coordinate",
+                "proof":{"mapping_after":mapping,"native_error":null,"clusters":4096}}),
+            ),
+            (
+                "move",
+                serde_json::json!({"object_index":u64::MAX,"phase":"evacuate-blocker",
+                "proof":{"mapping_after":[],"native_error":87}}),
+            ),
+            (
+                "section",
+                serde_json::json!({"object_index":4,"length":65536}),
+            ),
+        ];
+        let (values, value_rows) = stored(false, &records);
+        let (compact, compact_rows) = stored(true, &records);
+        assert!(values.len() > 70_000);
+        assert_eq!(values, compact);
+        assert_eq!(value_rows, compact_rows);
     }
 }

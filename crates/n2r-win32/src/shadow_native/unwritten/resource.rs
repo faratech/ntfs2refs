@@ -85,10 +85,7 @@ impl ResourcePlacement {
     /// The caller holds `workspace` through every native query and resulting
     /// capture/proof. Complete retrieval assembly is unchanged.
     pub(super) fn capture(&self, file: &File) -> io::Result<Capture> {
-        let limits = Limits::for_resource_bytes(self.retrieval_bytes)?;
-        let (first, continuation) =
-            crate::stream_native::retrieval_queries_resource(file, self.retrieval_bytes)?;
-        retrieval_paging::assemble_queries_with_limits(&first, &continuation, limits)
+        crate::stream_native::retrieval_capture_resource(file, self.retrieval_bytes)
     }
 
     /// The room a file of `file_bytes` can take of the row that mapping
@@ -151,6 +148,9 @@ impl ResourcePlacement {
         // serialize into streaming writers, not a third whole-proof buffer.
         // Two Value slots per canonical byte therefore cover both stages;
         // every paging/window allowance below remains independently paid.
+        // (The mapping now stays raw bytes in the proof and the record is
+        // serialized once, so this is more than a move takes; it is left
+        // as it was until a change of its own narrows it.)
         let json = canonical
             .checked_mul(2 * mem::size_of::<serde_json::Value>() as u64)
             .and_then(|n| n.checked_add((retrieval.max_pages as u64).checked_mul(6144)?))

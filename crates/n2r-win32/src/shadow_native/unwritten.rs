@@ -170,17 +170,51 @@ pub(super) struct Placement {
     _resource_memory: Option<Box<dyn super::report_memory::ReportMemoryLease>>,
 }
 
-#[derive(Serialize)]
-#[serde(transparent)]
+/// A resource move's proof: every field as JSON except the file's complete
+/// mapping after the move, which stays as its canonical bytes. That mapping
+/// is the one part of a proof that grows with the file, and as a JSON value
+/// it was one value per byte, built and then copied once more for every
+/// move: a file in thousands of pieces paid for both at every move. It
+/// serializes exactly as the whole proof as one JSON value did, with the
+/// mapping at its place among the keys in order.
 pub(super) struct ResourceMoveValue {
     value: serde_json::Value,
-    #[serde(skip)]
+    mapping_after: Vec<u8>,
     _memory: Box<dyn super::report_memory::ReportMemoryLease>,
 }
+const MAPPING_AFTER: &str = "mapping_after";
 impl std::ops::Deref for ResourceMoveValue {
     type Target = serde_json::Value;
+    /// The proof's fields other than `mapping_after`, which none of its
+    /// readers asks for by name.
     fn deref(&self) -> &Self::Target {
         &self.value
+    }
+}
+impl Serialize for ResourceMoveValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{Error, SerializeMap};
+        let fields = self
+            .value
+            .as_object()
+            .ok_or_else(|| S::Error::custom("resource move proof is not an object"))?;
+        // A JSON object's keys come out in order (serde_json without
+        // preserve_order keeps them in a BTreeMap), so the mapping goes
+        // before the first key that sorts after its own.
+        let mut map = serializer.serialize_map(Some(fields.len() + 1))?;
+        let mut mapping = Some(&self.mapping_after);
+        for (key, value) in fields {
+            if key.as_str() > MAPPING_AFTER
+                && let Some(bytes) = mapping.take()
+            {
+                map.serialize_entry(MAPPING_AFTER, bytes)?;
+            }
+            map.serialize_entry(key, value)?;
+        }
+        if let Some(bytes) = mapping {
+            map.serialize_entry(MAPPING_AFTER, bytes)?;
+        }
+        map.end()
     }
 }
 impl Placement {
@@ -190,7 +224,15 @@ impl Placement {
         }
         // This same guard was acquired before FSCTL_MOVE_FILE and covers
         // native capture plus both JSON copies and serialization workspace.
-        let value = serde_json::to_value(&self).map_err(io::Error::other)?;
+        let mapping_after = mem::take(&mut self.mapping_after);
+        let mut value = serde_json::to_value(&self).map_err(io::Error::other)?;
+        if value
+            .as_object_mut()
+            .and_then(|fields| fields.remove(MAPPING_AFTER))
+            != Some(serde_json::Value::Array(Vec::new()))
+        {
+            return Err(invalid("resource move proof mapping field differs"));
+        }
         let memory = self
             ._resource_memory
             .take()
@@ -198,6 +240,7 @@ impl Placement {
         drop(self);
         Ok(ResourceMoveValue {
             value,
+            mapping_after,
             _memory: memory,
         })
     }
@@ -1123,5 +1166,117 @@ impl PrivatePlaceholder {
     /// (tracking or the last move), for bounding the next move's proof.
     pub(super) fn retrieval_extents(&self) -> usize {
         self.retrieval_extents
+    }
+}
+
+/// Proofs shaped as a move returns them, for tests of what records them.
+#[cfg(test)]
+pub(in crate::shadow_native) mod proof_samples {
+    use super::*;
+    use crate::shadow_native::report_memory::{ReportMemoryAccountant, test_payer::Counted};
+
+    fn buffer(bytes: usize) -> serde_json::Value {
+        serde_json::json!({"codec":"rle-hex-v1","decoded_bytes":bytes,
+            "decoded_sha256":"ab".repeat(32),"data_hex":"0400000000"})
+    }
+    fn window(lcn: u64, clusters: u64, template: usize) -> bitmap_window_transport::Proof {
+        serde_json::from_value(serde_json::json!({
+            "schema_version":1,"encoding":bitmap_window_transport::ENCODING,
+            "window_schema_version":1,"window_encoding":"native-bitmap-window-v1",
+            "request":{"volume_clusters":16_000_000u64,"starting_lcn":lcn,"clusters":clusters},
+            "template":buffer(template),"declared_volume_clusters":16_000_000u64,
+            "window_bits":buffer(clusters.div_ceil(8) as usize),"allocated_clusters":0,
+            "window_sha256":"cd".repeat(32),"returned_bytes":4096,
+            "whole_volume_complete":false,
+            "queries":[{"code":0x9006f,"input":buffer(template),"bytes":buffer(4096),
+                "native_error":null}]
+        }))
+        .expect("sample destination window")
+    }
+
+    /// The proof of a move of `clusters` to `lcn` in a file left in
+    /// `extents` pieces, with its canonical mapping and one page proof per
+    /// 1024 extents, as `retrieval_paging` makes them.
+    pub(in crate::shadow_native) fn placement(
+        extents: usize,
+        lcn: u64,
+        clusters: u32,
+        native_error: Option<i32>,
+    ) -> Placement {
+        let mut mapping_after = Vec::with_capacity(16 + 16 * extents);
+        mapping_after.extend_from_slice(&(extents as u32).to_le_bytes());
+        mapping_after.extend_from_slice(&[0; 12]);
+        for n in 0..extents as u64 {
+            mapping_after.extend_from_slice(&((n + 1) * 7).to_le_bytes());
+            let lcn = if n % 5 == 4 { -1 } else { (n * 9_973) as i64 };
+            mapping_after.extend_from_slice(&lcn.to_le_bytes());
+        }
+        let pages = (0..extents.div_ceil(1024).max(1))
+            .map(|n| crate::retrieval_paging::PageProof {
+                input: (n as u64 * 7_168).to_le_bytes().to_vec(),
+                response_header: [n as u8; 16],
+                response_bytes: 16 + 16 * 1024,
+                native_error: (n + 1 < extents.div_ceil(1024)).then_some(234),
+                response_sha256: format!("{n:064x}"),
+            })
+            .collect();
+        let payer = Counted::with_limit(u64::MAX);
+        Placement {
+            destination_lcn: lcn,
+            starting_vcn: 77,
+            clusters,
+            submitted_once: true,
+            before_valid_data_advance: true,
+            native_error,
+            mapping_matches: native_error.is_none(),
+            all_placements_match: native_error.is_none(),
+            reposition: lcn.is_multiple_of(2),
+            mapping_after,
+            mapping_page_proof: crate::retrieval_paging::Proof {
+                encoding: crate::retrieval_paging::ENCODING.into(),
+                canonical_sha256: "ef".repeat(32),
+                extent_count: extents,
+                virtual_clusters: extents as u64 * 7,
+                pages,
+            },
+            destination_bitmap: DestinationWindows {
+                schema_version: 1,
+                scope: "destination-window-v1".into(),
+                legacy: window(lcn, u64::from(clusters), 8),
+                metadata: window(lcn, u64::from(clusters), 16),
+            },
+            _resource_memory: Some(payer.reserve(1).unwrap()),
+        }
+    }
+
+    #[test]
+    fn a_resource_proof_is_the_json_of_the_whole_placement() {
+        for extents in [0, 1, 2, 1023, 1024, 1025, 5000] {
+            for native_error in [None, Some(87)] {
+                let sample = || placement(extents, 4_096 + extents as u64, 8_192, native_error);
+                let whole = serde_json::to_value(sample()).unwrap();
+                let proof = sample().into_resource_value().unwrap();
+                // As a value and as bytes, compact and pretty.
+                assert_eq!(serde_json::to_value(&proof).unwrap(), whole);
+                assert_eq!(
+                    serde_json::to_vec(&proof).unwrap(),
+                    serde_json::to_vec(&whole).unwrap()
+                );
+                assert_eq!(
+                    serde_json::to_vec_pretty(&proof).unwrap(),
+                    serde_json::to_vec_pretty(&whole).unwrap()
+                );
+                // Every field it is read by is there as before.
+                for (key, value) in whole.as_object().unwrap() {
+                    if key != MAPPING_AFTER {
+                        assert_eq!(&proof[key.as_str()], value, "{key}");
+                    }
+                }
+                assert_eq!(
+                    proof.as_object().unwrap().len() + 1,
+                    whole.as_object().unwrap().len()
+                );
+            }
+        }
     }
 }

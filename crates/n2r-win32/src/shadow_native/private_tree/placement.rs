@@ -282,6 +282,19 @@ fn progress(
         row["canonical_object_index"] = key.object_index.into();
         row["stream_name_utf16"] = serde_json::json!(&key.name_utf16);
     }
+    tree.placement_progress = progress_document(phase, charged_bytes, verified, pending, counters);
+}
+
+/// The progress artifact, rebuilt twice for every move. The recent phases
+/// and the pending step are moved into it; `json!` copied each of them once
+/// more, value by value, on the way in.
+fn progress_document(
+    phase: &str,
+    charged_bytes: u64,
+    verified: &Evidence<'_>,
+    pending: Option<serde_json::Value>,
+    counters: &Counters,
+) -> serde_json::Value {
     // Keep a bounded tail, not a second copy of the complete mapping proofs.
     let phases: Vec<_> = verified
         .moves
@@ -290,17 +303,20 @@ fn progress(
         .take(16)
         .map(|m| serde_json::json!({"object_index":m["object_index"],"phase":m["phase"]}))
         .collect();
-    tree.placement_progress = serde_json::json!({
+    let mut document = serde_json::json!({
         "schema_version":2,"kind":"private-placement-progress","phase":phase,
         "occupancy_evidence_scope":"destination-window-v1",
         "per_move_retrieval_scope":"complete-file-mapping","phase_bitmap_scope":"full-volume",
         "charged_move_bytes":charged_bytes,"verified_move_submissions":verified.len(),
-        "recent_verified_phases_newest_first":phases,"pending":pending,"counters":counters,
+        "counters":counters,
         "placement_complete":false,"resume_authorized":false,"conversion_qualified":false
     });
+    document["recent_verified_phases_newest_first"] = serde_json::Value::Array(phases);
+    document["pending"] = pending.unwrap_or(serde_json::Value::Null);
     if let Some(barrier) = &counters.post_evacuation_barrier {
-        tree.placement_progress["post_evacuation_barrier"] = barrier.clone();
+        document["post_evacuation_barrier"] = barrier.clone();
     }
+    document
 }
 
 /// Record the bounded quantity in the progress artifact and refuse.
@@ -355,12 +371,32 @@ fn destination_drifted(error: &io::Error) -> bool {
 /// Bytes `value` adds to the saved document as one element of a top-level
 /// array: separator, two indentation levels before it and on each of its
 /// inner lines (serde_json's pretty formatter indents two spaces).
-fn saved_size(value: &serde_json::Value) -> Result<usize, String> {
-    let pretty = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
-    let lines = pretty.iter().filter(|&&b| b == b'\n').count();
-    lines
+fn saved_size(value: &(impl serde::Serialize + ?Sized)) -> Result<usize, String> {
+    // Counted as it is written: the text itself is not needed.
+    struct Count {
+        bytes: usize,
+        lines: usize,
+    }
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.bytes = self
+                .bytes
+                .checked_add(bytes.len())
+                .ok_or_else(|| invalid("placement saved size overflow"))?;
+            self.lines += bytes.iter().filter(|&&b| b == b'\n').count();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count { bytes: 0, lines: 0 };
+    serde_json::to_writer_pretty(&mut count, value).map_err(|e| e.to_string())?;
+    count
+        .lines
         .checked_mul(4)
-        .and_then(|n| n.checked_add(pretty.len() + 6))
+        .and_then(|n| n.checked_add(count.bytes))
+        .and_then(|n| n.checked_add(6))
         .ok_or_else(|| "placement evidence accounting overflow".to_owned())
 }
 
@@ -480,6 +516,50 @@ impl<'a> Evidence<'a> {
         Ok(())
     }
 
+    /// Record a verified move: `{"object_index","phase","proof"}`, as
+    /// `push_move` records it. A sink receives the record serialized once,
+    /// straight from the proof; without one it is kept as a JSON value.
+    fn push_move_proof(
+        &mut self,
+        object_index: u64,
+        phase: &'static str,
+        proof: &resource::MoveProof,
+    ) -> Result<(), String> {
+        if self.sink.is_none() {
+            return self.push_move(serde_json::json!({
+                "object_index":object_index,"phase":phase,"proof":proof
+            }));
+        }
+        let json = move_record_json(object_index, phase, proof)?;
+        let size = json.len();
+        let compact = size
+            .checked_add(self.compact_bytes)
+            .ok_or("placement evidence accounting overflow")?;
+        let total = self
+            .saved_bytes
+            .checked_add(size)
+            .filter(|n| *n <= self.maximum)
+            .ok_or("paged placement evidence resource exhausted")?;
+        self.sink
+            .as_mut()
+            .ok_or("placement evidence sink absent")?
+            .push_compact("move", &json)
+            .map_err(|e| e.to_string())?;
+        drop(json);
+        self.saved_bytes = total;
+        self.count = self
+            .count
+            .checked_add(1)
+            .ok_or("placement move count overflow")?;
+        let recent = serde_json::json!({"object_index":object_index,"phase":phase});
+        if self.moves.len() == 16 {
+            self.moves.remove(0);
+        }
+        self.moves.push(recent);
+        self.compact_bytes = compact;
+        Ok(())
+    }
+
     fn failed_move(&mut self, value: serde_json::Value) -> Result<serde_json::Value, String> {
         if self.sink.is_none() {
             return Ok(value);
@@ -520,6 +600,28 @@ impl<'a> Evidence<'a> {
     }
 }
 
+/// The compact JSON of a move record: the bytes of
+/// `json!({"object_index":object_index,"phase":phase,"proof":proof})`,
+/// whose keys a JSON value keeps in this order, without building that value.
+fn move_record_json(
+    object_index: u64,
+    phase: &'static str,
+    proof: &resource::MoveProof,
+) -> Result<Vec<u8>, String> {
+    #[derive(serde::Serialize)]
+    struct Record<'a> {
+        object_index: u64,
+        phase: &'static str,
+        proof: &'a resource::MoveProof,
+    }
+    serde_json::to_vec(&Record {
+        object_index,
+        phase,
+        proof,
+    })
+    .map_err(|e| e.to_string())
+}
+
 /// Upper bound on a move record before native submission. Retrieval fields
 /// retain their widest representation and all paging allowances. The actual
 /// destination-window proof is charged after capture, before FSCTL_MOVE_FILE;
@@ -548,20 +650,9 @@ impl Reservation {
     /// ledger, at the start of placement (#129). The bounds are the same to the byte
     /// (`the_move_bounds_are_those_of_the_record_built_whole`).
     fn with_pages(pages: usize) -> Result<Self, String> {
-        let one = saved_size(&widest_move_record(0, 1)?)?;
-        let per_page = saved_size(&widest_move_record(0, 2)?)?
-            .checked_sub(one)
-            .ok_or("placement evidence page reservation differs")?;
-        let base = match pages.checked_sub(1) {
-            // No page: the list is empty, not a page shorter.
-            None => saved_size(&widest_move_record(0, 0)?)?,
-            Some(more) => per_page
-                .checked_mul(more)
-                .and_then(|n| n.checked_add(one))
-                .ok_or("placement evidence reservation overflow")?,
-        };
-        let per_extent = saved_size(&widest_move_record(1, 1)?)?
-            .checked_sub(one)
+        let base = widest_move_record_size(0, pages)?;
+        let per_extent = widest_move_record_size(1, pages)?
+            .checked_sub(base)
             .ok_or("placement evidence reservation differs")?;
         let empty_destination = saved_size(&serde_json::json!({
             "proof":{"destination_bitmap":serde_json::Value::Null}
@@ -609,9 +700,22 @@ impl Reservation {
         // Use the exact enclosing shape so the pretty-printed indentation and
         // line count are charged at the proof's real nesting depth. Replacing
         // null here adds exactly the same bytes as in widest_move_record.
-        let destination_bytes = saved_size(&serde_json::json!({
-            "proof":{"destination_bitmap":destination}
-        }))?
+        // Measured as it is written, not built as a JSON value first: a
+        // pretty-printed object takes the same bytes and lines whatever the
+        // order of its keys.
+        #[derive(serde::Serialize)]
+        struct Destination<'a> {
+            destination_bitmap: &'a unwritten::DestinationWindows,
+        }
+        #[derive(serde::Serialize)]
+        struct Enclosing<'a> {
+            proof: Destination<'a>,
+        }
+        let destination_bytes = saved_size(&Enclosing {
+            proof: Destination {
+                destination_bitmap: destination,
+            },
+        })?
         .checked_sub(self.empty_destination)
         .ok_or("placement destination evidence accounting differs")?;
         self.per_extent
@@ -620,6 +724,23 @@ impl Reservation {
             .and_then(|n| n.checked_add(destination_bytes))
             .ok_or_else(|| "placement evidence reservation overflow".into())
     }
+}
+
+/// `saved_size` of `widest_move_record(extents, pages)`. A run's resource
+/// limits allow thousands of pages, and the record was built and printed
+/// with all of them. Its page proofs are identical elements of one array,
+/// so from the first one on each further page adds the same bytes and lines.
+fn widest_move_record_size(extents: usize, pages: usize) -> Result<usize, String> {
+    if pages <= 2 {
+        return saved_size(&widest_move_record(extents, pages)?);
+    }
+    let one = saved_size(&widest_move_record(extents, 1)?)?;
+    let page = saved_size(&widest_move_record(extents, 2)?)?
+        .checked_sub(one)
+        .ok_or("placement evidence reservation differs")?;
+    page.checked_mul(pages - 1)
+        .and_then(|n| n.checked_add(one))
+        .ok_or_else(|| "placement evidence reservation overflow".into())
 }
 
 fn widest_move_record(extents: usize, pages: usize) -> Result<serde_json::Value, String> {
@@ -1296,9 +1417,7 @@ fn allocate_deferred(
         } else {
             counters.deferred_scratch_submissions += 1;
         }
-        let recorded = evidence.push_move(
-            serde_json::json!({"object_index":step.index,"phase":step.phase,"proof":proof}),
-        );
+        let recorded = evidence.push_move_proof(step.index as u64, step.phase, &proof);
         counters.move_evidence_bytes = evidence.compact_bytes;
         counters.placement_artifact_bytes = evidence.saved_bytes;
         if let Err(message) = recorded {
@@ -2336,8 +2455,10 @@ fn run_domain_inner(
                 return Err(invalid(&refusal));
             }
             counters.evacuation_submissions += 1;
-            let recorded = evidence.push_move(
-                serde_json::json!({"object_index":movement.file_index,"phase":"evacuate-blocker","proof":proof}),
+            let recorded = evidence.push_move_proof(
+                u64::from(movement.file_index),
+                "evacuate-blocker",
+                &proof,
             );
             counters.move_evidence_bytes = evidence.compact_bytes;
             counters.placement_artifact_bytes = evidence.saved_bytes;
@@ -2613,9 +2734,11 @@ fn run_domain_inner(
                                 return Err(invalid(&message));
                             }
                             counters.final_submissions += 1;
-                            let recorded = evidence.push_move(
-                            serde_json::json!({"object_index":index,"phase":"original-coordinate","proof":proof}),
-                        );
+                            let recorded = evidence.push_move_proof(
+                                index as u64,
+                                "original-coordinate",
+                                &proof,
+                            );
                             counters.move_evidence_bytes = evidence.compact_bytes;
                             counters.placement_artifact_bytes = evidence.saved_bytes;
                             if let Err(message) = recorded {
@@ -2912,5 +3035,337 @@ mod tests {
             assert_eq!(move_clusters(131_072).unwrap(), 2);
             assert_eq!(cluster_span(2, 3).unwrap(), (131_072, 327_680));
         });
+    }
+}
+
+#[cfg(test)]
+mod move_record_tests {
+    use super::*;
+    use crate::shadow_native::unwritten::proof_samples::placement;
+
+    /// What a sink is given: each record as the compact JSON it stores.
+    #[derive(Default)]
+    struct Recorded(Vec<(&'static str, Vec<u8>)>);
+    impl PlacementEvidenceSink for Recorded {
+        fn maximum_bytes(&self) -> u64 {
+            u64::MAX
+        }
+        fn reserve_next(&mut self, _: u64) -> io::Result<()> {
+            Ok(())
+        }
+        fn push(&mut self, kind: &'static str, value: &serde_json::Value) -> io::Result<()> {
+            self.0.push((kind, serde_json::to_vec(value)?));
+            Ok(())
+        }
+        fn push_compact(&mut self, kind: &'static str, json: &[u8]) -> io::Result<()> {
+            self.0.push((kind, json.to_vec()));
+            Ok(())
+        }
+        fn finish(&mut self) -> io::Result<serde_json::Value> {
+            Ok(serde_json::Value::Null)
+        }
+    }
+
+    fn resource(extents: usize, native_error: Option<i32>) -> resource::MoveProof {
+        resource::MoveProof::Resource(
+            placement(extents, 9_000 + extents as u64, 4_096, native_error)
+                .into_resource_value()
+                .unwrap(),
+        )
+    }
+    /// The record as it was made before: the whole proof as one JSON value.
+    fn as_before(index: u64, phase: &str, extents: usize, error: Option<i32>) -> serde_json::Value {
+        let proof =
+            serde_json::to_value(placement(extents, 9_000 + extents as u64, 4_096, error)).unwrap();
+        serde_json::json!({"object_index":index,"phase":phase,"proof":proof})
+    }
+
+    const CASES: [(u64, &str, usize, Option<i32>); 6] = [
+        (0, DEFERRED_ORIGINAL, 1, None),
+        (3, DEFERRED_SCRATCH, 0, None),
+        (17, "evacuate-blocker", 1024, None),
+        (u32::MAX as u64, "original-coordinate", 1025, None),
+        (u64::MAX, "original-coordinate", 4_000, None),
+        (5, "original-coordinate", 2, Some(87)),
+    ];
+
+    #[test]
+    fn a_move_record_is_the_bytes_of_the_value_it_was_made_as() {
+        for (index, phase, extents, error) in CASES {
+            let before = as_before(index, phase, extents, error);
+            let proof = resource(extents, error);
+            let json = move_record_json(index, phase, &proof).unwrap();
+            assert_eq!(json, serde_json::to_vec(&before).unwrap());
+            assert_eq!(json.len(), compact_size(&before).unwrap());
+            // A refused move's record, and the record kept without a sink.
+            let value = serde_json::json!({"object_index":index,"phase":phase,"proof":proof});
+            assert_eq!(value, before);
+            // The fields a refusal is decided and reported by.
+            for key in ["native_error", "mapping_matches", "all_placements_match"] {
+                assert_eq!(proof[key], before["proof"][key], "{key}");
+            }
+        }
+    }
+
+    #[test]
+    fn evidence_records_a_move_proof_as_it_recorded_its_value() {
+        // With a sink, as a resource placement records: the same bytes,
+        // counts and recent phases.
+        let mut old_sink = Recorded::default();
+        let mut new_sink = Recorded::default();
+        let mut old = Evidence::new(Some(&mut old_sink), usize::MAX);
+        let mut new = Evidence::new(Some(&mut new_sink), usize::MAX);
+        for round in 0..4 {
+            for (index, phase, extents, error) in CASES {
+                let index = index.wrapping_add(round);
+                old.push_move(as_before(index, phase, extents, error))
+                    .unwrap();
+                new.push_move_proof(index, phase, &resource(extents, error))
+                    .unwrap();
+            }
+        }
+        assert_eq!(
+            (old.compact_bytes, old.saved_bytes, old.count, old.len()),
+            (new.compact_bytes, new.saved_bytes, new.count, new.len())
+        );
+        assert_eq!(old.moves, new.moves);
+        drop((old, new));
+        assert_eq!(old_sink.0, new_sink.0);
+        // Without one, every proof is kept as a value, as before.
+        let mut old = Evidence::default();
+        let mut new = Evidence::default();
+        for (index, phase, extents, error) in CASES {
+            old.push_move(as_before(index, phase, extents, error))
+                .unwrap();
+            new.push_move_proof(index, phase, &resource(extents, error))
+                .unwrap();
+        }
+        assert_eq!(
+            (old.compact_bytes, old.saved_bytes, old.len()),
+            (new.compact_bytes, new.saved_bytes, new.len())
+        );
+        assert_eq!(old.moves, new.moves);
+    }
+
+    #[test]
+    fn the_progress_document_is_the_one_json_made() {
+        let document_before = |phase: &str,
+                               charged: u64,
+                               verified: &Evidence<'_>,
+                               pending: Option<serde_json::Value>,
+                               counters: &Counters| {
+            let phases: Vec<_> = verified
+                .moves
+                .iter()
+                .rev()
+                .take(16)
+                .map(|m| serde_json::json!({"object_index":m["object_index"],"phase":m["phase"]}))
+                .collect();
+            let mut document = serde_json::json!({
+                "schema_version":2,"kind":"private-placement-progress","phase":phase,
+                "occupancy_evidence_scope":"destination-window-v1",
+                "per_move_retrieval_scope":"complete-file-mapping","phase_bitmap_scope":"full-volume",
+                "charged_move_bytes":charged,"verified_move_submissions":verified.len(),
+                "recent_verified_phases_newest_first":phases,"pending":pending,"counters":counters,
+                "placement_complete":false,"resume_authorized":false,"conversion_qualified":false
+            });
+            if let Some(barrier) = &counters.post_evacuation_barrier {
+                document["post_evacuation_barrier"] = barrier.clone();
+            }
+            document
+        };
+        let mut sink = Recorded::default();
+        let mut with_sink = Evidence::new(Some(&mut sink), usize::MAX);
+        let mut without = Evidence::default();
+        let mut counters = Counters {
+            files: 7,
+            desired_runs: 12,
+            ..Counters::default()
+        };
+        let pending = serde_json::json!({"object_index":3,"logical_offset":4096,
+            "destination":1 << 30,"length":65536,"placement_result_recorded":false,
+            "budget_charged":false,"stream_name_utf16":[65, 66]});
+        for round in 0..20u64 {
+            for evidence in [&with_sink, &without] {
+                for pending in [None, Some(pending.clone())] {
+                    let document = progress_document(
+                        "original-coordinate",
+                        round << 20,
+                        evidence,
+                        pending.clone(),
+                        &counters,
+                    );
+                    assert_eq!(
+                        serde_json::to_vec(&document).unwrap(),
+                        serde_json::to_vec(&document_before(
+                            "original-coordinate",
+                            round << 20,
+                            evidence,
+                            pending,
+                            &counters
+                        ))
+                        .unwrap()
+                    );
+                }
+            }
+            let (index, phase, extents, error) = CASES[round as usize % CASES.len()];
+            let index = index.wrapping_add(round);
+            with_sink
+                .push_move_proof(index, phase, &resource(extents, error))
+                .unwrap();
+            without
+                .push_move(as_before(index, phase, extents, error))
+                .unwrap();
+            counters.final_submissions += 1;
+            if round == 10 {
+                counters.post_evacuation_barrier =
+                    Some(serde_json::json!({"moves":3,"ranges":[1,2]}));
+            }
+        }
+    }
+
+    /// `saved_size` as it was: the whole text printed, then measured.
+    fn printed_size(value: &serde_json::Value) -> usize {
+        let pretty = serde_json::to_vec_pretty(value).unwrap();
+        pretty.iter().filter(|&&b| b == b'\n').count() * 4 + pretty.len() + 6
+    }
+
+    #[test]
+    fn sizes_measured_as_written_are_the_sizes_of_the_printed_values() {
+        for (index, phase, extents, error) in CASES {
+            let record = as_before(index, phase, extents, error);
+            assert_eq!(saved_size(&record).unwrap(), printed_size(&record));
+        }
+        // The widest record, for every count of pages a run may allow.
+        for extents in [0, 1] {
+            for pages in (0..40).chain([255, 1_000, 4_097]) {
+                assert_eq!(
+                    widest_move_record_size(extents, pages).unwrap(),
+                    printed_size(&widest_move_record(extents, pages).unwrap()),
+                    "{extents} extents, {pages} pages"
+                );
+            }
+        }
+        // A move's bound, with the destination windows as a JSON value.
+        let reservation = Reservation::with_resource_limits(crate::retrieval_paging::Limits {
+            max_returned_bytes: 1 << 20,
+            max_extents: 3_000,
+            max_pages: 37,
+        })
+        .unwrap();
+        for (extents, clusters) in [(1, 1), (40, 4_096), (2_999, 131_072)] {
+            let destination = placement(extents, 9_000, clusters, None).destination_bitmap;
+            let printed = printed_size(&serde_json::json!({
+                "proof":{"destination_bitmap":&destination}
+            })) - reservation.empty_destination;
+            assert_eq!(
+                reservation
+                    .bound(extents, u64::from(clusters) * 4096, &destination)
+                    .unwrap(),
+                reservation.per_extent * 3_000 + reservation.base + printed
+            );
+        }
+    }
+
+    /// Sizing a move's bound and the widest record, before and after. Not run
+    /// by default:
+    /// `cargo test --release -p n2r-win32 reservation_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn reservation_cost() {
+        use std::time::Instant;
+        let reservation = Reservation::with_pages(1).unwrap();
+        let destination = placement(1, 9_000, 131_072, None).destination_bitmap;
+        let rounds = 20_000;
+        let start = Instant::now();
+        for _ in 0..rounds {
+            std::hint::black_box(printed_size(&serde_json::json!({
+                "proof":{"destination_bitmap":&destination}
+            })));
+        }
+        let before = start.elapsed().as_secs_f64() / f64::from(rounds);
+        let start = Instant::now();
+        for _ in 0..rounds {
+            std::hint::black_box(reservation.bound(1, 1 << 29, &destination).unwrap());
+        }
+        let after = start.elapsed().as_secs_f64() / f64::from(rounds);
+        println!(
+            "a move's bound: {:.1} us before, {:.1} us after",
+            before * 1e6,
+            after * 1e6
+        );
+        for pages in [1_000, 10_000, 160_000] {
+            let start = Instant::now();
+            for extents in [0, 1] {
+                std::hint::black_box(printed_size(&widest_move_record(extents, pages).unwrap()));
+            }
+            let before = start.elapsed().as_secs_f64();
+            let start = Instant::now();
+            std::hint::black_box(Reservation::with_pages(pages).unwrap());
+            let after = start.elapsed().as_secs_f64();
+            println!(
+                "the widest record of {pages} pages: {:.1} ms before, {:.3} ms after",
+                before * 1e3,
+                after * 1e3
+            );
+        }
+    }
+
+    /// The JSON work of recording one move, before and after, for files in
+    /// growing numbers of pieces. Not run by default:
+    /// `cargo test --release -p n2r-win32 move_record_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn move_record_cost() {
+        use std::time::Instant;
+        for extents in [16, 256, 1024, 4096, 16_384] {
+            let rounds = (2_000_000 / extents).clamp(20, 20_000);
+            let mut sink = io::sink();
+            let start = Instant::now();
+            for _ in 0..rounds {
+                let sample = placement(extents, 9_000, 4_096, None);
+                let proof = serde_json::to_value(&sample).unwrap();
+                drop(sample);
+                let record = serde_json::json!({"object_index":7,"phase":"original-coordinate",
+                    "proof":resource::MoveProof::Legacy(proof)});
+                let size = compact_size(&record).unwrap();
+                let mut blocks = io::BufWriter::with_capacity(64 * 1024, &mut sink);
+                serde_json::to_writer(&mut blocks, &record).unwrap();
+                std::hint::black_box(size);
+            }
+            let before = start.elapsed().as_secs_f64() / rounds as f64;
+            let start = Instant::now();
+            for _ in 0..rounds {
+                let proof = resource::MoveProof::Resource(
+                    placement(extents, 9_000, 4_096, None)
+                        .into_resource_value()
+                        .unwrap(),
+                );
+                let json = move_record_json(7, "original-coordinate", &proof).unwrap();
+                io::Write::write_all(&mut sink, &json).unwrap();
+            }
+            let after = start.elapsed().as_secs_f64() / rounds as f64;
+            // Making the sample is in both; take it out of each.
+            let start = Instant::now();
+            for _ in 0..rounds {
+                std::hint::black_box(placement(extents, 9_000, 4_096, None));
+            }
+            let made = start.elapsed().as_secs_f64() / rounds as f64;
+            let proof = resource::MoveProof::Resource(
+                placement(extents, 9_000, 4_096, None)
+                    .into_resource_value()
+                    .unwrap(),
+            );
+            let bytes = move_record_json(7, "original-coordinate", &proof)
+                .unwrap()
+                .len();
+            println!(
+                "{extents:>6} extents, {bytes:>9} bytes of record: {:>9.1} us a move before, {:>9.1} us after ({:.1}x); {:.2} ns a byte saved",
+                (before - made) * 1e6,
+                (after - made) * 1e6,
+                (before - made) / (after - made),
+                (before - after) * 1e9 / bytes as f64
+            );
+        }
     }
 }

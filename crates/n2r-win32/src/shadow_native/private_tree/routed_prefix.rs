@@ -124,12 +124,7 @@ fn capture(
         ));
     }
     let sd = security(file)?;
-    let (first, continuation) = crate::stream_native::retrieval_queries_resource(file, row)?;
-    let mapping = crate::retrieval_paging::assemble_queries_with_limits(
-        &first,
-        &continuation,
-        crate::retrieval_paging::Limits::for_resource_bytes(row)?,
-    )?;
+    let mapping = crate::stream_native::retrieval_capture_resource(file, row)?;
     let mut digest = Sha256::new();
     digest.update(b"n2r-private-routed-prefix-readiness-v1\0");
     digest.update(id);
@@ -201,12 +196,7 @@ fn capture(
     }
     let after = snapshot(file);
     let after_sd = security(file)?;
-    let (first, continuation) = crate::stream_native::retrieval_queries_resource(file, row)?;
-    let after_mapping = crate::retrieval_paging::assemble_queries_with_limits(
-        &first,
-        &continuation,
-        crate::retrieval_paging::Limits::for_resource_bytes(row)?,
-    )?;
+    let after_mapping = crate::stream_native::retrieval_capture_resource(file, row)?;
     let after_storage =
         initialized_regions::capture_initialized(file, prefix, 2, row).map_err(|e| {
             io::Error::new(

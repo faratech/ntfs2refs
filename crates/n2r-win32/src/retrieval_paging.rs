@@ -348,6 +348,26 @@ impl Assembler {
         })
     }
 }
+/// Ask for a complete mapping page by page and assemble each response as
+/// it arrives: `ask(vcn, capacity)` makes the query for the page that
+/// starts at `vcn`. The result is what `assemble_queries_with_limits` gives
+/// for the same responses, the capture or the same refusal. Callers used to
+/// keep the responses and assemble them a second time, from the start, with
+/// the same assembler, which can only arrive where the first one did; every
+/// page was parsed and its SHA-256 taken twice, on every move of a file.
+pub fn assemble_while_asking(
+    limits: Limits,
+    mut ask: impl FnMut(u64, usize) -> IoctlQuery,
+) -> io::Result<Capture> {
+    let mut assembler = Assembler::with_limits(limits)?;
+    while assembler.response_capacity() != 0 {
+        let query = ask(assembler.next_vcn(), assembler.response_capacity());
+        if assembler.push(&query)? {
+            break;
+        }
+    }
+    assembler.finish()
+}
 pub fn assemble_queries(first: &IoctlQuery, continuation: &[IoctlQuery]) -> io::Result<Capture> {
     assemble_queries_with_limits(first, continuation, Limits::default())
 }

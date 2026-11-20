@@ -94,7 +94,9 @@ mod tests {
     fn the_running_windows_kernel_has_a_version_and_builds_compare_without_revision() {
         let windows = crate::current_windows_directory().unwrap();
         let version = file_version(&windows.join("System32\\ntoskrnl.exe")).unwrap();
-        assert_eq!(version.0, 10, "{version}");
+        // The fixed file version of the kernel says 6.2 (as refs.sys's does),
+        // whatever the product version is; the build is what is compared.
+        assert!(version.2 >= 26100, "{version}");
         assert!(FileVersion(10, 0, 26100, 1).same_build(&FileVersion(10, 0, 26100, 9457)));
         assert!(!FileVersion(10, 0, 26100, 1).same_build(&FileVersion(10, 0, 26200, 1)));
     }

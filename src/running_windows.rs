@@ -54,7 +54,11 @@ pub struct Request<'a> {
     pub windows_disk_id: String,
     pub diagnose: bool,
     pub target_format: Option<&'a str>,
-    pub verify_full_content: bool,
+    /// `--verify thorough` in either spelling: the converter in the
+    /// environment makes every check a thorough run makes.
+    pub thorough: bool,
+    pub recheck_everything: bool,
+    pub memory_limit: Option<u64>,
 }
 
 fn tool(program: &str, args: &[&str]) -> Result<String> {
@@ -560,8 +564,19 @@ fn converter_args(request: &Request<'_>) -> Vec<String> {
         args.push("--target-format".to_owned());
         args.push(format.to_owned());
     }
-    if request.verify_full_content {
-        args.push("--verify-full-content".to_owned());
+    // What the user asked of the verification and of memory is what the
+    // converter in the environment does: dropped here, a thorough run would
+    // silently convert with the fast checks there.
+    if request.thorough {
+        args.push("--verify".to_owned());
+        args.push("thorough".to_owned());
+    }
+    if request.recheck_everything {
+        args.push("--recheck-everything".to_owned());
+    }
+    if let Some(mib) = request.memory_limit {
+        args.push("--memory-limit".to_owned());
+        args.push(mib.to_string());
     }
     // Laboratory: a hold point for the converter in the environment, to cut
     // the power there and exercise the recovery after it.
@@ -945,9 +960,12 @@ fn run_or_recover(
                     code.max(1)
                 }
                 Recovered::Failed => {
+                    // On this start's drive letter, as the recovery itself
+                    // was run: the printed one may name another.
                     note(format!(
                         "The recovery did not finish. Run `ntfs2refs --recover \"{}\" --recovery-sha256 {} --rollback` from a command prompt in this environment.",
-                        command.directory, command.sha256
+                        rebased(&command.directory, directory),
+                        command.sha256
                     ));
                     NEEDS_ATTENTION
                 }

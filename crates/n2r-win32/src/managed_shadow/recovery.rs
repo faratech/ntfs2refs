@@ -388,6 +388,68 @@ pub fn detach_left_behind(path: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
+/// The backing file of every virtual disk Windows has attached, machine-wide
+/// (`GetAllAttachedVirtualDiskPhysicalPaths`): a run that ended before it
+/// recorded anything left its working volume among them (#201). Windows
+/// answers with NUL-terminated paths ended by an empty one; the buffer grows
+/// to the size it asks for. A path Windows gives as `\\?\X:\...` is given
+/// as `X:\...`, and one in the NT form `\Device\...` through
+/// `\\?\GLOBALROOT`, so that the files beside it can be opened. Nothing is
+/// opened or changed here.
+pub fn attached_image_paths() -> io::Result<Vec<PathBuf>> {
+    use std::os::windows::ffi::OsStringExt;
+    const ERROR_MORE_DATA: u32 = 234;
+    const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
+    let mut words: Vec<u16> = vec![0; 4096];
+    // The list can change between the call that sizes it and the next.
+    for _ in 0..16 {
+        let mut bytes = u32::try_from(words.len() * 2)
+            .map_err(|_| invalid("the list of attached virtual disks exceeds 4 GiB"))?;
+        // SAFETY: an initialized buffer of exactly `bytes` bytes, live for
+        // the synchronous call, and its in/out size.
+        let status =
+            unsafe { GetAllAttachedVirtualDiskPhysicalPaths(&mut bytes, words.as_mut_ptr()) };
+        match status {
+            0 => {
+                let mut paths = Vec::new();
+                for path in words.split(|word| *word == 0) {
+                    if path.is_empty() {
+                        break;
+                    }
+                    let path = PathBuf::from(std::ffi::OsString::from_wide(path));
+                    let text = path.to_string_lossy();
+                    paths.push(match text.strip_prefix("\\\\?\\") {
+                        Some(rest)
+                            if rest.as_bytes().get(1) == Some(&b':')
+                                && rest.as_bytes()[0].is_ascii_alphabetic() =>
+                        {
+                            PathBuf::from(rest)
+                        }
+                        _ if text.starts_with("\\Device\\") => {
+                            PathBuf::from(format!("\\\\?\\GLOBALROOT{text}"))
+                        }
+                        _ => path.clone(),
+                    });
+                }
+                return Ok(paths);
+            }
+            ERROR_INSUFFICIENT_BUFFER | ERROR_MORE_DATA => {
+                let asked = (bytes as usize).div_ceil(2) + 1;
+                words = vec![0; asked.max(words.len() * 2)];
+            }
+            error => {
+                return Err(operation_error(
+                    "list the attached virtual disks (GetAllAttachedVirtualDiskPhysicalPaths)",
+                    io::Error::from_raw_os_error(error as i32),
+                ));
+            }
+        }
+    }
+    Err(invalid(
+        "the list of attached virtual disks kept changing while it was read",
+    ))
+}
+
 /// The UTF-16 name of a run's own `shadow.vhdx`; anything else is refused
 /// before Windows is asked anything.
 fn left_behind_name(path: &Path) -> io::Result<Vec<u16>> {

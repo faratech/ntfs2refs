@@ -3,6 +3,7 @@
 //! result is exposed. Keys and JSON records are supplied by the typed caller.
 //! Callers must separately exclude raw/admin aliases and surviving writable
 //! mappings: ordinary file sharing alone cannot prove those writers absent.
+use crate::bulk_digest::{self, Algorithm};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -16,7 +17,29 @@ use std::{
     time::SystemTime,
 };
 
-pub const MAGIC: [u8; 8] = *b"N2RMPG01";
+/// The format this build writes. Its magic says which digest the file is
+/// pinned by and which one its page index carries: BLAKE3
+/// (`bulk_digest`). The magic is the first thing the complete-file digest
+/// covers, so a file cannot name one algorithm and be pinned by the other.
+pub const MAGIC: [u8; 8] = *b"N2RMPG02";
+/// The format of builds through 0.0.1, the same in every other respect:
+/// pinned and indexed by SHA-256. Read, never written.
+const MAGIC_SHA256: [u8; 8] = *b"N2RMPG01";
+fn magic_of(algorithm: Algorithm) -> [u8; 8] {
+    match algorithm {
+        Algorithm::Blake3 => MAGIC,
+        Algorithm::Sha256 => MAGIC_SHA256,
+    }
+}
+fn algorithm_of(magic: &[u8]) -> Option<Algorithm> {
+    if magic == MAGIC {
+        Some(Algorithm::Blake3)
+    } else if magic == MAGIC_SHA256 {
+        Some(Algorithm::Sha256)
+    } else {
+        None
+    }
+}
 const PAGE_MAGIC: [u8; 8] = *b"N2RPG001";
 const END_MAGIC: [u8; 8] = *b"N2RMEND1";
 const HEADER: u64 = 64;
@@ -49,6 +72,9 @@ impl PageBudget {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Summary {
+    /// The digest of the complete file, in hex. The field keeps its
+    /// historical name; the algorithm is the one the file's magic names,
+    /// BLAKE3 for every file this build writes.
     pub sha256: String,
     pub records: u64,
     pub pages: u64,
@@ -86,9 +112,9 @@ fn valid_json(bytes: &[u8]) -> io::Result<()> {
     serde::de::IgnoredAny::deserialize(&mut parser).map_err(io::Error::other)?;
     parser.end().map_err(io::Error::other)
 }
-fn header(purpose: [u8; 8], b: PageBudget) -> [u8; 64] {
+fn header(algorithm: Algorithm, purpose: [u8; 8], b: PageBudget) -> [u8; 64] {
     let mut out = [0; 64];
-    out[..8].copy_from_slice(&MAGIC);
+    out[..8].copy_from_slice(&magic_of(algorithm));
     out[8..16].copy_from_slice(&purpose);
     out[16..20].copy_from_slice(&b.max_page_bytes.to_le_bytes());
     out[20..24].copy_from_slice(&b.max_records_per_page.to_le_bytes());
@@ -214,25 +240,66 @@ impl Snapshot {
         })
     }
 }
-/// SHA-256 of megabytes at a time goes through Windows' implementation, which
-/// is about half again as fast here as the portable one used for the small
-/// fixed-size records below.
-fn bulk_sha256(bytes: &[u8]) -> io::Result<[u8; 32]> {
-    let mut hash = crate::sha256_native::Sha256::new()?;
-    hash.update(bytes)?;
-    hash.finish()
+/// The digest of a page's body, as the file's format has it in its index.
+/// The small fixed-size records below keep the portable SHA-256.
+fn page_digest(algorithm: Algorithm, bytes: &[u8]) -> io::Result<[u8; 32]> {
+    bulk_digest::digest(algorithm, bytes)
 }
 /// A page this large is hashed on a second thread while the writer's own
 /// thread brings the file hash up to date with the page before it.
 const OVERLAP_PAGE_BYTES: usize = 256 * 1024;
-fn file_hash(file: &mut File, bytes: u64) -> io::Result<[u8; 32]> {
-    crate::sha256_native::held_file(file, bytes)
+fn file_hash(algorithm: Algorithm, file: &mut File, bytes: u64) -> io::Result<[u8; 32]> {
+    bulk_digest::held_file(algorithm, file, bytes)
+}
+/// The algorithm of the digest that pins a working file: BLAKE3 when it is a
+/// complete record store of this module in the current format, SHA-256 for
+/// any other file.
+///
+/// A store is told by more than its magic, so that a file of other content
+/// that happens to begin with those eight bytes is not taken for one: its
+/// footer has the end magic, the same purpose, the file's own length and the
+/// SHA-256 of its header, as every store a [`Writer`] finished has.
+/// Classification only: the digest covers every byte looked at here, and a
+/// store that is damaged in any of them fails its pin under either
+/// algorithm. The file's position is left at its start.
+pub fn file_digest_algorithm(file: &mut File) -> io::Result<Algorithm> {
+    let bytes = file.metadata()?.len();
+    file.seek(SeekFrom::Start(0))?;
+    if bytes < HEADER + FOOTER {
+        return Ok(Algorithm::Sha256);
+    }
+    let mut header = [0; HEADER as usize];
+    file.read_exact(&mut header)?;
+    let mut current = false;
+    if header[..8] == MAGIC {
+        let mut footer = [0; FOOTER as usize];
+        read_at(file, bytes - FOOTER, &mut footer)?;
+        current = footer[..8] == END_MAGIC
+            && footer[8..16] == header[8..16]
+            && u64_at(&footer, 40) == bytes
+            && &footer[80..112] == Sha256::digest(header).as_slice();
+    }
+    file.seek(SeekFrom::Start(0))?;
+    Ok(if current {
+        Algorithm::Blake3
+    } else {
+        Algorithm::Sha256
+    })
+}
+/// The digest that pins a working file of `bytes` bytes, every byte read:
+/// by the algorithm [`file_digest_algorithm`] gives for it. For an owner
+/// that holds a working file to a digest a record names without knowing
+/// whether the file is a store. The file is left positioned at `bytes`.
+pub fn pinning_digest(file: &mut File, bytes: u64) -> io::Result<[u8; 32]> {
+    let algorithm = file_digest_algorithm(file)?;
+    bulk_digest::hash_range(algorithm, file, 0, bytes)
 }
 /// A file a [`Writer`] in this process finished.
 struct Written {
     bytes: u64,
     modified: SystemTime,
-    sha256: [u8; 32],
+    // The complete file's digest: always of the algorithm this build writes.
+    digest: [u8; 32],
     // XXH3-64 of each page body, in page order.
     page_sums: std::sync::Arc<Vec<u64>>,
 }
@@ -240,7 +307,7 @@ struct Written {
 type WrittenFiles = std::collections::HashMap<(String, String), Written>;
 static WRITTEN: std::sync::Mutex<Option<WrittenFiles>> = std::sync::Mutex::new(None);
 
-fn note_written(snapshot: &Snapshot, sha256: [u8; 32], page_sums: Vec<u64>) {
+fn note_written(snapshot: &Snapshot, digest: [u8; 32], page_sums: Vec<u64>) {
     WRITTEN
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -250,23 +317,27 @@ fn note_written(snapshot: &Snapshot, sha256: [u8; 32], page_sums: Vec<u64>) {
             Written {
                 bytes: snapshot.bytes,
                 modified: snapshot.modified,
-                sha256,
+                digest,
                 page_sums: std::sync::Arc::new(page_sums),
             },
         );
 }
 
 /// Whether this process wrote exactly this file, unchanged since, with this
-/// SHA-256. Its writer refused any record that was not valid JSON under a
+/// digest of this algorithm. Its writer refused any record that was not valid JSON under a
 /// strictly increasing key and hashed every byte, so under the check-once
 /// policy a reader need not hash and parse the whole file again to open it.
 /// Each page is still checked whenever it is loaded: against the checksum the
 /// writer kept in memory (returned here), which costs a few percent of the
-/// SHA-256 in the page index and catches the same damage to a file nobody
+/// digest in the page index and catches the same damage to a file nobody
 /// else can have written. Inside the gate before the first write to the
-/// source this is never true, and pages are checked by their SHA-256.
-fn written_here(snapshot: &Snapshot, sha256: &[u8; 32]) -> Option<std::sync::Arc<Vec<u64>>> {
-    if crate::verify_policy::full_unremembered() {
+/// source this is never true, and pages are checked by their digest.
+fn written_here(
+    snapshot: &Snapshot,
+    algorithm: Algorithm,
+    digest: &[u8; 32],
+) -> Option<std::sync::Arc<Vec<u64>>> {
+    if crate::verify_policy::full_unremembered() || algorithm != Algorithm::WRITTEN {
         return None;
     }
     WRITTEN
@@ -277,17 +348,18 @@ fn written_here(snapshot: &Snapshot, sha256: &[u8; 32]) -> Option<std::sync::Arc
         .filter(|known| {
             known.bytes == snapshot.bytes
                 && known.modified == snapshot.modified
-                && known.sha256 == *sha256
+                && known.digest == *digest
         })
         .map(|known| std::sync::Arc::clone(&known.page_sums))
 }
 
-/// The SHA-256 a [`Writer`] in this process computed for exactly this file
+/// The digest a [`Writer`] in this process computed for exactly this file
 /// (same identity, final path, length and timestamp), when the check-once
 /// policy lets it stand for hashing the file again: outside a gate only. An
-/// owner that pins a freshly written store by its SHA can use it instead of
-/// reading the whole file back.
-pub fn sha256_if_written_here(file: &File) -> Option<[u8; 32]> {
+/// owner that pins a freshly written store by its digest can use it instead
+/// of reading the whole file back. It is the BLAKE3 of the file: what
+/// [`file_digest_algorithm`] says of every file a writer here finished.
+pub fn digest_if_written_here(file: &File) -> Option<[u8; 32]> {
     if crate::verify_policy::full_unremembered() {
         return None;
     }
@@ -298,7 +370,7 @@ pub fn sha256_if_written_here(file: &File) -> Option<[u8; 32]> {
         .as_ref()
         .and_then(|written| written.get(&(snapshot.id.clone(), snapshot.final_path.clone())))
         .filter(|known| known.bytes == snapshot.bytes && known.modified == snapshot.modified)
-        .map(|known| known.sha256)
+        .map(|known| known.digest)
 }
 
 /// One start offset for every this many records of a page.
@@ -346,10 +418,10 @@ pub struct Writer {
     data_end: u64,
     last_key: Option<Vec<u8>>,
     poisoned: bool,
-    // Every byte in file order as it is written: the complete-file SHA-256.
+    // Every byte in file order as it is written: the complete-file digest.
     // It runs one page behind (`lagging`), so that a page's own hash and the
     // file hash of the page before it can be computed at the same time.
-    hash: Option<crate::sha256_native::Sha256>,
+    hash: Option<bulk_digest::Hasher>,
     lagging: Option<([u8; 64], Vec<u8>)>,
     // XXH3-64 of each page body written, for this process's own readers.
     page_sums: Vec<u64>,
@@ -370,9 +442,9 @@ impl Writer {
             Snapshot::observe(&file)?.bytes == 0,
             "new empty metadata file required",
         )?;
-        file.write_all(&header(purpose, budget))?;
-        let mut hash = crate::sha256_native::Sha256::new()?;
-        hash.update(&header(purpose, budget))?;
+        file.write_all(&header(Algorithm::WRITTEN, purpose, budget))?;
+        let mut hash = bulk_digest::Hasher::new(Algorithm::WRITTEN)?;
+        hash.update(&header(Algorithm::WRITTEN, purpose, budget))?;
         Ok(Self {
             file,
             purpose,
@@ -462,7 +534,7 @@ impl Writer {
         let body = &self.body;
         let page = if body.len() >= OVERLAP_PAGE_BYTES && previous.is_some() {
             let (page, caught_up) = std::thread::scope(|scope| {
-                let page = scope.spawn(move || bulk_sha256(body));
+                let page = scope.spawn(move || page_digest(Algorithm::WRITTEN, body));
                 let caught_up = catch_up();
                 (page.join(), caught_up)
             });
@@ -470,7 +542,7 @@ impl Writer {
             page.map_err(|_| io::Error::other("metadata page hashing thread panicked"))??
         } else {
             catch_up()?;
-            bulk_sha256(body)?
+            page_digest(Algorithm::WRITTEN, body)?
         };
         frame[32..].copy_from_slice(&page);
         self.file.seek(SeekFrom::Start(self.data_end))?;
@@ -543,7 +615,11 @@ impl Writer {
             footer[position..position + 8].copy_from_slice(&value.to_le_bytes());
         }
         footer[48..80].copy_from_slice(&index_hash.finalize());
-        footer[80..112].copy_from_slice(&Sha256::digest(header(self.purpose, self.budget)));
+        footer[80..112].copy_from_slice(&Sha256::digest(header(
+            Algorithm::WRITTEN,
+            self.purpose,
+            self.budget,
+        )));
         self.file.seek(SeekFrom::Start(bytes - FOOTER))?;
         self.file.write_all(&footer)?;
         running.update(&footer)?;
@@ -554,13 +630,13 @@ impl Writer {
             before.bytes == bytes,
             "metadata completed file length differs",
         )?;
-        // The file is written front to back, so its SHA-256 is known from the
+        // The file is written front to back, so its digest is known from the
         // bytes handed to it. Reading it all back to hash it again is left out
         // under the check-once policy.
         let written: [u8; 32] = running.finish()?;
         if !crate::verify_policy::checks_once() {
             require(
-                file_hash(&mut self.file, bytes)? == written,
+                file_hash(Algorithm::WRITTEN, &mut self.file, bytes)? == written,
                 "metadata file differs from the bytes written to it",
             )?;
         }
@@ -619,8 +695,10 @@ fn load_page(
     body: &mut Vec<u8>,
     statistics: &mut PageCacheStatistics,
     // The writer's in-memory checksum of this page, when the file is one this
-    // process wrote: checked in place of the page's SHA-256.
+    // process wrote: checked in place of the page's digest.
     written_sum: Option<u64>,
+    // The digest the file's index carries for its pages.
+    algorithm: Algorithm,
 ) -> io::Result<()> {
     require(
         e.bytes as u64 > FRAME
@@ -655,7 +733,10 @@ fn load_page(
         );
     }
     statistics.page_hash_bytes = statistics.page_hash_bytes.saturating_add(body.len() as u64);
-    require(bulk_sha256(body)? == e.sha, "metadata page SHA differs")
+    require(
+        page_digest(algorithm, body)? == e.sha,
+        "metadata page digest differs",
+    )
 }
 fn record_at(body: &[u8], at: usize) -> io::Result<(usize, &[u8], &[u8])> {
     require(
@@ -692,7 +773,7 @@ pub fn has_magic(path: &Path) -> io::Result<bool> {
     }
     let mut magic = [0; 8];
     file.read_exact(&mut magic)?;
-    Ok(magic == MAGIC)
+    Ok(algorithm_of(&magic).is_some())
 }
 
 /// Bounded diagnostic counters, never validation or recovery authority. Page
@@ -720,6 +801,9 @@ const AUTO_RESIDENT_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 pub struct Reader {
     file: File,
     snapshot: Snapshot,
+    // The digest of the complete file, and of each page in its index, is of
+    // the algorithm the file's magic names.
+    algorithm: Algorithm,
     sha256: [u8; 32],
     last_full: crate::verify_policy::LastFull,
     budget: PageBudget,
@@ -770,13 +854,16 @@ struct ResidentPages {
 
 thread_local! {
     // The files whose pages a reader of this thread holds in memory, by the
-    // SHA-256 and length of the complete file: a second reader of the same
+    // digest (and its algorithm) and length of the complete file: a second reader of the same
     // file shares them. (The expected tree is opened more than once in a
     // run; each reader read and held all of it, and where the ledger had no
     // room for the second copy that reader re-read a page for nearly every
     // lookup: 280 s of one step on a volume of 500,000 files.)
     static RESIDENT: std::cell::RefCell<
-        std::collections::HashMap<([u8; 32], u64), crate::evict::WeakEvictable<ResidentPages>>,
+        std::collections::HashMap<
+            (Algorithm, [u8; 32], u64),
+            crate::evict::WeakEvictable<ResidentPages>,
+        >,
     > = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 impl Reader {
@@ -835,18 +922,23 @@ impl Reader {
         let snapshot = Snapshot::observe(&file)?;
         ordinary(Path::new(&snapshot.final_path))?;
         let body_limit = Self::body_capacity_for_file(budget, snapshot.bytes)?;
-        let page_sums = written_here(&snapshot, &sha256);
+        // The file says which digest pins it; the digest covers that too.
+        let mut actual_header = [0; 64];
+        read_at(&mut file, 0, &mut actual_header)?;
+        // (A file that is no store fails its pin or, below, its header, as
+        // it always has.)
+        let algorithm = algorithm_of(&actual_header[..8]).unwrap_or(Algorithm::Sha256);
+        let page_sums = written_here(&snapshot, algorithm, &sha256);
         let written_here = page_sums.is_some();
         if !written_here {
             require(
-                file_hash(&mut file, snapshot.bytes)? == sha256,
-                "metadata complete-file SHA differs",
+                file_hash(algorithm, &mut file, snapshot.bytes)? == sha256,
+                "metadata complete-file digest differs",
             )?;
         }
-        let mut actual_header = [0; 64];
         read_at(&mut file, 0, &mut actual_header)?;
         require(
-            actual_header == header(purpose, budget),
+            actual_header == header(algorithm, purpose, budget),
             "metadata purpose or pinned budget differs",
         )?;
         let mut footer = [0; 128];
@@ -910,6 +1002,7 @@ impl Reader {
                 &mut body,
                 &mut statistics,
                 None,
+                algorithm,
             )?;
             let mut at = 0;
             for _ in 0..e.count {
@@ -938,6 +1031,7 @@ impl Reader {
         Ok(Self {
             file,
             snapshot,
+            algorithm,
             sha256,
             last_full: crate::verify_policy::LastFull::new(),
             budget,
@@ -992,7 +1086,7 @@ impl Reader {
         if crate::verify_policy::full_unremembered() {
             return false;
         }
-        let key = (self.sha256, self.snapshot.bytes);
+        let key = (self.algorithm, self.sha256, self.snapshot.bytes);
         let shared = RESIDENT.with(|resident| {
             let mut resident = resident.borrow_mut();
             let shared = resident.get(&key).and_then(|held| held.upgrade());
@@ -1040,6 +1134,7 @@ impl Reader {
                 &mut body,
                 &mut self.statistics,
                 written_sum,
+                self.algorithm,
             )?;
             let mut starts = Vec::new();
             starts
@@ -1068,7 +1163,10 @@ impl Reader {
             if shared.len() >= 16 && shared.len().is_power_of_two() {
                 shared.retain(|_, held| held.upgrade().is_some());
             }
-            shared.insert((self.sha256, self.snapshot.bytes), resident.downgrade());
+            shared.insert(
+                (self.algorithm, self.sha256, self.snapshot.bytes),
+                resident.downgrade(),
+            );
         });
         self.resident = Some(resident);
         Ok(())
@@ -1274,6 +1372,7 @@ impl Reader {
                 &mut self.body,
                 &mut self.statistics,
                 written_sum,
+                self.algorithm,
             )?;
             // Without its offsets the page is still read correctly, by
             // scanning; a malformed page is reported by that scan as before.
@@ -1326,9 +1425,9 @@ impl Reader {
         }
         require(
             Snapshot::observe(&self.file)? == self.snapshot
-                && file_hash(&mut self.file, self.snapshot.bytes)? == self.sha256
+                && file_hash(self.algorithm, &mut self.file, self.snapshot.bytes)? == self.sha256
                 && Snapshot::observe(&self.file)? == self.snapshot,
-            "held metadata identity or complete-file SHA changed",
+            "held metadata identity or complete-file digest changed",
         )
     }
     pub fn copy_to(&mut self, destination: &Path) -> io::Result<()> {
@@ -1348,20 +1447,20 @@ impl Reader {
         self.file.seek(SeekFrom::Start(0))?;
         let mut left = self.snapshot.bytes;
         let mut buffer = [0; 65536];
-        let mut hash = Sha256::new();
+        let mut hash = bulk_digest::Hasher::new(self.algorithm)?;
         while left > 0 {
             let count = left.min(buffer.len() as u64) as usize;
             self.file.read_exact(&mut buffer[..count])?;
             output.write_all(&buffer[..count])?;
-            hash.update(&buffer[..count]);
+            hash.update(&buffer[..count])?;
             left -= count as u64;
         }
         output.flush()?;
         output.sync_all()?;
         require(
-            hash.finalize().as_slice() == self.sha256
+            hash.finish()? == self.sha256
                 && output.metadata()?.len() == self.snapshot.bytes
-                && file_hash(&mut output, self.snapshot.bytes)? == self.sha256
+                && file_hash(self.algorithm, &mut output, self.snapshot.bytes)? == self.sha256
                 && Snapshot::observe(&self.file)? == self.snapshot,
             "metadata copy/root pin differs",
         )

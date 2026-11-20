@@ -626,6 +626,16 @@ the `conversion` folder of the run under the working directory, and the
 checksum is the SHA-256 of the `preparation-intent.json` in it
 (`Get-FileHash -Algorithm SHA256`).
 
+A run that ends before it prints the line above has recorded nothing to
+recover from, and the volume is online as it was (a shrink is not undone);
+only the working volume it was building may still be attached. A run that
+stops with an error then detaches it itself. One that is cut off cannot: the
+next conversion run, or `ntfs2refs --list` from an elevated terminal,
+detaches it and names the run's folder, which can then be deleted. A run that
+is still going is never touched (each run marks itself as running for as long
+as its process lives); a folder made by an earlier version is only named,
+with the diskpart commands that detach its volume.
+
 The lab ends the converter in two phases of preparation and runs exactly that
 command; the [recovery matrix](recovery-matrix.md#stopped-during-preparation)
 has the attempts. It ends the process. It has not turned the machine off
@@ -733,6 +743,18 @@ it to its run.
   verification: from then on a rollback is closed.
 - **`--recheck-everything`** changes *how often*, not what: the full re-reads
   happen at every checkpoint instead of once at the gate. Much slower.
+
+Where two checks prove the same thing, a fast run makes one of them;
+`--verify thorough` and `--recheck-everything` make both:
+
+- **Placing the new volume's extents.** After each move only the mapping of
+  the moved range is read, to see that it landed where it was sent. Each
+  file's complete mapping is compared with every piece placed for it once,
+  when placement ends, instead of after every move. Both views of the
+  destination's allocation are still read before every move.
+- **Writing the changes.** Each changed range is held to its old contents
+  once, before the apply marker, then written and read back against its new
+  contents. It is not read again immediately before it is written.
 
 A partition on the disk of the running Windows, a conversion with
 `--restart-media`, and a run whose interrupted preparation is resumed (its

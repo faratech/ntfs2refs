@@ -306,6 +306,37 @@ fn repair_pair(
     }
     Ok(())
 }
+/// Whether `newer` is a state `persist` writes over `older`: the changes of
+/// phase this guard makes, each keeping the run's nonce, the locked boot
+/// sector once recorded, and no delegation but the one it makes.
+fn written_over(older: &State, newer: &State) -> bool {
+    let kept = older.schema_version == 1 && newer.schema_version == 1 && older.nonce == newer.nonce;
+    let unlocked = older.locked_boot_hex.is_none() && newer.locked_boot_hex.is_none();
+    let locked = older.locked_boot_hex.is_some() && older.locked_boot_hex == newer.locked_boot_hex;
+    let undelegated = older.delegated.is_none() && newer.delegated.is_none();
+    kept && match (older.phase.as_str(), newer.phase.as_str()) {
+        // record_locked
+        ("Preparing", "Frozen") => {
+            older.locked_boot_hex.is_none() && newer.locked_boot_hex.is_some() && undelegated
+        }
+        // cancel, before anything was locked
+        ("Preparing", "UnstartedCancelled") => unlocked && undelegated,
+        // delegate
+        ("Frozen", "Delegated") => locked && older.delegated.is_none() && newer.delegated.is_some(),
+        // cancel and live cancellation
+        ("Frozen", "CancelIntent") | ("Frozen", "Cancelled") | ("CancelIntent", "Cancelled") => {
+            locked && undelegated
+        }
+        _ => false,
+    }
+}
+/// What a slot holds, for an error that says why two copies were refused.
+fn described(slot: &io::Result<State>) -> String {
+    match slot {
+        Ok(state) => state.phase.clone(),
+        Err(error) => format!("unreadable ({error})"),
+    }
+}
 #[derive(Clone, Serialize)]
 pub struct Routes {
     pub source: GeneralDiskBinding,
@@ -662,31 +693,69 @@ impl PreparationGuard {
         let mut b = vec![0; SLOT_BYTES as usize];
         file.read_exact(&mut a)?;
         file.read_exact(&mut b)?;
+        let Some(repair) = &self.repair else {
+            let state = self.adopt(&a, &b)?;
+            let file = self
+                .state_file
+                .as_ref()
+                .ok_or_else(|| bad("preparation state handle absent"))?;
+            self.intent.state_file.check(file)?;
+            return Ok(state);
+        };
         let first = parse(&a)?;
         let second = parse(&b)?;
-        if let Some(repair) = &self.repair {
-            require(
-                <[u8; 32]>::from(Sha256::digest(&a)) == repair.first
-                    && <[u8; 32]>::from(Sha256::digest(&b)) == repair.second,
-                "pending retirement copies changed outside their actual owner",
-            )?;
-            repair_pair(&self.intent.nonce, &first, &second, &repair.publication)?;
-            self.intent.state_file.check(file)?;
-            return Ok(State {
-                schema_version: 1,
-                nonce: self.intent.nonce.clone(),
-                phase: "DelegationPending".into(),
-                locked_boot_hex: first.locked_boot_hex,
-                delegated: Some(repair.publication.clone()),
-            });
-        }
         require(
-            a == b
-                && first == second
-                && first.schema_version == 1
-                && first.nonce == self.intent.nonce,
-            "preparation copies disagree; no permissive fallback exists",
+            <[u8; 32]>::from(Sha256::digest(&a)) == repair.first
+                && <[u8; 32]>::from(Sha256::digest(&b)) == repair.second,
+            "pending retirement copies changed outside their actual owner",
         )?;
+        repair_pair(&self.intent.nonce, &first, &second, &repair.publication)?;
+        self.intent.state_file.check(file)?;
+        Ok(State {
+            schema_version: 1,
+            nonce: self.intent.nonce.clone(),
+            phase: "DelegationPending".into(),
+            locked_boot_hex: first.locked_boot_hex,
+            delegated: Some(repair.publication.clone()),
+        })
+    }
+    /// The state the two copies hold. `persist` writes slot 0 and flushes it
+    /// before it writes slot 1, so a run ended inside `persist` leaves
+    /// exactly one of these, and each is taken as what was last made durable
+    /// (#200):
+    /// - slot 0 complete and written over slot 1 by a change of phase this
+    ///   guard makes (ended between the two writes): slot 0;
+    /// - slot 0 complete, slot 1 failing its own checksum (ended while
+    ///   writing slot 1): slot 0;
+    /// - slot 0 failing its checksum, slot 1 complete (ended while writing
+    ///   slot 0): slot 1, the state before that `persist`.
+    ///
+    /// The slot taken still has to name this run's nonce and a complete
+    /// known phase. Any other pair is refused, as before: two complete
+    /// copies that differ otherwise, or none complete.
+    fn adopt(&self, a: &[u8], b: &[u8]) -> io::Result<State> {
+        let path = &self.intent.state_file.path;
+        let (first, second) = (parse(a), parse(b));
+        let adopted = match (&first, &second) {
+            (Ok(one), Ok(two)) if a == b && one == two => one.clone(),
+            (Ok(one), Ok(two)) if written_over(two, one) => one.clone(),
+            (Ok(one), Err(_)) => one.clone(),
+            (Err(_), Ok(two)) => two.clone(),
+            _ => {
+                return Err(io::Error::other(format!(
+                    "preparation state {path}: its two copies disagree, and not as a run ended while one was written leaves them (slot 0: {}; slot 1: {}); no permissive fallback exists",
+                    described(&first),
+                    described(&second)
+                )));
+            }
+        };
+        require(
+            adopted.schema_version == 1 && adopted.nonce == self.intent.nonce,
+            "preparation state belongs to another run's intent",
+        )?;
+        Self::known_phase(adopted)
+    }
+    fn known_phase(first: State) -> io::Result<State> {
         require(
             match first.phase.as_str() {
                 "Preparing" | "UnstartedCancelled" => {
@@ -713,7 +782,6 @@ impl PreparationGuard {
             },
             "preparation state is not a complete known phase",
         )?;
-        self.intent.state_file.check(file)?;
         Ok(first)
     }
     pub fn revalidate(&mut self) -> io::Result<()> {

@@ -226,6 +226,7 @@ impl BoundJournalObservation<'_> {
             journal_identity: self.facts.identity,
             journal_path: self.facts.path,
             journal_profile: self.facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,
@@ -620,7 +621,7 @@ impl JournalObservation<'_> {
             target_length == self.ticket.image_length,
             "replay target length differs"
         );
-        let mut digest = pin_hash()?;
+        let mut digest = pin_hash(self.ticket.digest_algorithm())?;
         let mut buffers = Buffers::new();
         for ordinal in 0..u64::from(self.ticket.range_count) {
             let row = self.record(ordinal)?;
@@ -719,7 +720,7 @@ impl JournalObservation<'_> {
             target_length == self.ticket.image_length,
             "replay target length differs"
         );
-        let mut digest = pin_hash()?;
+        let mut digest = pin_hash(self.ticket.digest_algorithm())?;
         let mut buffers = Buffers::new();
         for ordinal in 0..u64::from(self.ticket.range_count) {
             let row = self.record(ordinal)?;
@@ -1323,6 +1324,7 @@ impl BoundJournalObservation<'_> {
             journal_identity: self.facts.identity,
             journal_path: self.facts.path,
             journal_profile: self.facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,

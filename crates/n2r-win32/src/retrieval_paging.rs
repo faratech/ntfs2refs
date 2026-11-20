@@ -40,6 +40,17 @@ pub fn returned_bytes_for_stream(stream_bytes: u64) -> usize {
 }
 pub const MORE_DATA: i32 = 234;
 pub const ENCODING: &str = "assembled-zero-vcn-retrieval-v1";
+/// The encoding of a mapping read from a VCN other than zero and only as far
+/// as a range's end ([`assemble_range_while_asking`]). Its canonical bytes
+/// have the layout of the complete form with the VCN it starts at in bytes
+/// 8 to 16 (which are zero in the complete form), its first extent is cut
+/// to begin there, and `virtual_clusters` is the VCN its last extent ends
+/// at. Whoever reads a proof tells the two forms apart by this field: a
+/// proof with [`ENCODING`] holds a stream's whole mapping, one with this
+/// holds the part of it that covers one range. No longer than [`ENCODING`],
+/// so a bound worked out for the complete form holds for this one.
+pub const RANGE_ENCODING: &str = "assembled-range-retrieval-v1";
+const _: () = assert!(RANGE_ENCODING.len() <= ENCODING.len());
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PageProof {
     pub input: Vec<u8>,
@@ -179,6 +190,8 @@ mod limit_tests {
 
 pub struct Assembler {
     runs: Vec<Run>,
+    // The VCN the mapping is assembled from: zero for a complete mapping.
+    start: u64,
     covered: u64,
     pages: Vec<PageProof>,
     returned: usize,
@@ -193,6 +206,12 @@ impl Default for Assembler {
 }
 impl Assembler {
     pub fn with_limits(limits: Limits) -> io::Result<Self> {
+        Self::with_limits_from(limits, 0)
+    }
+    /// An assembler of the mapping from `start` on. The extent that holds
+    /// `start` is cut to begin there; every later page is held to what the
+    /// pages before it returned, as in a complete mapping.
+    fn with_limits_from(limits: Limits, start: u64) -> io::Result<Self> {
         if limits.max_returned_bytes < 32
             || limits.max_extents == 0
             || limits.max_extents > u32::MAX as usize
@@ -202,7 +221,8 @@ impl Assembler {
         }
         Ok(Self {
             runs: Vec::new(),
-            covered: 0,
+            start,
+            covered: start,
             pages: Vec::new(),
             returned: 0,
             complete: false,
@@ -252,7 +272,9 @@ impl Assembler {
         let original_end = self.covered;
         let mut old_index = self.runs.partition_point(|r| end(r) <= page_start);
         for run in &page {
-            let mut overlap = run.vcn;
+            // Nothing before the start was assembled, so nothing there is
+            // compared: of a complete mapping that is nothing at all.
+            let mut overlap = run.vcn.max(self.start);
             let overlap_end = end(run).min(original_end);
             while overlap < overlap_end {
                 let old = self
@@ -347,6 +369,80 @@ impl Assembler {
             proof,
         })
     }
+}
+impl Assembler {
+    /// The mapping from the start to at least `limit`, or to the stream's
+    /// last extent where that comes first: see [`RANGE_ENCODING`].
+    fn finish_range(self, limit: u64) -> io::Result<Capture> {
+        if self.poisoned || self.runs.is_empty() || !(self.complete || self.covered >= limit) {
+            return Err(bad("ranged retrieval capture is incomplete"));
+        }
+        let count = u32::try_from(self.runs.len()).map_err(io::Error::other)?;
+        let bytes = self
+            .runs
+            .len()
+            .checked_mul(16)
+            .and_then(|n| n.checked_add(16))
+            .ok_or_else(|| bad("canonical retrieval size overflow"))?;
+        let mut canonical = Vec::new();
+        canonical
+            .try_reserve_exact(bytes)
+            .map_err(io::Error::other)?;
+        canonical.extend_from_slice(&count.to_le_bytes());
+        canonical.extend_from_slice(&[0; 4]);
+        canonical.extend_from_slice(&self.start.to_le_bytes());
+        for run in &self.runs {
+            canonical.extend_from_slice(&end(run).to_le_bytes());
+            canonical.extend_from_slice(&run.lcn.map_or(-1, |n| n as i64).to_le_bytes());
+        }
+        let proof = Proof {
+            encoding: RANGE_ENCODING.into(),
+            canonical_sha256: hex::encode(crate::content_digest::sha256(&canonical)?),
+            extent_count: self.runs.len(),
+            virtual_clusters: self.covered,
+            pages: self.pages,
+        };
+        Ok(Capture {
+            canonical,
+            runs: self.runs,
+            proof,
+        })
+    }
+}
+/// Ask for the mapping of the VCNs from `start` to `limit` and no more:
+/// `ask(vcn, capacity)` makes the query for the page that starts at `vcn`,
+/// as for [`assemble_while_asking`]. Pages are asked for until one ends at
+/// or beyond `limit`, or the mapping ends. The first page has room for a
+/// few extents only: a range that was just moved to one place is one extent,
+/// and a page of the usual size would be filled with the extents that follow
+/// it, which nobody asked about. The capture's runs begin at `start`; its
+/// proof is of the [`RANGE_ENCODING`] form.
+pub fn assemble_range_while_asking(
+    limits: Limits,
+    start: u64,
+    limit: u64,
+    mut ask: impl FnMut(u64, usize) -> IoctlQuery,
+) -> io::Result<Capture> {
+    /// Room for the header and four extents.
+    const FIRST_PAGE: usize = 16 + 16 * 4;
+    if start >= limit {
+        return Err(bad("ranged retrieval range is empty"));
+    }
+    let mut assembler = Assembler::with_limits_from(limits, start)?;
+    let mut first = true;
+    while assembler.response_capacity() != 0 {
+        let capacity = if first {
+            assembler.response_capacity().min(FIRST_PAGE)
+        } else {
+            assembler.response_capacity()
+        };
+        first = false;
+        let query = ask(assembler.next_vcn(), capacity);
+        if assembler.push(&query)? || assembler.next_vcn() >= limit {
+            break;
+        }
+    }
+    assembler.finish_range(limit)
 }
 /// Ask for a complete mapping page by page and assemble each response as
 /// it arrives: `ask(vcn, capacity)` makes the query for the page that

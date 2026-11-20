@@ -66,7 +66,13 @@ struct Entry {
 struct Verified {
     snapshot: ReferenceFileSnapshot,
     modified: SystemTime,
+    // The digest the file's records name, in hex: the BLAKE3 of a record
+    // store in the current format (its header says so), the SHA-256 of any
+    // other file. The field keeps its historical name.
     sha256: String,
+    // The BLAKE3 of the same bytes: what a later full re-read of the held
+    // file is compared with. The same value as `sha256` for a store.
+    reread: [u8; 32],
 }
 struct State {
     windows_native_allocation: bool,
@@ -297,6 +303,8 @@ struct FilePin {
     snapshot: ReferenceFileSnapshot,
     modified: SystemTime,
     sha256: String,
+    // See `Verified::reread`.
+    reread: [u8; 32],
     _parents: Vec<File>,
     external_origin: Option<Arc<ExternalOriginRoot>>,
     last_full: n2r_win32::verify_policy::LastFull,
@@ -479,10 +487,10 @@ fn parents(path: &Path) -> Result<Vec<File>> {
     }
     Ok(result)
 }
-/// How many working files are read and hashed at once. A file's SHA-256 is
-/// one stream, read on one thread and hashed on a second
-/// (`sha256_native::hash_next`), so a lane is two of the machine's
-/// processors.
+/// How many working files are read and hashed at once. A file is read on
+/// one thread; its BLAKE3 is computed on the pool's threads, a few
+/// milliseconds for each second of reading, so the lanes are what reads at
+/// the same time.
 fn hash_lanes() -> usize {
     std::thread::available_parallelism()
         .map_or(1, |cores| cores.get() / 2)
@@ -538,7 +546,31 @@ fn revalidate_pins(pins: &[&FilePin], lanes: usize) -> Result<()> {
         result
     })
 }
-fn inspect(file: &mut File, maximum: u64, expected: &str) -> Result<Verified> {
+/// How a file is held to the digest its records name.
+#[derive(Clone, Copy)]
+enum Hold<'a> {
+    /// For the first time, by the algorithm of its format: BLAKE3 for a
+    /// record store in the current format, SHA-256 for anything else
+    /// (`metadata_pages::file_digest_algorithm`).
+    ByFormat,
+    /// For the first time, by the algorithm its writer says it hashed the
+    /// bytes with: a file whose content is not the writer's to shape.
+    By(n2r_win32::bulk_digest::Algorithm),
+    /// Again, by the BLAKE3 taken when it was first held.
+    Reread(&'a [u8; 32]),
+}
+/// Holds `file` to `expected`, the digest its records name, and to nothing
+/// having changed while it was read.
+///
+/// A file's SHA-256 is one stream of a quarter of a gigabyte a second here,
+/// and the gate before the first write to the source re-reads every working
+/// file, 16 GB on the full Windows volume. So a file that is held for the
+/// first time has its BLAKE3 taken as well, from the same read where
+/// `expected` is a SHA-256, and every complete re-read after that is
+/// compared with the BLAKE3: it says the same about the same bytes, at the
+/// speed they can be read.
+fn inspect(file: &mut File, maximum: u64, expected: &str, hold: Hold<'_>) -> Result<Verified> {
+    use n2r_win32::bulk_digest::{self, Algorithm};
     ensure!(
         expected.len() == 64
             && expected
@@ -552,19 +584,53 @@ fn inspect(file: &mut File, maximum: u64, expected: &str) -> Result<Verified> {
         "artifact must have exactly one link"
     );
     let modified = file.metadata()?.modified()?;
-    // A record store this process has just written already has its SHA-256,
+    // A record store this process has just written already has its digest,
     // computed from the bytes written; pinning it read the whole file back to
     // hash it again (every store, gigabytes in all). Under the check-once
-    // policy the writer's SHA stands, when it is the expected one and the
-    // file is still exactly the file that writer closed.
-    let written = n2r_win32::metadata_pages::sha256_if_written_here(file).map(hex::encode);
-    let sha = if written.as_deref() == Some(expected) {
-        expected.to_owned()
+    // policy the writer's digest stands, when it is the expected one and the
+    // file is still exactly the file that writer closed. It is a BLAKE3, and
+    // so also what a later re-read is compared with.
+    let written = n2r_win32::metadata_pages::digest_if_written_here(file)
+        .filter(|written| hex::encode(written) == expected);
+    let (sha, reread) = if let Some(written) = written {
+        ensure!(
+            match hold {
+                Hold::ByFormat | Hold::By(Algorithm::Blake3) => true,
+                Hold::By(Algorithm::Sha256) => false,
+                Hold::Reread(reread) => *reread == written,
+            },
+            "closed artifact identity/bytes changed"
+        );
+        (expected.to_owned(), written)
     } else {
         let position = file.stream_position()?;
-        let hash = n2r_win32::sha256_native::held_file(file, snapshot.file_bytes);
+        let hashed = (|| -> std::io::Result<(String, [u8; 32])> {
+            let algorithm = match hold {
+                Hold::Reread(reread) => {
+                    let actual =
+                        bulk_digest::held_file(Algorithm::Blake3, file, snapshot.file_bytes)?;
+                    // The digest the records name stands only with the bytes
+                    // it was taken from.
+                    let named = if actual == *reread { expected } else { "" };
+                    return Ok((named.to_owned(), actual));
+                }
+                Hold::ByFormat => n2r_win32::metadata_pages::file_digest_algorithm(file)?,
+                Hold::By(algorithm) => algorithm,
+            };
+            match algorithm {
+                Algorithm::Blake3 => {
+                    let actual =
+                        bulk_digest::held_file(Algorithm::Blake3, file, snapshot.file_bytes)?;
+                    Ok((hex::encode(actual), actual))
+                }
+                Algorithm::Sha256 => {
+                    let both = bulk_digest::sha256_and_blake3(file, snapshot.file_bytes)?;
+                    Ok((hex::encode(both.sha256), both.blake3))
+                }
+            }
+        })();
         file.seek(SeekFrom::Start(position))?;
-        hex::encode(hash?)
+        hashed?
     };
     ensure!(
         sha == expected
@@ -576,6 +642,7 @@ fn inspect(file: &mut File, maximum: u64, expected: &str) -> Result<Verified> {
         snapshot,
         modified,
         sha256: sha,
+        reread,
     })
 }
 fn validate_prepared_state(
@@ -2609,9 +2676,8 @@ impl ArtifactPathPermit {
             .group
             .arena
             .reserve_ram(before.file_bytes.min(HASH_WORKSPACE))?;
-        let hash = hex::encode(n2r_win32::sha256_native::hash_range(
+        let hash = hex::encode(n2r_win32::metadata_pages::pinning_digest(
             &mut file,
-            0,
             before.file_bytes,
         )?);
         drop(file);
@@ -2653,20 +2719,42 @@ impl ArtifactPathPermit {
         group.held = add(group.held, bytes)?;
         Ok(())
     }
+    /// Holds the closed file to `expected_sha256`, the digest its writer
+    /// computed: the BLAKE3 of a record store in the current format, the
+    /// SHA-256 of any other file (the parameter keeps its historical name).
     pub fn verify_closed(self, expected_sha256: &str) -> Result<ArtifactLease> {
         let file = OpenOptions::new()
             .read(true)
             .share_mode(1)
             .custom_flags(0x00200000)
             .open(&self.path)?;
-        self.verify_file(file, expected_sha256)
+        self.verify_file(file, expected_sha256, Hold::ByFormat)
     }
     pub fn verify_closed_handle(self, file: &File, expected_sha256: &str) -> Result<ArtifactLease> {
         n2r_win32::file_storage::require_readonly_access(file)?;
         let file = n2r_win32::file_storage::duplicate_readonly(file)?;
-        self.verify_file(file, expected_sha256)
+        self.verify_file(file, expected_sha256, Hold::ByFormat)
     }
-    fn verify_file(mut self, mut file: File, expected_sha256: &str) -> Result<ArtifactLease> {
+    /// As [`Self::verify_closed_handle`] for a file whose bytes are not its
+    /// writer's to shape (bytes copied from a volume), so that nothing in
+    /// them is read as a format: `expected` is of `algorithm`, which the
+    /// writer hashed them with.
+    pub fn verify_closed_handle_by(
+        self,
+        algorithm: n2r_win32::bulk_digest::Algorithm,
+        file: &File,
+        expected: &str,
+    ) -> Result<ArtifactLease> {
+        n2r_win32::file_storage::require_readonly_access(file)?;
+        let file = n2r_win32::file_storage::duplicate_readonly(file)?;
+        self.verify_file(file, expected, Hold::By(algorithm))
+    }
+    fn verify_file(
+        mut self,
+        mut file: File,
+        expected_sha256: &str,
+        hold: Hold<'_>,
+    ) -> Result<ArtifactLease> {
         let maximum = {
             let state = self
                 .group
@@ -2688,7 +2776,7 @@ impl ArtifactPathPermit {
         // The handle is read-only here; reserve the maximum hash buffer before
         // inspecting its current length, so a changing file cannot outgrow it.
         let _hash_ram = self.group.arena.reserve_ram(maximum.min(HASH_WORKSPACE))?;
-        let verified = inspect(&mut file, maximum, expected_sha256)?;
+        let verified = inspect(&mut file, maximum, expected_sha256, hold)?;
         let parent_guid = n2r_win32::file_storage::final_path_guid(
             self._parents
                 .first()
@@ -2728,6 +2816,7 @@ impl ArtifactPathPermit {
             snapshot: verified.snapshot.clone(),
             modified: verified.modified,
             sha256: verified.sha256.clone(),
+            reread: verified.reread,
             _parents: std::mem::take(&mut self._parents),
             external_origin: self.external_origin.clone(),
             last_full: n2r_win32::verify_policy::LastFull::new(),
@@ -2887,6 +2976,7 @@ impl FilePin {
             file.as_mut().context("artifact owner closed")?,
             self.snapshot.file_bytes,
             &self.sha256,
+            Hold::Reread(&self.reread),
         )?;
         ensure!(
             current.snapshot == self.snapshot && current.modified == self.modified,
@@ -2977,9 +3067,15 @@ impl ArtifactLease {
                 )?,
                 modified: file.metadata()?.modified()?,
                 sha256: pin.sha256.clone(),
+                reread: pin.reread,
             }
         } else {
-            inspect(&mut file, pin.snapshot.file_bytes, &pin.sha256)?
+            inspect(
+                &mut file,
+                pin.snapshot.file_bytes,
+                &pin.sha256,
+                Hold::Reread(&pin.reread),
+            )?
         };
         if verified.snapshot != pin.snapshot || verified.modified != pin.modified {
             let _diagnostic_ram = group.arena.reserve_ram(8192)?;

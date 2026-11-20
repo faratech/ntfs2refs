@@ -5,6 +5,25 @@ entry are in the pull request named beside it and in `docs/performance.md`.
 
 ## Unreleased
 
+### What it converts
+
+- **The Windows the machine runs from (C:), with one command and a
+  restart**: `ntfs2refs --drive C --scratch-directory E:\runs --boot-partition
+  B`. In Windows the run only checks C: and changes nothing on it. It puts the
+  converter inside the machine's own recovery environment and restarts. It
+  converts C: there and starts Windows again, on ReFS. `E:` holds the working
+  files: twice what C: holds, plus the reserve the run keeps. `B:` is a FAT32
+  partition of 100 MB or more. Both must be on a disk other than Windows', for
+  example one USB drive. Without `--boot-partition`, the one FAT32 partition
+  on the working directory's disk is used. If power is lost or the machine is
+  reset during the conversion, the next start goes back into the recovery
+  environment, which recovers from the run's journal. A recovery that cannot
+  finish stops at a prompt rather than start a Windows that may be half
+  converted. Windows' own boot files and boot store are not changed. Shown on
+  Windows 11 build 26300; not yet on Windows Server (#115, #186).
+- **A volume that shares an MBR disk with other partitions**: the disk's
+  other partitions go offline for the length of the run. An installed Windows
+  on such a disk is still refused (#168).
 - **A directory's case-sensitive mark is carried over on Windows Server
   2025**: for a data volume converted there, every directory of the new
   volume is made with the mark its source directory has, and the mark is
@@ -14,6 +33,48 @@ entry are in the pull request named beside it and in `docs/performance.md`.
   offline. A volume whose root directory is itself marked converts without
   any mark, as before. Two names that differ only by case are still refused
   (#103, #120).
+
+### Verification and ways back
+
+- **`--verify fast|thorough`** names the verification a conversion makes.
+  `fast`, the default, proves data that stays in place by its extents.
+  `thorough` reads every byte, as `--verify-full-content` did; that spelling
+  still works (#148).
+- **`--review`**, for a data volume on a disk of its own: the conversion stops
+  before the handoff, with the new ReFS volume mounted read-only. Look at it,
+  then commit with `--recover`, or give the NTFS volume back with
+  `--recover --rollback`. A write made during the review refuses both (#110).
+- **A rollback gives the drive letter back** where Windows does not mount
+  volumes by itself (#174).
+- **A finished recovery or cancellation detaches the run's working volume**
+  (`shadow.vhdx`), so that the run folder can be deleted. In the recovery
+  environment it is tried again once the recovery has ended. If it is still
+  refused, the report says how to detach it by hand (#175, #182).
+- **A run cut off before it started writing** gets the NTFS volume back from
+  the `--recover` command it printed. There is nothing to resume (#177).
+
+### Speed and memory
+
+- **Several threads where one did the work**: observing the source's objects,
+  building the new volume's metadata, hard links and short-name links,
+  reading the converted files back, and hashing the working files before the
+  first write. Every check is the same. Where order matters, results are taken
+  in the order one thread would have taken them. Helpers are as many as the
+  processors and the memory budget allow (#140).
+- **Less repeated work**: a working file is hashed once per check, not once
+  for each record store that holds it. Extent placement costs less per move.
+  Waits for a volume to appear look again sooner (#140).
+- **Memory follows the volume, not the budget**. The sorts, the MFT
+  bootstrap, placement and the recovery audit reserve what the volume needs.
+  Caches are given back before a run goes beyond its budget (#129).
+
+### What it says
+
+- **The `memory:` line** says what the run set aside at its start, its peak
+  and how much of that was caches, and what the process itself took (#167).
+- **Windows' drive optimization**: a conversion or recovery that sees it
+  running says what it is and how to turn its task off for a conversion
+  (#132).
 
 ## 0.0.1
 

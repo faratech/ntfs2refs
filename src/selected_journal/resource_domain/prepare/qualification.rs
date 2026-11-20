@@ -805,8 +805,10 @@ fn require_owners_between_frozen_checks(
         let immutable_sha256 = prepared.inner.ticket.immutable_sha256;
         let body_bytes = prepared.inner.ticket.journal_length - MARKERLESS_BODY;
         let markerless = prepared.inner.ticket.marker_profile.is_none();
+        let algorithm = prepared.inner.ticket.digest_algorithm();
         if !(markerless
-            && n2r_win32::sha256_native::journal_body_already_verified(
+            && n2r_win32::bulk_digest::journal_body_already_verified(
+                algorithm,
                 &immutable_sha256,
                 MARKERLESS_BODY,
                 body_bytes,
@@ -831,7 +833,8 @@ fn require_owners_between_frozen_checks(
                 "prepared journal immutable bytes changed before qualification"
             );
             if markerless {
-                n2r_win32::sha256_native::note_journal_body_verified(
+                n2r_win32::bulk_digest::note_journal_body_verified(
+                    algorithm,
                     &immutable_sha256,
                     MARKERLESS_BODY,
                     body_bytes,

@@ -89,14 +89,12 @@ impl PartitionPublishedFiles {
         deny_second_writer(&publication_snapshot)?;
         deny_second_writer(&locator_snapshot)?;
         ensure!(
-            n2r_win32::sha256_native::hash_range(
+            n2r_win32::metadata_pages::pinning_digest(
                 &mut publication,
-                0,
                 publication_snapshot.file_bytes
             )? == publication_sha256
-                && n2r_win32::sha256_native::hash_range(
+                && n2r_win32::metadata_pages::pinning_digest(
                     &mut locator,
-                    0,
                     locator_snapshot.file_bytes
                 )? == locator_sha256,
             "pre-AP publication/locator bytes differ from actual publisher owners"

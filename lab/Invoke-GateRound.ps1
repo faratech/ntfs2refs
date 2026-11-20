@@ -153,6 +153,10 @@ $fixtureRuns = @(
     # pass the check of the restored NTFS against the source's fingerprint.
     @{ Name = 'seal-recorded-resume'; Arguments = $fixture40 + @{ InterruptAt = 'apply-seal-recorded' } }
     @{ Name = 'verify-readonly-rollback'; Arguments = $fixture40 + @{ InterruptAt = 'verify-source-readonly'; RecoverMode = 'rollback' } }
+    # The handoff marker torn as the finalizer writes it, after the verification
+    # passed, with the disk sealed (#1, #148): the recovery has to report it,
+    # settle it as not written, verify again and hand off.
+    @{ Name = 'torn-handoff-resume'; Arguments = $fixture40 + @{ InterruptAt = 'verify-passed'; TearMarker = 'handoff' } }
 )
 $fullRun = @{ Name = 'full-system'; Arguments = @{ MemoryGB = $MaxVmGB } }
 
@@ -194,8 +198,8 @@ $dataCases = @(
     "lived-in-verify-passed-rollback|$lived -InterruptAt verify-passed -RecoverMode rollback -Check"
     # --verify thorough keeps the flow before #148: the handoff is written by
     # the apply, before anything is mounted.
-    "thorough|$lived -ConverterArgs --verify=thorough -Check"
-    "thorough-handoff-durable-resume|$lived -ConverterArgs --verify=thorough -InterruptAt apply-handoff-durable -Check"
+    "thorough|$lived -Verify thorough -Check"
+    "thorough-handoff-durable-resume|$lived -Verify thorough -InterruptAt apply-handoff-durable -Check"
     'shared-apply-rollback|-Siblings -InterruptAt apply-mid-ranges -RecoverMode rollback -Check'
     "stop-supply-cancel|$lived -StopDuringPreparation payload_supply"
     "stop-journal-cancel|$lived -StopDuringPreparation recovery_journal"

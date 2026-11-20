@@ -769,12 +769,28 @@ mod review_publication_tests {
 /// finalizer writes the handoff while the source is sealed offline and
 /// read-only (3), so a torn one is settled there as well as where every
 /// other run writes it.
+///
+/// And in a recovery environment (WinRE, the running-Windows route), which
+/// starts every disk offline and read-only (3) whatever the run had left it
+/// in, before this recovery looks at it: a marker written beside a disk that
+/// was offline and writable (1), as the rollback intent, the handoff and a
+/// rollback's abort are, is found beside 3 there, and is settled there as
+/// well. The disk is put back in the writer's state afterwards from the
+/// settled lifecycle (`restore_writer_state_lost_in_recovery_environment`).
+/// A disk online, read-only or not, is still refused there, as everywhere.
 fn marker_source_attributes_of_run(
     marker: crate::interrupted_marker::Marker,
     verify_before_handoff: bool,
+    in_recovery_environment: bool,
 ) -> &'static [u64] {
+    use crate::interrupted_marker::Marker;
     match marker {
-        crate::interrupted_marker::Marker::Handoff if verify_before_handoff => &[1, 3],
+        Marker::Handoff if verify_before_handoff => &[1, 3],
+        Marker::RollbackIntent | Marker::Handoff | Marker::AbortAfterRollback
+            if in_recovery_environment =>
+        {
+            &[1, 3]
+        }
         marker => marker_source_attributes(marker),
     }
 }
@@ -846,7 +862,11 @@ fn settle_interrupted_marker(
             path,
             source.disk_number,
             state.disk_attributes,
-            marker_source_attributes_of_run(found.marker, verify_before_handoff),
+            marker_source_attributes_of_run(
+                found.marker,
+                verify_before_handoff,
+                n2r_win32::offline_environment::in_recovery_environment(),
+            ),
         )?;
     }
     let settled = super::sj::settle_interrupted_marker(journal, ticket)

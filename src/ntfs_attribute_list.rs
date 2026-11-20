@@ -73,6 +73,23 @@ fn validate_working_assembly(
     let Some(maximum) = limits.working_bytes else {
         return Ok(());
     };
+    let bytes = working_assembly_bytes(base, extensions, list_bytes)?;
+    ensure!(
+        bytes <= maximum,
+        "complete assembly exceeds admitted working RAM"
+    );
+    Ok(())
+}
+
+/// What a complete assembly is counted as holding while it is put together
+/// and replayed: the figure [`validate_working_assembly`] holds to the
+/// admitted working memory, and what an owner that leases by the records it
+/// has read (the MFT's bootstrap) leases before assembling them.
+pub(crate) fn working_assembly_bytes(
+    base: &RecordEvidence,
+    extensions: &[RecordEvidence],
+    list_bytes: usize,
+) -> Result<u64> {
     let mut bytes = (list_bytes as u64)
         .checked_mul(8)
         .context("list working RAM overflow")?;
@@ -114,12 +131,42 @@ fn validate_working_assembly(
                 .context("assembly RAM overflow")?;
         }
     }
-    ensure!(
-        bytes <= maximum,
-        "complete assembly exceeds admitted working RAM"
-    );
-    Ok(())
+    Ok(bytes)
 }
+
+/// The most [`working_assembly_bytes`] counts for one physical record of
+/// `record_bytes`, whatever the record holds: what is leased for a record
+/// before it is read. From the record's own form (`parse_record`):
+///
+/// - an attribute takes 24 bytes or more, so there are `record / 24` at the
+///   most, each with its inventory row and two digests' text;
+/// - all names together are within the record's bytes;
+/// - a run takes two bytes or more, so there are `record / 2`, in vectors
+///   that may have grown to twice their length and are never made smaller
+///   than four;
+/// - resident values are written out as hexadecimal: twice the record.
+///
+/// Sixteen copies of each, as the count takes them, and the record's own
+/// row and digest eight times.
+pub(crate) fn record_working_bound(record_bytes: u32) -> Result<u64> {
+    let record = u64::from(record_bytes);
+    let attributes = record / 24 + 1;
+    let extent = std::mem::size_of::<crate::ntfs_inspect::Extent>() as u64;
+    let inventory = std::mem::size_of::<AttributeInventory>() as u64 + 2 * DIGEST_TEXT_BYTES;
+    attributes
+        .checked_mul(inventory)
+        .and_then(|n| n.checked_add(record))
+        .and_then(|n| n.checked_add((record + 4 * attributes).checked_mul(extent)?))
+        .and_then(|n| n.checked_add(record.checked_mul(2)?))
+        .and_then(|n| n.checked_mul(16))
+        .and_then(|n| {
+            n.checked_add((std::mem::size_of::<RecordEvidence>() as u64 + DIGEST_TEXT_BYTES) * 8)
+        })
+        .context("record working RAM bound overflow")
+}
+/// More than the text of any digest a record's evidence carries (SHA-256 in
+/// hexadecimal is 64 bytes).
+const DIGEST_TEXT_BYTES: u64 = 128;
 
 trait BitmapInput {
     fn byte_len(&self) -> u64;

@@ -528,6 +528,25 @@ impl SourceScratch {
             _arena_ram: arena_ram,
         })
     }
+    /// As [`Self::lease_ram`] (caches are given up for it), granted only
+    /// where `beside` more bytes would still have room afterwards: for
+    /// memory that buys speed and must leave what its owner needs next (a
+    /// sort's batch, which is written out through page windows when it is
+    /// full). A refusal is for the caller to do without.
+    #[track_caller]
+    pub(crate) fn lease_ram_beside(&self, bytes: u64, beside: u64) -> Result<SourceRamLease> {
+        let both = bytes.checked_add(beside).context("metadata RAM overflow")?;
+        while !self.has_room_for(both)? {
+            if !n2r_win32::evict::evict_oldest() {
+                break;
+            }
+        }
+        ensure!(
+            self.has_room_for(both)?,
+            "no room in the source metadata working RAM"
+        );
+        self.lease_ram(bytes)
+    }
     fn has_room_for(&self, bytes: u64) -> Result<bool> {
         let ledger = self.0.borrow();
         Ok(ledger
@@ -1451,6 +1470,10 @@ impl PagedMetadataRange {
         *self.resident.get_mut() = None;
         // Not to be held again by itself: the caller is done with it.
         self.held_again_after.set(u64::MAX);
+    }
+    #[cfg(test)]
+    pub(crate) fn is_held_in_memory(&self) -> bool {
+        self.held().is_some()
     }
     /// The store's bytes in memory, while they are held.
     fn held(&self) -> Option<n2r_win32::evict::Evictable<ResidentMetadataCache>> {

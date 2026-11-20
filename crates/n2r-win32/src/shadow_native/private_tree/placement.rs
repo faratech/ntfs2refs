@@ -1786,6 +1786,31 @@ fn unfinished_runs(
     Ok(out)
 }
 
+/// Of the row a recovered target's mapping queries are limited to, what the
+/// mapping of a target of `rounded` bytes with `allocated` bytes of
+/// allocation can take. Every allocated extent is a cluster or more, and
+/// between two of them there is one hole at the most: a target of `n`
+/// allocated clusters has no more than `2n + 1` extents. Counted here are
+/// twice its clusters and one response's worth more, at what a row holds
+/// them as ([`crate::retrieval_paging::Limits::for_resource_bytes`]: a
+/// quarter of the row for what is returned, sixteen bytes an extent, twice,
+/// and sixteen a page). The workspace was eight of the row itself, an
+/// eighth of the run's memory, for every target, whatever it held.
+fn recovered_retrieval_bytes(row: usize, rounded: u64, allocated: u64) -> usize {
+    let per_response = crate::stream_layout::MAX_EXTENTS as u64;
+    let clusters = rounded.max(allocated).div_ceil(cluster());
+    let extents = clusters.saturating_mul(2).saturating_add(per_response);
+    let pages = (extents / per_response).saturating_mul(2).max(2);
+    let returned = extents
+        .saturating_mul(16)
+        .saturating_add(16)
+        .saturating_mul(2)
+        .saturating_add(pages.saturating_mul(16));
+    usize::try_from(returned.saturating_mul(4))
+        .unwrap_or(usize::MAX)
+        .min(row)
+}
+
 /// Native audit of complete CURRENT retrievals against BOTH full bitmaps.
 /// Bitmap occupancy does not create ownership: every range came from a held
 /// recovered file's own complete retrieval capture, and aliases refuse.
@@ -1821,8 +1846,13 @@ pub(super) fn audit_recovered_maps(tree: &PrivateTree, bytes: u64, moves: usize)
         unwritten::recovery::require_zero_storage_vdl(&target.file, rounded)?;
         let evidence_bytes =
             usize::try_from(admission.budget.max_row_bytes).map_err(io::Error::other)?;
+        // The queries stay limited to the row; their workspace is what
+        // this target's allocation can make of it. (`standard` is held to
+        // what it is here until the capture has been read.)
+        let workspace =
+            recovered_retrieval_bytes(evidence_bytes, rounded, layout::u64_at(&standard, 0)?);
         let _retrieval_memory = payer.reserve(
-            (evidence_bytes as u64)
+            (workspace as u64)
                 .checked_mul(8)
                 .and_then(|n| n.checked_add(4 * 1024 * 1024))
                 .ok_or_else(|| invalid("recovered target retrieval RAM overflow"))?,
@@ -2941,6 +2971,47 @@ fn run_domain_inner(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_recovered_targets_mapping_workspace_holds_every_extent_it_can_have() {
+        use super::recovered_retrieval_bytes;
+        use crate::retrieval_paging::Limits;
+        const MIB: usize = 1024 * 1024;
+        // A machine with 16 GB free limits a row to 141 MiB.
+        let row = 141 * MIB;
+        let cluster = super::cluster();
+        // A target of one cluster: under a megabyte where it was the row,
+        // and with the four fixed MiB under six where it was 1.1 GB.
+        let small = recovered_retrieval_bytes(row, cluster, cluster);
+        assert!(small < MIB / 2, "{small}");
+        assert!(8 * small + 4 * MIB < 6 * MIB);
+        for (rounded, allocated) in [
+            (0, 0),
+            (cluster, cluster),
+            (0, 64 * cluster),
+            (1 << 20, 1 << 20),
+            (1 << 30, 1 << 28),
+            (1 << 28, 1 << 30),
+            (1 << 31, 1 << 31),
+        ] {
+            let workspace = recovered_retrieval_bytes(row, rounded, allocated);
+            assert!(workspace < row, "{rounded} {allocated}");
+            // The most extents the target can be in, and the responses that
+            // many take.
+            let extents = usize::try_from(allocated.div_ceil(cluster) * 2 + 1).unwrap();
+            let pages = extents.div_ceil(crate::stream_layout::MAX_EXTENTS) + 1;
+            // What a row of the workspace's size is held to by the queries'
+            // own limits has room for all of them.
+            let holds = Limits::for_resource_bytes(workspace).unwrap();
+            assert!(holds.max_extents >= extents, "{rounded} {allocated}");
+            assert!(holds.max_returned_bytes >= 16 * extents + 16 * pages);
+            assert!(holds.max_pages >= pages, "{rounded} {allocated}");
+        }
+        // A target that could fill the row is held to it, as before.
+        assert_eq!(recovered_retrieval_bytes(row, 1 << 40, 1 << 40), row);
+        assert_eq!(recovered_retrieval_bytes(row, u64::MAX, u64::MAX), row);
+        assert_eq!(recovered_retrieval_bytes(65536, 1 << 30, 1 << 30), 65536);
+    }
+
     #[test]
     fn deferred_steps_are_paid_for_as_the_plan_grows_and_not_by_what_it_may_hold() {
         use crate::shadow_native::report_memory::test_payer::Counted;

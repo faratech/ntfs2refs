@@ -338,6 +338,35 @@ pub(super) fn read<R: Read + Seek>(reader: &mut R, geometry: &NtfsGeometry) -> R
     })
 }
 
+/// The working memory of the paged bootstrap: leased as the records it
+/// reads are known, never beyond what the assembly limits were made from.
+#[cfg(windows)]
+struct WorkingRam<'a> {
+    scratch: &'a paged_storage::SourceScratch,
+    admitted: u64,
+    held: u64,
+    leases: Vec<paged_storage::SourceRamLease>,
+}
+#[cfg(windows)]
+impl WorkingRam<'_> {
+    /// Hold `bytes` in all from here on, or all that was admitted where
+    /// that is less: an assembly that takes more is refused by its limits.
+    fn cover(&mut self, bytes: u64, what: &str) -> Result<()> {
+        let wanted = bytes.min(self.admitted);
+        if wanted > self.held {
+            let more = wanted - self.held;
+            let lease = self.scratch.lease_ram(more).with_context(|| {
+                format!(
+                    "the MFT's bootstrap (FILE 0) needs {more} more bytes of working memory for {what}"
+                )
+            })?;
+            self.leases.push(lease);
+            self.held = wanted;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(windows)]
 pub(super) struct PagedBootstrap {
     pub record: Record,
@@ -360,9 +389,20 @@ pub(super) fn read_paged<R: Read + Seek>(
     use assembled_io::{PagedMftResolver, SharedBitmap};
     use paged_storage::PagedMetadataRange;
     use std::rc::Rc;
+    // What may be admitted is a quarter of the budget, as before; what is
+    // leased follows the records read. (The quarter was leased whole for
+    // the whole bootstrap, whatever the MFT held: 1,122 MiB at this place
+    // on a volume of 143,000 objects, among its largest holders.)
     let working = scratch.budget().ram_bytes / 4;
-    let _working_ram = scratch.lease_ram(working)?;
     let limits = lists::AssemblyLimits::from_working_bytes(working, geometry.file_record_size)?;
+    let record_work = lists::record_working_bound(geometry.file_record_size)?;
+    let mut working_ram = WorkingRam {
+        scratch,
+        admitted: working,
+        held: 0,
+        leases: Vec::new(),
+    };
+    working_ram.cover(record_work, "its base record")?;
     let mut raw = vec![0; geometry.file_record_size as usize];
     read_at(
         reader,
@@ -468,6 +508,14 @@ pub(super) fn read_paged<R: Read + Seek>(
         known_mapping_resource(&data.report, geometry, limits.runs)?;
         let list = unnamed(&record, 0x20)?;
         lists::validate_list_resource(&list.report, geometry, limits)?;
+        // The list as read, its entries, those still pending and their
+        // identities: as the paged assembler pays for a file's list.
+        let list_work = list
+            .report
+            .logical_size
+            .saturating_mul(32)
+            .saturating_add(1024 * 1024);
+        working_ram.cover(record_work.saturating_add(list_work), "its attribute list")?;
         let value = read_small_attribute(reader, list, geometry, limits.list_bytes as u64)?;
         let entries = lists::parse_with_limit(&value, limits.list_bytes)?;
         ensure!(
@@ -484,6 +532,14 @@ pub(super) fn read_paged<R: Read + Seek>(
             !pending.is_empty() && pending.len() <= limits.extension_records,
             "MFT extensions exceed admitted per-record working RAM"
         );
+        // Every extension record before the first is read.
+        working_ram.cover(
+            (pending.len() as u64)
+                .saturating_add(1)
+                .saturating_mul(record_work)
+                .saturating_add(list_work),
+            "its extension records",
+        )?;
         let mut identities = BTreeSet::new();
         for entry in &pending {
             ensure!(
@@ -560,6 +616,12 @@ pub(super) fn read_paged<R: Read + Seek>(
                 "MFT self-mapping cannot reach a remaining extension"
             );
         }
+        // What the assembly is counted as holding, by the count it is then
+        // held to the admitted memory with.
+        working_ram.cover(
+            lists::working_assembly_bytes(&base, &extensions, value.len())?,
+            "its assembly",
+        )?;
         let (canonical, assembly) =
             lists::assemble_mft_resource(base, extensions, &value, &bitmap, geometry, limits)?;
         let old = std::mem::take(&mut record.attributes);
@@ -603,4 +665,135 @@ pub(super) fn read_paged<R: Read + Seek>(
         record_count,
         resolver,
     })
+}
+
+#[cfg(all(test, windows))]
+mod working_ram_tests {
+    use super::*;
+
+    fn geometry(record: u32) -> NtfsGeometry {
+        NtfsGeometry {
+            bytes_per_sector: 512,
+            sectors_per_cluster: 8,
+            cluster_size: 4096,
+            total_sectors: 1 << 40,
+            volume_size: 1 << 49,
+            total_clusters: 1 << 37,
+            mft_lcn: 4,
+            mftmirr_lcn: 8,
+            file_record_size: record,
+            index_record_size: 4096,
+            serial_number: 1,
+        }
+    }
+    /// A FILE record of `size` bytes whose attributes are `body`, with its
+    /// update sequence array applied as it is on disk.
+    fn file_record(size: usize, body: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0u8; size];
+        let entries = usa_entries(size);
+        let first = (48 + entries * 2).next_multiple_of(8);
+        bytes[..4].copy_from_slice(b"FILE");
+        bytes[4..6].copy_from_slice(&48u16.to_le_bytes());
+        bytes[6..8].copy_from_slice(&(entries as u16).to_le_bytes());
+        bytes[16..18].copy_from_slice(&1u16.to_le_bytes());
+        bytes[18..20].copy_from_slice(&1u16.to_le_bytes());
+        bytes[20..22].copy_from_slice(&(first as u16).to_le_bytes());
+        bytes[22..24].copy_from_slice(&1u16.to_le_bytes());
+        let used = first + body.len() + 8;
+        assert!(used <= size, "{used} of {size}");
+        bytes[24..28].copy_from_slice(&(used as u32).to_le_bytes());
+        bytes[28..32].copy_from_slice(&(size as u32).to_le_bytes());
+        bytes[first..first + body.len()].copy_from_slice(body);
+        bytes[first + body.len()..first + body.len() + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        bytes[48..50].copy_from_slice(&[0x5a, 0xa5]);
+        for index in 1..entries {
+            let tail = index * USA_STRIDE - 2;
+            let saved = [bytes[tail], bytes[tail + 1]];
+            bytes[48 + index * 2..48 + index * 2 + 2].copy_from_slice(&saved);
+            bytes[tail..tail + 2].copy_from_slice(&[0x5a, 0xa5]);
+        }
+        bytes
+    }
+    /// One nonresident attribute whose mapping is as many runs as `bytes`
+    /// can hold: two bytes a run, the least a run takes.
+    fn densest_mapping(bytes: usize) -> Vec<u8> {
+        let size = bytes / 8 * 8;
+        let runs = (size - 64 - 1) / 2;
+        let mut raw = vec![0u8; size];
+        raw[..4].copy_from_slice(&0x80u32.to_le_bytes());
+        raw[4..8].copy_from_slice(&(size as u32).to_le_bytes());
+        raw[8] = 1;
+        raw[24..32].copy_from_slice(&(runs as u64 - 1).to_le_bytes());
+        raw[32..34].copy_from_slice(&64u16.to_le_bytes());
+        let length = runs as u64 * 4096;
+        for at in [40, 48, 56] {
+            raw[at..at + 8].copy_from_slice(&length.to_le_bytes());
+        }
+        for run in 0..runs {
+            raw[64 + run * 2] = 0x01;
+            raw[64 + run * 2 + 1] = 1;
+        }
+        raw
+    }
+    /// As many attributes as `bytes` can hold: resident, of the smallest
+    /// form, each with a digest and its value in hexadecimal.
+    fn most_attributes(bytes: usize) -> Vec<u8> {
+        let mut raw = Vec::new();
+        for instance in 0..bytes / 24 {
+            let mut attribute = [0u8; 24];
+            attribute[..4].copy_from_slice(&0x10u32.to_le_bytes());
+            attribute[4..8].copy_from_slice(&24u32.to_le_bytes());
+            attribute[14..16].copy_from_slice(&(instance as u16).to_le_bytes());
+            attribute[20..22].copy_from_slice(&24u16.to_le_bytes());
+            raw.extend_from_slice(&attribute);
+        }
+        raw
+    }
+    /// One resident attribute whose value fills `bytes`, kept as
+    /// hexadecimal.
+    fn largest_resident(bytes: usize) -> Vec<u8> {
+        let size = bytes / 8 * 8;
+        let mut raw = vec![0x77u8; size];
+        raw[..4].copy_from_slice(&0x10u32.to_le_bytes());
+        raw[4..8].copy_from_slice(&(size as u32).to_le_bytes());
+        raw[8..16].fill(0);
+        raw[16..20].copy_from_slice(&(size as u32 - 24).to_le_bytes());
+        raw[20..22].copy_from_slice(&24u16.to_le_bytes());
+        raw[22..24].fill(0);
+        raw
+    }
+
+    #[test]
+    fn what_is_leased_for_a_record_covers_what_the_fullest_record_is_counted_as() {
+        for size in [1024usize, 4096] {
+            let geometry = geometry(size as u32);
+            let bound = lists::record_working_bound(size as u32).unwrap();
+            let room = size - (48 + usa_entries(size) * 2).next_multiple_of(8) - 8;
+            let mut most = 0;
+            for (name, body) in [
+                ("runs", densest_mapping(room)),
+                ("attributes", most_attributes(room)),
+                ("resident", largest_resident(room)),
+            ] {
+                let raw = file_record(size, &body);
+                let record = parse_record(raw.clone(), &geometry)
+                    .unwrap_or_else(|error| panic!("{size} {name}: {error:#}"));
+                let evidence = assembled_io::evidence(16, &raw, &record);
+                let counted = lists::working_assembly_bytes(&evidence, &[], 0).unwrap();
+                assert!(counted <= bound, "{size} {name}: {counted} > {bound}");
+                most = most.max(counted);
+            }
+            // The bound is of the size of what it covers (it allows for
+            // the most runs, attributes and resident bytes at once, and
+            // for vectors grown to twice their length): within eight
+            // times the fullest of these records, and a few MiB, not a
+            // share of the budget.
+            assert!(bound <= most * 8, "{size}: {bound} for {most}");
+            assert!(bound <= 16 * 1024 * 1024);
+        }
+        // The densest mapping really is dense: half the record in runs.
+        let raw = file_record(1024, &densest_mapping(1024 - 56 - 8));
+        let record = parse_record(raw, &geometry(1024)).unwrap();
+        assert!(record.attributes[0].report.extents.len() >= 440);
+    }
 }

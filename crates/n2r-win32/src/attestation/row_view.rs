@@ -50,6 +50,24 @@ impl<'a> NativeObservationRow<'a> {
             .as_deref()
             .ok_or_else(|| io::Error::other("native namespace row absent"))
     }
+    /// Whether this row holds an object's metadata snapshot and nothing of
+    /// its streams, their contents or its directory listing: what every row
+    /// of a report without a content pass (`content_passes` 0) must be.
+    pub fn holds_metadata_only(&self) -> io::Result<bool> {
+        let observation = self.observation();
+        let logical = self.logical()?;
+        let namespace = self.namespace()?;
+        Ok(observation.streams_before.is_none()
+            && observation.streams_after.is_none()
+            && logical.before.is_empty()
+            && logical.after.is_empty()
+            && namespace.open_error.is_none()
+            && namespace.identity_before.is_none()
+            && namespace.identity_after.is_none()
+            && namespace.standard.is_none()
+            && namespace.before.is_none()
+            && namespace.after.is_none())
+    }
     pub fn ram_accounted(&self) -> bool {
         #[cfg(windows)]
         {

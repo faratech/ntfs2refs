@@ -457,6 +457,19 @@ fn compare_domain_with_header(
         "resource reconciliation requires the actual paged native owner"
     );
     n2r_win32::attestation::validate_domain_resources(native)?;
+    // A run that verifies once asked Windows of each object only for what
+    // the raw volume cannot say (`n2r_win32::attestation_native`): its
+    // metadata snapshot, which the report records as having no content
+    // pass. That snapshot is held to the raw volume below as before, and
+    // the security views and the case marks later stages need are taken
+    // from it. The object's streams, their mappings and contents and a
+    // directory's listing were not asked for and are not compared. Only
+    // `--verify fast` admits such a report.
+    let per_need_only = header.content_passes == 0;
+    ensure!(
+        !per_need_only || policy.is_fast(),
+        "the source was observed through Windows without its streams, contents and directory listings, which only --verify fast admits"
+    );
     ensure!(
         serde_json::to_vec(&header.request)? == serde_json::to_vec(expected.header())?,
         "native request differs from complete current source selection"
@@ -597,47 +610,55 @@ fn compare_domain_with_header(
                 file.names.iter().filter(|name| name.namespace != 2).count()
             );
         }
-        let streams = Check::from((|| {
-            ensure!(
-                observation.open_error.is_none(),
-                "native stream metadata open refused"
-            );
-            for capture in [&observation.streams_before, &observation.streams_after] {
-                crate::ntfs_stream_attestation::check_file_with_resources(
-                    &file,
-                    capture
-                        .as_ref()
-                        .context("native complete stream mapping absent")?,
-                    base,
-                    &source.header().geometry,
-                    admission,
-                )?;
-            }
-            ensure!(
-                observation.streams_before == observation.streams_after,
-                "native complete stream observations changed between passes"
-            );
-            Ok(())
-        })());
+        let streams = if per_need_only {
+            Check::not_asked()
+        } else {
+            Check::from((|| {
+                ensure!(
+                    observation.open_error.is_none(),
+                    "native stream metadata open refused"
+                );
+                for capture in [&observation.streams_before, &observation.streams_after] {
+                    crate::ntfs_stream_attestation::check_file_with_resources(
+                        &file,
+                        capture
+                            .as_ref()
+                            .context("native complete stream mapping absent")?,
+                        base,
+                        &source.header().geometry,
+                        admission,
+                    )?;
+                }
+                ensure!(
+                    observation.streams_before == observation.streams_after,
+                    "native complete stream observations changed between passes"
+                );
+                Ok(())
+            })())
+        };
         let mut logical_bytes = (0, 0, 0);
-        let logical_data = Check::from((|| {
-            ensure!(
-                observation.open_error.is_none(),
-                "native logical file open refused"
-            );
-            logical_bytes =
-                crate::ntfs_data_attestation::check_file_with_extent_evidence_domain_scoped(
-                    source,
-                    &file,
-                    &logical,
-                    &observation,
-                    header,
-                    &selector,
-                    admission,
-                    expected.windows_paths,
-                )?;
-            Ok(())
-        })());
+        let logical_data = if per_need_only {
+            Check::not_asked()
+        } else {
+            Check::from((|| {
+                ensure!(
+                    observation.open_error.is_none(),
+                    "native logical file open refused"
+                );
+                logical_bytes =
+                    crate::ntfs_data_attestation::check_file_with_extent_evidence_domain_scoped(
+                        source,
+                        &file,
+                        &logical,
+                        &observation,
+                        header,
+                        &selector,
+                        admission,
+                        expected.windows_paths,
+                    )?;
+                Ok(())
+            })())
+        };
         let directory = native_row.namespace()?;
         ensure!(
             directory.identity == selector.identity,
@@ -650,16 +671,20 @@ fn compare_domain_with_header(
                 "native directory coverage/order differs"
             );
             (
-                Some(Check::from(
-                    crate::ntfs_namespace_attestation::check_projected_directory_domain(
-                        source,
-                        source.directories(),
-                        &file,
-                        &directory,
-                        admission,
+                Some(if per_need_only {
+                    Check::not_asked()
+                } else {
+                    Check::from(
+                        crate::ntfs_namespace_attestation::check_projected_directory_domain(
+                            source,
+                            source.directories(),
+                            &file,
+                            &directory,
+                            admission,
+                        )
+                        .map(|_| ()),
                     )
-                    .map(|_| ()),
-                )),
+                }),
                 Some(Check::from(
                     super::check_directory_case_observation(
                         &file,

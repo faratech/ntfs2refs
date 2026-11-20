@@ -931,6 +931,9 @@ pub struct Report {
     /// 2: each stream's content is read twice through its open handle. 1: read
     /// once and mirrored, with stability proven by the caller's bracket over the
     /// frozen, physically read-only source (allocation-bounded mode).
+    /// 0: a run that verifies once asked Windows of each object for its
+    /// metadata snapshot alone. No row holds a stream capture, a content
+    /// digest or a directory listing, and none may be read from it.
     #[serde(default = "two_content_passes")]
     pub content_passes: u8,
 }
@@ -1554,7 +1557,7 @@ fn validate_regular_paged_resources(
     let mut observed = 0u64;
     let mut complete_reservations = 0u64;
     let mut complete_streams = 0u64;
-    if !matches!(header.content_passes, 1 | 2) {
+    if !matches!(header.content_passes, 0 | 1 | 2) {
         return Err(invalid());
     }
     let mut bad_logical = false;
@@ -1601,6 +1604,9 @@ fn validate_regular_paged_resources(
                 header.schema_version,
                 13 | 14 | 15 | 16
             ))?;
+        }
+        if header.content_passes == 0 && !owner.holds_metadata_only()? {
+            return Err(invalid());
         }
         let file = owner.logical()?;
         let selected = Some(owner.request());

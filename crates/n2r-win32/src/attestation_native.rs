@@ -675,6 +675,13 @@ struct SourceObjects<'a> {
     single_content_pass: bool,
     paged_security_limit: Option<usize>,
     limits: ResourceLimits,
+    /// A run that verifies once ([`crate::verify_policy::verifies_once`])
+    /// asks Windows of each object only what the raw volume cannot say: one
+    /// open and one metadata snapshot (both security views, and whether a
+    /// directory is marked case-sensitive; the times, attributes, extended
+    /// attributes and reparse point come with the same handle). Its
+    /// streams, their mappings and their contents are not asked for.
+    per_need_only: bool,
 }
 impl SourceObjects<'_> {
     /// The stream evidence an object may hold, taken after objects that
@@ -758,6 +765,12 @@ impl SourceObjects<'_> {
             None => source_snapshot(file, request.requires_directory_case_sensitivity()),
         };
         obs.before = Some(snapshot(&file));
+        if self.per_need_only {
+            // No stream is opened, mapped or read: the row holds no stream
+            // capture and no content digest, and says nothing about them.
+            obs.after = obs.before.clone();
+            return (obs, logical);
+        }
         let (capture, hashes) = crate::stream_native::capture(
             &file,
             capture_request,
@@ -1052,6 +1065,15 @@ pub(crate) fn collect_file_metadata_with_routes(
     let paged_security_limit = sink
         .as_deref()
         .map(|sink| usize::try_from(sink.maximum_row_bytes()).unwrap_or(usize::MAX));
+    // Only the paged collection of a conversion that verifies once: every
+    // other caller, and every test, observes each object in full.
+    let per_need_only = crate::verify_policy::verifies_once()
+        && sink.is_some()
+        && request.schema_version == 8
+        && matches!(
+            request.resource_profile,
+            Some(ResourceProfile::ResourceBoundedV4(_))
+        );
     let objects = SourceObjects {
         volume: &volume,
         request,
@@ -1059,6 +1081,7 @@ pub(crate) fn collect_file_metadata_with_routes(
         single_content_pass,
         paged_security_limit,
         limits,
+        per_need_only,
     };
     // Objects ahead of the one being taken are observed on helper threads
     // where the collection's memory is accounted (each helper's workspace and
@@ -1219,15 +1242,32 @@ pub(crate) fn collect_file_metadata_with_routes(
         return Err(invalid("native allocation evidence budget exhausted"));
     }
     let namespace = if let Some(sink) = sink.as_deref_mut() {
-        let row_limit = usize::try_from(sink.maximum_row_bytes()).map_err(io::Error::other)?;
-        crate::namespace_native::collect_rows_domain(
-            &volume,
-            request,
-            selectors,
-            true,
-            Some(row_limit),
-            |row| sink.namespace(&row),
-        )?;
+        if per_need_only {
+            // No directory is listed through Windows, and no object is
+            // opened a second time for it: each object's row says only
+            // which object it is.
+            for index in 0..selectors.len() {
+                sink.namespace(&NamespaceFile {
+                    identity: selectors.identity(index)?,
+                    open_error: None,
+                    identity_before: None,
+                    identity_after: None,
+                    standard: None,
+                    before: None,
+                    after: None,
+                })?;
+            }
+        } else {
+            let row_limit = usize::try_from(sink.maximum_row_bytes()).map_err(io::Error::other)?;
+            crate::namespace_native::collect_rows_domain(
+                &volume,
+                request,
+                selectors,
+                true,
+                Some(row_limit),
+                |row| sink.namespace(&row),
+            )?;
+        }
         NamespaceData { files: Vec::new() }
     } else {
         crate::namespace_native::collect(&volume, request)
@@ -1280,7 +1320,15 @@ pub(crate) fn collect_file_metadata_with_routes(
             files: logical_files,
         }),
         namespace: Some(namespace),
-        content_passes: if single_content_pass { 1 } else { 2 },
+        // 0 says that no stream was read at all: the report holds each
+        // object's metadata snapshot and is validated and read as that.
+        content_passes: if per_need_only {
+            0
+        } else if single_content_pass {
+            1
+        } else {
+            2
+        },
     };
     if let Some(profile) = request.resource_profile {
         let mut resources = report.measured_resources(profile)?;

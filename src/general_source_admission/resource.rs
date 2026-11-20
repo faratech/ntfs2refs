@@ -1490,10 +1490,7 @@ impl ResourceSourceContext {
                 .as_ref()
                 .map(|(_, _, group)| group.seal())
                 .transpose()?;
-            save(
-                output,
-                "source-native-witness.json",
-                &serde_json::json!({
+            let mut native_witness = serde_json::json!({
                     "schema_version":1,
                     "kind":"actual-protected-resource-source-native-witness",
                     "source_inspection_sha256":inspection_sha,
@@ -1508,7 +1505,21 @@ impl ResourceSourceContext {
                     "after":native.after(),
                     "source_admitted":false,
                     "execution_authorized":false
-                }),
+            });
+            if native.domain().header().content_passes == 0 {
+                // What this run asked Windows of each object, and what it
+                // took from the raw volume alone.
+                native_witness["per_object_scope"] = serde_json::json!({
+                    "asked_of_windows":"one open and one metadata snapshot: both security views, the case-sensitive mark of a directory, times, attributes, extended attributes, reparse point",
+                    "not_asked_of_windows":["streams and their mappings","stream contents","directory listings"],
+                    "taken_from":"the raw inspection of the frozen volume",
+                    "requested_with":"--verify fast"
+                });
+            }
+            save(
+                output,
+                "source-native-witness.json",
+                &native_witness,
                 &scratch,
                 &mut metadata,
                 &mut reservations,

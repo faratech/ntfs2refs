@@ -253,7 +253,18 @@ fn run() -> Result<u8> {
                     },
                     "verification_modes": [
                         {"option": "--verify fast", "name": "fast, extent identity (default)",
-                         "changes": "data that stays in place is proven by the identity of its extents; everything else is read and checksummed"},
+                         "changes": "data that stays in place is proven by the identity of its extents; everything else is read and checksummed",
+                         "checks_once": {
+                             "unless": "--recheck-everything",
+                             "leaves_out": [
+                                 "the second reading of the source through Windows: its streams, their mappings and contents, and its directory listings are taken from the raw volume and not compared with what Windows shows",
+                                 "reading the new volume's payloads back a second time before the changes are captured",
+                                 "reading the new volume's restored metadata back before it is frozen",
+                                 "the second probe of each short-name link on the converted volume",
+                             ],
+                             "still_asks_windows_of_each_source_object": "one metadata snapshot: its security as Windows presents it and a directory's case-sensitive mark, with the times, attributes, extended attributes and reparse point the same handle gives; these are held to the raw volume",
+                             "still_runs": "the examination of the frozen new volume that the changes are captured from, and the full verification of the converted volume after they are written",
+                         }},
                         {"option": "--verify thorough", "name": "thorough, full content",
                          "also_accepted": "--verify-full-content",
                          "changes": "what is checked: every stream's complete contents are read and hashed"},

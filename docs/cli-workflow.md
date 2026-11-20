@@ -713,11 +713,29 @@ it to its run.
   streams, tails and everything rewritten are read and checksummed. Working
   files and the volume are re-read in full once, at the gate before the first
   write to the volume.
+
+  A fast run checks each thing once, and says so when it starts:
+  - The volume is read raw, once. Windows is still asked of every file and
+    directory for what the raw volume cannot say (its security as Windows
+    presents it, and whether a directory is marked case-sensitive), and that
+    answer is held to the raw volume. Its streams, their positions and
+    contents, and the directory listings are not read a second time through
+    Windows and compared.
+  - What was written to the new volume is checked as it is written, and the
+    new volume is examined once when it is complete; its payloads and its
+    metadata are not read back a second time in between.
+  - The short-name links of a converted Windows volume are probed once.
+
+  The converted volume is verified in full after the changes are written, in
+  both modes.
 - **`--verify thorough`** changes *what* is checked: every stream's complete
-  contents are read and hashed. Not with `--minimize-scratch`. The earlier
+  contents are read and hashed, and every check a fast run leaves out is made:
+  Windows' view of every object is compared with the raw volume in full, and
+  the new volume is read back before the changes are captured. Not with `--minimize-scratch`. The earlier
   spelling `--verify-full-content` is still accepted and means the same.
 - **`--recheck-everything`** changes *how often*, not what: the full re-reads
-  happen at every checkpoint instead of once at the gate. Much slower.
+  happen at every checkpoint instead of once at the gate, and a fast run
+  leaves nothing out. Much slower.
 
 ### Look before you commit: `--review`
 

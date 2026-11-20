@@ -572,96 +572,147 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         )
     };
     crate::perf::step("metadata: check objects and names");
-    for index in 0..input.len() {
-        metadata_progress(0, index as u64);
-        (|| -> io::Result<()> {
-            let owned = input.object(index)?;
-            let view = owned.input();
-            let item = &view;
-            if resource_admission.map_or(item.components.len() > 16, |_| {
-                !super::hard_links::resource_path_valid(&resource_root, item.components)
-            }) || item
-                .components
-                .iter()
-                .any(|part| !crate::shadow_names::valid_unicode_component(part))
-                || !paths.insert(crate::shadow_names::conservative_path_key(item.components))
-                || !basic_input_allowed(item)
+    // What is asked of an object's handle: queries only, which one thread
+    // made for one object after another. The objects of a batch are asked on
+    // the available cores where the batch's query workspace can be paid for
+    // (`each_at_once`); decoding an object, every check of its names against
+    // the names before it, and every check of what its handle answered
+    // against the objects before it stay on this thread, in order and in the
+    // order they were made in, so the same difference is reported first.
+    let row_limit = resource_admission.map(|a| a.budget.max_row_bytes);
+    // Objects are changed beside one another only on a shadow this run is
+    // building: an object that fails then leaves the rest of its batch
+    // changed, on a shadow that is discarded. A recovery takes over what an
+    // interrupted run left and changes one object at a time, as before.
+    let change_payer = if recovering { None } else { enumeration_payer };
+    let handle_shape = |(index, item): &(usize, Input<'_>)| {
+        let handle = handles
+            .get(index)
+            .ok_or_else(|| invalid("owned metadata handle absent"))?;
+        if recovering && crate::reparse_native::capture(handle)?.is_some() {
+            validate_bound_type(handle, item)?;
+        } else {
+            validate_open_type(handle, item.directory)?;
+        }
+        let id = info(handle, 18, 24)?;
+        let mapping = (|| -> io::Result<_> {
+            if item.directory {
+                return Ok(None);
+            }
+            let standard = info(handle, 1, 24)?;
+            let streams = stream_info(handle)?;
+            super::streams::exact_list(&streams, item)?;
+            if layout::u64_at(&standard, 8)? != item.logical_length()
+                || layout::u32_at(&standard, 16)? != super::hard_links::count(item)?
+                || standard[20] != 0
+                || standard[21] != 0
             {
-                return Err(invalid(
-                    "owning metadata input outside bounded source profile",
-                ));
+                return Err(invalid("owned metadata stream shape differs"));
             }
-            if let Some(a) = resource_admission {
-                descriptor_with_limit(item.security, a.budget.max_row_bytes)?;
-            } else {
-                descriptor(item.security)?;
+            if item.logical_length() != 0
+                && layout::u64_at(&standard, 0)? >= crate::target_cluster::bytes()
+            {
+                let canonical = crate::stream_native::retrieval_capture(handle)?.canonical;
+                // Keep the full-query comparison, retaining only its exact
+                // length and SHA-256 between metadata phases. A paged object
+                // domain must not retain every variable-sized retrieval map.
+                return Ok(Some((canonical.len(), Sha256::digest(&canonical))));
             }
-            if let Some(api) = item.expected_api_security {
+            Ok(None)
+        })();
+        Ok::<_, io::Error>((id, mapping))
+    };
+    let mut next = 0usize;
+    while next < input.len() {
+        metadata_progress(0, next as u64);
+        let end = (next + super::PARALLEL_BATCH).min(input.len());
+        let decoded: Vec<io::Result<_>> = (next..end).map(|index| input.object(index)).collect();
+        let items: Vec<(usize, Input<'_>)> = decoded
+            .iter()
+            .enumerate()
+            .filter_map(|(offset, owned)| {
+                owned
+                    .as_ref()
+                    .ok()
+                    .map(|owned| (next + offset, owned.input()))
+            })
+            .collect();
+        let shapes = super::each_at_once(
+            enumeration_payer,
+            &items,
+            |(_, item)| row_limit.and_then(|limit| report_memory::row_peak(item, limit).ok()),
+            handle_shape,
+        );
+        let mut asked = items.iter().zip(shapes);
+        for (offset, owned) in decoded.iter().enumerate() {
+            let index = next + offset;
+            (|| -> io::Result<()> {
+                if let Err(error) = owned {
+                    return Err(io::Error::new(error.kind(), error.to_string()));
+                }
+                let ((_, item), shape) = asked
+                    .next()
+                    .ok_or_else(|| invalid("an object's handle was not asked for its shape"))?;
+                if resource_admission.map_or(item.components.len() > 16, |_| {
+                    !super::hard_links::resource_path_valid(&resource_root, item.components)
+                }) || item
+                    .components
+                    .iter()
+                    .any(|part| !crate::shadow_names::valid_unicode_component(part))
+                    || !paths.insert(crate::shadow_names::conservative_path_key(item.components))
+                    || !basic_input_allowed(item)
+                {
+                    return Err(invalid(
+                        "owning metadata input outside bounded source profile",
+                    ));
+                }
                 if let Some(a) = resource_admission {
-                    descriptor_with_limit(api, a.budget.max_row_bytes)?;
+                    descriptor_with_limit(item.security, a.budget.max_row_bytes)?;
                 } else {
-                    descriptor(api)?;
+                    descriptor(item.security)?;
                 }
-            }
-            for path in super::hard_links::paths(item) {
-                if namespace_index
-                    .insert(
-                        path.to_vec(),
-                        (index, item.directory, item.reparse.is_some()),
-                    )
-                    .is_some()
-                {
-                    return Err(invalid("duplicate owned metadata namespace path"));
+                if let Some(api) = item.expected_api_security {
+                    if let Some(a) = resource_admission {
+                        descriptor_with_limit(api, a.budget.max_row_bytes)?;
+                    } else {
+                        descriptor(api)?;
+                    }
                 }
-                if !path.is_empty() {
-                    expected_children
-                        .entry(path[..path.len() - 1].to_vec())
-                        .or_default()
-                        .insert(path.to_vec());
+                for path in super::hard_links::paths(item) {
+                    if namespace_index
+                        .insert(
+                            path.to_vec(),
+                            (index, item.directory, item.reparse.is_some()),
+                        )
+                        .is_some()
+                    {
+                        return Err(invalid("duplicate owned metadata namespace path"));
+                    }
+                    if !path.is_empty() {
+                        expected_children
+                            .entry(path[..path.len() - 1].to_vec())
+                            .or_default()
+                            .insert(path.to_vec());
+                    }
                 }
-            }
-            let handle = handles
-                .get(&index)
-                .ok_or_else(|| invalid("owned metadata handle absent"))?;
-            if recovering && crate::reparse_native::capture(handle)?.is_some() {
-                validate_bound_type(handle, item)?;
-            } else {
-                validate_open_type(handle, item.directory)?;
-            }
-            let id = info(handle, 18, 24)?;
-            if !unique.insert(id.clone()) {
-                return Err(invalid("owned metadata identities alias"));
-            }
-            if let Some(root) = identities.get(&0usize) {
-                if id[..8] != root[..8] {
-                    return Err(invalid("owned metadata objects escape bound volume"));
+                let (id, mapping) = shape?;
+                if !unique.insert(id.clone()) {
+                    return Err(invalid("owned metadata identities alias"));
                 }
-            }
-            identities.insert(index, id);
-            if !item.directory {
-                let standard = info(handle, 1, 24)?;
-                let streams = stream_info(handle)?;
-                super::streams::exact_list(&streams, item)?;
-                if layout::u64_at(&standard, 8)? != item.logical_length()
-                    || layout::u32_at(&standard, 16)? != super::hard_links::count(item)?
-                    || standard[20] != 0
-                    || standard[21] != 0
-                {
-                    return Err(invalid("owned metadata stream shape differs"));
+                if let Some(root) = identities.get(&0usize) {
+                    if id[..8] != root[..8] {
+                        return Err(invalid("owned metadata objects escape bound volume"));
+                    }
                 }
-                if item.logical_length() != 0
-                    && layout::u64_at(&standard, 0)? >= crate::target_cluster::bytes()
-                {
-                    let canonical = crate::stream_native::retrieval_capture(handle)?.canonical;
-                    // Keep the full-query comparison, retaining only its exact
-                    // length and SHA-256 between metadata phases. A paged object
-                    // domain must not retain every variable-sized retrieval map.
-                    mappings.insert(index, (canonical.len(), Sha256::digest(&canonical)));
+                identities.insert(index, id);
+                if let Some(mapping) = mapping? {
+                    mappings.insert(index, mapping);
                 }
-            }
-            Ok(())
-        })()
-        .map_err(|error| at_object(input, "metadata shape", index, error))?;
+                Ok(())
+            })()
+            .map_err(|error| at_object(input, "metadata shape", index, error))?;
+        }
+        next = end;
     }
     metadata_progress(0, input.len() as u64);
     if let Some(aliases) = aliases.as_deref() {
@@ -802,72 +853,150 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     let mut provisional_security_objects = 0usize;
     // Finish every directory's inheritance propagation before restoring any
     // file. A shallow canonical file may also have a name under a deep parent.
-    for (ordinal, &(index, _, _)) in ordered
+    //
+    // Restoring a directory's descriptor may reach its descendants, so the
+    // directories of one depth are restored together and every depth is
+    // finished before the next; then the files, which reach nothing else.
+    // Within such a group the handles are asked and changed on the available
+    // cores (`each_at_once`). This thread keeps, in the objects' order: the
+    // decoding, the comparison that decides whether a descriptor is restored
+    // at all, the capacity checks before the two changes, the comparison of
+    // what was read back, the counts and the report of a failure. On a
+    // recovery a batch is one object, which is the pass as it was.
+    let security_batch = if change_payer.is_some() {
+        super::PARALLEL_BATCH
+    } else {
+        1
+    };
+    let snapshot_workspace = row_limit.and_then(|limit| report_memory::alias_peak(limit).ok());
+    let mut security_order = ordered
         .iter()
         .filter(|(_, _, flags)| *flags & DIRECTORY != 0)
+        .map(|&(index, depth, _)| (index, depth))
         .chain(
             ordered
                 .iter()
-                .filter(|(_, _, flags)| *flags & DIRECTORY == 0),
+                .filter(|(_, _, flags)| *flags & DIRECTORY == 0)
+                .map(|&(index, _, _)| (index, usize::MAX)),
         )
-        .enumerate()
-    {
-        metadata_progress(3, ordinal as u64);
-        (|| -> io::Result<()> {
-            let owned = input.object(index)?;
-            let original_view = owned.input();
-            let temporary = if security_placeholders {
-                crate::refs_security_descriptor::ConstructorSecurityViews::prepare(
-                    original_view.security,
-                    original_view.expected_api_security,
-                    resource_admission
-                        .ok_or_else(|| invalid("constructor security row admission absent"))?
-                        .budget
-                        .max_row_bytes,
-                )?
-            } else {
-                None
-            };
-            let mut view = original_view;
-            if let Some(temporary) = temporary.as_ref() {
-                view.security = &temporary.stored;
-                view.expected_api_security = temporary.api.as_deref();
-                provisional_security_objects += 1;
+        .peekable();
+    let mut security_done = 0u64;
+    let mut batch: Vec<usize> = Vec::with_capacity(security_batch);
+    loop {
+        batch.clear();
+        let mut group = None;
+        while let Some(&(index, of)) = security_order.peek() {
+            if batch.len() == security_batch || group.is_some_and(|group| group != of) {
+                break;
             }
-            let item = &view;
-            let handle = held(handles, index)?;
-            if info(handle, 18, 24)? != *identity_of(&identities, index)? {
-                return Err(invalid(
-                    "owned identity changed before security restoration",
-                ));
+            group = Some(of);
+            batch.push(index);
+            security_order.next();
+        }
+        if batch.is_empty() {
+            break;
+        }
+        metadata_progress(3, security_done);
+        security_done += batch.len() as u64;
+        let mut failures: Vec<Option<io::Error>> = batch.iter().map(|_| None).collect();
+        let mut decoded = Vec::with_capacity(batch.len());
+        for (slot, &index) in batch.iter().enumerate() {
+            let ready = (|| -> io::Result<_> {
+                let owned = input.object(index)?;
+                let temporary = if security_placeholders {
+                    let view = owned.input();
+                    crate::refs_security_descriptor::ConstructorSecurityViews::prepare(
+                        view.security,
+                        view.expected_api_security,
+                        resource_admission
+                            .ok_or_else(|| invalid("constructor security row admission absent"))?
+                            .budget
+                            .max_row_bytes,
+                    )?
+                } else {
+                    None
+                };
+                Ok((owned, temporary))
+            })();
+            match ready {
+                Ok(ready) => {
+                    provisional_security_objects += usize::from(ready.1.is_some());
+                    decoded.push(Some(ready));
+                }
+                Err(error) => {
+                    failures[slot] = Some(error);
+                    decoded.push(None);
+                }
             }
-            if !security_matches(
-                item,
-                &security_snapshot_with_limit(
-                    handle,
-                    resource_admission.map(|a| a.budget.max_row_bytes),
-                ),
-                &same_security,
-            )? {
+        }
+        // Slot in the batch, object, and the views it is held to.
+        let items: Vec<(usize, usize, Input<'_>)> = decoded
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, ready)| {
+                ready.as_ref().map(|(owned, temporary)| {
+                    let mut view = owned.input();
+                    if let Some(temporary) = temporary.as_ref() {
+                        view.security = &temporary.stored;
+                        view.expected_api_security = temporary.api.as_deref();
+                    }
+                    (slot, batch[slot], view)
+                })
+            })
+            .collect();
+        let found = super::each_at_once(
+            change_payer,
+            &items,
+            |_| snapshot_workspace,
+            |(_, index, _)| -> io::Result<Snapshot> {
+                let handle = held(handles, *index)?;
+                if info(handle, 18, 24)? != *identity_of(&identities, *index)? {
+                    return Err(invalid(
+                        "owned identity changed before security restoration",
+                    ));
+                }
+                Ok(security_snapshot_with_limit(handle, row_limit))
+            },
+        );
+        let mut restoring = Vec::new();
+        for (object, found) in items.iter().zip(found) {
+            let (slot, _, item) = object;
+            let differs = found.and_then(|found| {
+                if security_matches(item, &found, &same_security)? {
+                    return Ok(false);
+                }
+                // One before the protection change, one before the
+                // descriptor's.
                 input.before_mutation(item.security.len() as u64)?;
-                let restored = restore_acl_protection_with_limit(
-                    handle,
-                    item,
-                    resource_admission.map(|a| a.budget.max_row_bytes),
-                )?;
-                dacl_protection_updates += usize::from(restored.dacl);
-                sacl_protection_updates += usize::from(restored.sacl);
                 input.before_mutation(item.security.len() as u64)?;
-                backup_security_with_limit(
-                    handle,
-                    item.security,
-                    resource_admission.map(|a| a.budget.max_row_bytes),
-                )?;
-                let restored_view = security_snapshot_with_limit(
-                    handle,
-                    resource_admission.map(|a| a.budget.max_row_bytes),
-                );
-
+                Ok(true)
+            });
+            match differs {
+                Ok(true) => restoring.push(object),
+                Ok(false) => {}
+                Err(error) => failures[*slot] = Some(error),
+            }
+        }
+        let restored = super::each_at_once(
+            change_payer,
+            &restoring,
+            |_| snapshot_workspace,
+            |(_, index, item)| -> io::Result<(ProtectionRestore, io::Result<Snapshot>)> {
+                let handle = held(handles, *index)?;
+                let protection = restore_acl_protection_with_limit(handle, item, row_limit)?;
+                Ok((
+                    protection,
+                    backup_security_with_limit(handle, item.security, row_limit)
+                        .map(|_| security_snapshot_with_limit(handle, row_limit)),
+                ))
+            },
+        );
+        for (object, restored) in restoring.iter().zip(restored) {
+            let (slot, _, item) = *object;
+            let checked = restored.and_then(|(protection, restored_view)| {
+                dacl_protection_updates += usize::from(protection.dacl);
+                sacl_protection_updates += usize::from(protection.sacl);
+                let restored_view = restored_view?;
                 if !security_matches(item, &restored_view, &same_security)? {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -877,12 +1006,19 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                         ),
                     ));
                 }
+                Ok(())
+            });
+            if let Err(error) = checked {
+                failures[*slot] = Some(error);
             }
-            Ok(())
-        })()
-        .or_else(|error| {
-            input.defer_failure(at_object(input, "security restoration", index, error))
-        })?;
+        }
+        drop(restoring);
+        drop(items);
+        for (failure, &index) in failures.into_iter().zip(&batch) {
+            if let Some(error) = failure {
+                input.defer_failure(at_object(input, "security restoration", index, error))?;
+            }
+        }
     }
     metadata_progress(3, ordered.len() as u64);
     // Only actual constructor-owned canonical handles reach this operation.
@@ -891,93 +1027,123 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     crate::perf::step("metadata: restore extended attributes and reparse points");
     let mut ea_objects = 0usize;
     let mut ea_entries = 0usize;
-    for (ordinal, &(index, _, flags)) in ordered.iter().enumerate() {
-        metadata_progress(4, ordinal as u64);
-        if flags & EXTENDED_ATTRIBUTES == 0 {
-            continue;
-        }
-        (|| -> io::Result<()> {
-            let owned = input.object(index)?;
-            let view = owned.input();
-            let item = &view;
-            if let Some(expected) = item.extended_attributes {
-                let handle = held(handles, index)?;
-                if info(handle, 18, 24)? != *identity_of(&identities, index)? {
-                    return Err(invalid("owned identity changed before EA restoration"));
-                }
-                let current = if recovering {
-                    Some(
-                        crate::extended_attributes_native::capture(handle)
-                            .map_err(io::Error::other)?,
-                    )
-                } else {
-                    None
-                };
-                if current
-                    .as_ref()
-                    .is_none_or(|current| !expected.equivalent(current))
-                {
-                    input.before_mutation(0)?;
-                    if recovering {
-                        crate::extended_attributes_native::reconcile_owned(handle, expected)
-                    } else {
-                        crate::extended_attributes_native::restore_fresh_owned(handle, expected)
-                    }
-                    .map_err(io::Error::other)?;
-                }
-                ea_objects += 1;
-                ea_entries += expected.entries.len();
+    // An object's extended attributes are its own: the objects that have
+    // them are restored beside one another (`change_objects`).
+    super::change_objects(
+        input,
+        change_payer,
+        ordered
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, _, flags))| flags & EXTENDED_ATTRIBUTES != 0)
+            .map(|(ordinal, &(index, _, _))| (ordinal, index, 0)),
+        // What is there and what is set, with their native forms.
+        4 * crate::extended_attributes::MAX_EA_BYTES as u64,
+        |ordinal| metadata_progress(4, ordinal),
+        |item| usize::from(item.extended_attributes.is_some()),
+        |index, item, before_mutation| -> io::Result<Option<usize>> {
+            let Some(expected) = item.extended_attributes else {
+                return Ok(None);
+            };
+            let handle = held(handles, index)?;
+            if info(handle, 18, 24)? != *identity_of(&identities, index)? {
+                return Err(invalid("owned identity changed before EA restoration"));
             }
-            Ok(())
-        })()
-        .or_else(|error| {
-            input.defer_failure(at_object(
+            let current = if recovering {
+                Some(crate::extended_attributes_native::capture(handle).map_err(io::Error::other)?)
+            } else {
+                None
+            };
+            if current
+                .as_ref()
+                .is_none_or(|current| !expected.equivalent(current))
+            {
+                before_mutation()?;
+                if recovering {
+                    crate::extended_attributes_native::reconcile_owned(handle, expected)
+                } else {
+                    crate::extended_attributes_native::restore_fresh_owned(handle, expected)
+                }
+                .map_err(io::Error::other)?;
+            }
+            Ok(Some(expected.entries.len()))
+        },
+        |index, restored| match restored {
+            Ok(Some(entries)) => {
+                ea_objects += 1;
+                ea_entries += entries;
+                Ok(())
+            }
+            Ok(None) => Ok(()),
+            Err(error) => input.defer_failure(at_object(
                 input,
                 "extended-attribute restoration",
                 index,
                 error,
-            ))
-        })?;
-    }
+            )),
+        },
+    )?;
     metadata_progress(4, ordered.len() as u64);
     // Security propagation and all children finish before basic metadata.
     // Install points only after all parent-first ACL propagation has finished;
     // no security operation may traverse a newly installed junction target.
+    // A point is installed through the object's own handle and nothing is
+    // opened by path here, so the objects that have one are independent.
     let mut reparse_objects = 0usize;
-    for (ordinal, &(index, _, flags)) in ordered.iter().enumerate() {
-        metadata_progress(5, ordinal as u64);
-        if flags & REPARSE == 0 {
-            continue;
-        }
-        (|| -> io::Result<()> {
-        let owned = input.object(index)?;
-        let view = owned.input();
-        let item = &view;
-        if let Some(point) = item.reparse {
+    super::change_objects(
+        input,
+        change_payer,
+        ordered
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, _, flags))| flags & REPARSE != 0)
+            .map(|(ordinal, &(index, _, _))| (ordinal, index, 0)),
+        // A reparse buffer is at most 16 KiB; its native form and a copy.
+        65536,
+        |ordinal| metadata_progress(5, ordinal),
+        |item| usize::from(item.reparse.is_some()),
+        |index, item, before_mutation| -> io::Result<bool> {
+            let Some(point) = item.reparse else {
+                return Ok(false);
+            };
             let handle = held(handles, index)?;
             if info(handle, 18, 24)? != *identity_of(&identities, index)? {
                 return Err(invalid(
                     "owned identity changed before reparse installation",
                 ));
             }
-            let current=if recovering{crate::reparse_native::capture(handle)?}else{None};
-            if let Some(current)=current {
-                if &current!=point{return Err(invalid("recovered canonical reparse point conflicts; preserve without overwrite"));}
-            }else{
-                input.before_mutation(0)?;
+            let current = if recovering {
+                crate::reparse_native::capture(handle)?
+            } else {
+                None
+            };
+            if let Some(current) = current {
+                if &current != point {
+                    return Err(invalid(
+                        "recovered canonical reparse point conflicts; preserve without overwrite",
+                    ));
+                }
+            } else {
+                before_mutation()?;
                 crate::reparse_native::restore_fresh_owned(handle, point).map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    format!("reparse install {:?}: {error}", item.components),
-                )
+                    io::Error::new(
+                        error.kind(),
+                        format!("reparse install {:?}: {error}", item.components),
+                    )
                 })?;
             }
-            reparse_objects += 1;
-        }
-        Ok(())
-        })()
-        .or_else(|error| input.defer_failure(at_object(input, "reparse installation", index, error)))?;
-    }
+            Ok(true)
+        },
+        |index, installed| match installed {
+            Ok(installed) => {
+                reparse_objects += usize::from(installed);
+                Ok(())
+            }
+            Err(error) => {
+                input.defer_failure(at_object(input, "reparse installation", index, error))
+            }
+        },
+    )?;
     metadata_progress(5, ordered.len() as u64);
     crate::perf::step("metadata: restore the short-name links' metadata");
     let provisional_aliases = if let Some(aliases) = aliases.as_deref_mut() {
@@ -1001,12 +1167,24 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     // through the other name, which needs only attribute access and so no
     // sharing with the held handle.) Set it once through each other name,
     // before any directory's own times are finalized below.
-    for &index in &linked {
-        (|| -> io::Result<()> {
-            let owned = input.object(index)?;
-            let view = owned.input();
+    //
+    // Each file's other names are opened and set by themselves: the files
+    // are taken beside one another (`change_objects`), a file's names one
+    // after another.
+    super::change_objects(
+        input,
+        change_payer,
+        linked
+            .iter()
+            .enumerate()
+            .map(|(ordinal, &index)| (ordinal, index, 0)),
+        // One name's path at a time, and the basic information set.
+        1024 * 1024,
+        |_| {},
+        |item| item.additional_names.len(),
+        |index, view, before_mutation| -> io::Result<()> {
             for name in view.additional_names {
-                input.before_mutation(0)?;
+                before_mutation()?;
                 // SYNCHRONIZE | FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES;
                 // BACKUP_SEMANTICS | OPEN_REPARSE_POINT.
                 let link = File::options()
@@ -1017,35 +1195,49 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 if info(&link, 18, 24)? != *identity_of(&identities, index)? {
                     return Err(invalid("a hard-link name opens a different object"));
                 }
-                basic(&link, &view)?;
+                basic(&link, view)?;
             }
             Ok(())
-        })()
-        .map_err(|error| at_object(input, "hard-link listing refresh", index, error))?;
-    }
+        },
+        |index, refreshed| {
+            refreshed.map_err(|error| at_object(input, "hard-link listing refresh", index, error))
+        },
+    )?;
     crate::perf::step("metadata: restore times and attributes");
     // Reverse depth order finalizes root last, using the same held handles.
-    for (ordinal, &(index, _, _)) in ordered.iter().rev().enumerate() {
-        metadata_progress(6, ordinal as u64);
-        (|| -> io::Result<()> {
-            let owned = input.object(index)?;
-            let view = owned.input();
-            let item = &view;
+    // The objects of one depth are set beside one another (`change_objects`):
+    // none of them is another's parent, and every depth is finished before
+    // the one above it begins.
+    super::change_objects(
+        input,
+        change_payer,
+        ordered
+            .iter()
+            .rev()
+            .enumerate()
+            .map(|(ordinal, &(index, depth, _))| (ordinal, index, depth)),
+        // The basic information read and set.
+        65536,
+        |ordinal| metadata_progress(6, ordinal),
+        |_| 1,
+        |index, item, before_mutation| -> io::Result<()> {
             let handle = held(handles, index)?;
             if info(handle, 18, 24)? != *identity_of(&identities, index)? {
                 return Err(invalid("owned identity changed before basic restoration"));
             }
             if !recovering || !basic_matches(item, &info(handle, 0, 40)?) {
-                input.before_mutation(0)?;
+                before_mutation()?;
                 basic(handle, item)?;
             }
             if !item.directory {
-                crate::verify_policy::flush_working_file(&handle)?;
+                crate::verify_policy::flush_working_file(handle)?;
             }
             Ok(())
-        })()
-        .map_err(|error| at_object(input, "basic metadata restoration", index, error))?;
-    }
+        },
+        |index, set| {
+            set.map_err(|error| at_object(input, "basic metadata restoration", index, error))
+        },
+    )?;
     metadata_progress(6, ordered.len() as u64);
     crate::perf::step("metadata: flush and check directory listings again");
     input.before_mutation(0)?;

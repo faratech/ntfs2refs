@@ -95,6 +95,13 @@ pub fn add_bytes(point: Point, bytes: u64) {
     BYTES[point as usize].fetch_add(bytes, Relaxed);
 }
 
+/// Adds time to `point` without a call: the part of a pass that serves many
+/// objects at once (a batch observed on helper threads), so that the point's
+/// calls still count objects and its time is still the calling thread's.
+pub fn add_time(point: Point, elapsed: std::time::Duration) {
+    NANOS[point as usize].fetch_add(elapsed.as_nanos() as u64, Relaxed);
+}
+
 /// `sync_all`, with its time recorded under `point`.
 pub fn flush(point: Point, file: &std::fs::File) -> std::io::Result<()> {
     let _timed = scope(point);

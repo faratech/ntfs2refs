@@ -56,6 +56,7 @@ mod namespace_native;
 pub mod ntfs_preparation;
 #[cfg(windows)]
 pub mod observation_pages;
+pub(crate) mod ordered_observation;
 pub mod perf;
 #[cfg(windows)]
 pub mod preparation_shadow;

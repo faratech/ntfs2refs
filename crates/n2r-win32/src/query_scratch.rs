@@ -16,7 +16,7 @@ use std::sync::Mutex;
 
 /// The largest buffer kept between queries. A larger request is served by a
 /// buffer of its own, as before.
-const KEPT_BYTES: usize = 1024 * 1024;
+pub(crate) const KEPT_BYTES: usize = 1024 * 1024;
 /// Buffers of threads that have ended, for the threads that come next: the
 /// walks start their threads anew for every batch of objects.
 static SPARE: Mutex<Vec<Vec<u64>>> = Mutex::new(Vec::new());

@@ -2004,6 +2004,8 @@ impl GeneralJournaledPartition {
             return Err(invalid("paged recovery source lost offline exclusion"));
         }
         self.paged_policy = None;
+        // A window a pass of the replay left on does not outlive the writer.
+        self.set_read_ahead(false);
         Ok(GeneralExclusiveRecoveryTarget { inner: self })
     }
 }

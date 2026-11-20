@@ -326,6 +326,11 @@ pub(crate) fn convert_owned_with_provider_commitment(
     // below, instead of at every checkpoint in between.
     if !crate::resource_preparation::recheck_everything() {
         n2r_win32::verify_policy::check_once();
+        // `--verify fast`: where two checks prove the same thing, one is
+        // made. `--verify thorough` keeps both.
+        if verification_policy.is_fast() {
+            n2r_win32::verify_policy::verify_once();
+        }
     }
     let result = (|| -> Result<ConversionOutcome> {
         if mode == crate::execution_mode::ExecutionMode::Diagnose {

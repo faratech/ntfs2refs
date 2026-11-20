@@ -199,12 +199,22 @@ fn write_span(
         "fresh apply span escapes its actual descriptor"
     );
     let original = record(row, domain, journal)?;
+    // Every selected range was read and held to its OLD digest while the
+    // source was offline and read-only, immediately before the apply marker
+    // (`begin_paged_fresh_apply`), and the handle that made it writable has
+    // refused every other writer since. Reading each range once more before
+    // it is written, to see that it is still OLD, repeated that pass: 13 GB
+    // of the 57 GB an apply of the full Windows volume read. A run that
+    // verifies each thing once (`--verify fast`, the default) writes the NEW
+    // bytes without it; the read-back of everything written, against the NEW
+    // digest, stays. `--verify thorough`, `--recheck-everything` and the
+    // fault-injection path read first, as before.
+    let read_first = first_write_fault.is_some() || !n2r_win32::verify_policy::verifies_once();
     let mut done = 0;
     while done < length {
         let count = usize::try_from((length - done).min(BUFFER as u64))?;
         let within = add(start, done)?;
         let offset = add(row.capture.offset, within)?;
-        at(target, offset, &mut buffers.current[..count])?;
         read_new(
             domain,
             journal,
@@ -213,6 +223,16 @@ fn write_span(
             within,
             &mut buffers.new[..count],
         )?;
+        if !read_first {
+            target.seek(SeekFrom::Start(offset))?;
+            ensure!(
+                target.write(&buffers.new[..count])? == count,
+                "short fresh selected target write"
+            );
+            done = add(done, count as u64)?;
+            continue;
+        }
+        at(target, offset, &mut buffers.current[..count])?;
         if row.capture.old_is_source_free {
             sj::check_free_granules(
                 journal,

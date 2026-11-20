@@ -109,9 +109,30 @@ pub(super) fn check_selected<T: Read + Seek>(
     buffer: &mut [u8],
     expected: [u8; 32],
 ) -> Result<[u8; 32]> {
+    check_selected_reaching(target, domain, buffer, expected, |_, _| ())
+}
+
+/// [`check_selected`] for a target that reads ahead: `reach(target, end)` is
+/// told, at the first of each group of ranges that lie close together, where
+/// the group ends, so a read-ahead window holds those ranges and not the
+/// megabyte that follows the first of them.
+fn check_selected_reaching<T: Read + Seek>(
+    target: &mut T,
+    domain: &ResourceJournalDomain<'_>,
+    buffer: &mut [u8],
+    expected: [u8; 32],
+    mut reach: impl FnMut(&mut T, u64),
+) -> Result<[u8; 32]> {
     let mut aggregate = aggregate_pin_hash()?;
-    for ordinal in 0..u64::from(domain.facts.range_count) {
-        let row = domain.row(ordinal)?;
+    let mut rows = n2r_win32::AscendingRanges::new(u64::from(domain.facts.range_count));
+    while let Some((row, group_end)) = rows.next(|ordinal| {
+        domain
+            .row(ordinal)
+            .map(|row| (row, row.capture.offset, row.capture.length))
+    })? {
+        if let Some(end) = group_end {
+            reach(target, end);
+        }
         frame(
             &mut aggregate,
             &SelectedRange {
@@ -537,11 +558,12 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         target.sync_all()?;
         n2r_win32::perf::step("read back changed ranges");
         target.set_read_ahead(true);
-        let digest = check_selected(
+        let digest = check_selected_reaching(
             &mut target,
             domain,
             &mut buffers.current,
             ticket.new_selected_sha256,
+            |target, end| target.set_read_ahead_reach(end),
         );
         target.set_read_ahead(false);
         let digest = digest?;

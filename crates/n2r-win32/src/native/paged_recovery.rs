@@ -285,13 +285,30 @@ fn selected_digest<R: Read + Seek>(
     source: &mut R,
     policy: &HeldPagedWritePolicy,
 ) -> io::Result<[u8; 32]> {
+    selected_digest_reaching(source, policy, |_, _| ())
+}
+
+/// [`selected_digest`] for a source that reads ahead: `reach(source, end)`
+/// is told, at the first of each group of ranges that lie close together,
+/// where the group ends, so a read-ahead window holds those ranges and not
+/// the megabyte that follows the first of them.
+fn selected_digest_reaching<R: Read + Seek>(
+    source: &mut R,
+    policy: &HeldPagedWritePolicy,
+    mut reach: impl FnMut(&mut R, u64),
+) -> io::Result<[u8; 32]> {
     let previous = source.stream_position()?;
     let result = (|| {
         let facts = policy.facts()?;
         let mut hash = crate::sha256_native::Sha256::new()?;
         let mut buffer = vec![0; MAX_IO];
-        for ordinal in 0..u64::from(facts.range_count) {
-            let row = policy.row(ordinal)?;
+        let mut rows = super::AscendingRanges::new(u64::from(facts.range_count));
+        while let Some((row, group_end)) =
+            rows.next(|ordinal| policy.row(ordinal).map(|row| (row, row.offset, row.length)))?
+        {
+            if let Some(end) = group_end {
+                reach(source, end);
+            }
             hash.update(&row.offset.to_le_bytes())?;
             hash.update(&row.length.to_le_bytes())?;
             source.seek(SeekFrom::Start(row.offset))?;
@@ -373,6 +390,10 @@ impl BorrowedPagedWriter<'_> {
     /// writer is copied into the window, and dropping the writer turns it off.
     pub fn set_read_ahead(&mut self, enabled: bool) {
         self.source.set_read_ahead(enabled);
+    }
+    /// See `GeneralFrozenPartition::set_read_ahead_reach`.
+    pub fn set_read_ahead_reach(&mut self, end: u64) {
+        self.source.set_read_ahead_reach(end);
     }
     pub fn sync_all(&mut self) -> io::Result<()> {
         if self.poisoned {
@@ -1613,7 +1634,15 @@ impl GeneralFrozenPartition {
                     crate::sha256_native::journal_body(journal, BODY, length, &expected)
                 });
                 let old_bytes = self.with_read_ahead(|source| {
-                    verify_selected_digest(source, &policy, pins.old_selected_sha256)
+                    let actual = selected_digest_reaching(
+                        source,
+                        &policy,
+                        GeneralFrozenPartition::set_read_ahead_reach,
+                    )?;
+                    if actual != pins.old_selected_sha256 {
+                        return Err(invalid("actual excluded source selected bytes differ"));
+                    }
+                    Ok(())
                 });
                 (body.join(), old_bytes)
             })

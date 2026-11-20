@@ -16,12 +16,31 @@ use std::{
     ptr,
 };
 use windows_sys::Win32::{
-    Foundation::INVALID_HANDLE_VALUE,
+    Foundation::{HANDLE, INVALID_HANDLE_VALUE},
     Storage::FileSystem::{
         FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FileIdType, GetFileInformationByHandleEx,
-        OpenFileById, SetFileInformationByHandle,
+        OpenFileById,
     },
+    System::IO::IO_STATUS_BLOCK,
 };
+
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    fn NtSetInformationFile(
+        handle: HANDLE,
+        status: *mut IO_STATUS_BLOCK,
+        information: *const std::ffi::c_void,
+        length: u32,
+        class: i32,
+    ) -> i32;
+    fn RtlNtStatusToDosError(status: i32) -> u32;
+}
+
+/// FileCaseSensitiveInformation of FILE_INFORMATION_CLASS: the class
+/// NtSetInformationFile documents for changing the mark. (The Win32
+/// SetFileInformationByHandle documents a handful of classes for setting,
+/// and this is not among them.)
+const NT_CASE_SENSITIVE_INFORMATION: i32 = 71;
 
 /// FILE_READ_ATTRIBUTES: the only access asked for.
 const READ_ATTRIBUTES: u32 = 0x80;
@@ -104,21 +123,31 @@ pub fn flags(directory: &File) -> io::Result<u32> {
 }
 
 /// Sets or clears the mark on an open directory. The handle needs
-/// FILE_WRITE_ATTRIBUTES.
+/// FILE_WRITE_ATTRIBUTES, and is one opened for synchronous I/O, as every
+/// handle the standard library opens is, so the call returns its result.
 fn set(directory: &File, marked: bool) -> io::Result<()> {
     let flags = u32::from(marked);
-    // SAFETY: FILE_CASE_SENSITIVE_INFO is one ULONG of flags; the buffer is
-    // exactly that, initialized, and the handle is live for the call.
-    let ok = unsafe {
-        SetFileInformationByHandle(
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // SAFETY: FILE_CASE_SENSITIVE_INFORMATION is one ULONG of flags; the
+    // buffer is exactly that, initialized, the status block is this call's
+    // own, and the handle is live for the synchronous call.
+    let status = unsafe {
+        NtSetInformationFile(
             directory.as_raw_handle(),
-            CASE_SENSITIVE_INFO,
+            &mut status_block,
             (&flags as *const u32).cast(),
             mem::size_of::<u32>() as u32,
+            NT_CASE_SENSITIVE_INFORMATION,
         )
     };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
+    if status != 0 {
+        // SAFETY: a pure conversion of the status the call returned.
+        let code = unsafe { RtlNtStatusToDosError(status) };
+        let windows = io::Error::from_raw_os_error(code as i32);
+        return Err(io::Error::new(
+            windows.kind(),
+            format!("NtSetInformationFile answered status {status:#010x}: {windows}"),
+        ));
     }
     Ok(())
 }

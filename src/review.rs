@@ -141,18 +141,33 @@ pub(crate) fn record_path(publication: &Path) -> Result<PathBuf> {
 }
 
 /// Writes the record of the stop, flushes it to the disk and reads it back.
-/// A record that is there already is refused: a run stops for review once.
+/// It is written whole under a temporary name and then renamed, so that a
+/// power cut leaves either no record or a whole one, never a torn one. A
+/// record that is there already is refused: a run stops for review once.
 pub(crate) fn write_record(path: &Path, record: &ReviewStop) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(record)?;
     let written = (|| -> Result<()> {
+        ensure!(!path.exists(), "a record of this stop is there already");
+        let partial = path.with_extension("json.partial");
+        // A partial record of an earlier attempt was never renamed: nothing
+        // reads it.
+        match std::fs::remove_file(&partial) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
             .create_new(true)
-            .open(path)?;
+            .open(&partial)?;
         file.write_all(&bytes)?;
         file.sync_all()?;
         drop(file);
+        std::fs::rename(&partial, path)?;
+        // Flushing the renamed file commits the file system's log, the
+        // rename with it, before the disk is put online.
+        OpenOptions::new().write(true).open(path)?.sync_all()?;
         let mut back = Vec::new();
         File::open(path)?.read_to_end(&mut back)?;
         ensure!(
@@ -288,11 +303,21 @@ pub(crate) fn compare_before_direction(
     review && recorded && lifecycle == SelectedLifecycle::ApplyIntent
 }
 
-/// Whether a rollback checks the restored NTFS volume against the source
-/// fingerprint of the run before it is put online: every rollback of a
-/// review run, whichever state it was recovered from.
-pub(crate) fn check_restored_source(review: bool, lifecycle: SelectedLifecycle) -> bool {
-    review && lifecycle == SelectedLifecycle::Aborted
+/// Whether a rollback holds the restored NTFS volume to the fingerprint of
+/// the run's frozen source before it is put online. Decided from the
+/// lifecycle the recovery found, before it writes anything: every rollback
+/// of a review run that had written to its source (the apply intent, the
+/// rollback intent, or the abort marker of a rollback that did not put NTFS
+/// online). A run cut before its apply intent wrote nothing; its
+/// cancellation is not made to depend on the check.
+pub(crate) fn check_restored_source(review: bool, found: SelectedLifecycle) -> bool {
+    review
+        && matches!(
+            found,
+            SelectedLifecycle::ApplyIntent
+                | SelectedLifecycle::RollbackIntent
+                | SelectedLifecycle::Aborted
+        )
 }
 
 /// The refusal when the converted volume changed after the review stop.
@@ -460,9 +485,13 @@ mod tests {
     }
 
     #[test]
-    fn every_rollback_of_a_review_run_checks_the_restored_source() {
+    fn every_rollback_of_a_review_run_that_wrote_checks_the_restored_source() {
         for lifecycle in ALL {
-            assert_eq!(check_restored_source(true, lifecycle), lifecycle == Aborted);
+            assert_eq!(
+                check_restored_source(true, lifecycle),
+                matches!(lifecycle, ApplyIntent | RollbackIntent | Aborted),
+                "{lifecycle:?}"
+            );
         }
     }
 
@@ -501,7 +530,12 @@ mod tests {
         let path = directory.path().join(RECORD_NAME);
         let source = binding();
         let record = ReviewStop::new([1; 32], &source, [2; 32], "ab".repeat(32));
+        // What a power cut during an earlier write leaves is never read.
+        let partial = path.with_extension("json.partial");
+        std::fs::write(&partial, b"{\"schema_ver").unwrap();
+        assert_eq!(read_record(&path, [1; 32], &source, [2; 32]).unwrap(), None);
         write_record(&path, &record).unwrap();
+        assert!(!partial.exists(), "the record is renamed into place whole");
         assert!(write_record(&path, &record).is_err(), "written twice");
         assert_eq!(
             read_record(&path, [1; 32], &source, [2; 32]).unwrap(),
@@ -523,6 +557,99 @@ mod tests {
             )
             .unwrap(),
             None
+        );
+    }
+
+    /// A small fingerprint of a 16 KiB partition, of which bytes 4096..12288
+    /// are allocated and covered, written as a run writes its stores.
+    fn fingerprint_stores(
+        root: &Path,
+        scratch: &SourceScratch,
+    ) -> crate::source_fingerprint::resource::ReopenedFingerprintPins {
+        use crate::ntfs_inspect::record_store::SortedRecordWriter;
+        let store = |name: &str, rows: &[(u64, u64)]| {
+            let mut writer =
+                SortedRecordWriter::new(&root.join(name), *b"N2RFRNG1", scratch).unwrap();
+            for &(offset, length) in rows {
+                let mut key = [0u8; 16];
+                key[..8].copy_from_slice(&offset.to_be_bytes());
+                writer.reserve_next_record(256).unwrap();
+                writer
+                    .push(key, &serde_json::json!({"offset":offset,"length":length}))
+                    .unwrap();
+            }
+            writer.finish().unwrap()
+        };
+        let allocated = store("allocated", &[(4096, 8192)]);
+        let covered = store("covered", &[(4096, 8192)]);
+        let omitted = store("omitted", &[]);
+        serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "kind": crate::source_fingerprint::resource::FULL_KIND,
+            "partition_bytes": 16384,
+            "source_inspection_sha256": "cd".repeat(32),
+            "policy": crate::verification_policy::VerificationPolicy::FullContent,
+            "allocated": allocated, "covered": covered, "omitted": omitted,
+            "allocated_bytes": 8192, "covered_bytes": 8192, "omitted_bytes": 0,
+            "raw_extent_identity_streams": 0
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_rollback_reopens_the_frozen_source_fingerprint_from_the_runs_records() {
+        let conversion = tempfile::tempdir().unwrap();
+        let source = conversion.path().join("source");
+        std::fs::create_dir_all(source.join("fingerprint")).unwrap();
+        let writer = scratch();
+        let pins = fingerprint_stores(&source.join("fingerprint"), &writer);
+        let image = (0..16384u32).map(|n| (n % 251) as u8).collect::<Vec<_>>();
+        let expected = pins
+            .clone()
+            .open(&writer)
+            .unwrap()
+            .hash_partition_reader(&mut std::io::Cursor::new(&image), 16384)
+            .unwrap();
+        let inspection = "cd".repeat(32);
+        std::fs::write(
+            source.join("source-frozen.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "binding": null, "source_sha256": expected,
+                "inspection_sha256": inspection, "fingerprint": pins,
+                "source_payload_writes": 0
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        drop(writer);
+        // A recovery reopens it in a process of its own: another scratch.
+        let recovery = scratch();
+        let reopened =
+            reopen_source_fingerprint(conversion.path(), &expected, &inspection, &recovery)
+                .unwrap();
+        let hash = |bytes: &[u8]| {
+            reopened
+                .hash_partition_reader(&mut std::io::Cursor::new(bytes), 16384)
+                .unwrap()
+        };
+        assert_eq!(hash(&image), expected, "the restored source as it was");
+        let mut changed = image.clone();
+        changed[4096 + 100] ^= 1;
+        assert_ne!(hash(&changed), expected, "a covered byte changed");
+        // A record of another source is refused, before anything is read.
+        let Err(foreign) =
+            reopen_source_fingerprint(conversion.path(), &"ef".repeat(32), &inspection, &recovery)
+        else {
+            panic!("a record of another source was accepted");
+        };
+        assert!(
+            foreign.to_string().contains("not the record"),
+            "{foreign:#}"
+        );
+        // A run without its records is refused too.
+        let empty = tempfile::tempdir().unwrap();
+        assert!(
+            reopen_source_fingerprint(empty.path(), &expected, &inspection, &recovery).is_err()
         );
     }
 

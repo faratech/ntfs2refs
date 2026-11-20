@@ -121,6 +121,26 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
     } else {
         rollback
     };
+    // A rollback of a review run that wrote to its source is held to the
+    // fingerprint of its frozen source before NTFS is put online. The
+    // fingerprint is reopened here, before anything is written, so that a
+    // run whose records cannot be checked is refused with nothing changed.
+    let restored_source_check = if rollback && crate::review::check_restored_source(review, initial)
+    {
+        Some(
+            crate::review::reopen_source_fingerprint(
+                publication
+                    .parent()
+                    .context("the recovery publication has no directory")?,
+                recovery.source_sha256(),
+                recovery.source_inspection_sha256(),
+                recovery.runtime_scratch(),
+            )
+            .context("rollback of a review: nothing was written")?,
+        )
+    } else {
+        None
+    };
     match (rollback, initial) {
         (true, SelectedLifecycle::PreparedClear) => {
             events.phase("resource-abandon-clear");
@@ -167,23 +187,19 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
         ),
     }
     if rollback {
-        if crate::review::check_restored_source(review, recovery.observed_lifecycle()) {
+        if let Some(fingerprint) = &restored_source_check {
             // Today nothing checks the bytes outside the journaled ranges
             // after a rollback; for a review run, whose converted volume was
             // mounted, the restored NTFS volume is held to the fingerprint
             // of the frozen source before it is put online.
             events.phase("resource-review-restored-source-check");
             println!("Checking the restored NTFS volume against the source as it was frozen.");
-            let fingerprint = crate::review::reopen_source_fingerprint(
-                publication
-                    .parent()
-                    .context("the recovery publication has no directory")?,
-                recovery.source_sha256(),
-                recovery.source_inspection_sha256(),
-                recovery.runtime_scratch(),
-            )?;
             ensure!(
-                recovery.source_matches_frozen_fingerprint(&fingerprint, &mut events)?,
+                recovery.observed_lifecycle() == SelectedLifecycle::Aborted,
+                "rollback of a review: the journal does not record the rollback as done"
+            );
+            ensure!(
+                recovery.source_matches_frozen_fingerprint(fingerprint, &mut events)?,
                 "rollback of a review: the restored NTFS volume differs from the fingerprint of \
                  its source as it was frozen before the conversion. It is left offline; the \
                  journal records the rollback. Nothing more is done: restore the volume from a \
@@ -244,7 +260,7 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
             "source":mounted, "selected_replay":replayed,
             "restore_required_selected_bytes_verified":true,
             "free_space_restored_byte_for_byte":false,
-            "source_fingerprint_verified":review,
+            "source_fingerprint_verified":restored_source_check.is_some(),
             "mount_paths_preserved": expected == actual,
             "expected_mount_paths": expected, "actual_mount_paths": actual,
             "restored_drive_letters": restored_letters,

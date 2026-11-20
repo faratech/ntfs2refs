@@ -3163,10 +3163,7 @@ impl ReopenedResourceRecovery {
             bound.lifecycle()? == SelectedLifecycle::ApplyIntent,
             "actual held journal no longer holds the apply intent alone"
         );
-        let BoundJournalObservation {
-            mut observation,
-            facts,
-        } = bound;
+        let BoundJournalObservation { observation, facts } = bound;
         let ticket = observation.ticket;
         let pins = n2r_win32::PagedRecoveryPins {
             journal_binding: facts.binding,

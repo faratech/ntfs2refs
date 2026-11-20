@@ -1093,6 +1093,37 @@ pub(crate) fn recover(directory: &Path, sha: &str, rollback: bool) -> Result<u8>
 }
 
 #[cfg(test)]
+mod review_route_tests {
+    use super::*;
+
+    #[test]
+    fn the_recovery_route_reads_a_review_runs_publication() {
+        // --recover reads the routes of the publication before it opens
+        // it; a review run's publication carries one more field (#110).
+        let binding = serde_json::json!({
+            "disk_number": 7,
+            "volume_guid": "5f2d3e41-5555-4444-aabb-123456789abc",
+            "identity": {
+                "disk_guid": "12345678-1111-2222-aaaa-123456789abc",
+                "partition_guid": "23456789-2222-3333-bbbb-123456789abc",
+                "partition_number": 2, "disk_bytes": 8u64 << 30,
+                "partition_offset": 1u64 << 20, "partition_bytes": 6u64 << 30,
+                "logical_sector_bytes": 512, "physical_sector_bytes": 4096
+            }
+        });
+        let publication = serde_json::json!({
+            "schema_version": 1, "kind": "resource-allocation-recovery-envelope-v1",
+            "source": binding, "shadow": binding,
+            "locator": {"path": "C:\\j\\locator", "sha256": "00", "bytes": 1},
+            "review_before_handoff": true,
+            "serialized_publication_grants_authority": false
+        });
+        let routes: PublicationRoutes = serde_json::from_value(publication).unwrap();
+        assert!(!routes.serialized_publication_grants_authority);
+    }
+}
+
+#[cfg(test)]
 mod left_behind_tests {
     use super::*;
 

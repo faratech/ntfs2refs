@@ -313,47 +313,6 @@ impl Drop for Overlapped {
     }
 }
 
-/// Records that a recovery journal body with this SHA-256 was read in full
-/// and matched, in this process. See `bulk_digest`, which keeps the memory
-/// for both algorithms.
-pub fn note_journal_body_verified(expected: &[u8; 32], offset: u64, length: u64) {
-    crate::bulk_digest::note_journal_body_verified(
-        crate::bulk_digest::Algorithm::Sha256,
-        expected,
-        offset,
-        length,
-    );
-}
-
-/// Whether a full read of this journal body, pinned by SHA-256, can be
-/// skipped. See `bulk_digest::journal_body_already_verified`.
-pub fn journal_body_already_verified(expected: &[u8; 32], offset: u64, length: u64) -> bool {
-    crate::bulk_digest::journal_body_already_verified(
-        crate::bulk_digest::Algorithm::Sha256,
-        expected,
-        offset,
-        length,
-    )
-}
-
-/// SHA-256 of a held recovery journal's immutable body, to compare with
-/// `expected`: the body of a journal that a build before BLAKE3 wrote. See
-/// `bulk_digest::journal_body`.
-pub fn journal_body(
-    reader: &mut (impl Read + Seek),
-    offset: u64,
-    length: u64,
-    expected: &[u8; 32],
-) -> io::Result<[u8; 32]> {
-    crate::bulk_digest::journal_body(
-        crate::bulk_digest::Algorithm::Sha256,
-        reader,
-        offset,
-        length,
-        expected,
-    )
-}
-
 /// Hash every requested byte, with a fixed 4 MiB buffer and exact reads. No
 /// sampling, skipped zero ranges, alternate digest or source mutation.
 pub fn hash_range(
@@ -368,13 +327,6 @@ pub fn hash_range(
     crate::perf::add_bytes(crate::perf::Point::FileHash, length);
     reader.seek(SeekFrom::Start(offset))?;
     hash_next(reader, length)
-}
-
-/// SHA-256 of all `bytes` bytes of a held working file, for an owner to
-/// compare with a SHA-256 it pinned. See `bulk_digest::held_file`, which
-/// keeps one gate's digests for both algorithms.
-pub fn held_file(file: &mut std::fs::File, bytes: u64) -> io::Result<[u8; 32]> {
-    crate::bulk_digest::held_file(crate::bulk_digest::Algorithm::Sha256, file, bytes)
 }
 
 /// SHA-256 of the next `length` bytes of `reader`, all of them read.
@@ -416,6 +368,7 @@ pub fn hash_next(reader: &mut impl Read, length: u64) -> io::Result<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bulk_digest::{Algorithm, journal_body, journal_body_already_verified};
     use sha2::Digest;
 
     struct CountingReader {
@@ -445,14 +398,19 @@ mod tests {
             reads: 0,
         };
         assert_eq!(
-            journal_body(&mut reader, 1024, 7168, &expected).unwrap(),
+            journal_body(Algorithm::Sha256, &mut reader, 1024, 7168, &expected).unwrap(),
             expected
         );
         let first = reader.reads;
         assert!(first > 0);
-        assert!(!journal_body_already_verified(&expected, 1024, 7168));
+        assert!(!journal_body_already_verified(
+            Algorithm::Sha256,
+            &expected,
+            1024,
+            7168
+        ));
         assert_eq!(
-            journal_body(&mut reader, 1024, 7168, &expected).unwrap(),
+            journal_body(Algorithm::Sha256, &mut reader, 1024, 7168, &expected).unwrap(),
             expected
         );
         assert!(
@@ -521,9 +479,14 @@ mod tests {
         data[100] ^= 1;
         let mut reader = io::Cursor::new(data);
         assert_ne!(
-            journal_body(&mut reader, 0, 4096, &expected).unwrap(),
+            journal_body(Algorithm::Sha256, &mut reader, 0, 4096, &expected).unwrap(),
             expected
         );
-        assert!(!journal_body_already_verified(&expected, 0, 4096));
+        assert!(!journal_body_already_verified(
+            Algorithm::Sha256,
+            &expected,
+            0,
+            4096
+        ));
     }
 }

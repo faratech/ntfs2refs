@@ -1,6 +1,6 @@
-//! One in-flight chunk, one chunk being filled and one SHA-256 worker. The
-//! caller still reads and compares every byte; this only overlaps independent
-//! digests.
+//! One in-flight chunk, one chunk being filled and one digest worker (SHA-256,
+//! or BLAKE3 for a journal this build writes). The caller still reads and
+//! compares every byte; this only overlaps independent digests.
 //!
 //! Updates are gathered into the chunk being filled and handed to the worker
 //! when it is a quarter of a megabyte or would overflow. A journal row
@@ -8,7 +8,7 @@
 //! data: handing each of those over by itself woke the worker, and waited for
 //! it, three times a row for each of four digests, which on the full Windows
 //! volume was a third of the time the journal took to write.
-use super::stream_digest::StreamDigest;
+use super::stream_digest::{Backend, StreamDigest};
 use anyhow::{Context, Result, anyhow};
 use std::{
     sync::mpsc::{Receiver, SyncSender, sync_channel},
@@ -25,13 +25,17 @@ pub(crate) struct Pipeline {
     spare: usize,
     worker: Option<JoinHandle<Result<[u8; 32]>>>,
     chunk_bytes: usize,
+    backend: Backend,
 }
 
 /// A chunk this full goes to the worker without waiting for more.
 const HAND_OVER_BYTES: usize = 256 * 1024;
 
 impl Pipeline {
-    pub(crate) fn with_native_backend(chunk_bytes: usize, native: bool) -> Result<Self> {
+    pub(crate) fn with_native_backend(
+        chunk_bytes: usize,
+        native: impl Into<Backend>,
+    ) -> Result<Self> {
         Self::with_native_backend_and_prefix(chunk_bytes, native, None)
     }
 
@@ -39,7 +43,7 @@ impl Pipeline {
     /// It is copied into the worker; native hash handles stay on that worker.
     pub(crate) fn with_native_backend_and_prefix(
         chunk_bytes: usize,
-        native: bool,
+        native: impl Into<Backend>,
         prefix: Option<[u8; 16]>,
     ) -> Result<Self> {
         Self::with_buffers(chunk_bytes, native, prefix, 2)
@@ -52,10 +56,11 @@ impl Pipeline {
     /// that many chunks.
     pub(crate) fn with_buffers(
         chunk_bytes: usize,
-        native: bool,
+        native: impl Into<Backend>,
         prefix: Option<[u8; 16]>,
         buffers: usize,
     ) -> Result<Self> {
+        let backend = native.into();
         // The recycled buffers bound the worker's memory; 4 MiB matches the
         // largest native device request.
         anyhow::ensure!(
@@ -76,7 +81,7 @@ impl Pipeline {
             .spawn(move || {
                 let _sampled = n2r_win32::stack_sampler::helper();
                 // Construct CNG handles on this worker; none crosses threads.
-                let mut hash = StreamDigest::new(native)?;
+                let mut hash = StreamDigest::new(backend)?;
                 if let Some(prefix) = prefix {
                     hash.update(&prefix)?;
                 }
@@ -97,7 +102,13 @@ impl Pipeline {
             spare,
             worker: Some(worker),
             chunk_bytes,
+            backend,
         })
+    }
+
+    /// The algorithm of the digest the worker computes.
+    pub(crate) fn algorithm(&self) -> n2r_win32::bulk_digest::Algorithm {
+        self.backend.algorithm()
     }
 
     pub(crate) fn update(&mut self, bytes: &[u8]) -> Result<()> {
@@ -248,7 +259,7 @@ impl Drop for Pipeline {
     }
 }
 
-/// One SHA-256 worker for a sequence of records, each with a digest of its
+/// One digest worker for a sequence of records, each with a digest of its
 /// own: a journal's rows.
 ///
 /// A row of the journal carries the SHA-256 of its payload, and the thread
@@ -299,7 +310,11 @@ impl RecordChunk {
 }
 
 impl RecordDigests {
-    pub(crate) fn with_native_backend(chunk_bytes: usize, native: bool) -> Result<Self> {
+    pub(crate) fn with_native_backend(
+        chunk_bytes: usize,
+        native: impl Into<Backend>,
+    ) -> Result<Self> {
+        let backend = native.into();
         anyhow::ensure!(
             (1..=4 * 1024 * 1024).contains(&chunk_bytes),
             "record digest buffer must be between one byte and 4MiB"
@@ -312,7 +327,7 @@ impl RecordDigests {
             .spawn(move || {
                 let _sampled = n2r_win32::stack_sampler::helper();
                 // Construct CNG handles on this worker; none crosses threads.
-                let mut hash = StreamDigest::new(native)?;
+                let mut hash = StreamDigest::new(backend)?;
                 while let Ok(chunk) = chunks.recv() {
                     let mut from = 0;
                     for &end in &chunk.ends {
@@ -320,7 +335,7 @@ impl RecordDigests {
                             hash.update(&chunk.bytes[from..end])?;
                         }
                         from = end;
-                        let ended = std::mem::replace(&mut hash, StreamDigest::new(native)?);
+                        let ended = std::mem::replace(&mut hash, StreamDigest::new(backend)?);
                         if results.send(ended.finish()?).is_err() {
                             // The caller is gone and wants no more digests.
                             return Ok(());

@@ -406,6 +406,7 @@ impl<'j, 'd, 'c, 'p, 's, 'e> PartitionFreshApply<'j, 'd, 'c, 'p, 's, 'e> {
             journal_identity: facts.identity,
             journal_path: facts.path,
             journal_profile: facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,
@@ -487,6 +488,7 @@ impl<'j, 'd, 'c, 'p, 's, 'e> PartitionFreshApply<'j, 'd, 'c, 'p, 's, 'e> {
             &mut writer,
             p.domain,
             &mut buffers.current,
+            ticket.digest_algorithm(),
             ticket.new_selected_sha256,
         )?;
         let native_bytes_written = writer.native_bytes_written();
@@ -513,6 +515,7 @@ impl<'j, 'd, 'c, 'p, 's, 'e> PartitionFreshApply<'j, 'd, 'c, 'p, 's, 'e> {
             source,
             p.domain,
             &mut buffers.current,
+            ticket.digest_algorithm(),
             ticket.new_selected_sha256,
         )?;
         ensure!(
@@ -811,7 +814,10 @@ fn prepared_fingerprint(
                 "fingerprint pages must belong to the actual independent journal GUID volume"
             );
             ensure!(
-                hex::encode(n2r_win32::metadata_pages::pinning_digest(&mut file, actual.file_bytes)?) == page.file_sha256
+                hex::encode(n2r_win32::metadata_pages::pinning_digest(
+                    &mut file,
+                    actual.file_bytes
+                )?) == page.file_sha256
                     && n2r_win32::reference_file::observe_reference_file_handle_with_limit(
                         &file,
                         page.wire_bytes

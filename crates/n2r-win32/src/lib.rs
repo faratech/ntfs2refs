@@ -21,7 +21,6 @@ pub mod bitmap_window;
 #[cfg(windows)]
 pub mod bitmap_window_native;
 pub mod bitmap_window_transport;
-#[cfg(windows)]
 pub mod bulk_digest;
 pub mod content_digest;
 #[cfg(windows)]

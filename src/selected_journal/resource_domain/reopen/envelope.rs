@@ -454,7 +454,10 @@ impl HeldFile {
                 self.snapshot.file_bytes
             )? == self.snapshot
                 && self.file.metadata()?.modified()? == self.modified
-                && n2r_win32::metadata_pages::pinning_digest(&mut self.file, self.snapshot.file_bytes)? == self.sha256
+                && n2r_win32::metadata_pages::pinning_digest(
+                    &mut self.file,
+                    self.snapshot.file_bytes
+                )? == self.sha256
                 && n2r_win32::reference_file::observe_reference_file_handle_with_limit(
                     &self.file,
                     self.snapshot.file_bytes
@@ -1454,6 +1457,7 @@ impl ReopenedPartitionResourceRecovery {
                 journal_identity: facts.identity,
                 journal_path: facts.path,
                 journal_profile: facts.profile,
+                digest: ticket.digest_algorithm(),
                 immutable_sha256: ticket.immutable_sha256,
                 old_selected_sha256: ticket.old_selected_sha256,
                 old_restored_selected_sha256: ticket.old_restored_selected_sha256,
@@ -1534,6 +1538,7 @@ impl ReopenedPartitionResourceRecovery {
                     journal_identity: facts.identity,
                     journal_path: facts.path,
                     journal_profile: facts.profile,
+                    digest: ticket.digest_algorithm(),
                     immutable_sha256: ticket.immutable_sha256,
                     old_selected_sha256: ticket.old_selected_sha256,
                     old_restored_selected_sha256: ticket.old_restored_selected_sha256,
@@ -1771,8 +1776,12 @@ impl PartitionRecoveryPublicationBinding<'_> {
                     .final_path
                     .eq_ignore_ascii_case(&facts.path.to_string_lossy())
                 && ticket.journal_length >= 8192
-                && n2r_win32::sha256_native::hash_range(file, 8192, ticket.journal_length - 8192,)?
-                    == ticket.immutable_sha256,
+                && n2r_win32::bulk_digest::hash_range(
+                    ticket.digest_algorithm(),
+                    file,
+                    8192,
+                    ticket.journal_length - 8192,
+                )? == ticket.immutable_sha256,
             "partition MIXED held journal identity/body differs"
         );
         let after = n2r_win32::journal_file::observe_general_journal_file_with_profile(
@@ -1866,6 +1875,7 @@ impl<'a> VerifiedResourceHandoff<'a> {
             journal_identity: facts.identity,
             journal_path: facts.path,
             journal_profile: facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,
@@ -2006,6 +2016,7 @@ impl<'a> VerifiedProtectedHandoff<'a> {
             journal_identity: facts.identity,
             journal_path: facts.path,
             journal_profile: facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,
@@ -2621,8 +2632,13 @@ impl ReopenedResourceRecovery {
             "actual native terminal journal lifecycle changed"
         );
         ensure!(
-            n2r_win32::sha256_native::journal_body(journal, super::BODY, body_bytes, &immutable)?
-                == immutable,
+            n2r_win32::bulk_digest::journal_body(
+                self.locator.ticket().digest_algorithm(),
+                journal,
+                super::BODY,
+                body_bytes,
+                &immutable
+            )? == immutable,
             "mounted terminal journal immutable body changed"
         );
         ensure!(
@@ -2962,6 +2978,7 @@ impl ReopenedResourceRecovery {
             journal_identity: facts.identity,
             journal_path: facts.path,
             journal_profile: facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,
@@ -3166,6 +3183,7 @@ impl ReopenedResourceRecovery {
             journal_identity: facts.identity,
             journal_path: facts.path,
             journal_profile: facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,
@@ -3466,6 +3484,7 @@ impl ReopenedPartitionResourceRecovery {
             journal_identity: facts.identity,
             journal_path: facts.path,
             journal_profile: facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,
@@ -3683,6 +3702,7 @@ impl ReopenedPartitionResourceRecovery {
                 journal_identity: facts.identity,
                 journal_path: facts.path,
                 journal_profile: facts.profile,
+                digest: ticket.digest_algorithm(),
                 immutable_sha256: ticket.immutable_sha256,
                 old_selected_sha256: ticket.old_selected_sha256,
                 old_restored_selected_sha256: ticket.old_restored_selected_sha256,
@@ -3698,6 +3718,7 @@ impl ReopenedPartitionResourceRecovery {
             journal_identity: facts.identity,
             journal_path: facts.path,
             journal_profile: facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,

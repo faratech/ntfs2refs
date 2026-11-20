@@ -647,8 +647,15 @@ impl Origin {
                         .map_err(io::Error::other)?,
             "locator source/journal/restored-OLD lineage differs",
         )?;
+        // A ticket without a `digest` label is an older build's: SHA-256.
+        let ticket_digest = match ticket.get("digest") {
+            None => crate::bulk_digest::Algorithm::Sha256,
+            Some(Value::String(label)) => crate::bulk_digest::Algorithm::from_label(Some(label))?,
+            Some(_) => return Err(bad("published ticket digest label is not a string")),
+        };
         need(
-            json_bytes(&ticket["immutable_sha256"])? == pins.immutable_sha256
+            ticket_digest == pins.digest
+                && json_bytes(&ticket["immutable_sha256"])? == pins.immutable_sha256
                 && json_bytes(&ticket["old_selected_sha256"])? == pins.old_selected_sha256
                 && json_bytes(&ticket["new_selected_sha256"])? == pins.new_selected_sha256,
             "published ticket differs from actual closed-J pins",

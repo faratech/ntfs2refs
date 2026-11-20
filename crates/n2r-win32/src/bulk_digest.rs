@@ -13,11 +13,12 @@
 //!
 //! Both digests are thirty-two bytes, so nothing but its label tells one from
 //! the other. Whatever pins a large digest therefore names its algorithm: a
-//! record store in the magic of its header, a journal in its magic, a ticket
-//! in its `digest` field (absent in a ticket of an older build, which is
-//! SHA-256). The functions here take the [`Algorithm`] so read; a digest of
-//! one is never compared with a pin of the other, and the memories of
-//! digests already computed are kept by algorithm.
+//! record store in the magic of its header, a journal's ticket in its
+//! `digest` field (absent in a ticket of an older build, which is SHA-256),
+//! the capture's literal file in its pin. The functions here take the
+//! [`Algorithm`] so read; a digest of one is never compared with a pin of
+//! the other, and the memories of digests already computed are kept by
+//! algorithm.
 //!
 //! Small records (envelopes, markers, intents, boot data, the page index of
 //! a store) keep SHA-256 through `sha256_native` and `sha2`.
@@ -26,10 +27,12 @@
 //! are the process's Rayon pool, which has one thread for each processor the
 //! process may use; a buffer is hashed there only when it is long enough to
 //! be worth dividing.
+use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Seek, SeekFrom};
 
-/// Which hash a large digest is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// Which hash a large digest is. Serialized as its label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Algorithm {
     /// What builds through 0.0.1 wrote. Read, never written.
     Sha256,
@@ -81,46 +84,70 @@ const PARALLEL_FROM: usize = 256 * 1024;
 /// path has always used, and what its callers pay the ledger for.
 const BLAKE3_BUFFER: usize = 4 * 1024 * 1024;
 
+#[cfg(windows)]
+type Sha256Stream = crate::sha256_native::Sha256;
+#[cfg(not(windows))]
+struct Sha256Stream(sha2::Sha256);
+#[cfg(not(windows))]
+impl Sha256Stream {
+    fn new() -> io::Result<Self> {
+        Ok(Self(<sha2::Sha256 as sha2::Digest>::new()))
+    }
+    fn update(&mut self, bytes: &[u8]) -> io::Result<()> {
+        sha2::Digest::update(&mut self.0, bytes);
+        Ok(())
+    }
+    fn finish(self) -> io::Result<[u8; 32]> {
+        Ok(sha2::Digest::finalize(self.0).into())
+    }
+}
+
+fn blake3_update(hash: &mut blake3::Hasher, bytes: &[u8]) {
+    if bytes.len() >= PARALLEL_FROM {
+        hash.update_rayon(bytes);
+    } else {
+        hash.update(bytes);
+    }
+}
+
 /// A streaming digest of exactly the bytes passed to `update`, in order.
 /// Construct on its consuming thread: a SHA-256 hash object belongs to one.
-pub enum Hasher {
-    Sha256(crate::sha256_native::Sha256),
+pub struct Hasher(Inner);
+
+enum Inner {
+    Sha256(Sha256Stream),
     Blake3(Box<blake3::Hasher>),
 }
 
 impl Hasher {
     pub fn new(algorithm: Algorithm) -> io::Result<Self> {
-        Ok(match algorithm {
-            Algorithm::Sha256 => Self::Sha256(crate::sha256_native::Sha256::new()?),
-            Algorithm::Blake3 => Self::Blake3(Box::new(blake3::Hasher::new())),
-        })
+        Ok(Self(match algorithm {
+            Algorithm::Sha256 => Inner::Sha256(Sha256Stream::new()?),
+            Algorithm::Blake3 => Inner::Blake3(Box::new(blake3::Hasher::new())),
+        }))
     }
 
     pub fn algorithm(&self) -> Algorithm {
-        match self {
-            Self::Sha256(_) => Algorithm::Sha256,
-            Self::Blake3(_) => Algorithm::Blake3,
+        match &self.0 {
+            Inner::Sha256(_) => Algorithm::Sha256,
+            Inner::Blake3(_) => Algorithm::Blake3,
         }
     }
 
     pub fn update(&mut self, bytes: &[u8]) -> io::Result<()> {
-        match self {
-            Self::Sha256(hash) => hash.update(bytes),
-            Self::Blake3(hash) => {
-                if bytes.len() >= PARALLEL_FROM {
-                    hash.update_rayon(bytes);
-                } else {
-                    hash.update(bytes);
-                }
+        match &mut self.0 {
+            Inner::Sha256(hash) => hash.update(bytes),
+            Inner::Blake3(hash) => {
+                blake3_update(hash, bytes);
                 Ok(())
             }
         }
     }
 
     pub fn finish(self) -> io::Result<[u8; 32]> {
-        match self {
-            Self::Sha256(hash) => hash.finish(),
-            Self::Blake3(hash) => Ok(*hash.finalize().as_bytes()),
+        match self.0 {
+            Inner::Sha256(hash) => hash.finish(),
+            Inner::Blake3(hash) => Ok(*hash.finalize().as_bytes()),
         }
     }
 }
@@ -140,12 +167,13 @@ pub fn hash_range(
     offset: u64,
     length: u64,
 ) -> io::Result<[u8; 32]> {
+    #[cfg(windows)]
     if algorithm == Algorithm::Sha256 {
         return crate::sha256_native::hash_range(reader, offset, length);
     }
     offset
         .checked_add(length)
-        .ok_or_else(|| io::Error::other("BLAKE3 range overflow"))?;
+        .ok_or_else(|| io::Error::other(format!("{} range overflow", algorithm.name())))?;
     let _timed = crate::perf::scope(crate::perf::Point::FileHash);
     crate::perf::add_bytes(crate::perf::Point::FileHash, length);
     reader.seek(SeekFrom::Start(offset))?;
@@ -162,23 +190,20 @@ pub fn hash_next(
     reader: &mut impl Read,
     length: u64,
 ) -> io::Result<[u8; 32]> {
+    #[cfg(windows)]
     if algorithm == Algorithm::Sha256 {
         return crate::sha256_native::hash_next(reader, length);
     }
-    let mut hash = blake3::Hasher::new();
+    let mut hash = Hasher::new(algorithm)?;
     let mut buffer = vec![0; length.min(BLAKE3_BUFFER as u64) as usize];
     let mut left = length;
     while left > 0 {
         let count = left.min(buffer.len() as u64) as usize;
         reader.read_exact(&mut buffer[..count])?;
-        if count >= PARALLEL_FROM {
-            hash.update_rayon(&buffer[..count]);
-        } else {
-            hash.update(&buffer[..count]);
-        }
+        hash.update(&buffer[..count])?;
         left -= count as u64;
     }
-    Ok(*hash.finalize().as_bytes())
+    hash.finish()
 }
 
 /// The SHA-256 and the BLAKE3 of the same `bytes` bytes of `file` from its
@@ -189,6 +214,7 @@ pub fn hash_next(
 /// full re-read of the held file is compared with the BLAKE3. Both digests
 /// are of the very bytes this call read, so the later comparison says what
 /// the SHA-256 would. The file is left positioned at `bytes`.
+#[cfg(windows)]
 pub fn sha256_and_blake3(file: &mut (impl Read + Seek), bytes: u64) -> io::Result<Both> {
     // A megabyte in hand and the SHA-256 worker's two: less than the four
     // megabytes callers pay for.
@@ -208,7 +234,7 @@ pub fn sha256_and_blake3(file: &mut (impl Read + Seek), bytes: u64) -> io::Resul
             let count = left.min(buffer.len() as u64) as usize;
             file.read_exact(&mut buffer[..count])?;
             sha256.update(&buffer[..count])?;
-            blake3.update(&buffer[..count]);
+            blake3_update(&mut blake3, &buffer[..count]);
             left -= count as u64;
         }
         sha256.finish()?
@@ -218,7 +244,7 @@ pub fn sha256_and_blake3(file: &mut (impl Read + Seek), bytes: u64) -> io::Resul
             let count = left.min(buffer.len() as u64) as usize;
             file.read_exact(&mut buffer[..count])?;
             sha256.update(&buffer[..count])?;
-            blake3.update(&buffer[..count]);
+            blake3_update(&mut blake3, &buffer[..count]);
             left -= count as u64;
         }
         sha256.finish()?
@@ -230,6 +256,7 @@ pub fn sha256_and_blake3(file: &mut (impl Read + Seek), bytes: u64) -> io::Resul
 }
 
 /// See [`sha256_and_blake3`].
+#[cfg(windows)]
 pub struct Both {
     pub sha256: [u8; 32],
     pub blake3: [u8; 32],
@@ -238,14 +265,9 @@ pub struct Both {
 /// A complete digest computed inside the gate that is open: the gate, the
 /// algorithm, the file's identity (volume and file id), its length and its
 /// timestamp.
-type GateDigest = (
-    u64,
-    Algorithm,
-    String,
-    u64,
-    std::time::SystemTime,
-    [u8; 32],
-);
+#[cfg(windows)]
+type GateDigest = (u64, Algorithm, String, u64, std::time::SystemTime, [u8; 32]);
+#[cfg(windows)]
 static GATE_DIGESTS: std::sync::Mutex<Vec<GateDigest>> = std::sync::Mutex::new(Vec::new());
 
 /// The digest of all `bytes` bytes of a held working file, for an owner to
@@ -262,6 +284,7 @@ static GATE_DIGESTS: std::sync::Mutex<Vec<GateDigest>> = std::sync::Mutex::new(V
 /// checks. Outside a gate, and always with `--recheck-everything`, the file
 /// is read every time. The file is left positioned at `bytes`, as after a
 /// read.
+#[cfg(windows)]
 pub fn held_file(
     algorithm: Algorithm,
     file: &mut std::fs::File,
@@ -360,9 +383,10 @@ pub fn journal_body_already_verified(
 }
 
 /// The digest of a held recovery journal's immutable body, to compare with
-/// `expected`. Gigabytes long and compared at every step of apply and
-/// finalization; see [`journal_body_already_verified`] for when the read is
-/// skipped and `expected` returned.
+/// `expected`, which the journal's ticket pins by `algorithm`. Gigabytes
+/// long and compared at every step of apply and finalization; see
+/// [`journal_body_already_verified`] for when the read is skipped and
+/// `expected` returned.
 pub fn journal_body(
     algorithm: Algorithm,
     reader: &mut (impl Read + Seek),

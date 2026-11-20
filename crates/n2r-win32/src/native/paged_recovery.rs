@@ -126,6 +126,9 @@ pub struct PagedRecoveryPins<'a> {
     pub journal_identity: &'a JournalFileIdentity,
     pub journal_path: &'a Path,
     pub journal_profile: JournalProfile,
+    /// The algorithm of the four digests below, as the ticket names it:
+    /// BLAKE3 for a journal this build wrote, SHA-256 for an older one's.
+    pub digest: crate::bulk_digest::Algorithm,
     pub immutable_sha256: [u8; 32],
     pub old_selected_sha256: [u8; 32],
     pub old_restored_selected_sha256: Option<[u8; 32]>,
@@ -271,24 +274,26 @@ fn verify_journal_owner(
 fn verify_selected_digest<R: Read + Seek>(
     source: &mut R,
     policy: &HeldPagedWritePolicy,
+    algorithm: crate::bulk_digest::Algorithm,
     expected: [u8; 32],
 ) -> io::Result<()> {
-    if selected_digest(source, policy)? != expected {
+    if selected_digest(source, policy, algorithm)? != expected {
         return Err(invalid("actual excluded source selected bytes differ"));
     }
     Ok(())
 }
 
 /// The digest of the source's selected ranges, framed as the journal frames
-/// its OLD and NEW digests.
+/// its OLD and NEW digests, by the journal's algorithm.
 fn selected_digest<R: Read + Seek>(
     source: &mut R,
     policy: &HeldPagedWritePolicy,
+    algorithm: crate::bulk_digest::Algorithm,
 ) -> io::Result<[u8; 32]> {
     let previous = source.stream_position()?;
     let result = (|| {
         let facts = policy.facts()?;
-        let mut hash = crate::sha256_native::Sha256::new()?;
+        let mut hash = crate::bulk_digest::Hasher::new(algorithm)?;
         let mut buffer = vec![0; MAX_IO];
         for ordinal in 0..u64::from(facts.range_count) {
             let row = policy.row(ordinal)?;
@@ -315,12 +320,12 @@ fn verify_restored_digest<R: Read + Seek>(
     pins: &PagedRecoveryPins<'_>,
 ) -> io::Result<()> {
     let Some(expected) = pins.old_restored_selected_sha256 else {
-        return verify_selected_digest(source, policy, pins.old_selected_sha256);
+        return verify_selected_digest(source, policy, pins.digest, pins.old_selected_sha256);
     };
     let previous = source.stream_position()?;
     let result = (|| {
         let facts = policy.facts()?;
-        let mut hash = crate::sha256_native::Sha256::new()?;
+        let mut hash = crate::bulk_digest::Hasher::new(pins.digest)?;
         let mut buffer = vec![0; MAX_IO];
         for ordinal in 0..u64::from(facts.range_count) {
             let row = policy.row(ordinal)?;
@@ -738,7 +743,8 @@ fn verify_paged_new_bytes<R: Read + Seek>(
     let before = verify_journal_owner(journal, pins, facts.journal_length)?;
     let modified = journal.metadata()?.modified()?;
     state.check(journal, pins)?;
-    if crate::sha256_native::journal_body(
+    if crate::bulk_digest::journal_body(
+        pins.digest,
         journal,
         BODY,
         facts.journal_length - BODY,
@@ -752,11 +758,12 @@ fn verify_paged_new_bytes<R: Read + Seek>(
     }
     verify_index_against_journal(journal, policy, pins)?;
     if !selected_new_bytes_already_verified(pins) {
-        verify_selected_digest(source, policy, pins.new_selected_sha256)?;
+        verify_selected_digest(source, policy, pins.digest, pins.new_selected_sha256)?;
         note_selected_new_bytes_verified(&pins.immutable_sha256, &pins.new_selected_sha256);
     }
     state.check(journal, pins)?;
-    if crate::sha256_native::journal_body(
+    if crate::bulk_digest::journal_body(
+        pins.digest,
         journal,
         BODY,
         facts.journal_length - BODY,
@@ -814,7 +821,8 @@ fn verify_paged_abort<R: Read + Seek>(
     let before = verify_journal_owner(journal, pins, facts.journal_length)?;
     let modified = journal.metadata()?.modified()?;
     let abandoned = check_aborted_lifecycle(journal, pins)?;
-    if crate::sha256_native::journal_body(
+    if crate::bulk_digest::journal_body(
+        pins.digest,
         journal,
         BODY,
         facts.journal_length - BODY,
@@ -825,7 +833,7 @@ fn verify_paged_abort<R: Read + Seek>(
     }
     verify_index_against_journal(journal, policy, pins)?;
     if abandoned {
-        verify_selected_digest(source, policy, pins.old_selected_sha256)?;
+        verify_selected_digest(source, policy, pins.digest, pins.old_selected_sha256)?;
     } else {
         verify_restored_digest(source, policy, pins)?;
     }
@@ -846,7 +854,8 @@ fn verify_paged_abort<R: Read + Seek>(
             "rollback intent changed during source verification",
         ));
     }
-    if crate::sha256_native::journal_body(
+    if crate::bulk_digest::journal_body(
+        pins.digest,
         journal,
         BODY,
         facts.journal_length - BODY,
@@ -1497,7 +1506,8 @@ impl GeneralFrozenPartition {
         let journal_before = verify_journal_owner(journal, pins, facts.journal_length)?;
         let modified = journal.metadata()?.modified()?;
         check_lifecycle(journal, pins, direction)?;
-        if crate::sha256_native::journal_body(
+        if crate::bulk_digest::journal_body(
+            pins.digest,
             journal,
             BODY,
             facts.journal_length - BODY,
@@ -1507,7 +1517,7 @@ impl GeneralFrozenPartition {
             return Err(invalid("protected recovery journal immutable body differs"));
         }
         verify_index_against_journal(journal, policy, pins)?;
-        let actual = selected_digest(&mut self, policy)?;
+        let actual = selected_digest(&mut self, policy, pins.digest)?;
         if !accepted.admits(actual, pins) {
             return Err(invalid(match accepted {
                 FrozenSelected::Old => "actual excluded source selected bytes differ",
@@ -1523,7 +1533,8 @@ impl GeneralFrozenPartition {
             ));
         }
         check_lifecycle(journal, pins, direction)?;
-        if crate::sha256_native::journal_body(
+        if crate::bulk_digest::journal_body(
+            pins.digest,
             journal,
             BODY,
             facts.journal_length - BODY,
@@ -1605,15 +1616,16 @@ impl GeneralFrozenPartition {
         // this one reads and hashes the other.
         let (body, old_bytes) = {
             let expected = pins.immutable_sha256;
+            let algorithm = pins.digest;
             let length = facts.journal_length - BODY;
             let journal = &mut *journal;
             std::thread::scope(|scope| {
                 let body = scope.spawn(move || {
                     let _sampled = crate::stack_sampler::helper();
-                    crate::sha256_native::journal_body(journal, BODY, length, &expected)
+                    crate::bulk_digest::journal_body(algorithm, journal, BODY, length, &expected)
                 });
                 let old_bytes = self.with_read_ahead(|source| {
-                    verify_selected_digest(source, &policy, pins.old_selected_sha256)
+                    verify_selected_digest(source, &policy, algorithm, pins.old_selected_sha256)
                 });
                 (body.join(), old_bytes)
             })
@@ -1632,7 +1644,8 @@ impl GeneralFrozenPartition {
         check_clear_lifecycle(journal)?;
         // Ordinary sharing excludes new file writers, not privileged raw
         // aliases. Preserve a complete closing body hash before publishing AP.
-        if crate::sha256_native::journal_body(
+        if crate::bulk_digest::journal_body(
+            pins.digest,
             journal,
             BODY,
             facts.journal_length - BODY,
@@ -1863,7 +1876,8 @@ impl GeneralExclusiveRecoveryTarget {
             Err(error) => return Err(error),
         }
         check_lifecycle(journal, pins, direction)?;
-        if crate::sha256_native::journal_body(
+        if crate::bulk_digest::journal_body(
+            pins.digest,
             journal,
             BODY,
             facts.journal_length - BODY,
@@ -1979,7 +1993,8 @@ pub(super) fn authenticate_partition_paged_source(
         Err(error) => return Err(error),
     }
     check_lifecycle(journal, pins, PagedRecoveryDirection::Resume)?;
-    if crate::sha256_native::journal_body(
+    if crate::bulk_digest::journal_body(
+        pins.digest,
         journal,
         BODY,
         facts.journal_length - BODY,
@@ -1992,6 +2007,7 @@ pub(super) fn authenticate_partition_paged_source(
     verify_selected_digest(
         source,
         policy,
+        pins.digest,
         if require_new {
             pins.new_selected_sha256
         } else {
@@ -1999,7 +2015,8 @@ pub(super) fn authenticate_partition_paged_source(
         },
     )?;
     check_lifecycle(journal, pins, PagedRecoveryDirection::Resume)?;
-    if crate::sha256_native::journal_body(
+    if crate::bulk_digest::journal_body(
+        pins.digest,
         journal,
         BODY,
         facts.journal_length - BODY,
@@ -2067,6 +2084,7 @@ mod review_gate_tests {
             journal_profile: JournalProfile::CapacityPinnedV3 {
                 max_journal_bytes: 1 << 30,
             },
+            digest: crate::bulk_digest::Algorithm::WRITTEN,
             immutable_sha256: [7; 32],
             old_selected_sha256: [8; 32],
             old_restored_selected_sha256: None,

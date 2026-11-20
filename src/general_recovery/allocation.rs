@@ -66,7 +66,10 @@ impl ResourceExpectationPin {
                 && self.file.metadata()?.modified()? == self.modified,
             "resource expectation identity/metadata changed"
         );
-        let sha = hex::encode(n2r_win32::metadata_pages::pinning_digest(&mut self.file, self.snapshot.file_bytes)?);
+        let sha = hex::encode(n2r_win32::metadata_pages::pinning_digest(
+            &mut self.file,
+            self.snapshot.file_bytes,
+        )?);
         ensure!(
             sha == self.sha256
                 && n2r_win32::reference_file::observe_reference_file_handle_with_limit(
@@ -1147,6 +1150,7 @@ fn recover_allocation_inner(
             // This records that code path; it grants no replay authority.
             "exclusive_recovery_journal_used":true,
             "journal_format":if ticket.marker_profile.is_some() { "N2RFRE02" } else { plan.encoding_name() },
+            "journal_digest":ticket.digest_algorithm().label(),
             "journal_bytes":journal_bytes,"selected_bytes":selected_bytes,
             "old_zero_bytes":old_zero_bytes,
             "old_zero_payload_storage_elided":old_zero_bytes > 0,

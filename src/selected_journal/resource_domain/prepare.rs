@@ -728,17 +728,67 @@ fn complete_rows<J: DurableIo>(
             );
             whole.update(&stored[..f.record_size])?;
             immutable.update(&stored[..f.record_size])?;
-            let mut left = row
-                .next_offset
-                .checked_sub(row.descriptor_offset)
-                .and_then(|n| n.checked_sub(f.record_size as u64))
-                .context("journal row layout underflow")?;
-            while left != 0 {
-                let count = usize::try_from(left.min(buffer.len() as u64))?;
-                file.read_exact(&mut buffer[..count])?;
-                whole.update(&buffer[..count])?;
-                immutable.update(&buffer[..count])?;
-                left -= count as u64;
+            ensure!(
+                row.descriptor_offset.checked_add(f.record_size as u64)
+                    == Some(row.old_storage_offset),
+                "journal row layout differs: its OLD payload does not follow its descriptor"
+            );
+            // Each payload stored in full is held to the digest of the bytes
+            // it was written from (the source's OLD bytes, the candidate's
+            // NEW bytes) as it is read back. Under the check-once policy this
+            // read-back is the only comparison of the journal's stored
+            // payloads before the first write to the source: the gate hashes
+            // the body as a whole, and an apply that verifies each thing once
+            // no longer reads the source against the stored OLD bytes before
+            // writing (#203). A zero row stores nothing and a COPY row's NEW
+            // bytes are an earlier row's OLD bytes, checked there.
+            let full = |stored: u64| stored != 0 && stored == row.capture.length;
+            let payloads = [
+                (
+                    "OLD",
+                    row.new_storage_offset
+                        .checked_sub(row.old_storage_offset)
+                        .context("journal row layout underflow")?,
+                    old,
+                ),
+                (
+                    "NEW",
+                    row.next_offset
+                        .checked_sub(row.new_storage_offset)
+                        .context("journal row layout underflow")?,
+                    new,
+                ),
+            ];
+            for (kind, stored, expected) in payloads {
+                let mut check = if full(stored) {
+                    Some(crate::selected_journal::pin_hash(old_records.algorithm)?)
+                } else {
+                    None
+                };
+                let mut left = stored;
+                while left != 0 {
+                    let count = usize::try_from(left.min(buffer.len() as u64))?;
+                    file.read_exact(&mut buffer[..count])?;
+                    whole.update(&buffer[..count])?;
+                    immutable.update(&buffer[..count])?;
+                    if let Some(check) = check.as_mut() {
+                        check.update(&buffer[..count])?;
+                    }
+                    left -= count as u64;
+                }
+                if let Some(check) = check {
+                    ensure!(
+                        crate::selected_journal::finish(check)? == expected,
+                        "journal preparation read-back: the {kind} payload stored at offset {} for the source range at {} ({} bytes) differs from the digest of the bytes it was written from; the journal is not used",
+                        if kind == "OLD" {
+                            row.old_storage_offset
+                        } else {
+                            row.new_storage_offset
+                        },
+                        row.capture.offset,
+                        row.capture.length
+                    );
+                }
             }
         }
     }

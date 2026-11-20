@@ -26,6 +26,30 @@ pub fn checks_once() -> bool {
     ONCE.load(SeqCst)
 }
 
+static VERIFY_ONCE: AtomicBool = AtomicBool::new(false);
+
+/// Selects "each thing is verified once" for the rest of the process: the
+/// run asked for `--verify fast` (the default) and not for
+/// `--recheck-everything`. Where two checks prove the same thing, such a run
+/// makes one of them:
+///
+/// - a move of the shadow's extents is held to the mapping of the range it
+///   moved, and each file's complete mapping is compared once, when
+///   placement ends, instead of after every one of its moves;
+/// - the journal apply does not read a range again immediately before
+///   writing it: the range was held to its OLD digest before the apply
+///   marker and is read back against its NEW digest after it is written.
+///
+/// A run with `--verify thorough`, a recovery and every route that never
+/// calls this keep every check as it was.
+pub fn verify_once() {
+    VERIFY_ONCE.store(true, SeqCst);
+}
+
+pub fn verifies_once() -> bool {
+    VERIFY_ONCE.load(SeqCst)
+}
+
 /// The full verification that precedes the first write to the source. While
 /// one is alive, every full check runs for real, once.
 pub struct Gate(u64);

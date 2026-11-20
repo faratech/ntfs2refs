@@ -88,6 +88,17 @@ impl ResourcePlacement {
         crate::stream_native::retrieval_capture_resource(file, self.retrieval_bytes)
     }
 
+    /// The mapping of the VCNs from `start` to `limit` only, under the same
+    /// limits and the same workspace as [`Self::capture`].
+    pub(super) fn capture_range(&self, file: &File, start: u64, limit: u64) -> io::Result<Capture> {
+        crate::stream_native::retrieval_range_capture_resource(
+            file,
+            self.retrieval_bytes,
+            start,
+            limit,
+        )
+    }
+
     /// The room a file of `file_bytes` can take of the row that mapping
     /// queries are limited to: a stream has no more extents than clusters,
     /// and a query's limits allow a quarter of the row for what it returns.

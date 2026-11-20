@@ -36,9 +36,11 @@ exits 1 if a case ended otherwise. Its own output is in
 `.lab\hyperv\attempts\<Prefix>-<case>` like any attempt. About 45 minutes for
 the first two sets as they were measured, before the eight review cases were
 added to the second; half an hour each for the full volume and the server
-cases. The running set has not been timed as a set: its four cases each
-convert a whole Windows (22 minutes in the full run) and wait through its
-restarts, on two VMs side by side.
+cases. The running set has not been timed as a set. By the attempts made by
+hand at 8 GB, a conversion of C: took 27 minutes from the restart to Windows
+again (`runc-convert3`), and a run cut at `apply-mid-ranges` 22 minutes to
+the cut and 1 h 51 min to recover (`runc-cut-apply-10`): with two VMs side by
+side, expect some three hours, most of it that one case.
 
 The running set uses `-RunningVm` (the data VMs unless others are named), as
 many of them as the host has memory and disk space for (8 GB and 65 GB a VM
@@ -51,9 +53,10 @@ takes its share of the cases one after another:
 | `c-diagnose` | `-Diagnose` | `PASSED`: C: is NTFS and healthy, the converter ended with 0 |
 | `c-convert` | `-Acceptance` | `PASSED`: C: is ReFS and healthy, the converter ended with 0, and the use test and two more starts passed |
 | `c-cut-preparation` | `-HoldAt none -CutAfterMinutes 3` | `CUT-BACK-TO-NTFS`: the start after the cut cancelled the run, C: is NTFS and healthy |
-| `c-cut-apply-mid` | `-HoldAt apply-mid-ranges` | `CUT-RECOVERED-TO-REFS`: the converter had reported the hold, the start after the cut finished the conversion, C: is ReFS and healthy |
+| `c-cut-apply-mid` | `-HoldAt apply-mid-ranges -HoldAfterMinutes 15 -CutAfterMinutes 60 -AwayMinutes 180` | `CUT-RECOVERED-TO-REFS`: the converter had reported the hold, the start after the cut finished the conversion, C: is ReFS and healthy |
 
-Every one of them is run with `-Restore -Reattach`.
+Every one of them is run with `-Restore -Reattach` and 8 GB, which is what
+those times were taken with.
 
 The sections below describe the attempts the round is made of; run one by
 itself to look into a failure.
@@ -512,8 +515,8 @@ Outcomes: `PASSED` (`C:` is the file system the run was to leave, ReFS, or
 NTFS with `-Diagnose`, it is healthy, and the converter ended with 0),
 `CONVERTER-EXIT-<n>`, `C-IS-<file system>` and `C-IS-<file system>-<health>`,
 `REFUSED-IN-WINDOWS` (nothing restarted), `no-return` (Windows did not come
-back with the run's report within `-AwayMinutes`; `screen-no-return.png` is
-what the VM showed). After a cut, what the start after it reported has to
+back with the run's report within `-AwayMinutes` of the restart, or of the
+power cut; `screen-no-return.png` is what the VM showed). After a cut, what the start after it reported has to
 agree with what `C:` is: `CUT-RECOVERED-TO-REFS` (it finished the
 conversion; ReFS, healthy), `CUT-BACK-TO-NTFS` (it cancelled a run that had
 not started writing, or put NTFS back; NTFS, healthy),
@@ -522,7 +525,8 @@ not started writing, or put NTFS back; NTFS, healthy),
 cut came before the converter had printed a way back, and the run simply
 began again) and `RUN-ENDED-BEFORE-THE-CUT` (Windows was back before the
 power was to go). A verdict is written however the attempt ends; an error of
-the harness leaves `harness-error` with the error.
+the harness leaves `harness-error` with the error, and `result` has the
+outcome that stood when it happened.
 
 ## Storage and preservation
 

@@ -253,8 +253,15 @@ $runningCases = @(
     # prepares. The next start cancels it: NTFS, healthy.
     @{ Name = 'c-cut-preparation'; Expected = 'CUT-BACK-TO-NTFS'; Arguments = @{ HoldAt = 'none'; CutAfterMinutes = 3 } }
     # The power goes half way through the source writes. The next start
-    # finishes the conversion: ReFS, healthy.
-    @{ Name = 'c-cut-apply-mid'; Expected = 'CUT-RECOVERED-TO-REFS'; Arguments = @{ HoldAt = 'apply-mid-ranges' } }
+    # finishes the conversion: ReFS, healthy. The times are from the runs
+    # made by hand at 8 GB: the converter reached this hold some 20 minutes
+    # after the restart (runc-cut-apply-10) and a whole conversion took 27
+    # (runc-convert3), so a screen that stands still is not taken for the
+    # hold in the first 15; a cut at 25 came before the writes once
+    # (runc-cut-apply-11), so the latest time is 60; and the recovery after
+    # the cut took 1 h 51 min (runc-cut-apply-10), so Windows has three hours
+    # to come back.
+    @{ Name = 'c-cut-apply-mid'; Expected = 'CUT-RECOVERED-TO-REFS'; Arguments = @{ HoldAt = 'apply-mid-ranges'; HoldAfterMinutes = 15; CutAfterMinutes = 60; AwayMinutes = 180 } }
 )
 
 if ($Sets -contains 'fixtures') { foreach ($run in $fixtureRuns) { $expected["$Prefix-$($run.Name)"] = Get-ExpectedBootOutcome $run.Arguments } }
@@ -282,14 +289,15 @@ $bootChain = {
 # other VMs'. Each restores the VM's baseline checkpoint first and gives the
 # VM back the disks it detached when it ends.
 $runningChain = {
-    param($running, $cases, $prefix, $vmId, $binary, $scratch, $memoryGB, $logs)
+    param($running, $cases, $prefix, $vmId, $binary, $scratch, $logs)
     foreach ($case in @($cases)) {
         $arguments = @{} + $case.Arguments
         $arguments.Name = "$prefix-$($case.Name)"
         $arguments.VmId = $vmId
         $arguments.Binary = $binary
         $arguments.ScratchVhdx = $scratch
-        $arguments.MemoryGB = $memoryGB
+        # What the cases' times were taken with.
+        $arguments.MemoryGB = 8
         $arguments.Restore = $true
         $arguments.Reattach = $true
         try { & $running @arguments *> (Join-Path $logs "$($arguments.Name).log") }
@@ -419,8 +427,7 @@ try {
         $count = [int][math]::Max(0, [math]::Min($RunningVm.Count, [math]::Min([math]::Floor(($freeGB - 8) / 8.5), [math]::Floor($diskGB / 65))))
         if ($count -eq 0) { throw ('The running set needs 16.5 GB of host memory and 65 GB of disk space for one VM: {0:N1} GB of memory and {1:N1} GB of disk are free' -f $freeGB, $diskGB) }
         $used = @($RunningVm | Select-Object -First $count)
-        $memoryGB = [int][math]::Max(8, [math]::Min($MaxVmGB, [math]::Floor(($freeGB - 8) / $count) - 1))
-        Say ('{0} running-Windows cases on {1}, {2} GB each ({3:N1} GB of host memory and {4:N1} GB of disk free)' -f $runningCases.Count, ($used -join ', '), $memoryGB, $freeGB, $diskGB)
+        Say ('{0} running-Windows cases on {1}, 8 GB each ({2:N1} GB of host memory and {3:N1} GB of disk free)' -f $runningCases.Count, ($used -join ', '), $freeGB, $diskGB)
         for ($number = 0; $number -lt $used.Count; $number++) {
             $name = $used[$number]
             # The working disk: an NTFS volume on a disk of its own, made by a
@@ -436,7 +443,7 @@ try {
             # Each VM takes every case whose place in the list is its own.
             $mine = @(for ($i = $number; $i -lt $runningCases.Count; $i += $used.Count) { $runningCases[$i] })
             Say "$name takes $(($mine | ForEach-Object { $_.Name }) -join ', ')"
-            $runningJobs += Start-Job -ScriptBlock $runningChain -ArgumentList $running, $mine, $Prefix, $vms[$name].Id.Guid, $binary, (Join-Path $attempts "$work\scratch.vhdx"), $memoryGB, $logs
+            $runningJobs += Start-Job -ScriptBlock $runningChain -ArgumentList $running, $mine, $Prefix, $vms[$name].Id.Guid, $binary, (Join-Path $attempts "$work\scratch.vhdx"), $logs
         }
         $runningJobs | Wait-Job | Receive-Job | Out-File -LiteralPath (Join-Path $logs 'running-jobs.log')
     }

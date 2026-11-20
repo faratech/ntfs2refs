@@ -423,6 +423,7 @@ fn bitmap_report(raw: &NtfsInspection, before: &[IoctlQuery], after: &[IoctlQuer
     };
     Report {
         content_passes: 2,
+        content_reads_skipped: None,
         resources: None,
         schema_version: 6,
         request: Request {

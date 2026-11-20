@@ -611,19 +611,62 @@ pub(crate) fn peek_saved_resume_request(
     maximum: u64,
 ) -> Result<SavedResumeRequest> {
     let intent = peek_resume_intent(directory, independent_sha, maximum)?;
-    let mut candidates = intent
-        .initial_artifacts
-        .iter()
-        .filter(|pin| pin.key == "resume-request");
+    let saved: SavedResumeRequest = peek_initial_artifact(
+        directory,
+        &intent,
+        "resume-request",
+        "resume-request.json",
+        maximum,
+    )?;
+    saved.validate(intent.resources)?;
+    ensure!(
+        saved.request.pair == intent.pair
+            && saved.request.journal == intent.working
+            && directory.starts_with(&saved.arena_root),
+        "resume-request bootstrap route differs"
+    );
+    Ok(saved)
+}
+
+/// The pins of the saved source view, read like
+/// [`peek_saved_resume_request`] before the new arena exists, so that a
+/// resume that cannot use that view is refused before anything is created.
+/// [`ResumeSessionInputs::open`] adopts the same pinned file later.
+pub(crate) fn peek_saved_source_cache_origin(
+    directory: &Path,
+    independent_sha: [u8; 32],
+    maximum: u64,
+) -> Result<SourceCacheOriginPins> {
+    let intent = peek_resume_intent(directory, independent_sha, maximum)?;
+    peek_initial_artifact(
+        directory,
+        &intent,
+        "source-cache-origin",
+        "source-cache-origin.json",
+        maximum,
+    )
+}
+
+/// One initial artifact of the resume intent, `key` at `directory/name`,
+/// read without adopting or charging it: its pin's path, identity, working
+/// volume and digest are checked, and it must not change while it is read.
+fn peek_initial_artifact<T: DeserializeOwned>(
+    directory: &Path,
+    intent: &ResumeIntent,
+    key: &str,
+    name: &str,
+    maximum: u64,
+) -> Result<T> {
+    let mut candidates = intent.initial_artifacts.iter().filter(|pin| pin.key == key);
     let pin = candidates
         .next()
-        .context("initial resume-request pin absent")?;
+        .with_context(|| format!("initial {key} pin absent"))?;
     ensure!(
         candidates.next().is_none()
-            && pin.path == directory.join("resume-request.json")
+            && pin.path == directory.join(name)
             && pin.bytes > 0
             && pin.bytes <= maximum,
-        "initial resume-request pin path/count/bound differs"
+        "initial {key} pin path/count/bound differs"
     );
     ordinary(&pin.path, false)?;
     let mut file = OpenOptions::new()
@@ -647,29 +690,22 @@ pub(crate) fn peek_saved_resume_request(
                 .final_path
                 .to_ascii_lowercase()
                 .starts_with(&(intent.working.disk.volume_path()?.to_ascii_lowercase() + "\\")),
-        "resume-request bootstrap identity or independent working volume differs"
+        "{key} bootstrap identity or independent working volume differs"
     );
     ensure!(
         n2r_win32::metadata_pages::pinning_digest(&mut file, pin.bytes)? == digest(&pin.sha256)?,
-        "resume-request independent pin SHA differs"
+        "{key} independent pin SHA differs"
     );
     file.seek(SeekFrom::Start(0))?;
     let mut parser = serde_json::Deserializer::from_reader((&mut file).take(pin.bytes));
-    let saved = SavedResumeRequest::deserialize(&mut parser)?;
+    let saved = T::deserialize(&mut parser)?;
     parser.end()?;
     drop(parser);
     ensure!(
         n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, maximum)?
             == before
             && file.metadata()?.last_write_time() == pin.last_write_time,
-        "resume-request bootstrap file changed"
-    );
-    saved.validate(intent.resources)?;
-    ensure!(
-        saved.request.pair == intent.pair
-            && saved.request.journal == intent.working
-            && directory.starts_with(&saved.arena_root),
-        "resume-request bootstrap route differs"
+        "{key} bootstrap file changed"
     );
     Ok(saved)
 }

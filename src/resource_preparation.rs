@@ -966,20 +966,34 @@ where
             && request.verification_policy == VerificationPolicy::ExtentIdentityV1
             && request.marker_use == MarkerStorageUse::QualifiedProduction
         {
-            events
-                .observer
-                .parent_public_resources()
-                .map(|parent| {
-                    resume_checkpoint::Checkpoints::create_fresh(
-                        &context,
-                        &expected,
-                        &request,
-                        parent,
-                        &locator_group,
-                        output,
-                    )
-                })
-                .transpose()?
+            use n2r_win32::attestation::NativeObservationDomain;
+            if let Some(skipped) = context.native().domain().header().content_reads_skipped {
+                // A resumed preparation does not verify once, and refuses
+                // a saved Windows view that left contents unread: a resume
+                // checkpoint of this run could never be used. None is
+                // written, and the run says how a cut-off one is undone.
+                println!(
+                    "This preparation cannot be resumed: verifying once (--verify fast), Windows did not read the contents of {} plain stream(s) of {} object(s) ({} bytes), and a resumed preparation needs every stream its extents do not prove read through Windows. If it is cut off before any \"To recover:\" line, cancel it with the --rollback command printed above at its start, then start the conversion again.",
+                    skipped.streams, skipped.objects, skipped.logical_bytes
+                );
+                std::io::stdout().flush()?;
+                None
+            } else {
+                events
+                    .observer
+                    .parent_public_resources()
+                    .map(|parent| {
+                        resume_checkpoint::Checkpoints::create_fresh(
+                            &context,
+                            &expected,
+                            &request,
+                            parent,
+                            &locator_group,
+                            output,
+                        )
+                    })
+                    .transpose()?
+            }
         } else {
             None
         };

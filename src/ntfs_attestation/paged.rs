@@ -123,6 +123,141 @@ impl<'a> PagedObservationRequest<'a> {
     pub fn admission(&self) -> SourceResourceAdmission {
         self.admission
     }
+    /// The object's request row and, with `plain`, the names of its plain
+    /// streams ([`plain_content_stream`]; none for a thorough run), both from
+    /// one reading of its record.
+    fn selected(&self, index: usize, plain: bool) -> Result<(NativeRequestRow, Vec<Vec<u16>>)> {
+        ensure!(index < self.length, "source selector ordinal absent");
+        let (row, plain) = self.source.with_file(index as u64, |file| {
+            let mut row = NativeRequestRow {
+                identity: FileIdentity {
+                    record_number: file.record_number,
+                    sequence_number: file.sequence_number,
+                },
+                extent_identity_streams: Vec::new(),
+            };
+            let mut plain_streams = Vec::new();
+            if self.policy.is_fast() {
+                for stream in &file.streams {
+                    let selector = if self.windows_paths {
+                        super::extent_identity_stream_request_windows_domain(
+                            self.source,
+                            file,
+                            stream,
+                        )?
+                    } else {
+                        super::extent_identity_stream_request_domain(
+                            self.source,
+                            file,
+                            stream,
+                            true,
+                            true,
+                        )?
+                    };
+                    if let Some(selector) = selector {
+                        row.extent_identity_streams.push(selector);
+                    }
+                    if plain
+                        && plain_content_stream(self.source, file, stream).with_context(|| {
+                            format!(
+                                "deciding whether stream {:?} of FILE {} is plain",
+                                stream.name, file.record_number
+                            )
+                        })?
+                    {
+                        plain_streams.push(stream.name_utf16.clone());
+                    }
+                }
+            }
+            Ok((row, plain_streams))
+        })?;
+        // Enforce the row budget while serializing without allocating a
+        // second JSON buffer. The raw owner bounds its decoded input row.
+        struct Counter {
+            bytes: u64,
+            maximum: u64,
+        }
+        impl io::Write for Counter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.bytes = self
+                    .bytes
+                    .checked_add(bytes.len() as u64)
+                    .filter(|n| *n <= self.maximum)
+                    .ok_or_else(|| io::Error::other("native selector row exceeds admitted RAM"))?;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        serde_json::to_writer(
+            Counter {
+                bytes: 0,
+                maximum: self.admission.budget.max_row_bytes,
+            },
+            &row,
+        )?;
+        Ok((row, plain))
+    }
+}
+
+/// Whether the raw reading holds `stream` as plain: one non-resident DATA
+/// attribute of a user file's base record, not assembled from an attribute
+/// list, uncompressed and unsparse, initialized to its end, every run on
+/// disk, with a complete raw digest. That digest is then a straight read of
+/// the clusters the run list names; nothing in it is decoded or zero-filled.
+/// Any doubt is "not plain", and such a stream is read through Windows. So
+/// is a plain one whose valid data Windows does not confirm runs to its end
+/// (the collector asks, `n2r_win32::attestation::valid_data_to_end`).
+pub(crate) fn plain_content_stream(
+    source: &PagedInspection,
+    file: &crate::ntfs_inspect::FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+) -> Result<bool> {
+    if file.is_directory
+        || file.is_metadata
+        || file.record_number < 16
+        || file.base_file_reference != 0
+        || file.metadata_role != crate::ntfs_inspect::MetadataRole::OutsideExtendCandidate
+        || file.metadata_role_issue.is_some()
+        || file
+            .attributes
+            .iter()
+            .any(|a| a.type_code == 0x20 || a.lowest_vcn != 0)
+        || stream.resident
+        || stream.flags != 0
+        || stream.logical_size == 0
+        || stream.initialized_size != stream.logical_size
+        || stream.extents.is_empty()
+        || stream.extents.iter().any(|e| e.physical_offset.is_none())
+        || stream.logical_hash_status != crate::ntfs_inspect::LogicalHashStatus::Complete
+        || !stream
+            .logical_sha256
+            .as_deref()
+            .is_some_and(n2r_win32::content_digest::is_hex)
+    {
+        return Ok(false);
+    }
+    let mut attributes = file
+        .attributes
+        .iter()
+        .filter(|a| a.type_code == 0x80 && a.name_utf16 == stream.name_utf16);
+    let (Some(a), None) = (attributes.next(), attributes.next()) else {
+        return Ok(false);
+    };
+    if a.resident
+        || a.flags != 0
+        || a.compression_unit != 0
+        || a.total_allocated_size.is_some()
+        || a.lowest_vcn != 0
+        || a.logical_size != stream.logical_size
+        || a.initialized_size != stream.initialized_size
+        || a.allocated_size != stream.allocated_size
+        || a.extents != stream.extents
+    {
+        return Ok(false);
+    }
+    Ok(!source.has_attribute_list_assembly(file.record_number)?)
 }
 impl NativeRequestDomain for PagedObservationRequest<'_> {
     fn header(&self) -> &Request {
@@ -239,71 +374,17 @@ impl NativeRequestDomain for PagedObservationRequest<'_> {
         .map_err(io::Error::other)
     }
     fn row(&self, index: usize) -> io::Result<Cow<'_, NativeRequestRow>> {
-        (|| -> Result<_> {
-            ensure!(index < self.length, "source selector ordinal absent");
-            let row = self.source.with_file(index as u64, |file| {
-                let mut row = NativeRequestRow {
-                    identity: FileIdentity {
-                        record_number: file.record_number,
-                        sequence_number: file.sequence_number,
-                    },
-                    extent_identity_streams: Vec::new(),
-                };
-                if self.policy.is_fast() {
-                    for stream in &file.streams {
-                        let selector = if self.windows_paths {
-                            super::extent_identity_stream_request_windows_domain(
-                                self.source,
-                                file,
-                                stream,
-                            )?
-                        } else {
-                            super::extent_identity_stream_request_domain(
-                                self.source,
-                                file,
-                                stream,
-                                true,
-                                true,
-                            )?
-                        };
-                        if let Some(selector) = selector {
-                            row.extent_identity_streams.push(selector);
-                        }
-                    }
-                }
-                Ok(row)
-            })?;
-            // Enforce the row budget while serializing without allocating a
-            // second JSON buffer. The raw owner bounds its decoded input row.
-            struct Counter {
-                bytes: u64,
-                maximum: u64,
-            }
-            impl io::Write for Counter {
-                fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                    self.bytes = self
-                        .bytes
-                        .checked_add(bytes.len() as u64)
-                        .filter(|n| *n <= self.maximum)
-                        .ok_or_else(|| {
-                            io::Error::other("native selector row exceeds admitted RAM")
-                        })?;
-                    Ok(bytes.len())
-                }
-                fn flush(&mut self) -> io::Result<()> {
-                    Ok(())
-                }
-            }
-            serde_json::to_writer(
-                Counter {
-                    bytes: 0,
-                    maximum: self.admission.budget.max_row_bytes,
-                },
-                &row,
-            )?;
-            Ok(Cow::Owned(row))
-        })()
-        .map_err(io::Error::other)
+        self.selected(index, false)
+            .map(|(row, _)| Cow::Owned(row))
+            .map_err(io::Error::other)
+    }
+    fn row_with_plain_content_streams(
+        &self,
+        index: usize,
+    ) -> io::Result<(Cow<'_, NativeRequestRow>, Vec<Vec<u16>>)> {
+        self.selected(index, true)
+            .map(|(row, plain)| (Cow::Owned(row), plain))
+            .map_err(io::Error::other)
     }
     fn revalidate(&self) -> io::Result<()> {
         self.source.revalidate().map_err(io::Error::other)?;
@@ -348,6 +429,15 @@ pub struct PagedFileComparison {
     pub complete_logical_bytes: u64,
     pub extent_identity_streams: u64,
     pub extent_identity_logical_bytes: u64,
+    /// The plain streams whose contents Windows did not read because the
+    /// run verifies once (named in `logical_data`), and their bytes.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub unread_plain_streams: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub unread_plain_logical_bytes: u64,
+}
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 impl PagedFileComparison {
     /// The views of this object that Windows does not show as the raw volume
@@ -457,6 +547,21 @@ fn compare_domain_with_header(
         "resource reconciliation requires the actual paged native owner"
     );
     n2r_win32::attestation::validate_domain_resources(native)?;
+    // A run that verifies once does not read through Windows the contents
+    // of plain streams; their rows say so, and the header counts them. Only
+    // a process that verifies once compares such a view. Every other one
+    // (--verify thorough, --recheck-everything, --diagnose, --recover)
+    // holds every stream's Windows reading to its raw digest, and cannot
+    // where none was taken.
+    if let Some(skipped) = header.content_reads_skipped {
+        ensure!(
+            policy.verifies_once(),
+            "the Windows view of this source did not read the contents of {} plain stream(s) of {} object(s) ({} bytes), as a --verify fast run that verifies once does; this process does not verify once and needs every stream its extents do not prove read through Windows. A preparation resumed with --recover cannot use that view: cancel it with the same --recover command and --rollback, then start the conversion again",
+            skipped.streams,
+            skipped.objects,
+            skipped.logical_bytes
+        );
+    }
     ensure!(
         serde_json::to_vec(&header.request)? == serde_json::to_vec(expected.header())?,
         "native request differs from complete current source selection"
@@ -619,25 +724,47 @@ fn compare_domain_with_header(
             );
             Ok(())
         })());
-        let mut logical_bytes = (0, 0, 0);
-        let logical_data = Check::from((|| {
+        let mut evidence = crate::ntfs_data_attestation::LogicalEvidence::default();
+        let mut logical_data = Check::from((|| {
             ensure!(
                 observation.open_error.is_none(),
                 "native logical file open refused"
             );
-            logical_bytes =
-                crate::ntfs_data_attestation::check_file_with_extent_evidence_domain_scoped(
-                    source,
-                    &file,
-                    &logical,
-                    &observation,
-                    header,
-                    &selector,
-                    admission,
-                    expected.windows_paths,
-                )?;
+            // Only where the process verifies once may a stream whose
+            // contents Windows did not read be admitted, and only one that
+            // the raw reading holds as plain.
+            let mut plain = |stream: &crate::ntfs_inspect::StreamInventory| {
+                plain_content_stream(source, &file, stream)
+            };
+            evidence = crate::ntfs_data_attestation::check_file_with_extent_evidence_domain_scoped(
+                source,
+                &file,
+                &logical,
+                &observation,
+                header,
+                &selector,
+                admission,
+                expected.windows_paths,
+                policy.verifies_once().then_some(
+                    &mut plain
+                        as &mut dyn FnMut(&crate::ntfs_inspect::StreamInventory) -> Result<bool>,
+                ),
+            )?;
             Ok(())
         })());
+        if logical_data.matched && !evidence.unread_plain_streams.is_empty() {
+            logical_data.detail = format!(
+                "native observations match the supplied raw model; Windows did not read the contents of {} plain stream(s) ({} bytes), as a run that verifies once does: their run lists are held to Windows' retrieval pointers, Windows confirmed that their valid data runs to their end, and their raw digests stand: {}",
+                evidence.unread_plain_streams.len(),
+                evidence.unread_plain_bytes,
+                evidence
+                    .unread_plain_streams
+                    .iter()
+                    .map(|name| format!("\"{}\"", String::from_utf16_lossy(name)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         let directory = native_row.namespace()?;
         ensure!(
             directory.identity == selector.identity,
@@ -699,9 +826,11 @@ fn compare_domain_with_header(
             case_sensitive_mark,
             timestamps,
             security: security_view,
-            complete_logical_bytes: logical_bytes.0,
-            extent_identity_streams: u64::try_from(logical_bytes.1)?,
-            extent_identity_logical_bytes: logical_bytes.2,
+            complete_logical_bytes: evidence.full_bytes,
+            extent_identity_streams: u64::try_from(evidence.extent_identity_streams)?,
+            extent_identity_logical_bytes: evidence.extent_identity_bytes,
+            unread_plain_streams: u64::try_from(evidence.unread_plain_streams.len())?,
+            unread_plain_logical_bytes: evidence.unread_plain_bytes,
         })?;
     }
     expected.revalidate()?;

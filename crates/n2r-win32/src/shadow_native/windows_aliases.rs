@@ -287,6 +287,10 @@ pub struct VerifiedWindowsAliases {
     plan_digest: [u8; 32],
     maximum_row_bytes: u64,
     retained_memory_bytes: u64,
+    /// Set where this ledger was issued by probing every link on the
+    /// converted volume under its READ_ONLY lease, and taken by the one
+    /// observation of that volume that may stand on those probes.
+    probed_converted: std::sync::atomic::AtomicBool,
     _memory: Box<dyn report_memory::ReportMemoryLease>,
 }
 impl VerifiedWindowsAliases {
@@ -525,6 +529,7 @@ impl VerifiedWindowsAliases {
             plan_digest,
             maximum_row_bytes: admission.budget.max_row_bytes,
             retained_memory_bytes: retained,
+            probed_converted: std::sync::atomic::AtomicBool::new(true),
             _memory: memory,
         })
     }
@@ -637,7 +642,20 @@ impl VerifiedWindowsAliases {
         }
         let root = format!("{}\\", binding.volume_path()?);
         const DIFFERS: &str = "readonly derived alias metadata differs";
-        for entries in self.entries.chunks(ALIAS_BATCH) {
+        // A ledger issued from recovered expectations was made by probing
+        // every one of these links on this converted volume, held READ_ONLY
+        // since: its point, its identity, its parent's and its target's, and
+        // its security. Probing them again here could only repeat that, so
+        // under "verify once" the first observation of the converted volume
+        // stands on it. A ledger from construction (the shadow), a second
+        // observation and every other run probe each link as before.
+        let already_probed = converted
+            && crate::verify_policy::verifies_once()
+            && self
+                .probed_converted
+                .swap(false, std::sync::atomic::Ordering::SeqCst);
+        let to_probe: &[VerifiedAlias] = if already_probed { &[] } else { &self.entries };
+        for entries in to_probe.chunks(ALIAS_BATCH) {
             let owners = entries
                 .iter()
                 .map(|entry| input.object(entry.canonical_object_index))
@@ -1699,6 +1717,7 @@ impl StagedWindowsAliases {
             plan_digest: self.plan_digest,
             maximum_row_bytes: self.maximum_row_bytes,
             retained_memory_bytes: retained,
+            probed_converted: std::sync::atomic::AtomicBool::new(false),
             _memory: self._memory,
         })
     }

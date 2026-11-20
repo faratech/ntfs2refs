@@ -236,6 +236,22 @@ pub trait NativeRequestDomain {
     fn windows_object_id_identity(&self, _index: usize) -> io::Result<Option<FileIdentity>> {
         Ok(None)
     }
+    /// The object's [`row`](Self::row) and the names of its plain streams,
+    /// from one reading of the object: those the raw reading holds as one
+    /// non-resident, uncompressed, unsparse DATA attribute, initialized to
+    /// its end with every run on disk, whose raw digest is therefore a
+    /// straight read of the clusters its run list names. A run that verifies
+    /// once maps them through Windows and holds that mapping to the raw run
+    /// list, asks Windows whether their valid data runs to their end, and
+    /// does not read their contents a second time where it does. The names
+    /// select reads only; the comparison recomputes the set from the raw
+    /// reading and refuses a skipped stream outside it.
+    fn row_with_plain_content_streams(
+        &self,
+        index: usize,
+    ) -> io::Result<(Cow<'_, NativeRequestRow>, Vec<Vec<u16>>)> {
+        Ok((self.row(index)?, Vec::new()))
+    }
     fn revalidate(&self) -> io::Result<()>;
     fn require_paged_source(
         &self,
@@ -933,6 +949,48 @@ pub struct Report {
     /// frozen, physically read-only source (allocation-bounded mode).
     #[serde(default = "two_content_passes")]
     pub content_passes: u8,
+    /// The streams whose contents a run that verifies once did not read
+    /// through Windows (`logical_hash::Status::NotReadPlainRunsV1`), counted
+    /// from the rows and validated against them. None when every stream
+    /// that the request does not prove by its extents was read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_reads_skipped: Option<SkippedContentReads>,
+}
+
+/// What [`Report::content_reads_skipped`] counts: the objects with at least
+/// one such stream, the streams and their logical bytes.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SkippedContentReads {
+    pub objects: u64,
+    pub streams: u64,
+    pub logical_bytes: u64,
+}
+impl SkippedContentReads {
+    /// Counts one object's skipped streams; false when it has none.
+    pub(crate) fn add_object(&mut self, hashes: &[StreamHash]) -> io::Result<bool> {
+        let overflow = || io::Error::other("skipped content read count overflow");
+        let mut any = false;
+        for h in hashes
+            .iter()
+            .filter(|h| h.outcome.status == crate::logical_hash::Status::NotReadPlainRunsV1)
+        {
+            any = true;
+            self.streams = self.streams.checked_add(1).ok_or_else(overflow)?;
+            self.logical_bytes = self
+                .logical_bytes
+                .checked_add(h.logical_size)
+                .ok_or_else(overflow)?;
+        }
+        if any {
+            self.objects = self.objects.checked_add(1).ok_or_else(overflow)?;
+        }
+        Ok(any)
+    }
+    /// None when nothing was skipped, as the report records it.
+    pub fn recorded(self) -> Option<Self> {
+        (self.streams != 0).then_some(self)
+    }
 }
 
 /// Complete source evidence with one owned row at a time. The header retains
@@ -1204,6 +1262,49 @@ pub struct StreamHash {
     pub standard_before: Option<Query>,
     pub standard_after: Option<Query>,
     pub outcome: crate::logical_hash::Outcome,
+    /// Only for a stream whose contents were not read because it is plain
+    /// ([`crate::logical_hash::Status::NotReadPlainRunsV1`]): Windows' answer,
+    /// through the same read handle and without reading the stream, that its
+    /// valid data runs from its start to its end ([`valid_data_to_end`]).
+    /// None for every other stream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_data: Option<Box<IoctlQuery>>,
+}
+
+/// `FSCTL_QUERY_FILE_REGIONS`: the regions of a stream of a given use, here
+/// its valid data, answered without reading the stream.
+pub const QUERY_FILE_REGIONS: u32 = 0x0009_0284;
+/// `FILE_REGION_USAGE_VALID_CACHED_DATA`: the valid data as a read through
+/// Windows sees it (it reads zeros past it). On a source that nothing has
+/// written to since it was mounted this is NTFS's own reading of the valid
+/// data length it stores. It is the usage NTFS answers ([MS-FSA]
+/// 2.1.5.10.24); NTFS refuses `FILE_REGION_USAGE_VALID_NONCACHED_DATA` with
+/// ERROR_INVALID_PARAMETER.
+pub const REGION_VALID_CACHED_DATA: u32 = 1;
+
+/// The `FILE_REGION_INPUT` asking for the valid data of the whole of a
+/// stream of `logical_size` bytes: offset 0, that length, cached valid data.
+/// None for a size it cannot ask about (0, or more than 63 bits).
+pub fn valid_data_request(logical_size: u64) -> Option<[u8; 24]> {
+    let length = i64::try_from(logical_size).ok().filter(|n| *n > 0)?;
+    let mut input = [0u8; 24];
+    input[8..16].copy_from_slice(&length.to_le_bytes());
+    input[16..20].copy_from_slice(&REGION_VALID_CACHED_DATA.to_le_bytes());
+    Some(input)
+}
+
+/// Whether `answer` is Windows' answer that the valid data of a stream of
+/// `logical_size` bytes runs from its start to its end: it asked exactly
+/// that ([`valid_data_request`]), succeeded, and its regions cover
+/// `[0, logical_size)` as valid data and nothing past it. A stream whose
+/// valid data ends early reads as zeros from there on, which a checksum of
+/// the clusters its run list names would not show.
+pub fn valid_data_to_end(answer: &IoctlQuery, logical_size: u64) -> bool {
+    answer.code == QUERY_FILE_REGIONS
+        && valid_data_request(logical_size).is_some_and(|input| answer.input == input)
+        && answer.native_error.is_none()
+        && crate::region_layout::validate(&answer.bytes, logical_size, REGION_VALID_CACHED_DATA)
+            .is_ok()
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LogicalFile {
@@ -1235,6 +1336,11 @@ pub(crate) fn hash_retained_bytes(items: &Vec<StreamHash>) -> usize {
         .flatten()
         {
             bytes = bytes.saturating_add(q.bytes.capacity());
+        }
+        if let Some(q) = &h.valid_data {
+            bytes = bytes.saturating_add(
+                std::mem::size_of::<IoctlQuery>() + q.input.capacity() + q.bytes.capacity(),
+            );
         }
     }
     bytes
@@ -1557,6 +1663,7 @@ fn validate_regular_paged_resources(
     if !matches!(header.content_passes, 1 | 2) {
         return Err(invalid());
     }
+    let mut skipped = SkippedContentReads::default();
     let mut bad_logical = false;
     let mut bad_observation = false;
     let mut bad_namespace = false;
@@ -1608,6 +1715,7 @@ fn validate_regular_paged_resources(
         if header.content_passes == 1 && file.after != file.before {
             return Err(invalid());
         }
+        skipped.add_object(&file.before)?;
         let passes: &[&Vec<StreamHash>] = if header.content_passes == 1 {
             &[&file.before]
         } else {
@@ -1623,6 +1731,32 @@ fn validate_regular_paged_resources(
                 return Err(invalid());
             }
             for h in pass {
+                // Only a paged collection that verifies once skips a plain
+                // stream's content read, never one the request proves by its
+                // extents; such an outcome holds nothing read, and Windows'
+                // answer that the stream's valid data runs to its end. No
+                // other stream carries that answer.
+                let plain = h.outcome.status == crate::logical_hash::Status::NotReadPlainRunsV1;
+                if plain != h.valid_data.is_some()
+                    || (plain
+                        && ((header.request.schema_version, header.schema_version) != (8, 16)
+                            || h.outcome.bytes_read != 0
+                            || h.outcome.eof_confirmed
+                            || h.outcome.sha256.is_some()
+                            || h.outcome.native_error.is_some()
+                            || h.outcome.detail.is_some()
+                            || !h
+                                .valid_data
+                                .as_ref()
+                                .is_some_and(|q| valid_data_to_end(q, h.logical_size))
+                            || selected.as_ref().is_some_and(|s| {
+                                s.extent_identity_streams
+                                    .iter()
+                                    .any(|wanted| wanted.name_utf16 == h.name_utf16)
+                            })))
+                {
+                    return Err(invalid());
+                }
                 if h.outcome.status == crate::logical_hash::Status::NotReadExtentIdentityV1
                     && (!matches!(
                         (header.request.schema_version, header.schema_version),
@@ -1764,6 +1898,10 @@ fn validate_regular_paged_resources(
         ] {
             mark_native_identity(&mut identities, identity, bit, count)?;
         }
+    }
+    // The header says exactly which content reads the rows skipped.
+    if skipped.recorded() != header.content_reads_skipped {
+        return Err(invalid());
     }
     measured_allocation_resources(&mut actual, header, profile)?;
     let streaming_shape = match header.schema_version {
@@ -1954,7 +2092,8 @@ fn validate_domain_resources_irregular(domain: &impl NativeObservationDomain) ->
     let mut observed = 0u64;
     let mut complete_reservations = 0u64;
     let mut complete_streams = 0u64;
-    if !matches!(header.content_passes, 1 | 2) {
+    // Only the regular paged form above may skip a plain stream's read.
+    if !matches!(header.content_passes, 1 | 2) || header.content_reads_skipped.is_some() {
         return Err(invalid());
     }
     for index in 0..domain.logical_len() {
@@ -1984,6 +2123,11 @@ fn validate_domain_resources_irregular(domain: &impl NativeObservationDomain) ->
                 return Err(invalid());
             }
             for h in pass {
+                if h.outcome.status == crate::logical_hash::Status::NotReadPlainRunsV1
+                    || h.valid_data.is_some()
+                {
+                    return Err(invalid());
+                }
                 if h.outcome.status == crate::logical_hash::Status::NotReadExtentIdentityV1
                     && (!matches!(
                         (header.request.schema_version, header.schema_version),
@@ -2309,6 +2453,9 @@ pub(crate) fn measured_row_resources(
                 .chain(stream.standard_after.iter())
             {
                 query(&mut out.stream_evidence_bytes, q)?;
+            }
+            if let Some(q) = &stream.valid_data {
+                ioctl(&mut out.stream_evidence_bytes, q)?;
             }
         }
     }

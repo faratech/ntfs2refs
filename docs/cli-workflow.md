@@ -732,35 +732,74 @@ it to its run.
   streams, tails and everything rewritten are read and checksummed. Working
   files and the volume are re-read in full once, at the gate before the first
   write to the volume. The conversion is committed only after the converted
-  volume has passed this verification: every new sector is written and read
+  volume has passed its verification: every new sector is written and read
   back, the disk is sealed offline and read-only again, the converted volume
   is mounted read-only and verified, and only then is the handoff written and
   the volume put online. Until then `--recover ... --rollback` puts NTFS back.
+
+  A fast run checks each thing once, and says so when it starts. Where two
+  checks prove the same thing, it makes one of them (`--verify thorough` and
+  `--recheck-everything` make both):
+  - **Reading the source.** The volume is read raw, once, and what Windows
+    shows of it is still compared with that reading: every file's and
+    directory's attributes, times and security, its streams with their
+    names and sizes, where each stream lies on the disk, and every directory
+    listing. Windows still reads the contents of every stream the raw
+    reading has to decode or assemble: resident, compressed, sparse and
+    partly initialized streams, and those of a file whose attributes span
+    several file records. Only the contents of a plain stream (one
+    uncompressed, unsparse stream of a file, initialized to its end, all of
+    it on disk) are not read a second time through Windows: where it lies
+    is held to Windows' map of it, Windows confirms, without reading it,
+    that its valid data runs to its end (a stream it does not say that of
+    is read through Windows like any other), and the checksum of its raw
+    reading is what the new volume is checked against.
+  - **Building the new volume.** What was written to it is checked as it is
+    written, and it is examined once when it is complete; its payloads and
+    its metadata are not read back a second time in between, and its
+    directories are not listed again after their metadata is restored.
+  - **Placing the new volume's extents.** After each move only the mapping
+    of the moved range is read, to see that it landed where it was sent.
+    Each file's complete mapping is compared with every piece placed for it
+    once, when placement ends, instead of after every move. Both views of
+    the destination's allocation are still read before every move.
+  - **Writing the changes.** Each changed range is held to its old contents
+    once, before the apply marker, then written and read back against its
+    new contents. It is not read again immediately before it is written.
+  - **Short names.** The short-name links of a converted Windows volume are
+    probed once.
+
+  The converted volume is verified in full after the changes are written, in
+  both modes. A diagnosis (`--diagnose`) leaves nothing out: it stops before
+  the new volume is examined, which is where a conversion makes the checks it
+  leaves out earlier. A recovery (`--recover`) and a partition on the disk of
+  the running Windows never leave anything out either. A fast run's
+  preparation that was cut off is therefore not resumed: it is cancelled
+  with the `--rollback` command the run printed at its start ([A run that
+  is cut off while it prepares](#a-run-that-is-cut-off-while-it-prepares)),
+  and the conversion is started again. A fast conversion of a Windows
+  volume that left plain streams unread says so once it has read the
+  source, and writes no resume checkpoint.
 - **`--verify thorough`** changes *what* is checked: every stream's complete
-  contents are read and hashed. Not with `--minimize-scratch`. The earlier
-  spelling `--verify-full-content` is still accepted and means the same. It
-  commits as soon as every new sector is written and read back, before the
-  verification: from then on a rollback is closed.
-- **`--recheck-everything`** changes *how often*, not what: the full re-reads
-  happen at every checkpoint instead of once at the gate. Much slower.
-
-Where two checks prove the same thing, a fast run makes one of them;
-`--verify thorough` and `--recheck-everything` make both:
-
-- **Placing the new volume's extents.** After each move only the mapping of
-  the moved range is read, to see that it landed where it was sent. Each
-  file's complete mapping is compared with every piece placed for it once,
-  when placement ends, instead of after every move. Both views of the
-  destination's allocation are still read before every move.
-- **Writing the changes.** Each changed range is held to its old contents
-  once, before the apply marker, then written and read back against its new
-  contents. It is not read again immediately before it is written.
+  contents are read and hashed, and every check a fast run leaves out is made:
+  Windows reads the contents of every stream and they are compared with the
+  raw volume, the new volume is read back before the changes are captured,
+  each move of its extents is followed by a read of the file's complete
+  mapping, and each changed range is read again just before it is written.
+  Not with `--minimize-scratch`. The earlier spelling
+  `--verify-full-content` is still accepted and means the same.
+  It commits as soon as every new sector is written and read back, before
+  the verification: from then on a rollback is closed.
+- **`--recheck-everything`** changes *how often*: the full re-reads happen at
+  every checkpoint instead of once at the gate. With `--verify fast` it also
+  makes every check a fast run leaves out. Much slower.
 
 A partition on the disk of the running Windows, a conversion with
-`--restart-media`, and a run whose interrupted preparation is resumed still
-commit before the verification, as `--verify thorough` does: from their
-handoff on a rollback is closed. A resumed preparation says so before it
-writes to the volume.
+`--restart-media`, and a run whose interrupted preparation is resumed (a
+thorough run's: a fast run's is not resumed, see above) still commit before
+the verification, as `--verify thorough` does: from their handoff on a
+rollback is closed. A resumed preparation says so before it writes to the
+volume.
 
 **If the verification does not pass** (with `--verify fast`), nothing is
 committed and nothing is rolled back. The run ends with an error that says

@@ -45,6 +45,19 @@ pub struct Reconciliation {
 fn zero_count(n: &usize) -> bool {
     *n == 0
 }
+/// What one object's content evidence came to.
+#[derive(Default)]
+pub(crate) struct LogicalEvidence {
+    /// Logical bytes read through Windows and held to the raw digest.
+    pub full_bytes: u64,
+    pub extent_identity_streams: usize,
+    pub extent_identity_bytes: u64,
+    /// The plain streams whose contents a run that verifies once did not
+    /// read through Windows, by name: their run lists are held to Windows'
+    /// retrieval pointers and their raw digests stand.
+    pub unread_plain_streams: Vec<Vec<u16>>,
+    pub unread_plain_bytes: u64,
+}
 fn zero_bytes(n: &u64) -> bool {
     *n == 0
 }
@@ -156,7 +169,7 @@ fn check_file_with_extent_evidence(
     observation: &n2r_win32::attestation::Observation,
     native: &Report,
 ) -> Result<(u64, usize, u64)> {
-    check_file_with_selectors(
+    let evidence = check_file_with_selectors(
         &raw.geometry,
         file,
         logical,
@@ -165,7 +178,13 @@ fn check_file_with_extent_evidence(
         &native.request.extent_identity_streams,
         |stream| crate::ntfs_attestation::extent_identity_stream_request(raw, file, stream),
         None,
-    )
+        None,
+    )?;
+    Ok((
+        evidence.full_bytes,
+        evidence.extent_identity_streams,
+        evidence.extent_identity_bytes,
+    ))
 }
 
 #[cfg(windows)]
@@ -178,7 +197,7 @@ pub fn check_file_with_extent_evidence_domain(
     selector: &n2r_win32::attestation::NativeRequestRow,
     resources: n2r_win32::tree_resources::SourceResourceAdmission,
 ) -> Result<(u64, usize, u64)> {
-    check_file_with_extent_evidence_domain_scoped(
+    let evidence = check_file_with_extent_evidence_domain_scoped(
         source,
         file,
         logical,
@@ -187,11 +206,20 @@ pub fn check_file_with_extent_evidence_domain(
         selector,
         resources,
         false,
-    )
+        None,
+    )?;
+    Ok((
+        evidence.full_bytes,
+        evidence.extent_identity_streams,
+        evidence.extent_identity_bytes,
+    ))
 }
 
 /// Native comparison scope only. The caller derives Windows scope from the
 /// bound layout; this flag cannot satisfy source or alias-preservation gates.
+/// `plain` is given only where the run verifies once: it says from the raw
+/// reading whether a stream is plain, and a stream whose contents Windows
+/// did not read is admitted only when it is.
 #[cfg(windows)]
 pub(crate) fn check_file_with_extent_evidence_domain_scoped(
     source: &impl crate::ntfs_inspect::RootFileDomain,
@@ -202,7 +230,8 @@ pub(crate) fn check_file_with_extent_evidence_domain_scoped(
     selector: &n2r_win32::attestation::NativeRequestRow,
     resources: n2r_win32::tree_resources::SourceResourceAdmission,
     windows_paths: bool,
-) -> Result<(u64, usize, u64)> {
+    plain: Option<&mut dyn FnMut(&crate::ntfs_inspect::StreamInventory) -> Result<bool>>,
+) -> Result<LogicalEvidence> {
     resources.validate()?;
     ensure!(
         selector.identity == logical.identity,
@@ -227,6 +256,7 @@ pub(crate) fn check_file_with_extent_evidence_domain_scoped(
             }
         },
         Some(resources),
+        plain,
     )
 }
 
@@ -241,14 +271,22 @@ fn check_file_with_selectors(
         &crate::ntfs_inspect::StreamInventory,
     ) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>>,
     resources: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
-) -> Result<(u64, usize, u64)> {
-    if !logical
-        .before
-        .iter()
-        .chain(&logical.after)
-        .any(|h| h.outcome.status == Status::NotReadExtentIdentityV1)
-    {
-        return Ok((check_file(file, logical, geometry.serial_number)?, 0, 0));
+    mut plain: Option<&mut dyn FnMut(&crate::ntfs_inspect::StreamInventory) -> Result<bool>>,
+) -> Result<LogicalEvidence> {
+    // A row with no stream left unread is held to the raw digests as it was
+    // read. A row with one takes the path below, which also holds every
+    // stream's Windows mapping to the raw run list before any unread stream
+    // is admitted.
+    if !logical.before.iter().chain(&logical.after).any(|h| {
+        matches!(
+            h.outcome.status,
+            Status::NotReadExtentIdentityV1 | Status::NotReadPlainRunsV1
+        )
+    }) {
+        return Ok(LogicalEvidence {
+            full_bytes: check_file(file, logical, geometry.serial_number)?,
+            ..LogicalEvidence::default()
+        });
     }
     ensure!(
         matches!(
@@ -287,6 +325,8 @@ fn check_file_with_selectors(
     let mut full_bytes = 0u64;
     let mut extent_streams = 0;
     let mut extent_bytes = 0u64;
+    let mut unread_plain_streams = Vec::new();
+    let mut unread_plain_bytes = 0u64;
     for (pass_index, pass) in [&logical.before, &logical.after].into_iter().enumerate() {
         let names: BTreeSet<_> = pass.iter().map(|h| &h.name_utf16).collect();
         let expected_names: BTreeSet<_> = file.streams.iter().map(|s| &s.name_utf16).collect();
@@ -352,6 +392,52 @@ fn check_file_with_selectors(
                         .checked_add(s.logical_size)
                         .context("extent identity byte count overflow")?;
                 }
+            } else if h.outcome.status == Status::NotReadPlainRunsV1 {
+                // Windows did not read this stream's contents: the run
+                // verifies once, the raw reading holds it as plain, so its
+                // digest is a straight read of the clusters its run list
+                // names, and that list was held to Windows' retrieval
+                // pointers above.
+                let plain = plain.as_deref_mut().context(
+                    "Windows did not read this stream's contents, which only a run that verifies once (--verify fast) admits",
+                )?;
+                ensure!(
+                    plain(s)?,
+                    "Windows did not read the contents of a stream that the raw reading does not hold as plain (one non-resident, uncompressed, unsparse DATA attribute, initialized to its end, every run on disk)"
+                );
+                ensure!(
+                    s.logical_hash_status == LogicalHashStatus::Complete
+                        && s.logical_sha256
+                            .as_deref()
+                            .is_some_and(n2r_win32::content_digest::is_hex)
+                        && h.outcome.bytes_read == 0
+                        && !h.outcome.eof_confirmed
+                        && h.outcome.sha256.is_none()
+                        && h.outcome.native_error.is_none()
+                        && h.outcome.detail.is_none(),
+                    "an unread plain stream must have a raw digest and no digest, EOF probe, read bytes or error"
+                );
+                // The raw reading's valid data length is what made it plain,
+                // and its raw digest is what Windows reads only if its valid
+                // data runs to its end: Windows answered that, without
+                // reading it, for this very stream.
+                ensure!(
+                    h.valid_data.as_deref().is_some_and(|q| {
+                        n2r_win32::attestation::valid_data_to_end(q, s.logical_size)
+                    }),
+                    "Windows did not confirm that the valid data of the unread plain stream \"{}\" runs to its end ({} bytes): FSCTL_QUERY_FILE_REGIONS answered {:?}",
+                    String::from_utf16_lossy(&s.name_utf16),
+                    s.logical_size,
+                    h.valid_data
+                        .as_deref()
+                        .map(|q| (q.native_error, hex::encode(&q.bytes)))
+                );
+                if pass_index == 0 {
+                    unread_plain_streams.push(s.name_utf16.clone());
+                    unread_plain_bytes = unread_plain_bytes
+                        .checked_add(s.logical_size)
+                        .context("unread plain byte count overflow")?;
+                }
             } else {
                 ensure!(
                     s.logical_hash_status == LogicalHashStatus::Complete
@@ -380,12 +466,15 @@ fn check_file_with_selectors(
                 h.identity_before == h.identity_after && h.standard_before == h.standard_after,
                 "native read/elision identity or EOF changed"
             );
-            if h.outcome.status == Status::NotReadExtentIdentityV1 {
+            if matches!(
+                h.outcome.status,
+                Status::NotReadExtentIdentityV1 | Status::NotReadPlainRunsV1
+            ) {
                 ensure!(
                     h.standard_before
                         .as_ref()
                         .is_some_and(|q| u64le(&q.bytes, 0) == s.allocated_size),
-                    "native extent-identity allocation differs"
+                    "native allocation of an unread stream differs"
                 );
             }
         }
@@ -394,7 +483,13 @@ fn check_file_with_selectors(
         logical.before == logical.after,
         "native logical/elision snapshots differ"
     );
-    Ok((full_bytes, extent_streams, extent_bytes))
+    Ok(LogicalEvidence {
+        full_bytes,
+        extent_identity_streams: extent_streams,
+        extent_identity_bytes: extent_bytes,
+        unread_plain_streams,
+        unread_plain_bytes,
+    })
 }
 pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation> {
     if !raw.attribute_assemblies.is_empty() {

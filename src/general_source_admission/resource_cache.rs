@@ -88,6 +88,10 @@ struct NativeWitnessCache {
     source_inspection_sha256: String,
     source_fingerprint_before_native: String,
     native_pages_sha256: String,
+    /// What the saved Windows view did not read, where the run that took
+    /// it verified once ([`super::WINDOWS_CONTENT_READS_SKIPPED`]).
+    #[serde(default, rename = "windows_content_reads_skipped")]
+    content_reads_skipped: Option<serde_json::Value>,
 }
 
 pub(super) struct OpenedSourceCache {
@@ -99,6 +103,9 @@ pub(super) struct OpenedSourceCache {
     pub(super) fresh_complete_streams_verified: u64,
     pub(super) fresh_complete_payload_bytes: u64,
     pub(super) refresh: Option<super::cache_refresh::UserSemanticRefresh>,
+    /// What the saved Windows rows did not read (none for rows that read
+    /// every stream), as their native witness records it.
+    pub(super) windows_content_reads_skipped: Option<serde_json::Value>,
     pub(super) auxiliary_group: ArtifactGroupPermit,
     pub(super) _memory: SourceRamLease,
 }
@@ -230,6 +237,39 @@ impl ResourceSourceContext {
 impl SourceCacheOriginPins {
     pub fn canonical_sha256(&self) -> Result<[u8; 32]> {
         Ok(Sha256::digest(serde_json::to_vec(self)?).into())
+    }
+
+    /// What the saved Windows view of the source did not read: the record
+    /// its native witness holds where the run that took it verified once,
+    /// none where it read every stream. Only the pinned witness is read,
+    /// and nothing else is opened.
+    pub(crate) fn windows_content_reads_skipped(&self) -> Result<Option<serde_json::Value>> {
+        let pin = &self.native_witness;
+        ensure!(
+            pin.bytes <= 16 * 1024 * 1024,
+            "the saved native witness {} is {} bytes, more than 16 MiB",
+            pin.path.display(),
+            pin.bytes
+        );
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .custom_flags(0x0020_0000)
+            .open(&pin.path)
+            .with_context(|| format!("opening the saved native witness {}", pin.path.display()))?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(usize::try_from(pin.bytes)?)?;
+        file.take(pin.bytes + 1)
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("reading the saved native witness {}", pin.path.display()))?;
+        ensure!(
+            bytes.len() as u64 == pin.bytes && hex::encode(Sha256::digest(&bytes)) == pin.sha256,
+            "the saved native witness {} differs from its pin",
+            pin.path.display()
+        );
+        let witness: NativeWitnessCache = serde_json::from_slice(&bytes)
+            .with_context(|| format!("decoding the saved native witness {}", pin.path.display()))?;
+        Ok(witness.content_reads_skipped)
     }
 
     fn validate(
@@ -678,6 +718,7 @@ impl SourceCacheOriginPins {
                 fresh_complete_streams_verified,
                 fresh_complete_payload_bytes,
                 refresh,
+                windows_content_reads_skipped: witness.content_reads_skipped,
                 auxiliary_group,
                 _memory: memory,
             },

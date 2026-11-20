@@ -754,15 +754,14 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     // names an object, or a derived alias, of the right kind and identity,
     // none is there twice and none is missing. Made on this thread, for one
     // directory after another in the objects' order.
-    let compare_listing = |components: &[String],
-                           entries: Vec<namespace_layout::Entry>,
-                           points_installed: bool,
-                           aliases: Option<&super::windows_aliases::StagedWindowsAliases>|
-     -> io::Result<()> {
-        let _seen_memory = enumeration_payer
+    // The memory of the paths seen in one listing, reserved before the
+    // listing is compared: a path seen is the directory's components and
+    // the name, each a String, in a Vec in a node of the set.
+    let reserve_seen = |components: &[String],
+                        entries: &[namespace_layout::Entry]|
+     -> io::Result<Option<Box<dyn report_memory::ReportMemoryLease>>> {
+        enumeration_payer
             .map(|payer| {
-                // A path seen: the directory's components and the name,
-                // each a String, in a Vec in a node of the set.
                 let parent = components
                     .iter()
                     .fold(64 * (components.len() as u64 + 3), |n, part| {
@@ -773,7 +772,14 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                         .saturating_add(3 * entry.name_utf16.len() as u64)
                 }))
             })
-            .transpose()?;
+            .transpose()
+    };
+    let compare_listing = |components: &[String],
+                           entries: Vec<namespace_layout::Entry>,
+                           points_installed: bool,
+                           aliases: Option<&super::windows_aliases::StagedWindowsAliases>,
+                           _seen_memory: Option<Box<dyn report_memory::ReportMemoryLease>>|
+     -> io::Result<()> {
         let mut seen = BTreeSet::new();
         for entry in entries {
             if entry.name_utf16 == [46] || entry.name_utf16 == [46, 46] {
@@ -856,7 +862,14 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                     (None, None)
                 };
                 let entries = enumerate_with_resource_budget(handle, enumeration_budget)?;
-                compare_listing(directory.components, entries, points_installed, aliases)?;
+                let seen = reserve_seen(directory.components, &entries)?;
+                compare_listing(
+                    directory.components,
+                    entries,
+                    points_installed,
+                    aliases,
+                    seen,
+                )?;
             }
             metadata_progress(pass, input.len() as u64);
             return Ok(());
@@ -900,7 +913,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                         payer.reserve_spare(memory)?
                     };
                     drop(directory);
-                    Ok(Some((owned, handle, evidence, memory)))
+                    Ok(Some((owned, handle, evidence, memory, next)))
                 })();
                 match gathered {
                     Ok(Some(listing)) => batch.push(listing),
@@ -912,7 +925,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             }
             let asked: Vec<(&File, usize)> = batch
                 .iter()
-                .map(|(_, handle, evidence, _)| (*handle, *evidence))
+                .map(|(_, handle, evidence, _, _)| (*handle, *evidence))
                 .collect();
             let listed = super::each_at_once(
                 Some(payer),
@@ -924,13 +937,39 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             );
             drop(asked);
             // A listing's memory is returned once the listing was compared.
-            for ((owned, _, _, _memory), entries) in batch.into_iter().zip(listed) {
+            //
+            // The paths seen in a listing are needed memory, reserved when
+            // the listing is compared. One directory at a time, nothing but
+            // that directory's listing is held then. Here the later
+            // listings of the batch are held beside it, as spare memory,
+            // and must not be what the reservation is refused for: on a
+            // refusal they are returned, the reservation is made again as
+            // it would be for one directory by itself (its refusal then is
+            // the pass's error, as before), and the directories whose
+            // listings were returned are listed again in the next batch.
+            let mut rest = batch.into_iter().zip(listed);
+            while let Some(((owned, _, _, _memory, ordinal), entries)) = rest.next() {
+                let entries = entries?;
+                let mut resume = None;
+                let seen = match reserve_seen(owned.input().components, &entries) {
+                    Ok(seen) => seen,
+                    Err(refused) if rest.len() == 0 => return Err(refused),
+                    Err(_) => {
+                        resume = Some(ordinal + 1);
+                        rest.by_ref().for_each(drop);
+                        reserve_seen(owned.input().components, &entries)?
+                    }
+                };
                 compare_listing(
                     owned.input().components,
-                    entries?,
+                    entries,
                     points_installed,
                     aliases,
+                    seen,
                 )?;
+                if let Some(resume) = resume {
+                    next = resume;
+                }
             }
         }
         metadata_progress(pass, input.len() as u64);

@@ -4752,6 +4752,11 @@ impl Read for GeneralFrozenLane {
         if aligned + count as u64 > length {
             return Err(invalid("aligned frozen lane read escapes partition"));
         }
+        // What the device is asked for, whole granules, as "device read"
+        // counts the owner's reads. A lane reads on its own thread, so the
+        // time is that thread's.
+        let _timed = crate::perf::scope(crate::perf::Point::LaneRead);
+        crate::perf::add_bytes(crate::perf::Point::LaneRead, count as u64);
         self.file.seek(SeekFrom::Start(
             self.binding.identity.partition_offset + aligned,
         ))?;

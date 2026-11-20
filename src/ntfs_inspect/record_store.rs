@@ -382,6 +382,9 @@ impl SortedRecordStore {
     /// them, was checked by itself: a tenth of what decoding rows cost.
     pub fn get<T: DeserializeOwned>(&self, ordinal: u64) -> Result<T> {
         let (_, offset, length) = self.entry(ordinal)?;
+        // Counted, not timed: this decodes the rows of every store, and
+        // reading the clock twice would weigh on the smallest of them.
+        n2r_win32::perf::add_call(n2r_win32::perf::Point::SourceRowDecode);
         self.data.with_bytes_at(offset, length, |bytes| {
             Ok(serde_json::from_str(std::str::from_utf8(bytes)?)?)
         })

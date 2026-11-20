@@ -134,7 +134,12 @@ impl std::error::Error for CommittedFinalizationError {
 /// The verification of a run whose handoff follows it (#148) did not pass,
 /// or could not be made: the handoff is not written, the converted volume
 /// was never mounted writable and rollback is open. Nothing is rolled back
-/// here; the message names the two ways on.
+/// here; the message names what stopped it on its first line, then the two
+/// ways on.
+///
+/// The cause is part of the message and is not also given as the error's
+/// source: the error is printed with its chain (`{:#}`), which would print
+/// it a second time, after the two commands.
 #[derive(Debug)]
 pub(crate) struct UncommittedVerificationError {
     directory: std::path::PathBuf,
@@ -143,22 +148,14 @@ pub(crate) struct UncommittedVerificationError {
 }
 impl std::fmt::Display for UncommittedVerificationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}\n  What stopped it: {:#}",
-            crate::verify_first::failed_before_handoff(
-                &self.directory,
-                &hex::encode(self.publication_sha256)
-            ),
-            self.cause
-        )
+        f.write_str(&crate::verify_first::failed_before_handoff(
+            &self.directory,
+            &hex::encode(self.publication_sha256),
+            &self.cause,
+        ))
     }
 }
-impl std::error::Error for UncommittedVerificationError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.cause.as_ref())
-    }
-}
+impl std::error::Error for UncommittedVerificationError {}
 
 pub(crate) fn finalize_resource_handoff(
     pair: GeneralSourceShadowBinding,

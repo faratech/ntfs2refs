@@ -232,6 +232,19 @@ fn retrieval_capture_with_limits(
     file: &File,
     limits: crate::retrieval_paging::Limits,
 ) -> io::Result<crate::retrieval_paging::Capture> {
+    // `--recheck-everything` keeps the pages and assembles them a second
+    // time, as every capture did before.
+    if !crate::verify_policy::checks_once() {
+        let (first, continuation) = retrieval_queries_assembled(
+            file,
+            crate::retrieval_paging::Assembler::with_limits(limits)?,
+        );
+        return crate::retrieval_paging::assemble_queries_with_limits(
+            &first,
+            &continuation,
+            limits,
+        );
+    }
     crate::retrieval_paging::assemble_while_asking(limits, |vcn, capacity| {
         ioctl(file, layout::GET_RETRIEVAL, &vcn.to_le_bytes(), capacity)
     })

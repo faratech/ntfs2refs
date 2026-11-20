@@ -1239,10 +1239,26 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         },
     )?;
     metadata_progress(6, ordered.len() as u64);
-    crate::perf::step("metadata: flush and check directory listings again");
+    // Under "verify once" the listings are not checked a second time here
+    // in a run that restored the metadata itself. They were checked before
+    // the metadata was restored, which is the only listing of a directory
+    // that has since become a reparse point; and the one observation of this
+    // volume once it is frozen, which the capture is made from, lists every
+    // other directory again and holds each entry to the object it names,
+    // its attributes (reparse point included) and the complete set of names
+    // expected, before anything is written to the source. A run that resumes
+    // metadata an earlier process restored still checks them here.
+    let check_listings_again = recovering || !crate::verify_policy::verifies_once();
+    crate::perf::step(if check_listings_again {
+        "metadata: flush and check directory listings again"
+    } else {
+        "metadata: flush"
+    });
     input.before_mutation(0)?;
     crate::perf::flush(crate::perf::Point::VolumeFlush, &volume)?;
-    namespace(true, aliases.as_deref())?;
+    if check_listings_again {
+        namespace(true, aliases.as_deref())?;
+    }
     crate::perf::step("metadata: read restored metadata back");
     // Every object's metadata is read back through its held handle and
     // compared with what was restored, and a file's streams, names and
@@ -1455,6 +1471,10 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         report["metadata_objects_verified"] = 0u64.into();
         report["metadata_readback_verified"] = false.into();
         report["metadata_readback_left_to_frozen_shadow_observation"] = true.into();
+    }
+    if !check_listings_again {
+        report["directory_listings_checked_after_restore"] = false.into();
+        report["directory_listings_left_to_frozen_shadow_observation"] = true.into();
     }
     if security_placeholders {
         report["kind"] = "provisional-Windows-constructor-metadata-completion".into();

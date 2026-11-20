@@ -318,7 +318,7 @@ fn describe_verification(policy: crate::verification_policy::VerificationPolicy)
 /// it: printed under the verification line unless `--recheck-everything`
 /// was given, which keeps every pass.
 #[cfg_attr(not(windows), allow(dead_code))]
-const VERIFIES_ONCE: &str = "Fast checks each thing once. The source is read raw; Windows is asked of each object only for what the raw volume cannot say (its security as Windows presents it, a directory's case-sensitive mark), not for its streams, contents and directory listings a second time. The new volume's payloads and metadata are not read back again before the changes are captured, and the short-name links of the converted volume are probed once. The converted volume is still verified in full after the changes are written.";
+const VERIFIES_ONCE: &str = "Fast checks each thing once. The source is read raw; Windows is asked of each object only for what the raw volume cannot say (its security as Windows presents it, a directory's case-sensitive mark), not for its streams, contents and directory listings a second time. The new volume's payloads and metadata are not read back again, nor its directory listings checked again after the metadata is restored, before the changes are captured; the short-name links of the converted volume are probed once. The converted volume is still verified in full after the changes are written.";
 
 impl DriveArgs {
     pub fn requested(&self) -> bool {

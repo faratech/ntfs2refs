@@ -723,7 +723,8 @@ it to its run.
     Windows and compared.
   - What was written to the new volume is checked as it is written, and the
     new volume is examined once when it is complete; its payloads and its
-    metadata are not read back a second time in between.
+    metadata are not read back a second time in between, and its directories
+    are not listed again after their metadata is restored.
   - The short-name links of a converted Windows volume are probed once.
 
   The converted volume is verified in full after the changes are written, in

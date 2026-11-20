@@ -168,8 +168,11 @@ Keep it that way. Before a change is committed:
    minutes), and the 1-in-40 one does with `-RunAs administrator`.
 3. A change to apply, finalization or recovery also passes interrupted runs
    on the 1-in-40 fixture that recover with an identical listing:
-   `-InterruptAt apply-mid-ranges` (half way through the source writes) and
-   `-InterruptAt handoff-sealed` (before finalization). A change to a
+   `-InterruptAt apply-mid-ranges` (half way through the source writes),
+   `-InterruptAt apply-seal-recorded` (sealed for the verification, before
+   finalization) and `-InterruptAt handoff-sealed` (handed off). With
+   `--verify thorough` the handoff is written by the apply, so there
+   `handoff-sealed` is the point before finalization. A change to a
    per-object path also passes a full run (several defects only showed at
    full size), and one to source inspection or stream planning also converts
    data volumes of 512-byte clusters and on a 4Kn disk, to both target units,
@@ -199,7 +202,10 @@ reorder the work:
    that only buys speed be what a run fails for.
 2. A fast default (`--verify fast|thorough`), with the final verification
    in front of the handoff marker so that a failure can still be rolled
-   back (#148 phase 2, #110).
+   back (#148 phase 2, #110): written (#205, owner's "Verify once",
+   2026-11-19: in fast runs each thing is checked once; thorough keeps every
+   check and today's flow). It has not been shown in the lab yet; the gate
+   round has its holds.
 3. Speed (#140, `docs/performance.md`). More threads help where a pass
    opens and queries, not where it changes ReFS metadata; measure with
    undisturbed runs and rank steps by `timing-steps:`.

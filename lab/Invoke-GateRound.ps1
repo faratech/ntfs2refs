@@ -147,6 +147,16 @@ $fixtureRuns = @(
     @{ Name = 'apply-mid-resume'; Arguments = $fixture40 + @{ InterruptAt = 'apply-mid-ranges' } }
     @{ Name = 'apply-mid-rollback'; Arguments = $fixture40 + @{ InterruptAt = 'apply-mid-ranges'; RecoverMode = 'rollback' } }
     @{ Name = 'handoff-sealed-resume'; Arguments = $fixture40 + @{ InterruptAt = 'handoff-sealed' } }
+    # --verify fast (the default) seals the volume under the apply marker and
+    # verifies it before the handoff (#148, #110): ended there, it resumes to
+    # ReFS, and rolled back from the read-only verification mount it has to
+    # pass the check of the restored NTFS against the source's fingerprint.
+    @{ Name = 'seal-recorded-resume'; Arguments = $fixture40 + @{ InterruptAt = 'apply-seal-recorded' } }
+    @{ Name = 'verify-readonly-rollback'; Arguments = $fixture40 + @{ InterruptAt = 'verify-source-readonly'; RecoverMode = 'rollback' } }
+    # The handoff marker torn as the finalizer writes it, after the verification
+    # passed, with the disk sealed (#1, #148): the recovery has to report it,
+    # settle it as not written, verify again and hand off.
+    @{ Name = 'torn-handoff-resume'; Arguments = $fixture40 + @{ InterruptAt = 'verify-passed'; TearMarker = 'handoff' } }
 )
 $fullRun = @{ Name = 'full-system'; Arguments = @{ MemoryGB = $MaxVmGB } }
 
@@ -178,6 +188,18 @@ $dataCases = @(
     "lived-in-apply-mid-resume|$lived -InterruptAt apply-mid-ranges -Check"
     "lived-in-apply-mid-rollback|$lived -InterruptAt apply-mid-ranges -RecoverMode rollback -Check"
     "lived-in-handoff-sealed-resume|$lived -InterruptAt handoff-sealed -Check"
+    # The holds of a fast run between its seal and its handoff (#148): sealed
+    # but not yet recorded (replayed), recorded (verified, not replayed),
+    # mounted read-only for the verification, and verified but not yet
+    # handed off; each resumed or rolled back.
+    "lived-in-sealed-resume|$lived -InterruptAt apply-sealed -Check"
+    "lived-in-seal-recorded-rollback|$lived -InterruptAt apply-seal-recorded -RecoverMode rollback -Check"
+    "lived-in-verify-readonly-resume|$lived -InterruptAt verify-source-readonly -Check"
+    "lived-in-verify-passed-rollback|$lived -InterruptAt verify-passed -RecoverMode rollback -Check"
+    # --verify thorough keeps the flow before #148: the handoff is written by
+    # the apply, before anything is mounted.
+    "thorough|$lived -Verify thorough -Check"
+    "thorough-handoff-durable-resume|$lived -Verify thorough -InterruptAt apply-handoff-durable -Check"
     'shared-apply-rollback|-Siblings -InterruptAt apply-mid-ranges -RecoverMode rollback -Check'
     "stop-supply-cancel|$lived -StopDuringPreparation payload_supply"
     "stop-journal-cancel|$lived -StopDuringPreparation recovery_journal"
@@ -274,6 +296,12 @@ $runningCases = @(
     # the cut took 1 h 51 min (runc-cut-apply-10), so Windows has three hours
     # to come back.
     @{ Name = 'c-cut-apply-mid'; Expected = 'CUT-RECOVERED-TO-REFS'; Arguments = @{ HoldAt = 'apply-mid-ranges'; HoldAfterMinutes = 15; CutAfterMinutes = 60; AwayMinutes = 180 } }
+    # The power goes while the converted volume is mounted read-only for the
+    # verification before the handoff (#148). In the recovery environment the
+    # disk comes up offline and read-only; the run's seal record keeps it so,
+    # and the next start verifies and hands off: ReFS, healthy. The hold
+    # comes after the writes, so later than the one above.
+    @{ Name = 'c-cut-verify'; Expected = 'CUT-RECOVERED-TO-REFS'; Arguments = @{ HoldAt = 'verify-source-readonly'; HoldAfterMinutes = 20; CutAfterMinutes = 75; AwayMinutes = 180 } }
 )
 
 if ($Sets -contains 'fixtures') { foreach ($run in $fixtureRuns) { $expected["$Prefix-$($run.Name)"] = Get-ExpectedBootOutcome $run.Arguments } }

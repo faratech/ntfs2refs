@@ -30,6 +30,10 @@ overflow-checks = true
 # Function names and line numbers in the separate .pdb, for --sample-stacks.
 # The executable itself is unchanged.
 debug = "line-tables-only"
+# Optimise across the crates: the converter calls into n2r-win32 and the
+# hashing crates from its inner loops. Thin, with the default number of code
+# generation units, so that a build still uses every core.
+lto = "thin"
 
 # Keep native-lab development builds from exhausting the image reserve.
 [profile.dev]

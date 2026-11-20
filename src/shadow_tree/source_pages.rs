@@ -563,7 +563,7 @@ impl SourceExpectedDomain {
         let mut logical = 0u64;
         let mut roles = Vec::new();
         for ordinal in 0..source.file_count() {
-            let file = source.file(ordinal)?;
+            let file = source.file_shared(ordinal)?;
             if let Some(role) = ntfs_admission::paged::internal_role(source, &file)? {
                 roles.push(role);
                 continue;
@@ -780,7 +780,7 @@ impl SourceExpectedDomain {
             mut physical_ordinal,
         ) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
         for ordinal in 0..source.file_count() {
-            let file = source.file(ordinal)?;
+            let file = source.file_shared(ordinal)?;
             if let Some(role) = ntfs_admission::paged::internal_role(source, &file)? {
                 add_role(&mut roles, &mut role_ram, role, scratch)?;
                 continue;

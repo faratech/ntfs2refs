@@ -76,6 +76,13 @@ pub struct DriveArgs {
         requires = "drive"
     )]
     pub offline_recovery_media: Option<PathBuf>,
+    /// For the Windows this machine runs (--drive C): the drive letter of a
+    /// FAT32 partition on another disk (a USB stick will do, 100 MB or more)
+    /// that the machine starts its recovery environment from. The disk a
+    /// machine starts from cannot be taken offline, and the conversion takes
+    /// the Windows disk offline. Keep it connected until Windows is back.
+    #[arg(long, requires = "drive", value_name = "LETTER", value_parser = n2r_win32::drive_inventory::parse_drive_letter)]
+    pub boot_partition: Option<char>,
     /// The volume is an installed Windows that is not running; the Windows
     /// that runs the converter is on another disk and is never converted.
     /// Admitted for the boot profiles `ntfs2refs capabilities` lists.
@@ -107,6 +114,10 @@ pub struct DriveArgs {
     // takes none.)
     #[arg(long, conflicts_with_all = ["list", "drive", "partition", "scratch_directory"])]
     pub recover: Option<PathBuf>,
+    /// Used by the recovery environment that converting the running Windows
+    /// restarts into: runs that conversion from its session file.
+    #[arg(long, hide = true, conflicts_with_all = ["list", "drive", "recover"])]
+    pub running_windows_session: Option<PathBuf>,
     /// The checksum printed with that directory (the SHA-256 of its
     /// recovery-envelope.json), or the preparation SHA-256 printed at the
     /// start of a run that had not yet written to the volume.
@@ -294,7 +305,10 @@ fn describe_verification(policy: crate::verification_policy::VerificationPolicy)
 
 impl DriveArgs {
     pub fn requested(&self) -> bool {
-        self.list || self.drive.is_some() || self.recover.is_some()
+        self.list
+            || self.drive.is_some()
+            || self.recover.is_some()
+            || self.running_windows_session.is_some()
     }
 
     /// What `--diagnose` cannot be combined with, and why. Diagnose never
@@ -486,7 +500,10 @@ mod windows {
                 // run would otherwise say only after it had started.
                 let conversion = drive_inventory::conversion_note(disk, part);
                 if part.contains_running_windows == Some(true) && conversion.is_none() {
-                    notes.push("running Windows".into());
+                    notes.push(
+                        "running Windows: converts through a restart into its recovery environment (--drive, --scratch-directory, --boot-partition)"
+                            .into(),
+                    );
                 }
                 if part.offline == Some(true) {
                     notes.push("offline".into());
@@ -666,6 +683,178 @@ mod windows {
         print!("> ");
         Ok(crate::confirmation::answer()?)
     }
+    /// The Windows this machine runs: prepared here, converted in its own
+    /// recovery environment after a restart.
+    fn running_windows_route(
+        args: &DriveArgs,
+        inventory: &drive_inventory::DriveInventory,
+        selected: &drive_inventory::PartitionSelection,
+        mode: crate::execution_mode::ExecutionMode,
+    ) -> Result<u8> {
+        ensure!(
+            !args.check,
+            "--check reads a volume that stays online; the running Windows is checked in its recovery environment, with --diagnose. Nothing was changed."
+        );
+        ensure!(
+            !args.windows_boot_volume && args.offline_recovery_media.is_none(),
+            "the running Windows converts through its own recovery environment: drop --windows-boot-volume and --restart-media. Nothing was changed."
+        );
+        let scratch = args.scratch_directory.as_deref().context(
+            "the running Windows converts through a restart, and the run needs --scratch-directory on a volume of another disk that stays connected until Windows is back. Nothing was changed.",
+        )?;
+        let letter = selected
+            .partition
+            .mount_paths
+            .iter()
+            .find_map(|path| path.chars().next().filter(|c| c.is_ascii_alphabetic()))
+            .context("the running Windows volume has no drive letter")?;
+        ensure!(
+            selected.partition.bitlocker != Some(true),
+            "this Windows is on a BitLocker volume, which the recovery environment cannot read without its key: it is not converted. Nothing was changed."
+        );
+        let serial = selected
+            .partition
+            .volume_serial
+            .map(crate::confirmation::format_volume_serial)
+            .context("the volume's serial number could not be read")?;
+        // Working storage, measured in the lab on a volume with 19.6 GiB in
+        // use: the shadow and its capture take about twice that, and the run
+        // keeps a quarter of what is free (at most 16 GiB) untouched besides.
+        // It converted with 59.5 GiB free (runc-convert3) and stopped in its
+        // capture with 39.8 (runc-cut-midranges) and 13 (runc-convert2). So:
+        // twice what is in use, plus that reserve, checked here before the
+        // restart instead of found out 15 minutes after it.
+        let windows_space = n2r_win32::discovery::observe_volume_space(&format!("{letter}:\\"))?;
+        let in_use = windows_space
+            .total_bytes_available_to_caller
+            .saturating_sub(windows_space.total_free_bytes);
+        let scratch_text = scratch.to_string_lossy();
+        let scratch_root = match scratch_text.as_bytes() {
+            [l, b':', ..] if l.is_ascii_alphabetic() => format!("{}:\\", *l as char),
+            _ => scratch_text.to_string(),
+        };
+        let scratch_space = n2r_win32::discovery::observe_volume_space(&scratch_root)
+            .with_context(|| format!("the free space of {scratch_root} could not be read"))?;
+        let twice = in_use.saturating_mul(2);
+        let wanted = twice.saturating_add((twice / 3).min(16 << 30));
+        let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
+        ensure!(
+            scratch_space.available_bytes_to_caller >= wanted,
+            "{scratch_root} has {:.1} GiB free; converting this Windows ({:.1} GiB in use) takes about {:.1} GiB of working storage there. Free space on it or give another volume with --scratch-directory. Nothing was changed.",
+            gib(scratch_space.available_bytes_to_caller),
+            gib(in_use),
+            gib(wanted)
+        );
+        // Without --boot-partition, the one FAT32 partition with a drive
+        // letter on the working directory's disk, if there is exactly one:
+        // a single USB drive with an NTFS and a FAT32 partition needs no
+        // second argument.
+        let on_scratch_disk: Vec<char> = inventory
+            .disks
+            .iter()
+            .filter(|disk| {
+                disk.partitions.iter().any(|part| {
+                    part.mount_paths
+                        .iter()
+                        .any(|path| path.eq_ignore_ascii_case(&scratch_root))
+                })
+            })
+            .flat_map(|disk| disk.partitions.iter())
+            .filter(|part| part.filesystem.as_deref() == Some("FAT32"))
+            .filter_map(|part| {
+                part.mount_paths.iter().find_map(|path| {
+                    let bytes = path.as_bytes();
+                    (bytes.len() == 3 && bytes[0].is_ascii_alphabetic() && &path[1..] == ":\\")
+                        .then(|| (bytes[0] as char).to_ascii_uppercase())
+                })
+            })
+            .collect();
+        let boot = match (args.boot_partition, on_scratch_disk.as_slice()) {
+            (Some(boot), _) => boot,
+            (None, [only]) => {
+                println!(
+                    "Boot partition: {only}: (the FAT32 partition on the working directory's disk)."
+                );
+                *only
+            }
+            (None, _) => anyhow::bail!(
+                "the running Windows converts through its recovery environment, which the machine starts from a FAT32 partition on another disk: format one (a USB stick will do, 100 MB or more; on the working directory's disk it is found by itself) and give its letter with --boot-partition. Nothing was changed."
+            ),
+        };
+        let root = format!("{}:\\", boot.to_ascii_uppercase());
+        let boot_disk = inventory
+            .disks
+            .iter()
+            .find(|disk| {
+                disk.partitions.iter().any(|part| {
+                    part.mount_paths
+                        .iter()
+                        .any(|path| path.eq_ignore_ascii_case(&root))
+                })
+            })
+            .map(|disk| disk.disk_number)
+            .with_context(|| format!("--boot-partition {boot}: is not a partition of a disk this machine lists. Nothing was changed."))?;
+        // The working disk and the Windows disk by their identity: the
+        // environment starts with every disk offline and brings these online.
+        let identity_of = |number: u32| {
+            inventory
+                .disks
+                .iter()
+                .find(|disk| disk.disk_number == number)
+                .and_then(crate::running_windows::disk_identity)
+        };
+        let scratch_letter_root = scratch_root.to_ascii_uppercase();
+        let scratch_disk = inventory
+            .disks
+            .iter()
+            .find(|disk| {
+                disk.partitions.iter().any(|part| {
+                    part.mount_paths
+                        .iter()
+                        .any(|path| path.eq_ignore_ascii_case(&scratch_letter_root))
+                })
+            })
+            .map(|disk| disk.disk_number)
+            .with_context(|| {
+                format!("the disk of {scratch_root} could not be found. Nothing was changed.")
+            })?;
+        let scratch_disk_id = identity_of(scratch_disk)
+            .with_context(|| format!("disk {scratch_disk} has neither a GPT GUID nor an MBR signature. Nothing was changed."))?;
+        let windows_disk_id = identity_of(selected.disk_number).context(
+            "the Windows disk has neither a GPT GUID nor an MBR signature. Nothing was changed.",
+        )?;
+        ensure!(
+            boot_disk != selected.disk_number,
+            "--boot-partition {boot}: is on disk {boot_disk}, the Windows disk; it has to be on another disk, which can stay online while the Windows disk is offline. Nothing was changed."
+        );
+        let diagnose = matches!(mode, crate::execution_mode::ExecutionMode::Diagnose);
+        println!(
+            "{letter}: is the Windows this machine runs. It is converted in its own Windows Recovery Environment: this run stages that environment, restarts the machine into it, converts the volume there and starts Windows again from it.
+The machine restarts, possibly more than once. Do not switch it off while the conversion runs; keep {} connected.",
+            scratch.display()
+        );
+        let prompt = if diagnose {
+            "Restart now to diagnose this Windows without converting it? [y/N]"
+        } else {
+            "Restart now to convert this Windows? [y/N]"
+        };
+        if !confirm(prompt)? {
+            println!("Nothing was changed.");
+            return Ok(0);
+        }
+        crate::running_windows::stage_and_restart(&crate::running_windows::Request {
+            windows_drive: letter,
+            volume_serial: serial,
+            scratch_directory: scratch,
+            diagnose,
+            target_format: args.target_format.as_deref(),
+            verify_full_content: args.verify_full_content,
+            boot_volume: boot,
+            scratch_disk_id,
+            windows_disk_id,
+        })?;
+        Ok(0)
+    }
     /// Administrator rights, asked before a disk is opened. Without them the
     /// first device open failed, with an OS error and no advice.
     fn require_elevation(action: &str) -> Result<()> {
@@ -689,6 +878,9 @@ mod windows {
         Ok(version)
     }
     pub(super) fn run(args: DriveArgs) -> Result<u8> {
+        if let Some(session) = &args.running_windows_session {
+            return crate::running_windows::run_session(session);
+        }
         let mode = args.execution_mode()?;
         // Refuses contradictory verification options before anything is opened.
         args.verification_policy()?;
@@ -908,10 +1100,9 @@ mod windows {
         } else {
             None
         };
-        ensure!(
-            selected.partition.contains_running_windows != Some(true),
-            "the running Windows partition is not supported for conversion"
-        );
+        if selected.partition.contains_running_windows == Some(true) {
+            return running_windows_route(&args, &inventory, &selected, mode);
+        }
         // Inventory is routing only. The partition path independently probes
         // actual source/GPT/current-Windows roles before any write admission.
         if !args.windows_boot_volume

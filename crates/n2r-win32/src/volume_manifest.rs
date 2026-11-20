@@ -51,8 +51,9 @@ pub struct Record {
     /// SHA-256 over the extended attributes other than kernel caches, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extended_attributes: Option<String>,
-    /// `$Kernel.Purge.*` attributes: caches the kernel discards whenever a
-    /// file changes. Counted, not hashed.
+    /// `$Kernel.Purge.*` attributes (caches the kernel discards whenever a
+    /// file changes) and `$Kernel.CFDoNotConvert` (the mark the
+    /// configuration manager puts on a hive it loads). Counted, not hashed.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub kernel_cache_attributes: u32,
     pub links: u32,
@@ -1095,7 +1096,8 @@ mod capture {
                     let mut ordinary = 0usize;
                     for entry in &set.entries {
                         let name = entry.name.to_ascii_uppercase();
-                        if name.starts_with(b"$KERNEL.PURGE.") {
+                        if name.starts_with(b"$KERNEL.PURGE.") || name == b"$KERNEL.CFDONOTCONVERT"
+                        {
                             record.kernel_cache_attributes += 1;
                             continue;
                         }

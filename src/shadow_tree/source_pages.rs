@@ -941,7 +941,7 @@ impl SourceExpectedDomain {
             "source_inspection_sha256":self.source_inspection_sha256,
             "records":records.pin(), "normalized_objects":records.len(),
             "omitted_kernel_purge_entries":self.windows_ea_normalized_entries,
-            "policy":"target only: omit flags0 $Kernel.Purge.<nonempty> caches; archive exact source EAs; preserve ordinary EAs",
+            "policy":"target only: omit flags0 $Kernel.Purge.<nonempty> caches and the flags0 $Kernel.CFDoNotConvert hive mark; archive exact source EAs; preserve ordinary EAs",
             "ea_set_digest_format":"ntfs2refs-exact-EA-set-v1",
             "raw_source_evidence_changed":false,"source_native_comparison_changed":false,
             "grants_source_or_replay_authority":false,

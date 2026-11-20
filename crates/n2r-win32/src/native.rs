@@ -148,6 +148,34 @@ pub struct GeneralDiskState {
     pub gpt_layout: Vec<u8>,
     pub disk_attributes: u64,
 }
+impl GeneralDiskState {
+    /// What differs between a disk as it was and as it is, in words: the
+    /// attributes it should have, and each part of its identity that moved.
+    pub fn difference_from(&self, before: &Self, wanted_attributes: u64) -> String {
+        let mut parts = Vec::new();
+        if self.disk_attributes != wanted_attributes {
+            parts.push(format!(
+                "disk attributes are {:#x}, expected {wanted_attributes:#x}",
+                self.disk_attributes
+            ));
+        }
+        for (name, now, was) in [
+            ("device descriptor", &self.device, &before.device),
+            ("length", &self.disk_length, &before.disk_length),
+            ("alignment", &self.alignment, &before.alignment),
+            ("partition layout", &self.gpt_layout, &before.gpt_layout),
+        ] {
+            if now != was {
+                parts.push(format!(
+                    "{name} changed ({} bytes, were {})",
+                    now.len(),
+                    was.len()
+                ));
+            }
+        }
+        parts.join("; ")
+    }
+}
 /// Created only by a physically read-only native observation bracketed by
 /// actual excluded-device snapshots. Exporting it cannot recreate a lease.
 #[derive(Debug, Serialize)]
@@ -863,6 +891,55 @@ pub(crate) fn device_file(path: &str, writable: bool, unbuffered: bool) -> io::R
         options.custom_flags(0xa000_0000);
     } // NO_BUFFERING | WRITE_THROUGH
     options.open(path)
+}
+
+/// In a recovery environment the disk attributes a run set do not survive a
+/// restart: its registry is in RAM, and its SAN policy brings every disk up
+/// offline and read-only (3). A recovery there takes the journal as the
+/// record of how far the run got: where the journal says writing may have
+/// begun, the disk is put back offline and writable (1), the state the writer
+/// held it in, so that recovery reopens it as an exclusive recovery target,
+/// whose every span is checked against both the original and the new bytes.
+/// Refused outside a recovery environment, and for any other starting state.
+pub fn restore_writer_state_in_recovery_environment(disk_number: u32) -> io::Result<()> {
+    if !offline_environment::in_recovery_environment() {
+        return Err(invalid(
+            "disk attributes are restored from the journal only in a recovery environment",
+        ));
+    }
+    let file = device_file(&format!("\\\\.\\PhysicalDrive{disk_number}"), true, true)
+        .map_err(|e| io::Error::new(e.kind(), format!("opening disk {disk_number}: {e}")))?;
+    let mut events = Vec::new();
+    let before = attributes(&file, &mut events)?;
+    if before != OFFLINE | READ_ONLY {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "disk {disk_number} has attributes {before:#x}, not the offline and read-only state the environment starts it in"
+            ),
+        ));
+    }
+    set_attributes(&file, OFFLINE, &mut events)?;
+    Ok(())
+}
+
+/// The recovery environment of the running-Windows route starts with every
+/// disk offline (its SAN policy). This brings one disk online and writable,
+/// as `diskpart online disk` and `attributes disk clear readonly` would, so
+/// that a fresh conversion can admit it with every check of its own; it
+/// answers the disk's attributes afterwards. Never used for a recovery, which
+/// takes the disk offline as it found it.
+pub fn bring_disk_online_for_admission(disk_number: u32) -> io::Result<u64> {
+    let file = device_file(&format!("\\\\.\\PhysicalDrive{disk_number}"), true, true)
+        .map_err(|e| io::Error::new(e.kind(), format!("opening disk {disk_number}: {e}")))?;
+    let mut events = Vec::new();
+    set_attributes(&file, 0, &mut events).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("bringing disk {disk_number} online and writable: {e}"),
+        )
+    })?;
+    attributes(&file, &mut events)
 }
 
 fn attributes(file: &File, events: &mut Vec<NativeEvent>) -> io::Result<u64> {
@@ -2558,7 +2635,14 @@ impl GeneralFrozenPartition {
             || frozen.alignment != pre_lock.alignment
             || frozen.gpt_layout != pre_lock.gpt_layout
         {
-            return Err(invalid("general disk exclusion or identity changed"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "general disk exclusion or identity changed on disk {}: {}",
+                    binding.disk_number,
+                    frozen.difference_from(&pre_lock, OFFLINE | READ_ONLY)
+                ),
+            ));
         }
         close_file(management, "close-general-management", events)?;
         let file = device_file(

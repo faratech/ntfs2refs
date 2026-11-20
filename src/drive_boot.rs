@@ -208,24 +208,32 @@ pub(super) fn normalize_geometry(
         "Preparing exact ReFS geometry: Windows NTFS driver shrink of {remainder} bytes. Recovery intent: {}",
         run.join("boot-geometry-intent.json").display()
     );
-    let status = Command::new(current.join("System32\\WindowsPowerShell\\v1.0\\powershell.exe"))
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-        ])
-        .arg(&script)
-        .arg("-InputPath")
-        .arg(&request)
-        .arg("-OutputPath")
-        .arg(&result)
-        .creation_flags(0x0800_0000)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
+    let powershell = current.join("System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    let status = if powershell.exists() {
+        Command::new(powershell)
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(&script)
+            .arg("-InputPath")
+            .arg(&request)
+            .arg("-OutputPath")
+            .arg(&result)
+            .creation_flags(0x0800_0000)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?
+    } else {
+        // A recovery environment has no PowerShell (#115). diskpart asks the
+        // same NTFS driver to shrink the volume; everything is checked below
+        // exactly as after the PowerShell child.
+        shrink_with_diskpart(&current, run, &before.binding, remainder, &result)?
+    };
     write_new(
         &run.join("boot-geometry-child-exit.json"),
         &serde_json::to_vec_pretty(
@@ -321,6 +329,56 @@ pub(super) fn normalize_geometry(
         "NTFS geometry adjustment completed; the disk's other partitions, this partition's GUID and start, and the NTFS serial are unchanged."
     );
     Ok(after)
+}
+/// Shrinks the source partition by `shrink_bytes` with diskpart, where
+/// PowerShell is not there, and writes the result where the PowerShell child
+/// writes its own: `{"success": …, "error": …}`. diskpart shrinks by whole
+/// MiB; a remainder that is not one is refused before anything is asked.
+fn shrink_with_diskpart(
+    windows: &Path,
+    run: &Path,
+    source: &GeneralDiskBinding,
+    shrink_bytes: u64,
+    result: &Path,
+) -> Result<std::process::ExitStatus> {
+    ensure!(
+        shrink_bytes % (1 << 20) == 0 && shrink_bytes > 0,
+        "the source's NTFS has to shrink by {shrink_bytes} bytes for whole 64 MiB ReFS units, which is not a whole number of MiB; without PowerShell, diskpart cannot do that. Nothing was changed."
+    );
+    let mib = shrink_bytes >> 20;
+    let script = run.join("boot-geometry-diskpart.txt");
+    let _script_owner = write_new(
+        &script,
+        format!(
+            "select disk {}\r\nselect partition {}\r\nshrink desired={mib} minimum={mib}\r\n",
+            source.disk_number, source.identity.partition_number
+        )
+        .as_bytes(),
+    )?;
+    let output = Command::new(windows.join("System32\\diskpart.exe"))
+        .arg("/s")
+        .arg(&script)
+        .creation_flags(0x0800_0000)
+        .stdin(Stdio::null())
+        .output()?;
+    let said = String::from_utf8_lossy(&output.stdout).into_owned();
+    let _log = write_new(
+        &run.join("boot-geometry-diskpart-output.txt"),
+        said.as_bytes(),
+    )?;
+    let shrunk = output.status.success() && said.contains("successfully shrunk");
+    let _reply = write_new(
+        result,
+        &serde_json::to_vec(&serde_json::json!({
+            "success": shrunk,
+            "resize_attempted": true,
+            "tool": "diskpart",
+            "error": if shrunk { serde_json::Value::Null } else { serde_json::Value::String(said.chars().rev().take(2000).collect::<String>().chars().rev().collect()) },
+            "raw_source_writes": false,
+            "ntfs_driver_resize": true
+        }))?,
+    )?;
+    Ok(output.status)
 }
 fn write_new(path: &Path, bytes: &[u8]) -> Result<File> {
     ensure!(
@@ -441,11 +499,29 @@ pub(super) fn validate(binding: &GeneralDiskBinding) -> Result<()> {
         "boot profile {} expects a different ReFS geometry unit",
         profile.id
     );
-    ensure!(
-        hash(&root.join("System32\\ntoskrnl.exe"))?
-            == hash(&current.join("System32\\ntoskrnl.exe"))?,
-        "offline and recovery Windows kernels differ; this boot profile requires matching builds"
-    );
+    // The ReFS of the new volume is written by the converting Windows'
+    // refs.sys, and read afterwards by the offline Windows' own. The two
+    // agree where the kernels are the same file (a second Windows of the
+    // same build), and where the two ReFS drivers are of one Windows build,
+    // whatever their revisions: the case of the machine's own recovery
+    // environment (WinRE), which is serviced apart from Windows (#115). The
+    // ReFS version itself is checked against the profile when the new
+    // volume is formatted.
+    let kernel_matches = hash(&root.join("System32\\ntoskrnl.exe"))?
+        == hash(&current.join("System32\\ntoskrnl.exe"))?;
+    let refs_build = if kernel_matches {
+        None
+    } else {
+        let offline =
+            n2r_win32::file_version::file_version(&root.join("System32\\drivers\\refs.sys"))?;
+        let converting =
+            n2r_win32::file_version::file_version(&current.join("System32\\drivers\\refs.sys"))?;
+        ensure!(
+            offline.same_build(&converting),
+            "offline and converting Windows differ: their kernels are not the same file, and their ReFS drivers are of different builds (the offline Windows' refs.sys {offline}, the converting Windows' {converting}); convert from a Windows, or a recovery environment, of the same build"
+        );
+        Some((offline, converting))
+    };
     for name in ["SYSTEM", "SOFTWARE"] {
         let mut file = ordinary(&root.join("System32\\config").join(name))?;
         let mut magic = [0; 4];
@@ -455,10 +531,16 @@ pub(super) fn validate(binding: &GeneralDiskBinding) -> Result<()> {
             "offline Windows {name} is not a registry hive"
         );
     }
-    println!(
-        "Offline Windows boot profile: demonstrated Windows 11 loader/ReFS driver ({}); matching recovery kernel.",
-        profile.id
-    );
+    match refs_build {
+        None => println!(
+            "Offline Windows boot profile: demonstrated Windows 11 loader/ReFS driver ({}); matching recovery kernel.",
+            profile.id
+        ),
+        Some((offline, converting)) => println!(
+            "Offline Windows boot profile: demonstrated Windows 11 loader/ReFS driver ({}); converting ReFS driver {converting} of the same build as the offline Windows' {offline}.",
+            profile.id
+        ),
+    }
     println!(
         "The running Windows disk remains excluded. EFI, MSR and WinRE partitions are preserved."
     );

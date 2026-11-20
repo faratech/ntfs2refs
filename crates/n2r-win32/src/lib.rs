@@ -32,6 +32,7 @@ pub mod extended_attributes;
 pub mod extended_attributes_native;
 #[cfg(windows)]
 pub mod file_storage;
+pub mod file_version;
 pub mod general_layout;
 #[cfg(windows)]
 pub mod io_profile;
@@ -130,6 +131,7 @@ pub use native::BootStorageHintNormalization;
 pub use native::PartitionMixedReplayGate;
 #[cfg(windows)]
 pub use native::PartitionTerminalNativeObservation;
+pub use native::bring_disk_online_for_admission;
 #[cfg(windows)]
 pub use native::forbid_disk_state_changes;
 pub use native::forbid_raw_write_activation;
@@ -141,6 +143,7 @@ pub use native::partition_isolation;
 pub use native::partition_lifecycle;
 #[cfg(windows)]
 pub use native::partition_restoration;
+pub use native::restore_writer_state_in_recovery_environment;
 #[cfg(windows)]
 pub use native::{
     BorrowedPagedWriter, DriveLetterRestore, GeneralAllocationPhase, GeneralAllocationSnapshot,

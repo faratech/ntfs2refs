@@ -562,7 +562,10 @@ pub(super) fn system_efi(
         roles.catalog_complete
             && rows.len() == 1
             && rows[0].role.disk_number == source.storage.disk_number
-            && roles.current_windows.role.disk_number == source.storage.disk_number,
+            && roles
+                .current_windows
+                .as_ref()
+                .is_some_and(|current| current.role.disk_number == source.storage.disk_number),
         "alpha requires unique native same-disk system EFI/current Windows",
     )?;
     let row = rows[0];

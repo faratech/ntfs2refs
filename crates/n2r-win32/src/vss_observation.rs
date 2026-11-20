@@ -537,11 +537,45 @@ pub struct Observation {
     pub inflight_snapshot_operations_excluded: bool,
     pub source_exclusion_proven: bool,
     pub execution_authorized: bool,
+    /// Set where the shadow copies were read off the volume itself, because
+    /// the recovery environment has no shadow-copy service to ask.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offline_evidence: Option<OfflineShadowEvidence>,
+}
+
+/// The shadow-copy storage found on a volume read from a recovery
+/// environment. Windows keeps every shadow copy's changed blocks in a file of
+/// `\System Volume Information` named for the software provider; a volume
+/// with no such file has no shadow copy of any volume stored on it.
+#[derive(Clone, Debug, Serialize)]
+pub struct OfflineShadowEvidence {
+    pub directory: String,
+    pub directory_present: bool,
+    pub diff_area_files: Vec<OfflineDiffAreaFile>,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct OfflineDiffAreaFile {
+    pub name: String,
+    pub bytes: u64,
 }
 impl Observation {
+    fn offline_refusal(&self) -> Option<io::Result<()>> {
+        let evidence = self.offline_evidence.as_ref()?;
+        Some(match evidence.diff_area_files.first() {
+            Some(file) => Err(invalid(format!(
+                "the volume holds shadow-copy storage ({} in {}, {} bytes): a conversion in place would destroy the shadow copies it stores. Delete the shadow copies (`vssadmin delete shadows /for=<drive>:`) in Windows, then convert",
+                file.name, evidence.directory, file.bytes
+            ))),
+            None => Ok(()),
+        })
+    }
+
     /// A source-presence/storage observation only. Callers must separately own and
     /// bind source freeze/exclusion; this is not a global VSS serialization lease.
     pub fn require_observed_catalog_clear(&self) -> io::Result<()> {
+        if let Some(answer) = self.offline_refusal() {
+            return answer;
+        }
         self.require_observed_snapshot_absence()?;
         if let Some(area) = self.hosted_diff_areas.first() {
             return Err(invalid(format!(
@@ -569,6 +603,9 @@ impl Observation {
     /// The same conditions as ever, each with its own words: a refusal
     /// used to be one sentence that named none of them.
     pub fn require_observed_snapshot_absence(&self) -> io::Result<()> {
+        if let Some(answer) = self.offline_refusal() {
+            return answer;
+        }
         let presence = &self.source_snapshot_presence;
         if presence.hresult == S_OK && presence.snapshots_present {
             return Err(invalid(
@@ -703,6 +740,22 @@ impl Observation {
     }
 
     pub fn same_source_and_provider_inventory(&self, other: &Self) -> bool {
+        // Read off the volume, the catalog is the same where the same files
+        // of the same sizes were found; it is never the same as one asked of
+        // the shadow-copy service.
+        match (&self.offline_evidence, &other.offline_evidence) {
+            (Some(a), Some(b)) => {
+                return self.source_volume_guid == other.source_volume_guid
+                    && a.directory_present == b.directory_present
+                    && a.diff_area_files.len() == b.diff_area_files.len()
+                    && a.diff_area_files
+                        .iter()
+                        .zip(&b.diff_area_files)
+                        .all(|(x, y)| x.name == y.name && x.bytes == y.bytes);
+            }
+            (None, None) => {}
+            _ => return false,
+        }
         self.source_volume_guid == other.source_volume_guid
             && self.provider_inventory_completed
             && other.provider_inventory_completed
@@ -740,6 +793,9 @@ pub fn observe_snapshot_presence(source_volume_guid: &str) -> io::Result<Observa
 
 fn observe(source_volume_guid: &str, include_storage: bool) -> io::Result<Observation> {
     let source = volume_guid(source_volume_guid)?;
+    if crate::native::offline_environment::in_recovery_environment() {
+        return observe_offline(source);
+    }
     // Declare the module before all COM owners; they release before unload.
     let api = VssApi::load()?;
     let _apartment = Apartment::initialize()?;
@@ -943,6 +999,7 @@ fn observe(source_volume_guid: &str, include_storage: bool) -> io::Result<Observ
             inflight_snapshot_operations_excluded: false,
             source_exclusion_proven: false,
             execution_authorized: false,
+            offline_evidence: None,
         });
     }
     let mut differential = ptr::null_mut();
@@ -1032,6 +1089,77 @@ fn observe(source_volume_guid: &str, include_storage: bool) -> io::Result<Observ
         inflight_snapshot_operations_excluded: false,
         source_exclusion_proven: false,
         execution_authorized: false,
+        offline_evidence: None,
+    })
+}
+
+/// The software provider's diff-area files are named
+/// `<shadow-set-id>{3808876b-c176-4e48-b7ae-04046e6cc752}`.
+const DIFF_AREA_SUFFIX: &str = "{3808876b-c176-4e48-b7ae-04046e6cc752}";
+
+/// In a recovery environment there is no shadow-copy service. The catalog is
+/// read off the volume: its `System Volume Information` is listed for the
+/// diff-area files that hold shadow copies. A directory that cannot be listed
+/// is not an absence: it is an error, and the volume is not converted.
+fn observe_offline(source: String) -> io::Result<Observation> {
+    let directory = format!("{}System Volume Information", source);
+    let mut files = Vec::new();
+    let present = match std::fs::read_dir(&directory) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry
+                    .map_err(|e| io::Error::new(e.kind(), format!("listing {directory}: {e}")))?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.to_ascii_lowercase().ends_with(DIFF_AREA_SUFFIX) {
+                    let bytes = entry
+                        .metadata()
+                        .map_err(|e| io::Error::new(e.kind(), format!("{directory}\\{name}: {e}")))?
+                        .len();
+                    files.push(OfflineDiffAreaFile { name, bytes });
+                }
+            }
+            true
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+        Err(e) => {
+            return Err(io::Error::new(
+                e.kind(),
+                format!(
+                    "the shadow-copy storage of the volume could not be read from {directory}: {e}"
+                ),
+            ));
+        }
+    };
+    files.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(Observation {
+        schema_version: 3,
+        kind: "vss-source-presence-and-hosted-storage-observation-v3",
+        source_volume_guid: source,
+        snapshot_context: -1,
+        completed_snapshot_count_all_volumes: None,
+        source_snapshot_presence: SourceSnapshotPresence {
+            api: "offline-system-volume-information",
+            scope: "volume",
+            hresult: S_OK,
+            snapshots_present: !files.is_empty(),
+            compatibility_flags: 0,
+        },
+        providers: Vec::new(),
+        hosted_diff_areas: Vec::new(),
+        hosted_diff_area_query_hresult: None,
+        hosted_storage_enumerated: false,
+        completed_catalog_enumeration: false,
+        provider_inventory_completed: false,
+        shadow_copy_query_hresult: None,
+        shadow_copies: Vec::new(),
+        inflight_snapshot_operations_excluded: false,
+        source_exclusion_proven: false,
+        execution_authorized: false,
+        offline_evidence: Some(OfflineShadowEvidence {
+            directory,
+            directory_present: present,
+            diff_area_files: files,
+        }),
     })
 }
 
@@ -1390,6 +1518,7 @@ mod refusal_tests {
             inflight_snapshot_operations_excluded: false,
             source_exclusion_proven: false,
             execution_authorized: false,
+            offline_evidence: None,
         }
     }
 

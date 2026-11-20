@@ -1563,9 +1563,12 @@ where
                         )?.with_closing_bytes(closing);
                         let mut guard = |p: CaptureProgress| -> Result<()> {
                             let space = n2r_win32::discovery::observe_volume_space(&journal_root)?;
+                            let required = p.required_available_bytes()?;
                             ensure!(
-                                space.available_bytes_to_caller >= p.required_available_bytes()?,
-                                "capture does not have its remaining journal and reserve capacity"
+                                space.available_bytes_to_caller >= required,
+                                "capture does not have its remaining journal and reserve capacity: {journal_root} has {} bytes free, the capture needs {required} (of which {} kept free); free space there or use a larger working volume",
+                                space.available_bytes_to_caller,
+                                p.minimum_free_bytes
                             );
                             capture_progress.report(n2r_win32::progress::Update::new(
                                 n2r_win32::progress::Phase::TargetCapture,

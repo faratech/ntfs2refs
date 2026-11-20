@@ -473,6 +473,49 @@ fn interrupted_verification_left_source_online(
     lifecycle == SelectedLifecycle::Handoff && disk_attributes == ONLINE_READ_ONLY
 }
 
+/// In a recovery environment (the running-Windows route) the disk comes back
+/// offline and read-only whatever the run had left it in, so the attributes
+/// say nothing of how far it got. The journal does: once it holds an apply or
+/// rollback intent or a handoff, writing may have begun, and the disk is put
+/// back in the writer's state so that recovery checks every span against both
+/// the original and the new bytes instead of expecting the original alone
+/// (runc-cut-apply-10: "selected bytes differ" after a power cut halfway
+/// through apply). A prepared run that never wrote keeps the frozen state.
+fn restore_writer_state_lost_in_recovery_environment(
+    source: &GeneralDiskBinding,
+    lifecycle: SelectedLifecycle,
+    events: &mut Vec<NativeEvent>,
+) -> Result<()> {
+    if !n2r_win32::offline_environment::in_recovery_environment()
+        || !matches!(
+            lifecycle,
+            SelectedLifecycle::ApplyIntent
+                | SelectedLifecycle::RollbackIntent
+                | SelectedLifecycle::Handoff
+        )
+    {
+        return Ok(());
+    }
+    let state = n2r_win32::observe_general_disk_state_readonly(source.clone(), events)
+        .context("observing the source disk in the recovery environment")?;
+    if state.disk_attributes != 3 {
+        return Ok(());
+    }
+    n2r_win32::restore_writer_state_in_recovery_environment(source.disk_number).with_context(
+        || {
+            format!(
+                "putting disk {} back offline and writable, as the journal says the run held it",
+                source.disk_number
+            )
+        },
+    )?;
+    eprintln!(
+        "Disk {} came back offline and read-only, as this environment starts every disk; the journal says writing may have begun, so it is offline and writable again, as the run held it.",
+        source.disk_number
+    );
+    Ok(())
+}
+
 /// Dismounts and seals a converted source that an interrupted verification
 /// left online and read-only. Returns whether it did anything.
 fn reseal_after_interrupted_verification(
@@ -2265,6 +2308,11 @@ impl ReopenedResourceRecovery {
         let (target, initial_state, mounted) = match online {
             Some((mounted, state)) => (None, state, Some(mounted)),
             None => {
+                restore_writer_state_lost_in_recovery_environment(
+                    &publication.source,
+                    initial_lifecycle,
+                    events,
+                )?;
                 reseal_after_interrupted_verification(
                     &publication.source,
                     initial_lifecycle,

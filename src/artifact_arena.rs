@@ -479,6 +479,65 @@ fn parents(path: &Path) -> Result<Vec<File>> {
     }
     Ok(result)
 }
+/// How many working files are read and hashed at once. A file's SHA-256 is
+/// one stream, read on one thread and hashed on a second
+/// (`sha256_native::hash_next`), so a lane is two of the machine's
+/// processors.
+fn hash_lanes() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, |cores| cores.get() / 2)
+        .clamp(1, 8)
+}
+/// Every pin's check, each made once by one of `lanes` threads, this one
+/// among them. The check is the pin's own (`revalidate_prepaid`): the lanes
+/// only decide which files are read at the same time. The first failure
+/// stops the lanes from starting on further files and is the one reported.
+fn revalidate_pins(pins: &[&FilePin], lanes: usize) -> Result<()> {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+    let lane = || -> Result<()> {
+        while !failed.load(Ordering::Acquire) {
+            let Some(pin) = pins.get(next.fetch_add(1, Ordering::AcqRel)) else {
+                break;
+            };
+            if let Err(error) = pin.revalidate_prepaid() {
+                failed.store(true, Ordering::Release);
+                return Err(error.context(format!(
+                    "re-validating working file {:?} ({} bytes)",
+                    pin.snapshot.final_path, pin.snapshot.file_bytes
+                )));
+            }
+        }
+        Ok(())
+    };
+    if lanes <= 1 || pins.len() <= 1 {
+        return lane();
+    }
+    std::thread::scope(|scope| {
+        let others: Vec<_> = (1..lanes.min(pins.len()))
+            .map(|_| {
+                scope.spawn(|| {
+                    let _sampled = n2r_win32::stack_sampler::helper();
+                    lane()
+                })
+            })
+            .collect();
+        let mut result = lane();
+        for other in others {
+            let joined = match other.join() {
+                Ok(outcome) => outcome,
+                Err(_) => Err(anyhow::anyhow!(
+                    "a working-file re-validation lane panicked"
+                )),
+            };
+            if result.is_ok() {
+                result = joined;
+            }
+        }
+        result
+    })
+}
 fn inspect(file: &mut File, maximum: u64, expected: &str) -> Result<Verified> {
     ensure!(
         expected.len() == 64
@@ -503,7 +562,7 @@ fn inspect(file: &mut File, maximum: u64, expected: &str) -> Result<Verified> {
         expected.to_owned()
     } else {
         let position = file.stream_position()?;
-        let hash = n2r_win32::sha256_native::hash_range(file, 0, snapshot.file_bytes);
+        let hash = n2r_win32::sha256_native::held_file(file, snapshot.file_bytes);
         file.seek(SeekFrom::Start(position))?;
         hex::encode(hash?)
     };
@@ -715,6 +774,28 @@ impl PreparedArenaClosure {
             512 * 1024,
         )?;
         let _ram = self.arena.reserve_ram(hash_bytes)?;
+        let pins: Vec<&FilePin> = self
+            .ordinary
+            .iter()
+            .flat_map(|seal| &seal.pins.pins)
+            .map(|pin| &**pin)
+            .collect();
+        // When the files are about to be read in full (the gate before the
+        // first write to the source; every time with --recheck-everything)
+        // several are read and hashed at once: one file after another was
+        // 16 GB on one lane for the full Windows volume. Each further lane
+        // has a hashing workspace of its own, taken as spare memory before
+        // the ledger is locked below: a lane that is not granted is a file
+        // that waits its turn.
+        let wanted = if n2r_win32::verify_policy::full_unremembered() {
+            hash_lanes().min(pins.len())
+        } else {
+            1
+        };
+        let spare: Vec<ArenaRamLease> = (1..wanted)
+            .map_while(|_| self.arena.reserve_spare_ram(hash_bytes).ok())
+            .collect();
+        let lanes = 1 + spare.len();
         let mut state = self
             .arena
             .0
@@ -730,12 +811,7 @@ impl PreparedArenaClosure {
             self.native_reservation,
             true,
         )?;
-        for seal in &self.ordinary {
-            for pin in &seal.pins.pins {
-                pin.revalidate_prepaid()?;
-            }
-        }
-        Ok(())
+        revalidate_pins(&pins, lanes)
     }
 
     /// Preserve exhaustive before/after content checks while allowing nested

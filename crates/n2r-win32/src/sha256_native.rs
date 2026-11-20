@@ -382,6 +382,70 @@ pub fn hash_range(
     hash_next(reader, length)
 }
 
+/// A complete digest computed inside the gate that is open: the gate, the
+/// file's identity (volume and file id), its length and its timestamp.
+type GateDigest = (u64, String, u64, std::time::SystemTime, [u8; 32]);
+static GATE_DIGESTS: std::sync::Mutex<Vec<GateDigest>> = std::sync::Mutex::new(Vec::new());
+
+/// SHA-256 of all `bytes` bytes of a held working file, for an owner to
+/// compare with the digest it pinned.
+///
+/// The gate before the first write to the source reads every working file
+/// again, once for each owner that holds it, and a record store has two: the
+/// arena's pin and the reader that looks records up in it. Each hashed the
+/// whole file, one after the other. Inside one gate under the check-once
+/// policy the digest computed for a file stands for the next owner of that
+/// same file (same volume and file id, length and timestamp, each read from
+/// the caller's own handle); every owner still compares it with its own pin
+/// and makes its own identity checks. Outside a gate, and always with
+/// `--recheck-everything`, the file is read every time. The file is left
+/// positioned at `bytes`, as after a read.
+pub fn held_file(file: &mut std::fs::File, bytes: u64) -> io::Result<[u8; 32]> {
+    let key = match crate::verify_policy::open_gate() {
+        Some(gate) => {
+            let metadata = file.metadata()?;
+            (metadata.len() == bytes)
+                .then(|| -> io::Result<_> {
+                    Ok((
+                        gate,
+                        crate::file_storage::file_id_info(file)?,
+                        metadata.modified()?,
+                    ))
+                })
+                .transpose()?
+        }
+        None => None,
+    };
+    if let Some((gate, id, modified)) = &key {
+        let known = GATE_DIGESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .find(|(of, file_id, length, at, _)| {
+                of == gate && file_id == id && *length == bytes && at == modified
+            })
+            .map(|known| known.4);
+        if let Some(digest) = known {
+            file.seek(SeekFrom::Start(bytes))?;
+            return Ok(digest);
+        }
+    }
+    let digest = hash_range(file, 0, bytes)?;
+    if let Some((gate, id, modified)) = key {
+        // Only for a file that is, after the read, what it was before it.
+        let metadata = file.metadata()?;
+        if metadata.len() == bytes && metadata.modified()? == modified {
+            let mut known = GATE_DIGESTS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            // Digests of gates that have closed are of no use to anyone.
+            known.retain(|(of, ..)| *of == gate);
+            known.push((gate, id, bytes, modified, digest));
+        }
+    }
+    Ok(digest)
+}
+
 /// SHA-256 of the next `length` bytes of `reader`, all of them read.
 ///
 /// A long range is hashed on a second thread while this one reads the next

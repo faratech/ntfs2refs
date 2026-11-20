@@ -226,10 +226,7 @@ fn bulk_sha256(bytes: &[u8]) -> io::Result<[u8; 32]> {
 /// thread brings the file hash up to date with the page before it.
 const OVERLAP_PAGE_BYTES: usize = 256 * 1024;
 fn file_hash(file: &mut File, bytes: u64) -> io::Result<[u8; 32]> {
-    let _timed = crate::perf::scope(crate::perf::Point::FileHash);
-    crate::perf::add_bytes(crate::perf::Point::FileHash, bytes);
-    file.seek(SeekFrom::Start(0))?;
-    crate::sha256_native::hash_next(file, bytes)
+    crate::sha256_native::held_file(file, bytes)
 }
 /// A file a [`Writer`] in this process finished.
 struct Written {

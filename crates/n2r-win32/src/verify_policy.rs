@@ -69,6 +69,14 @@ pub fn full_unremembered() -> bool {
     !ONCE.load(SeqCst) || GATE.load(SeqCst) != 0
 }
 
+/// The gate that is open now under [`check_once`], if one is. A complete
+/// re-read made inside it may stand for the same held file until it closes;
+/// without the policy (`--recheck-everything`) there is never such a gate.
+pub fn open_gate() -> Option<u64> {
+    let gate = GATE.load(SeqCst);
+    (ONCE.load(SeqCst) && gate != 0).then_some(gate)
+}
+
 /// Whether bytes read earlier from the frozen source may be served again
 /// from memory: the route checks once and no gate is open. Inside the gate
 /// every read goes to the disk.

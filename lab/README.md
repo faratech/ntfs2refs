@@ -139,9 +139,24 @@ rollback ends `ROLLED-BACK-NOT-BOOTED` and is compared with the listing taken
 before in every field (`compare --exact`: nothing allowed).
 `-RecoverMode none -CheckpointAfterConvert <name>` saves the interrupted state
 instead, and `-RecoverFrom <attempt>` recovers it later from that attempt's own
-records. `-TearMarker handoff`, with `-InterruptAt apply-handoff-durable`, leaves
-the journal's handoff marker as a write that stopped part-way leaves it, so that
-recovery has to settle it first.
+records. `-TearMarker handoff` leaves the journal's handoff marker as a write
+that stopped part-way leaves it, so that recovery has to settle it first: with
+`-InterruptAt apply-handoff-durable` and `-Verify thorough`, whose apply step
+writes the handoff with the disk offline and writable, the marker the run wrote
+is torn; with `-InterruptAt verify-passed` and `--verify fast` (the default),
+whose finalizer writes the handoff after the verification with the disk sealed
+offline and read-only, the marker is not written yet, and the harness makes the
+torn image of the one that would be written next from the apply intent beside
+it.
+
+`-Verify fast|thorough` gives the converter its `--verify` (`fast` is its
+default). A fast run's handoff follows the verification of the converted
+volume, so it passes `apply-sealed`, `apply-seal-recorded`,
+`verify-authenticated`, `verify-source-readonly` and `verify-passed` and not
+`apply-handoff-durable`, `finalize-authenticated` or
+`finalize-source-readonly`, which only a thorough run reaches; a hold at a
+point the run does not reach is never reported. The verdict records the mode
+as `verify`.
 
 `-InterruptKind vm` turns the VM off at the hold instead of ending the
 converter's process, as if the machine's power had gone: whatever the guest had
@@ -199,8 +214,8 @@ attempt's folder and attaches to the VM for the attempt. `-LargeRecords` formats
 4096-byte file records (`format /L`). `-PartitionMB` sets the partition's size;
 one that is not a multiple of 64 makes the converter shrink it first.
 `-TargetClusterBytes 65536` converts to 64 KiB ReFS clusters. `-RunAs`,
-`-ConverterArgs`, `-Binary`, `-ManifestBinary` and `-SampleStacks` mean what
-they mean to the boot harness. `-ExpectRefusal <pattern>` is for a volume the
+`-ConverterArgs`, `-Verify`, `-Binary`, `-ManifestBinary` and `-SampleStacks`
+mean what they mean to the boot harness. `-ExpectRefusal <pattern>` is for a volume the
 converter must refuse.
 
 `-InterruptAt <point>` (for example `apply-mid-ranges` or `handoff-sealed`)

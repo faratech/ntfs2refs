@@ -76,13 +76,22 @@ param(
     # -NoConvert it is the control: the unconverted Windows, used the same way.
     [switch]$Acceptance,
     [ValidateSet('resume', 'rollback', 'none')][string]$RecoverMode = 'resume',
-    # With -InterruptAt apply-handoff-durable: before recovery runs, leave the
-    # journal's handoff marker as a write that stopped part-way leaves it (its
-    # first 512-byte sector written, its last one clear). The lab cannot cut
-    # power to the storage; this is the image such a cut leaves, made by hand
-    # once the converter's process has ended. Recovery has to settle the
-    # marker before it can read the journal, and has to say that it did.
+    # Before recovery runs, leave the journal's handoff marker as a write that
+    # stopped part-way leaves it (its first 512-byte sector written, its last
+    # one clear). The lab cannot cut power to the storage; this is the image
+    # such a cut leaves, made by hand once the converter's process has ended.
+    # Recovery has to settle the marker before it can read the journal, and
+    # has to say that it did. With -InterruptAt apply-handoff-durable (a run
+    # with --verify thorough, whose apply step writes the handoff with the
+    # disk offline and writable) the whole marker is there and is torn; with
+    # -InterruptAt verify-passed (--verify fast, the default, whose finalizer
+    # writes the handoff after the verification with the disk sealed offline
+    # and read-only) it is not written yet, and the torn image of the marker
+    # that would be written next is made from the apply intent beside it.
     [ValidateSet('handoff')][string]$TearMarker,
+    # The converter's --verify: fast (its default) or thorough. Not with
+    # -RecoverFrom: a recovery takes the mode its run recorded.
+    [ValidateSet('fast', 'thorough')][string]$Verify,
     # The account the converter (and its recovery) runs as in the control OS.
     # 'system' is what every attempt used before this switch existed, and it
     # hid that an administrator was refused: the converter's working objects
@@ -111,8 +120,26 @@ param(
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 $workspace = Split-Path -Parent $PSScriptRoot
 $Recover = [bool]$RecoverFrom
-if ($TearMarker -and ($InterruptAt -ne 'apply-handoff-durable' -or $RecoverMode -eq 'none')) {
-    throw '-TearMarker handoff needs -InterruptAt apply-handoff-durable and a -RecoverMode: the marker has to be whole, and nothing after it done, when it is torn'
+$verifyInArgs = @($ConverterArgs | Where-Object { $_ -like '--verify*' })
+if ($Verify -and $verifyInArgs) { throw "-Verify $Verify and $($verifyInArgs -join ' ') in -ConverterArgs: give the mode once" }
+if ($Verify -and $Recover) { throw '-Verify applies to a conversion, not to -RecoverFrom: a recovery takes the mode its run recorded' }
+# The mode the converter runs with: -Verify, else one in -ConverterArgs, else its default.
+$verifyMode = if ($Verify) { $Verify } else {
+    $at = [array]::IndexOf([string[]]$ConverterArgs, '--verify')
+    if ($at -ge 0 -and $at + 1 -lt $ConverterArgs.Count) { $ConverterArgs[$at + 1] }
+    elseif ($ConverterArgs -contains '--verify=thorough' -or $ConverterArgs -contains '--verify-full-content') { 'thorough' }
+    else { 'fast' }
+}
+if ($TearMarker) {
+    # Where each mode's run is held with its handoff marker either whole and
+    # nothing after it done (thorough), or about to be written (fast).
+    $tearAt = @{ 'apply-handoff-durable' = 'thorough'; 'verify-passed' = 'fast' }
+    if (-not $InterruptAt -or -not $tearAt.ContainsKey($InterruptAt) -or $RecoverMode -eq 'none') {
+        throw '-TearMarker handoff needs -InterruptAt apply-handoff-durable (with --verify thorough) or verify-passed (with --verify fast, the default), and a -RecoverMode: nothing after the marker may be done when it is torn'
+    }
+    if ($tearAt[$InterruptAt] -ne $verifyMode) {
+        throw "-TearMarker handoff with -InterruptAt $InterruptAt needs --verify $($tearAt[$InterruptAt]); this run would use --verify $verifyMode and never reach that point"
+    }
 }
 $case = Join-Path $workspace ".lab\hyperv\attempts\$Name"
 if (Test-Path -LiteralPath $case) { throw "Attempt directory already exists: $case" }
@@ -799,6 +826,8 @@ try {
         if ($Recover -or $Diagnose) { throw '-InterruptAt applies to a conversion, not to -RecoverFrom or -Diagnose' }
         $arguments += @('--lab-hold-at', $InterruptAt, '--acknowledge-lab-hold-never-completes')
     }
+    if ($Verify) { $arguments += @('--verify', $Verify) }
+    if (-not $Recover) { $verdict.verify = $verifyMode }
     $arguments += $ConverterArgs
     $symbols = [IO.Path]::ChangeExtension($Binary, '.pdb')
     if ($SampleStacks) {
@@ -962,8 +991,10 @@ try {
         $recoverArguments = @('--recover', $printed.Matches[0].Groups[1].Value, '--recovery-sha256', $printed.Matches[0].Groups[2].Value)
         if ($RecoverMode -eq 'rollback') { $recoverArguments += '--rollback' }
         if ($TearMarker) {
-            $torn = Invoke-Command -Session $session -ArgumentList "$($printed.Matches[0].Groups[1].Value)\selected.journal", $TearMarker -ScriptBlock {
-                param($journal, $marker)
+            $torn = Invoke-Command -Session $session -ArgumentList "$($printed.Matches[0].Groups[1].Value)\selected.journal", $TearMarker, $InterruptAt -ScriptBlock {
+                param($journal, $marker, $point)
+                # The handoff is the journal's first granule (offset 0); the
+                # apply intent beside it is the second (offset 4096).
                 $magic = @{ handoff = 'N2RSHN01' }[$marker]; $offset = @{ handoff = 0 }[$marker]
                 $sha = [Security.Cryptography.SHA256]::Create()
                 $digest = { param($bytes) [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant() }
@@ -972,9 +1003,30 @@ try {
                     $granule = New-Object byte[] 4096
                     $null = $stream.Seek($offset, 'Begin')
                     if ($stream.Read($granule, 0, 4096) -ne 4096) { throw "short read of the $marker marker in $journal" }
-                    $lastSector = @($granule[3584..4095] | Where-Object { $_ -ne 0 })
-                    if ([Text.Encoding]::ASCII.GetString($granule, 0, 8) -ne $magic -or -not $lastSector.Count) {
-                        throw "$journal does not hold a whole $marker marker at offset $offset"
+                    if ($point -eq 'verify-passed') {
+                        # --verify fast: the finalizer writes the handoff after
+                        # this point, so its granule is still clear. The marker
+                        # it would write carries the apply intent's digests (the
+                        # journal's immutable digest and the new selected digest,
+                        # bytes 8 to 71) under the handoff's magic, and ends in
+                        # the SHA-256 of the 4,064 bytes before it
+                        # (src/selected_journal.rs, marker()).
+                        if (@($granule | Where-Object { $_ -ne 0 }).Count) { throw "$journal holds something at offset ${offset}: a run held at verify-passed has not written its $marker marker" }
+                        $intent = New-Object byte[] 4096
+                        $null = $stream.Seek(4096, 'Begin')
+                        if ($stream.Read($intent, 0, 4096) -ne 4096) { throw "short read of the apply intent in $journal" }
+                        if ([Text.Encoding]::ASCII.GetString($intent, 0, 8) -ne 'N2RSAP01' -or
+                            [BitConverter]::ToString($intent, 4064, 32) -ne [BitConverter]::ToString($sha.ComputeHash($intent, 0, 4064))) {
+                            throw "$journal does not hold a whole apply intent at offset 4096"
+                        }
+                        [Array]::Copy([Text.Encoding]::ASCII.GetBytes($magic), 0, $granule, 0, 8)
+                        [Array]::Copy($intent, 8, $granule, 8, 64)
+                        [Array]::Copy($sha.ComputeHash($granule, 0, 4064), 0, $granule, 4064, 32)
+                    } else {
+                        $lastSector = @($granule[3584..4095] | Where-Object { $_ -ne 0 })
+                        if ([Text.Encoding]::ASCII.GetString($granule, 0, 8) -ne $magic -or -not $lastSector.Count) {
+                            throw "$journal does not hold a whole $marker marker at offset $offset"
+                        }
                     }
                     $whole = & $digest $granule
                     [Array]::Clear($granule, 3584, 512)
@@ -985,6 +1037,7 @@ try {
             }
             $verdict.torn_marker = [ordered]@{ marker = $torn.marker; journal = $torn.journal; journal_offset = $torn.offset
                 image = 'first 512-byte sector written, last sector clear'; whole_sha256 = $torn.whole_sha256; torn_sha256 = $torn.torn_sha256
+                whole_marker = $(if ($InterruptAt -eq 'verify-passed') { 'not yet written by the run (--verify fast): made from the apply intent beside it' } else { 'written by the run' })
                 evidence_kind = 'marker image made by hand after the process ended; not a power loss'; settled_by_recovery = $false }
             Say "left the $($torn.marker) marker of $($torn.journal) partly written (last sector cleared)"
         }

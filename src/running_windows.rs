@@ -754,8 +754,54 @@ fn recover_from(
     };
     if outcome != Recovered::Failed {
         let _ = fs::rename(&saved, directory.join("recover-command.done.json"));
+        // The recovery detaches the run's working volume itself; where that
+        // was refused (#182: Access is denied) it is tried again here, its
+        // process gone and every handle it held closed, before Windows
+        // starts and the run folder is to be removed.
+        if let Some(line) =
+            run_shadow(Path::new(&recovery_directory)).and_then(|s| detach_after_recovery(&s))
+        {
+            note(line);
+        }
     }
     outcome
+}
+
+/// The working volume of the run a recovery directory belongs to: the
+/// recovery directory is the run's `conversion` directory, beside its
+/// `shadow.vhdx`.
+fn run_shadow(recovery_directory: &Path) -> Option<PathBuf> {
+    recovery_directory
+        .parent()
+        .filter(|run| !run.as_os_str().is_empty())
+        .map(|run| run.join("shadow.vhdx"))
+}
+
+/// Detaches the run's working volume once the recovery has ended, if Windows
+/// still has it attached; what was done, for the report.
+fn detach_after_recovery(shadow: &Path) -> Option<String> {
+    if !shadow.is_file() {
+        return None;
+    }
+    detach_after_recovery_line(
+        shadow,
+        n2r_win32::managed_shadow::detach_left_behind(shadow),
+    )
+}
+
+fn detach_after_recovery_line(shadow: &Path, detached: std::io::Result<bool>) -> Option<String> {
+    match detached {
+        Ok(true) => Some(format!(
+            "Detached the volume the run built: {}",
+            shadow.display()
+        )),
+        Ok(false) => None,
+        Err(error) => Some(format!(
+            "The volume the run built is still attached and could not be detached ({error}): {}. Before deleting the run folder, in diskpart: `select vdisk file=\"{}\"` and `detach vdisk`.",
+            shadow.display(),
+            shadow.display()
+        )),
+    }
 }
 
 /// `recorded` (`D:\\runs\\...`) on the drive `here` is on, when the two
@@ -1087,6 +1133,45 @@ mod tests {
         assert_eq!(
             rebased(r"\\?\Volume{1}\x", Path::new(r"E:\runs")),
             r"\\?\Volume{1}\x"
+        );
+    }
+
+    #[test]
+    fn after_a_recovery_the_runs_own_working_volume_is_detached_or_named() {
+        // The working volume beside the recovery directory, on this start's
+        // letter.
+        let directory = rebased(
+            r"D:\runs\0123abcd\conversion",
+            Path::new(r"E:\runs\n2r-running"),
+        );
+        let shadow = run_shadow(Path::new(&directory)).unwrap();
+        assert_eq!(shadow, Path::new(r"E:\runs\0123abcd\shadow.vhdx"));
+        assert_eq!(run_shadow(Path::new("conversion")), None);
+        // A detach is said; nothing to detach says nothing; a refused one
+        // names why, the image, and how to detach it by hand (#182).
+        assert_eq!(
+            detach_after_recovery_line(&shadow, Ok(true)).unwrap(),
+            r"Detached the volume the run built: E:\runs\0123abcd\shadow.vhdx"
+        );
+        assert_eq!(detach_after_recovery_line(&shadow, Ok(false)), None);
+        let refused = detach_after_recovery_line(
+            &shadow,
+            Err(std::io::Error::other(
+                "detach the working volume: Access is denied. (os error 5)",
+            )),
+        )
+        .unwrap();
+        assert!(refused.contains("os error 5"), "{refused}");
+        assert!(
+            refused.contains(
+                r#"`select vdisk file="E:\runs\0123abcd\shadow.vhdx"` and `detach vdisk`"#
+            ),
+            "{refused}"
+        );
+        // A run whose folder has no working volume is not asked about.
+        assert_eq!(
+            detach_after_recovery(Path::new(r"Z:\absent\shadow.vhdx")),
+            None
         );
     }
 

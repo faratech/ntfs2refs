@@ -130,7 +130,7 @@ fn strings(v: &Vec<String>) -> io::Result<u64> {
 fn option_string(v: &Option<String>) -> u64 {
     v.as_ref().map_or(0, |s| s.capacity() as u64)
 }
-fn snapshot_bytes(s: &Snapshot) -> io::Result<u64> {
+pub(in crate::shadow_native) fn snapshot_bytes(s: &Snapshot) -> io::Result<u64> {
     let mut n = add(vec_bytes(&s.queries)?, vec_bytes(&s.security)?)?;
     for q in &s.queries {
         n = add(n, vec_bytes(&q.bytes)?)?;

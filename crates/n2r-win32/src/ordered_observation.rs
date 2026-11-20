@@ -115,7 +115,7 @@ pub(crate) fn in_order<S, R: Sync, O: Send>(
 
 /// `observe` for every object, on up to `helpers` threads that take runs of
 /// [`RUN`] neighbouring objects; the results in the objects' order.
-fn observe_batch<R: Sync, O: Send>(
+pub(crate) fn observe_batch<R: Sync, O: Send>(
     objects: &[R],
     helpers: usize,
     observe: &(impl Fn(&R) -> Option<O> + Sync),

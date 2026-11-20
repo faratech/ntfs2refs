@@ -228,7 +228,7 @@ fn probe_aliases(
         probe_alias(root, probe, parents.of(*index), maximum_row_bytes, differs)
     };
     let (at_once, in_turn) = numbered.split_at(workspaces.len());
-    let mut natives = super::observe_in_parallel(at_once, &probe_one)?;
+    let mut natives = super::observe_read_back(at_once, &probe_one)?;
     drop(workspaces);
     for native in super::observe_in_turn(in_turn, &probe_one) {
         natives.push(native?);

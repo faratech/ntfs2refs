@@ -51,9 +51,20 @@ impl AliasObjectShape for AliasObjectShapeRef<'_> {
 /// The digest covers every object of the domain; computing it decodes all of
 /// them. Under the check-once policy it is computed once, and once more
 /// inside each gate before a first write to the source.
+///
+/// Beside the input digest the domain may keep other digests of itself, each
+/// under a name its caller gives it. Every one of them is kept on the same
+/// terms as the input digest and has its own turn inside a gate: one digest
+/// computed again there does not stand for another.
 #[derive(Debug, Default)]
 pub struct InputDigestMemo {
     digest: std::sync::Mutex<Option<[u8; 32]>>,
+    last_full: crate::verify_policy::LastFull,
+    keyed: std::sync::Mutex<std::collections::BTreeMap<&'static str, KeyedDigest>>,
+}
+#[derive(Debug)]
+struct KeyedDigest {
+    digest: [u8; 32],
     last_full: crate::verify_policy::LastFull,
 }
 impl InputDigestMemo {
@@ -78,6 +89,46 @@ impl InputDigestMemo {
             .digest
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(digest);
+    }
+    /// The digest kept under `key`, on the terms of [`get`](Self::get):
+    /// nothing unless the route checks once, and nothing the first time it
+    /// is asked for inside a gate, where it is computed again.
+    // No caller yet: the slots are there for the digests that are still
+    // computed on every use.
+    #[allow(dead_code)]
+    pub(crate) fn get_keyed(&self, key: &'static str) -> Option<[u8; 32]> {
+        if !crate::verify_policy::checks_once() {
+            return None;
+        }
+        let keyed = self
+            .keyed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let known = keyed.get(key)?;
+        if crate::verify_policy::full(&known.last_full) {
+            return None;
+        }
+        Some(known.digest)
+    }
+    /// Keeps `digest` under `key`, in place of the one kept there before.
+    #[allow(dead_code)]
+    pub(crate) fn set_keyed(&self, key: &'static str, digest: [u8; 32]) {
+        let mut keyed = self
+            .keyed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match keyed.get_mut(key) {
+            Some(known) => known.digest = digest,
+            None => {
+                keyed.insert(
+                    key,
+                    KeyedDigest {
+                        digest,
+                        last_full: crate::verify_policy::LastFull::new(),
+                    },
+                );
+            }
+        }
     }
 }
 

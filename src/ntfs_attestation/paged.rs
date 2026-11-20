@@ -123,6 +123,82 @@ impl<'a> PagedObservationRequest<'a> {
     pub fn admission(&self) -> SourceResourceAdmission {
         self.admission
     }
+    /// The object's request row and, with `plain`, the names of its plain
+    /// streams ([`plain_content_stream`]; none for a thorough run), both from
+    /// one reading of its record.
+    fn selected(&self, index: usize, plain: bool) -> Result<(NativeRequestRow, Vec<Vec<u16>>)> {
+        ensure!(index < self.length, "source selector ordinal absent");
+        let (row, plain) = self.source.with_file(index as u64, |file| {
+            let mut row = NativeRequestRow {
+                identity: FileIdentity {
+                    record_number: file.record_number,
+                    sequence_number: file.sequence_number,
+                },
+                extent_identity_streams: Vec::new(),
+            };
+            let mut plain_streams = Vec::new();
+            if self.policy.is_fast() {
+                for stream in &file.streams {
+                    let selector = if self.windows_paths {
+                        super::extent_identity_stream_request_windows_domain(
+                            self.source,
+                            file,
+                            stream,
+                        )?
+                    } else {
+                        super::extent_identity_stream_request_domain(
+                            self.source,
+                            file,
+                            stream,
+                            true,
+                            true,
+                        )?
+                    };
+                    if let Some(selector) = selector {
+                        row.extent_identity_streams.push(selector);
+                    }
+                    if plain
+                        && plain_content_stream(self.source, file, stream).with_context(|| {
+                            format!(
+                                "deciding whether stream {:?} of FILE {} is plain",
+                                stream.name, file.record_number
+                            )
+                        })?
+                    {
+                        plain_streams.push(stream.name_utf16.clone());
+                    }
+                }
+            }
+            Ok((row, plain_streams))
+        })?;
+        // Enforce the row budget while serializing without allocating a
+        // second JSON buffer. The raw owner bounds its decoded input row.
+        struct Counter {
+            bytes: u64,
+            maximum: u64,
+        }
+        impl io::Write for Counter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.bytes = self
+                    .bytes
+                    .checked_add(bytes.len() as u64)
+                    .filter(|n| *n <= self.maximum)
+                    .ok_or_else(|| io::Error::other("native selector row exceeds admitted RAM"))?;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        serde_json::to_writer(
+            Counter {
+                bytes: 0,
+                maximum: self.admission.budget.max_row_bytes,
+            },
+            &row,
+        )?;
+        Ok((row, plain))
+    }
 }
 
 /// Whether the raw reading holds `stream` as plain: one non-resident DATA
@@ -297,95 +373,18 @@ impl NativeRequestDomain for PagedObservationRequest<'_> {
         })()
         .map_err(io::Error::other)
     }
-    fn plain_content_streams(&self, index: usize) -> io::Result<Vec<Vec<u16>>> {
-        (|| -> Result<_> {
-            ensure!(index < self.length, "source selector ordinal absent");
-            if !self.policy.is_fast() {
-                return Ok(Vec::new());
-            }
-            self.source.with_file(index as u64, |file| {
-                let mut plain = Vec::new();
-                for stream in &file.streams {
-                    if plain_content_stream(self.source, file, stream).with_context(|| {
-                        format!(
-                            "deciding whether stream {:?} of FILE {} is plain",
-                            stream.name, file.record_number
-                        )
-                    })? {
-                        plain.push(stream.name_utf16.clone());
-                    }
-                }
-                Ok(plain)
-            })
-        })()
-        .map_err(io::Error::other)
-    }
     fn row(&self, index: usize) -> io::Result<Cow<'_, NativeRequestRow>> {
-        (|| -> Result<_> {
-            ensure!(index < self.length, "source selector ordinal absent");
-            let row = self.source.with_file(index as u64, |file| {
-                let mut row = NativeRequestRow {
-                    identity: FileIdentity {
-                        record_number: file.record_number,
-                        sequence_number: file.sequence_number,
-                    },
-                    extent_identity_streams: Vec::new(),
-                };
-                if self.policy.is_fast() {
-                    for stream in &file.streams {
-                        let selector = if self.windows_paths {
-                            super::extent_identity_stream_request_windows_domain(
-                                self.source,
-                                file,
-                                stream,
-                            )?
-                        } else {
-                            super::extent_identity_stream_request_domain(
-                                self.source,
-                                file,
-                                stream,
-                                true,
-                                true,
-                            )?
-                        };
-                        if let Some(selector) = selector {
-                            row.extent_identity_streams.push(selector);
-                        }
-                    }
-                }
-                Ok(row)
-            })?;
-            // Enforce the row budget while serializing without allocating a
-            // second JSON buffer. The raw owner bounds its decoded input row.
-            struct Counter {
-                bytes: u64,
-                maximum: u64,
-            }
-            impl io::Write for Counter {
-                fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                    self.bytes = self
-                        .bytes
-                        .checked_add(bytes.len() as u64)
-                        .filter(|n| *n <= self.maximum)
-                        .ok_or_else(|| {
-                            io::Error::other("native selector row exceeds admitted RAM")
-                        })?;
-                    Ok(bytes.len())
-                }
-                fn flush(&mut self) -> io::Result<()> {
-                    Ok(())
-                }
-            }
-            serde_json::to_writer(
-                Counter {
-                    bytes: 0,
-                    maximum: self.admission.budget.max_row_bytes,
-                },
-                &row,
-            )?;
-            Ok(Cow::Owned(row))
-        })()
-        .map_err(io::Error::other)
+        self.selected(index, false)
+            .map(|(row, _)| Cow::Owned(row))
+            .map_err(io::Error::other)
+    }
+    fn row_with_plain_content_streams(
+        &self,
+        index: usize,
+    ) -> io::Result<(Cow<'_, NativeRequestRow>, Vec<Vec<u16>>)> {
+        self.selected(index, true)
+            .map(|(row, plain)| (Cow::Owned(row), plain))
+            .map_err(io::Error::other)
     }
     fn revalidate(&self) -> io::Result<()> {
         self.source.revalidate().map_err(io::Error::other)?;

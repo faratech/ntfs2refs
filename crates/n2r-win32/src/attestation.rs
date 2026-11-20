@@ -236,16 +236,21 @@ pub trait NativeRequestDomain {
     fn windows_object_id_identity(&self, _index: usize) -> io::Result<Option<FileIdentity>> {
         Ok(None)
     }
-    /// The names of the object's plain streams: those the raw reading holds
-    /// as one non-resident, uncompressed, unsparse DATA attribute,
-    /// initialized to its end with every run on disk, whose raw digest is
-    /// therefore a straight read of the clusters its run list names. A run
-    /// that verifies once maps them through Windows and holds that mapping to
-    /// the raw run list, but does not read their contents a second time.
-    /// This selects reads only; the comparison recomputes the set from the
-    /// raw reading and refuses a skipped stream outside it.
-    fn plain_content_streams(&self, _index: usize) -> io::Result<Vec<Vec<u16>>> {
-        Ok(Vec::new())
+    /// The object's [`row`](Self::row) and the names of its plain streams,
+    /// from one reading of the object: those the raw reading holds as one
+    /// non-resident, uncompressed, unsparse DATA attribute, initialized to
+    /// its end with every run on disk, whose raw digest is therefore a
+    /// straight read of the clusters its run list names. A run that verifies
+    /// once maps them through Windows and holds that mapping to the raw run
+    /// list, asks Windows whether their valid data runs to their end, and
+    /// does not read their contents a second time where it does. The names
+    /// select reads only; the comparison recomputes the set from the raw
+    /// reading and refuses a skipped stream outside it.
+    fn row_with_plain_content_streams(
+        &self,
+        index: usize,
+    ) -> io::Result<(Cow<'_, NativeRequestRow>, Vec<Vec<u16>>)> {
+        Ok((self.row(index)?, Vec::new()))
     }
     fn revalidate(&self) -> io::Result<()>;
     fn require_paged_source(

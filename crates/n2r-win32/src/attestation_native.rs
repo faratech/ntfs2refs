@@ -677,11 +677,11 @@ struct SourceObjects<'a> {
     limits: ResourceLimits,
     /// A run that verifies once ([`crate::verify_policy::verifies_once`])
     /// does not read through Windows the contents of an object's plain
-    /// streams ([`NativeRequestDomain::plain_content_streams`]): each is
-    /// still enumerated, opened, mapped and queried for identity and EOF,
-    /// Windows is asked whether its valid data runs to its end, and its row
-    /// says that its content read was skipped. One Windows does not say that
-    /// of is read as before.
+    /// streams ([`NativeRequestDomain::row_with_plain_content_streams`]):
+    /// each is still enumerated, opened, mapped and queried for identity and
+    /// EOF, Windows is asked whether its valid data runs to its end, and its
+    /// row says that its content read was skipped. One Windows does not say
+    /// that of is read as before.
     skip_plain_reads: bool,
 }
 impl SourceObjects<'_> {
@@ -1124,11 +1124,10 @@ pub(crate) fn collect_file_metadata_with_routes(
         crate::perf::Point::SourceObject,
         &mut taken,
         |taken, index, first| {
-            let row = selectors.row(index)?;
-            let plain = if skip_plain_reads {
-                selectors.plain_content_streams(index)?
+            let (row, plain) = if skip_plain_reads {
+                selectors.row_with_plain_content_streams(index)?
             } else {
-                Vec::new()
+                (selectors.row(index)?, Vec::new())
             };
             // What the object may hold if it is taken after what the objects
             // taken so far hold: right for every object of the batch while

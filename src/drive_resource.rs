@@ -328,8 +328,11 @@ pub(crate) fn convert_owned_with_provider_commitment(
         n2r_win32::verify_policy::check_once();
         // `--verify fast` checks each thing once: the passes that only look
         // again at what another pass of this run checks are left out.
-        // `--verify thorough` (and `--recheck-everything`) keeps them all.
-        if verification_policy.is_fast() {
+        // `--verify thorough` (and `--recheck-everything`) keeps them all,
+        // and so does a diagnosis: it stops once the new volume's metadata
+        // is restored, before the frozen volume is examined, which is where
+        // a conversion makes the checks it leaves out earlier.
+        if verification_policy.is_fast() && mode != crate::execution_mode::ExecutionMode::Diagnose {
             n2r_win32::verify_policy::verify_once();
         }
     }

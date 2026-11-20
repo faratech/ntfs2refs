@@ -316,7 +316,7 @@ fn describe_verification(policy: crate::verification_policy::VerificationPolicy)
 
 /// What a fast run leaves out because another step of the same run checks
 /// it: printed under the verification line unless `--recheck-everything`
-/// was given, which keeps every pass.
+/// was given or the run is a diagnosis, which keep every pass.
 #[cfg_attr(not(windows), allow(dead_code))]
 const VERIFIES_ONCE: &str = "Fast checks each thing once. The source is read raw; Windows is asked of each object only for what the raw volume cannot say (its security as Windows presents it, a directory's case-sensitive mark), not for its streams, contents and directory listings a second time. The new volume's payloads and metadata are not read back again, nor its directory listings checked again after the metadata is restored, before the changes are captured; the short-name links of the converted volume are probed once. The converted volume is still verified in full after the changes are written.";
 
@@ -1390,7 +1390,10 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             "Mode: allocation-bounded (compares and writes only the ranges the new ReFS allocates; free space is not verified)"
         );
         println!("{}", describe_verification(verification_policy));
-        if verification_policy.is_fast() && !args.recheck_everything {
+        if verification_policy.is_fast()
+            && !args.recheck_everything
+            && mode != crate::execution_mode::ExecutionMode::Diagnose
+        {
             println!("{VERIFIES_ONCE}");
         }
         println!(

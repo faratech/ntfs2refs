@@ -255,7 +255,8 @@ fn run() -> Result<u8> {
                         {"option": "--verify fast", "name": "fast, extent identity (default)",
                          "changes": "data that stays in place is proven by the identity of its extents; everything else is read and checksummed",
                          "checks_once": {
-                             "unless": "--recheck-everything",
+                             "unless": ["--recheck-everything", "--diagnose"],
+                             "why_not_a_diagnosis": "it stops before the new volume is examined, where a conversion makes the checks it leaves out earlier",
                              "leaves_out": [
                                  "the second reading of the source through Windows: its streams, their mappings and contents, and its directory listings are taken from the raw volume and not compared with what Windows shows",
                                  "reading the new volume's payloads back a second time before the changes are captured",

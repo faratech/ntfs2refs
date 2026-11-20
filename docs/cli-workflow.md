@@ -728,7 +728,9 @@ it to its run.
   - The short-name links of a converted Windows volume are probed once.
 
   The converted volume is verified in full after the changes are written, in
-  both modes.
+  both modes. A diagnosis (`--diagnose`) leaves nothing out: it stops before
+  the new volume is examined, which is where a conversion makes the checks it
+  leaves out earlier.
 - **`--verify thorough`** changes *what* is checked: every stream's complete
   contents are read and hashed, and every check a fast run leaves out is made:
   Windows' view of every object is compared with the raw volume in full, and

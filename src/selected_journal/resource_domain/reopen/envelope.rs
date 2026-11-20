@@ -2059,134 +2059,7 @@ impl<'a> VerifiedProtectedHandoff<'a> {
         events: &mut Vec<NativeEvent>,
     ) -> Result<&'a mut ReopenedResourceRecovery> {
         self.require_verified_observation(observation, map_proof, SelectedLifecycle::Handoff)?;
-        self.finish_online(observation, group, index_path, maximum_index_bytes, events)
-    }
-
-    /// The proof every step after the protected observation takes: the same
-    /// actual observation of this sealed source, its exact reopened-map
-    /// comparison and its known-content coverage, beside the lifecycle the
-    /// step is made in.
-    fn require_verified_observation(
-        &self,
-        observation: &n2r_win32::GeneralLiveConvertedObservation,
-        map_proof: &crate::general_reconstruct::fast_verification::v4_maps::reopened::VerifiedMapComparison<'_>,
-        lifecycle: SelectedLifecycle,
-    ) -> Result<()> {
-        map_proof.require_same(self, observation)?;
-        let mut expected_readonly = self.recovery.initial_state.clone();
-        expected_readonly.disk_attributes = 2;
-        let report = observation.report();
-        let content = report
-            .content_observation
-            .as_ref()
-            .context("protected native content observation absent")?;
-        let known = content
-            .known_content
-            .as_ref()
-            .context("protected known-content proof absent")?;
-        ensure!(
-            self.recovery.initial_lifecycle == lifecycle
-                && self.selected_sha256 == self.recovery.locator.ticket().new_selected_sha256
-                && observation.before() == &self.recovery.initial_state
-                && observation.after() == &self.recovery.initial_state
-                && observation.observed_readonly() == &expected_readonly
-                && self.recovery.initial_state.disk_attributes == 3
-                && report.pair.source == self.recovery.publication.source
-                && report.pair.shadow == self.recovery.publication.shadow
-                && report.native.binding.identity == self.recovery.publication.source.identity
-                && !report.conversion_qualified
-                && content.metadata_and_namespace_verified
-                && content.complete_stream_mappings_observed
-                && content.data_storage_validity_checked
-                && !content.full_file_hashes
-                && known
-                    .streams_hashed
-                    .checked_add(known.streams_without_content_baseline)
-                    == Some(usize::try_from(
-                        self.recovery.publication.resource_admission.data_streams
-                    )?)
-                && known.payload_bytes_read == content.admitted_payload_bytes_read,
-            "actual protected converted observation or known-content coverage differs"
-        );
-        Ok(())
-    }
-
-    /// Whether this source was verified beside its apply intent alone: the
-    /// handoff of such a run (#148) is still to be written.
-    pub(crate) fn before_handoff(&self) -> bool {
-        self.recovery.verifying_before_handoff()
-    }
-
-    /// Writes the handoff of a run whose handoff follows its verification
-    /// (#148), and only for such a run: after the same actual protected
-    /// native observation and exact reopened-map comparison that bringing
-    /// the volume online requires have succeeded beside the apply intent
-    /// alone. The source stays sealed offline and read-only throughout;
-    /// every selected byte is authenticated NEW once more at the marker.
-    /// From here on rollback is closed, as after every handoff.
-    pub(crate) fn write_handoff_after_verified_observation(
-        &mut self,
-        observation: &n2r_win32::GeneralLiveConvertedObservation,
-        map_proof: &crate::general_reconstruct::fast_verification::v4_maps::reopened::VerifiedMapComparison<'_>,
-        group: &ArtifactGroupPermit,
-        index_path: &Path,
-        maximum_index_bytes: u64,
-        events: &mut Vec<NativeEvent>,
-    ) -> Result<()> {
-        ensure!(
-            self.recovery.verifying_before_handoff(),
-            "a handoff after the verification is written only by a run that records it, \
-             beside its apply intent alone"
-        );
-        self.require_verified_observation(observation, map_proof, SelectedLifecycle::ApplyIntent)?;
-        let selected_sha256 = self.selected_sha256;
-        let recovery = &mut *self.recovery;
-        recovery.revalidate(events)?;
-        let volume = recovery.locator.journal_binding().disk.volume_path()?;
-        let _index_parent = hold_index_parent(index_path, &volume)?;
-        let mut bound = BoundJournalObservation::open(
-            &mut recovery.journal,
-            recovery.locator.ticket(),
-            group,
-            &recovery.scratch,
-            index_path,
-            maximum_index_bytes,
-        )?;
-        let Some(ObservedTarget::Frozen(target)) = recovery.target.as_mut() else {
-            anyhow::bail!(
-                "the handoff after the verification requires its source sealed offline and \
-                 read-only"
-            );
-        };
-        let before = target.state(events)?;
-        ensure!(
-            before == recovery.initial_state
-                && before.disk_attributes == 3
-                && target.binding() == recovery.locator.source(),
-            "the verified source is not the sealed source of this run"
-        );
-        let length = target.byte_len();
-        let digest = bound.write_handoff_after_verification(target, length)?;
-        ensure!(
-            digest == selected_sha256 && target.state(events)? == before,
-            "the verified source changed while its handoff was written"
-        );
-        bound.observation.retire()?;
-        recovery.initial_lifecycle = SelectedLifecycle::Handoff;
-        recovery.revalidate(events)?;
-        Ok(())
-    }
-
-    /// The online transition of `bring_online_after_verified_observation`,
-    /// after its proof was checked.
-    fn finish_online(
-        self,
-        native_observation: &n2r_win32::GeneralLiveConvertedObservation,
-        group: &ArtifactGroupPermit,
-        index_path: &Path,
-        maximum_index_bytes: u64,
-        events: &mut Vec<NativeEvent>,
-    ) -> Result<&'a mut ReopenedResourceRecovery> {
+        let native_observation = observation;
         let recovery = self.recovery;
         recovery.revalidate(events)?;
         let volume = recovery.locator.journal_binding().disk.volume_path()?;
@@ -2257,6 +2130,123 @@ impl<'a> VerifiedProtectedHandoff<'a> {
             .context("HND source is online but temporary authenticated-index retirement failed")?;
         recovery.revalidate_handoff_artifacts_after_mount(events)?;
         Ok(recovery)
+    }
+
+    /// The proof every step after the protected observation takes: the same
+    /// actual observation of this sealed source, its exact reopened-map
+    /// comparison and its known-content coverage, beside the lifecycle the
+    /// step is made in.
+    fn require_verified_observation(
+        &self,
+        observation: &n2r_win32::GeneralLiveConvertedObservation,
+        map_proof: &crate::general_reconstruct::fast_verification::v4_maps::reopened::VerifiedMapComparison<'_>,
+        lifecycle: SelectedLifecycle,
+    ) -> Result<()> {
+        map_proof.require_same(self, observation)?;
+        let mut expected_readonly = self.recovery.initial_state.clone();
+        expected_readonly.disk_attributes = 2;
+        let report = observation.report();
+        let content = report
+            .content_observation
+            .as_ref()
+            .context("protected native content observation absent")?;
+        let known = content
+            .known_content
+            .as_ref()
+            .context("protected known-content proof absent")?;
+        ensure!(
+            self.recovery.initial_lifecycle == lifecycle
+                && self.selected_sha256 == self.recovery.locator.ticket().new_selected_sha256
+                && observation.before() == &self.recovery.initial_state
+                && observation.after() == &self.recovery.initial_state
+                && observation.observed_readonly() == &expected_readonly
+                && self.recovery.initial_state.disk_attributes == 3
+                && report.pair.source == self.recovery.publication.source
+                && report.pair.shadow == self.recovery.publication.shadow
+                && report.native.binding.identity == self.recovery.publication.source.identity
+                && !report.conversion_qualified
+                && content.metadata_and_namespace_verified
+                && content.complete_stream_mappings_observed
+                && content.data_storage_validity_checked
+                && !content.full_file_hashes
+                && known
+                    .streams_hashed
+                    .checked_add(known.streams_without_content_baseline)
+                    == Some(usize::try_from(
+                        self.recovery.publication.resource_admission.data_streams
+                    )?)
+                && known.payload_bytes_read == content.admitted_payload_bytes_read,
+            "actual protected converted observation or known-content coverage differs"
+        );
+        Ok(())
+    }
+
+    /// Whether this source was verified beside its apply intent alone: the
+    /// handoff of such a run (#148) is still to be written.
+    pub(crate) fn before_handoff(&self) -> bool {
+        self.recovery.verifying_before_handoff()
+    }
+
+    /// Writes the handoff of a run whose handoff follows its verification
+    /// (#148), and only for such a run: after the same actual protected
+    /// native observation and exact reopened-map comparison that bringing
+    /// the volume online requires have succeeded beside the apply intent
+    /// alone. The source stays sealed offline and read-only throughout; at
+    /// the marker the apply intent alone and every selected byte NEW are
+    /// authenticated again (read from the source unless this process has
+    /// read them back since they were written). From here on rollback is
+    /// closed, as after every handoff.
+    pub(crate) fn write_handoff_after_verified_observation(
+        &mut self,
+        observation: &n2r_win32::GeneralLiveConvertedObservation,
+        map_proof: &crate::general_reconstruct::fast_verification::v4_maps::reopened::VerifiedMapComparison<'_>,
+        group: &ArtifactGroupPermit,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<()> {
+        ensure!(
+            self.recovery.verifying_before_handoff(),
+            "a handoff after the verification is written only by a run that records it, \
+             beside its apply intent alone"
+        );
+        self.require_verified_observation(observation, map_proof, SelectedLifecycle::ApplyIntent)?;
+        let selected_sha256 = self.selected_sha256;
+        let recovery = &mut *self.recovery;
+        recovery.revalidate(events)?;
+        let volume = recovery.locator.journal_binding().disk.volume_path()?;
+        let _index_parent = hold_index_parent(index_path, &volume)?;
+        let mut bound = BoundJournalObservation::open(
+            &mut recovery.journal,
+            recovery.locator.ticket(),
+            group,
+            &recovery.scratch,
+            index_path,
+            maximum_index_bytes,
+        )?;
+        let Some(ObservedTarget::Frozen(target)) = recovery.target.as_mut() else {
+            anyhow::bail!(
+                "the handoff after the verification requires its source sealed offline and \
+                 read-only"
+            );
+        };
+        let before = target.state(events)?;
+        ensure!(
+            before == recovery.initial_state
+                && before.disk_attributes == 3
+                && target.binding() == recovery.locator.source(),
+            "the verified source is not the sealed source of this run"
+        );
+        let length = target.byte_len();
+        let digest = bound.write_handoff_after_verification(target, length)?;
+        ensure!(
+            digest == selected_sha256 && target.state(events)? == before,
+            "the verified source changed while its handoff was written"
+        );
+        bound.observation.retire()?;
+        recovery.initial_lifecycle = SelectedLifecycle::Handoff;
+        recovery.revalidate(events)?;
+        Ok(())
     }
 }
 

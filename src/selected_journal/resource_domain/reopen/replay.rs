@@ -202,6 +202,7 @@ impl BoundJournalObservation<'_> {
         after_resume: F,
         events: &mut Vec<NativeEvent>,
     ) -> Result<MarkerlessReplayResult> {
+        n2r_win32::perf::step("replay: authenticate journal and arm");
         ensure!(
             self.observation.ticket.marker_profile.is_none()
                 && self.facts.marker_native_qualified.is_none()
@@ -272,6 +273,7 @@ impl BoundJournalObservation<'_> {
                 (selected, None)
             }
         };
+        n2r_win32::perf::step("replay: disarm and revalidate");
         let target = writer.into_unarmed_paged_recovery(events)?;
         index_owner.retire()?;
         Ok(MarkerlessReplayResult {
@@ -687,6 +689,10 @@ impl JournalObservation<'_> {
                     }
                 }
                 digest.update(&buffers.current[..count])?;
+                // What was read of the target, so that the number of passes
+                // a run makes over its changed ranges shows in the point's
+                // bytes.
+                n2r_win32::perf::add_bytes(n2r_win32::perf::Point::TargetCheck, count as u64);
                 done = add(done, count as u64)?;
             }
         }
@@ -716,6 +722,9 @@ impl JournalObservation<'_> {
                 false,
             );
         };
+        // The same pass over the changed ranges as `check_target_reader`,
+        // which the branch above is counted in.
+        let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::TargetCheck);
         ensure!(
             target_length == self.ticket.image_length,
             "replay target length differs"
@@ -736,6 +745,7 @@ impl JournalObservation<'_> {
                     add(row.offset, done)?,
                     &mut buffers.current[..count],
                 )?;
+                n2r_win32::perf::add_bytes(n2r_win32::perf::Point::TargetCheck, count as u64);
                 if row.old_kind == 2 {
                     self.read_after_row(row, ordinal, done, &mut buffers.after[..count])?;
                     sj::check_free_granules(
@@ -832,8 +842,10 @@ impl JournalObservation<'_> {
             },
             "replay lifecycle does not permit this direction"
         );
+        n2r_win32::perf::step("replay: classify changed ranges");
         target.sync_all()?;
         self.check_target(target, None, false)?;
+        n2r_win32::perf::step("replay: write changed ranges");
         if !forward && self.ticket.marker_profile.is_some() {
             ensure!(
                 apply && sj::read_marker_pair(self.journal, self.ticket, MarkerKind::Apply)?,
@@ -868,6 +880,7 @@ impl JournalObservation<'_> {
                 &mut buffers,
             )?;
         }
+        n2r_win32::perf::step("replay: flush and write boot sector");
         target.sync_all()?;
         let first = self.record(0)?;
         if first.offset == 0 {
@@ -875,6 +888,7 @@ impl JournalObservation<'_> {
         }
         drop(buffers);
         target.sync_all()?;
+        n2r_win32::perf::step("replay: read back changed ranges");
         let digest = if forward {
             self.check_target(target, Some(self.ticket.new_selected_sha256), false)?
         } else {
@@ -917,6 +931,7 @@ impl JournalObservation<'_> {
             "resume requires observed apply intent"
         );
         let resumed = self.execute(authority.target, true)?;
+        n2r_win32::perf::step("replay: read back again");
         after_resume(&resumed)?;
         let (apply, rollback) = sj::read_markers(self.journal, self.ticket)?;
         ensure!(

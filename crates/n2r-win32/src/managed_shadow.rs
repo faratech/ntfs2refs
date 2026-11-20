@@ -549,7 +549,7 @@ fn rediscover_stage(
     let mut wait = native::PublicationWait::begin_for(STAGE_PUBLICATION_SECONDS);
     let mut written = 0usize;
     let mut attempt = 0u32;
-    loop {
+    let outcome = loop {
         attempt += 1;
         let mut events = Vec::new();
         let observed = native::rediscover_general_volume(binding.clone(), &mut events);
@@ -565,16 +565,23 @@ fn rediscover_stage(
             .ok_or_else(|| invalid("staging discovery diagnostic exceeds 16 MiB"))?;
         report.write_all(&bytes)?;
         report.write_all(b"\n")?;
-        report.sync_all()?;
         match observed {
-            Ok(actual) => return Ok(actual),
+            Ok(actual) => break Ok(actual),
             Err(error)
                 if error.kind() == io::ErrorKind::NotFound
                     && started.elapsed() < allowed
                     && wait.pause() => {}
-            Err(error) => return Err(error),
+            Err(error) => break Err(error),
         }
-    }
+    };
+    // The diagnostic is synchronized once, when the wait is over, whichever
+    // way it ended: the volume was found, the time passed, or the discovery
+    // refused. A sync after every attempt's line made each attempt wait for
+    // the disk, and no attempt reads the diagnostic; what the caller gets is
+    // what the last attempt found. As before, a diagnostic that cannot be
+    // synchronized is reported in place of that.
+    report.sync_all()?;
+    outcome
 }
 
 fn ready_layout(raw: &[u8], disk: &GUID, bytes: u64) -> io::Result<Option<(Vec<u8>, Vec<u8>)>> {

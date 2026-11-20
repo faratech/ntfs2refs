@@ -85,10 +85,7 @@ impl ResourcePlacement {
     /// The caller holds `workspace` through every native query and resulting
     /// capture/proof. Complete retrieval assembly is unchanged.
     pub(super) fn capture(&self, file: &File) -> io::Result<Capture> {
-        let limits = Limits::for_resource_bytes(self.retrieval_bytes)?;
-        let (first, continuation) =
-            crate::stream_native::retrieval_queries_resource(file, self.retrieval_bytes)?;
-        retrieval_paging::assemble_queries_with_limits(&first, &continuation, limits)
+        crate::stream_native::retrieval_capture_resource(file, self.retrieval_bytes)
     }
 
     /// The room a file of `file_bytes` can take of the row that mapping

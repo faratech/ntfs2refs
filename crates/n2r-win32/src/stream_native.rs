@@ -215,8 +215,26 @@ fn retrieval_queries_assembled(
     (first, queries)
 }
 pub(crate) fn retrieval_capture(file: &File) -> io::Result<crate::retrieval_paging::Capture> {
-    let (first, continuation) = retrieval_queries(file);
-    crate::retrieval_paging::assemble_queries(&first, &continuation)
+    retrieval_capture_with_limits(file, crate::retrieval_paging::Limits::default())
+}
+/// A file's complete mapping, within the limits of a resource row of
+/// `evidence_bytes`, assembled once as its pages arrive.
+pub(crate) fn retrieval_capture_resource(
+    file: &File,
+    evidence_bytes: usize,
+) -> io::Result<crate::retrieval_paging::Capture> {
+    retrieval_capture_with_limits(
+        file,
+        crate::retrieval_paging::Limits::for_resource_bytes(evidence_bytes)?,
+    )
+}
+fn retrieval_capture_with_limits(
+    file: &File,
+    limits: crate::retrieval_paging::Limits,
+) -> io::Result<crate::retrieval_paging::Capture> {
+    crate::retrieval_paging::assemble_while_asking(limits, |vcn, capacity| {
+        ioctl(file, layout::GET_RETRIEVAL, &vcn.to_le_bytes(), capacity)
+    })
 }
 fn info(file: &File, class: i32, length: usize) -> Query {
     info_kept(file, class, length, |response| response.len())

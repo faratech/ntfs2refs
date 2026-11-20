@@ -422,3 +422,146 @@ fn equivalent_maps_keep_distinct_raw_pages_and_preserve_header_padding_in_proofs
     );
     assert_ne!(one.proof.pages, paged.proof.pages);
 }
+
+/// A file's mapping served as Windows serves it: the page asked for at a
+/// VCN starts with the extent holding that VCN (`back` extents earlier when
+/// asked), and holds as many extents as the capacity has room for.
+/// `corrupt` changes the page with that number.
+fn responder(
+    extents: &[(i64, i64)],
+    back: usize,
+    corrupt: Option<usize>,
+) -> impl FnMut(u64, usize) -> IoctlQuery + '_ {
+    let mut asked = 0;
+    move |vcn, capacity| {
+        let holding = extents.partition_point(|&(next, _)| next as u64 <= vcn);
+        let first = holding.saturating_sub(back);
+        let room = (capacity - 16) / 16;
+        let last = (first + room).min(extents.len());
+        let start = if first == 0 { 0 } else { extents[first - 1].0 };
+        let more = (last < extents.len()).then_some(MORE_DATA);
+        let mut query = page(vcn, start, &extents[first..last.max(first + 1)], more);
+        if corrupt == Some(asked) {
+            // The page's first extent now ends where it starts.
+            query.bytes[16..24].copy_from_slice(&start.to_le_bytes());
+        }
+        asked += 1;
+        query
+    }
+}
+
+fn same_capture(
+    a: &std::io::Result<n2r_win32::retrieval_paging::Capture>,
+    b: &std::io::Result<n2r_win32::retrieval_paging::Capture>,
+) {
+    match (a, b) {
+        (Ok(a), Ok(b)) => {
+            assert_eq!(a.canonical, b.canonical);
+            assert_eq!(a.runs, b.runs);
+            assert_eq!(a.proof, b.proof);
+        }
+        (Err(a), Err(b)) => {
+            assert_eq!(a.kind(), b.kind());
+            assert_eq!(a.to_string(), b.to_string());
+        }
+        _ => panic!(
+            "one captured and the other refused: {:?} / {:?}",
+            a.as_ref().err(),
+            b.as_ref().err()
+        ),
+    }
+}
+
+#[test]
+fn assembling_as_pages_arrive_is_assembling_the_kept_pages_afterwards() {
+    use n2r_win32::retrieval_paging::{
+        Limits, assemble_queries_with_limits, assemble_while_asking,
+    };
+    let limits = [
+        Limits::default(),
+        // Room for two pages only: a longer mapping is refused as incomplete.
+        Limits {
+            max_returned_bytes: 2 * PAGE_CAPACITY,
+            max_extents: 4 * MAX_EXTENTS,
+            max_pages: 2,
+        },
+        // Fewer extents than the mapping has.
+        Limits {
+            max_returned_bytes: MAX_RETURNED_BYTES,
+            max_extents: MAX_EXTENTS + 7,
+            max_pages: MAX_PAGES,
+        },
+    ];
+    let mut compared = 0;
+    for count in [
+        1,
+        2,
+        MAX_EXTENTS - 1,
+        MAX_EXTENTS,
+        MAX_EXTENTS + 1,
+        3 * MAX_EXTENTS + 5,
+    ] {
+        let extents = fragmented(0, count);
+        for back in [0, 3] {
+            for corrupt in [None, Some(0), Some(1)] {
+                for limits in limits {
+                    // As before: the pages asked for kept, then assembled.
+                    let mut ask = responder(&extents, back, corrupt);
+                    let mut queries = Vec::new();
+                    let mut assembler = Assembler::with_limits(limits).unwrap();
+                    while assembler.response_capacity() != 0 {
+                        let query = ask(assembler.next_vcn(), assembler.response_capacity());
+                        let result = assembler.push(&query);
+                        queries.push(query);
+                        if !matches!(result, Ok(false)) {
+                            break;
+                        }
+                    }
+                    let kept = assemble_queries_with_limits(&queries[0], &queries[1..], limits);
+                    let asked = assemble_while_asking(limits, responder(&extents, back, corrupt));
+                    same_capture(&kept, &asked);
+                    compared += usize::from(kept.is_ok());
+                }
+            }
+        }
+    }
+    assert!(compared > 10, "{compared} complete captures compared");
+}
+
+/// What assembling a mapping a second time cost every capture: one
+/// assembly of the kept pages. Not run by default:
+/// `cargo test --release -p n2r-win32 --test retrieval_paging assembly_cost -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn assembly_cost() {
+    use n2r_win32::retrieval_paging::{Limits, assemble_queries_with_limits};
+    use std::time::Instant;
+    for count in [16, 256, 1024, 4096, 16_384] {
+        let extents = fragmented(0, count);
+        let limits = Limits::default();
+        let mut ask = responder(&extents, 0, None);
+        let mut queries = Vec::new();
+        let mut assembler = Assembler::with_limits(limits).unwrap();
+        while assembler.response_capacity() != 0 {
+            let query = ask(assembler.next_vcn(), assembler.response_capacity());
+            let complete = assembler.push(&query).unwrap();
+            queries.push(query);
+            if complete {
+                break;
+            }
+        }
+        let rounds = (2_000_000 / count).clamp(100, 100_000);
+        let start = Instant::now();
+        for _ in 0..rounds {
+            std::hint::black_box(
+                assemble_queries_with_limits(&queries[0], &queries[1..], limits).unwrap(),
+            );
+        }
+        let once = start.elapsed().as_secs_f64() / rounds as f64;
+        println!(
+            "{count:>6} extents in {} pages: {:>8.1} us saved a capture",
+            queries.len(),
+            once * 1e6
+        );
+    }
+}

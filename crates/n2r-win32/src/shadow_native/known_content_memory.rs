@@ -180,15 +180,28 @@ struct Ahead {
     unnamed: Option<StreamAhead>,
     named: Vec<Option<StreamAhead>>,
 }
-/// The memory a helper thread needs beside what its results hold: its
-/// stack, the buffer its queries answer into, and one snapshot or one read
-/// buffer at a time.
+/// The memory a helper thread needs until its results are paid for: its
+/// stack, the buffer its queries answer into, the two snapshots of one
+/// stream and the buffer that stream is read through.
+///
+/// The snapshots are sized as every pass that observes at once sizes them
+/// ([`report_memory::residual_query_peak`]: by the largest descriptor there
+/// is, since a descriptor is copied at its own length), not by the row
+/// limit as the reservation of a stream read in turn is: eight row limits
+/// for each helper is two gigabytes on a machine with 24, which the ledger
+/// would spare for a few helpers at best.
 fn helper_workspace_bytes(maximum: u64) -> io::Result<u64> {
     const THREAD_STACK_BYTES: u64 = 2 * 1024 * 1024;
-    add(
-        add(THREAD_STACK_BYTES, crate::query_scratch::KEPT_BYTES as u64)?,
-        snapshot_or_read_workspace(maximum)?,
-    )
+    // The largest request `hash_exact_stream` makes.
+    const READ_BUFFER_BYTES: u64 = 4 * 1024 * 1024;
+    [
+        THREAD_STACK_BYTES,
+        crate::query_scratch::KEPT_BYTES as u64,
+        report_memory::residual_query_peak(maximum)?,
+        READ_BUFFER_BYTES,
+    ]
+    .into_iter()
+    .try_fold(0u64, add)
 }
 impl Check<'_> {
     fn open_unnamed(&self, item: &Input<'_>) -> io::Result<File> {

@@ -299,6 +299,17 @@ impl n2r_win32::shadow_native::report_memory::ReportMemoryAccountant for SourceN
                 .map_err(io::Error::other)?,
         )))
     }
+    /// The source observation's helper threads ask for their workspaces as
+    /// spare memory: refused while the ledger is needed for what the run
+    /// cannot do without, and the observation then takes the object in turn.
+    fn reserve_spare(
+        &self,
+        bytes: u64,
+    ) -> io::Result<Box<dyn n2r_win32::shadow_native::report_memory::ReportMemoryLease>> {
+        Ok(Box::new(SourceNativeMemoryLease(
+            self.0.reserve_spare_ram(bytes).map_err(io::Error::other)?,
+        )))
+    }
     fn lease_heap_bytes(&self) -> u64 {
         std::mem::size_of::<SourceNativeMemoryLease>() as u64
     }

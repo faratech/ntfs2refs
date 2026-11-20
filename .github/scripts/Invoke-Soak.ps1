@@ -74,11 +74,15 @@ if ($Seed -eq 0) { $Seed = Get-Random -Minimum 1 -Maximum 1000000000 }
 $automountWasOff = [bool]((& mountvol.exe) -match 'automatic mounting of new volumes disabled')
 if ($automountWasOff) { $null = & mountvol.exe /E; "automatic mounting of new volumes was off on this machine; turned on for the soak (mountvol /E)" }
 
+# The points a run with the default --verify fast reaches, in order: its
+# handoff follows the verification of the converted volume (#148), so it
+# does not reach apply-handoff-durable, finalize-authenticated or
+# finalize-source-readonly, and a hold at one of them would never be reported.
 $holdPoints = @('apply-activated', 'apply-mid-ranges', 'apply-ranges-written', 'apply-before-boot-granule', 'apply-boot-granule-written',
-    'apply-before-handoff', 'apply-handoff-durable', 'handoff-sealed', 'finalize-authenticated', 'finalize-source-readonly',
-    'finalize-before-online', 'finalize-online')
+    'apply-before-handoff', 'apply-sealed', 'apply-seal-recorded', 'verify-authenticated', 'verify-source-readonly', 'verify-passed',
+    'handoff-sealed', 'finalize-before-online', 'finalize-online')
 # The points a rollback is designed for: before the handoff marker is durable.
-$rollbackPoints = $holdPoints[0..5]
+$rollbackPoints = $holdPoints[0..10]
 $recoverLine = '^To recover: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64})'
 $cancelLine = 'To get it back as NTFS: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64}) --rollback'
 

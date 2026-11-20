@@ -2253,12 +2253,24 @@ impl<'a> VerifiedProtectedHandoff<'a> {
         maximum_index_bytes: u64,
         events: &mut Vec<NativeEvent>,
     ) -> Result<()> {
+        let disk = self.recovery.locator.source().disk_number;
+        let journal = self.recovery.locator.journal_path().to_path_buf();
         ensure!(
             self.recovery.verifying_before_handoff(),
-            "a handoff after the verification is written only by a run that records it, \
-             beside its apply intent alone"
+            "handoff after the verification of disk {disk}: written only by a run whose \
+             publication records it, beside its apply intent alone, and the recovery journal {} \
+             does not hold that; nothing was written",
+            journal.display()
         );
-        self.require_verified_observation(observation, map_proof, SelectedLifecycle::ApplyIntent)?;
+        self.require_verified_observation(observation, map_proof, SelectedLifecycle::ApplyIntent)
+            .with_context(|| {
+                format!(
+                    "handoff after the verification of disk {disk}: checking that the \
+                     verification passed for this sealed source, beside the apply intent of the \
+                     recovery journal {}; nothing was written",
+                    journal.display()
+                )
+            })?;
         let selected_sha256 = self.selected_sha256;
         let recovery = &mut *self.recovery;
         recovery.revalidate(events)?;
@@ -2271,11 +2283,19 @@ impl<'a> VerifiedProtectedHandoff<'a> {
             &recovery.scratch,
             index_path,
             maximum_index_bytes,
-        )?;
+        )
+        .with_context(|| {
+            format!(
+                "handoff after the verification of disk {disk}: observing the recovery journal {}",
+                journal.display()
+            )
+        })?;
         let Some(ObservedTarget::Frozen(target)) = recovery.target.as_mut() else {
             anyhow::bail!(
-                "the handoff after the verification requires its source sealed offline and \
-                 read-only"
+                "handoff after the verification of disk {disk}: the source is not held sealed \
+                 offline and read-only, which writing the handoff to the recovery journal {} \
+                 requires; nothing was written",
+                journal.display()
             );
         };
         let before = target.state(events)?;
@@ -2283,13 +2303,19 @@ impl<'a> VerifiedProtectedHandoff<'a> {
             before == recovery.initial_state
                 && before.disk_attributes == 3
                 && target.binding() == recovery.locator.source(),
-            "the verified source is not the sealed source of this run"
+            "handoff after the verification of disk {disk}: the held source (attributes {}) is \
+             not the sealed source this run verified; nothing was written to the recovery \
+             journal {}",
+            before.disk_attributes,
+            journal.display()
         );
         let length = target.byte_len();
         let digest = bound.write_handoff_after_verification(target, length)?;
         ensure!(
             digest == selected_sha256 && target.state(events)? == before,
-            "the verified source changed while its handoff was written"
+            "handoff after the verification of disk {disk}: the source changed while the \
+             handoff was written to the recovery journal {}",
+            journal.display()
         );
         bound.observation.retire()?;
         recovery.initial_lifecycle = SelectedLifecycle::Handoff;

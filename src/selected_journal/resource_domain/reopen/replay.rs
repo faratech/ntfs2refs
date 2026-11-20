@@ -376,29 +376,66 @@ impl BoundJournalObservation<'_> {
         target: &mut R,
         target_length: u64,
     ) -> Result<[u8; 32]> {
+        let journal = self.facts.path;
         ensure!(
             self.observation.ticket.marker_profile.is_none()
                 && self.facts.marker_native_qualified.is_none(),
-            "a handoff after the verification supports markerless journals only"
+            "handoff after the verification: the recovery journal {} keeps redundant or \
+             natively qualified markers, and a handoff after the verification supports \
+             markerless journals only; nothing was written",
+            journal.display()
         );
-        let digest = self.verify_review_data(target, target_length)?;
-        let (apply, rollback) =
-            sj::read_markers(self.observation.journal, self.observation.ticket)?;
+        let digest = self
+            .verify_review_data(target, target_length)
+            .with_context(|| {
+                format!(
+                    "handoff after the verification: authenticating the apply intent alone and \
+                     every new byte against the recovery journal {} before the handoff is \
+                     written; nothing was written",
+                    journal.display()
+                )
+            })?;
+        let (apply, rollback) = sj::read_markers(self.observation.journal, self.observation.ticket)
+            .with_context(|| {
+                format!(
+                    "handoff after the verification: reading the lifecycle markers of the \
+                     recovery journal {}",
+                    journal.display()
+                )
+            })?;
         ensure!(
             apply && !rollback,
-            "handoff requires completed forward intent"
+            "handoff after the verification: the recovery journal {} does not hold the apply \
+             intent alone (apply {apply}, rollback {rollback}); nothing was written",
+            journal.display()
         );
         sj::write_lifecycle_marker(
             self.observation.journal,
             self.observation.ticket,
             MarkerKind::Handoff,
-        )?;
+        )
+        .with_context(|| {
+            format!(
+                "handoff after the verification: writing the handoff marker of the recovery \
+                 journal {}",
+                journal.display()
+            )
+        })?;
         self.observation
             .journal
-            .require_native_mount_barriers(self.observation.ticket)?;
+            .require_native_mount_barriers(self.observation.ticket)
+            .with_context(|| {
+                format!(
+                    "handoff after the verification: flushing the handoff marker of the \
+                     recovery journal {}",
+                    journal.display()
+                )
+            })?;
         ensure!(
             self.observation.lifecycle()? == SelectedLifecycle::Handoff,
-            "the handoff marker did not read back after the verification"
+            "handoff after the verification: the handoff marker of the recovery journal {} did \
+             not read back as written",
+            journal.display()
         );
         Ok(digest)
     }

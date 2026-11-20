@@ -25,6 +25,15 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
     rollback: bool,
     observer: &mut O,
 ) -> Result<serde_json::Value> {
+    // A recovery, in either direction, makes an identical check of bytes it
+    // has held ever since once (`verify_policy::repeat_once`). It does not
+    // select `check_once` here: that leaves full re-reads to a gate before
+    // the first write to the source, and a recovery has no such gate. A
+    // conversion started with `--recheck-everything` that cancels itself
+    // through here keeps every repeat.
+    if !crate::resource_preparation::recheck_everything() {
+        n2r_win32::verify_policy::repeat_once();
+    }
     resources.validate()?;
     ensure!(
         output.is_absolute() && !output.exists(),
@@ -60,6 +69,15 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
         budget.scratch_bytes,
         &mut events,
     )?;
+    // What a conversion published with `--verify fast` left out of its own
+    // run, its recovery may leave out as well; this is read from the
+    // publication that was just authenticated. The recovery of a run
+    // published with `--verify thorough` keeps every such pass.
+    if recovery.verification_policy().is_fast()
+        && !crate::resource_preparation::recheck_everything()
+    {
+        n2r_win32::verify_policy::repeat_once_as_verified();
+    }
     let initial = recovery.observed_lifecycle();
     events.checkpoint()?;
     if recovery.mounted_source().is_some() {

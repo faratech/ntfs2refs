@@ -1904,60 +1904,78 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             run.display()
         );
         native_creation_admission.check()?;
-        let staged =
-            super::staging::StageOwner::Vhdx(n2r_win32::managed_shadow::create_with_profile(
-                &run.join("shadow.vhdx"),
-                converted_partition_bytes,
-                before.binding.identity.logical_sector_bytes,
-                before.binding.identity.physical_sector_bytes,
-                target_format,
-            )?);
-        native_creation_admission.check()?;
-        // The version is whatever this Windows formatted. One the lab never
-        // converted is accepted, and the run says that it is the first.
-        let refs_version = n2r_win32::target_refs_version::get();
-        if refs_version != n2r_win32::target_refs_version::DEFAULT {
-            println!(
-                "Note: Windows formatted the working ReFS as version {}.{}. Conversions have been run in the lab to ReFS {}.{} only; this version is accepted and has not been tried.",
-                refs_version.0,
-                refs_version.1,
-                n2r_win32::target_refs_version::DEFAULT.0,
-                n2r_win32::target_refs_version::DEFAULT.1
-            );
-        }
-        // Only now, with a working volume that Windows did format, is the
-        // partition shrunk to the length that volume has.
-        let before = if let Some(super::boot::GeometryDecision::Shrink { .. }) = boot_geometry {
-            let authority = mode.source_change_authority(
-                "the Windows NTFS driver shrink that prepares ReFS geometry",
-            )?;
-            let shrunk = super::boot::normalize_geometry(before, &run, &authority)?;
-            ensure!(
-                shrunk.binding.identity.partition_bytes == converted_partition_bytes,
-                "the Windows NTFS driver left the partition {} bytes long, not the {converted_partition_bytes} the working volume was formatted for",
-                shrunk.binding.identity.partition_bytes
-            );
-            shrunk
-        } else {
-            before
+        let shadow_path = run.join("shadow.vhdx");
+        let staged = match n2r_win32::managed_shadow::create_with_profile(
+            &shadow_path,
+            converted_partition_bytes,
+            before.binding.identity.logical_sector_bytes,
+            before.binding.identity.physical_sector_bytes,
+            target_format,
+        ) {
+            Ok(shadow) => super::staging::StageOwner::Vhdx(shadow),
+            // Windows may have attached the new image before the step that
+            // failed (a refused format is the usual one): no owner of it
+            // comes back, and it stays attached until it is detached.
+            Err(error) => return Err(stopped_while_creating(&run, &shadow_path, error.into())),
         };
-        let provider_commitment = staged.initial_host_backing_commitment()?;
-        // Record the provider identity as well as the disk identity: a guest
-        // reboot can remove the attachment while leaving the recovery backing
-        // intact. These facts locate the original shadow; they never grant
-        // source admission, formatting or journal replay authority.
-        save_new(&run.join("managed-shadow.json"), &staged.location())?;
-        save_new(
-            &run.join("managed-shadow-policy.json"),
-            &serde_json::json!({
-                "schema_version":1,"kind":"requested-and-observed-shadow-format-policy",
-                "requested_target_format":target_format,"shadow_binding":staged.binding(),
-                "actual_shadow_policy":staged.format_policy(),
-                "requested_designation_verified":true,"explicit_trust_or_filter_configuration_changed":false,
-                "source_trust_inferred_from_shadow":false,
-                "grants_source_or_replay_authority":false,
-            }),
-        )?;
+        // From here until the preparation intent is written nothing is
+        // recorded that the working volume could be recovered from: a run
+        // that stops in between detaches and removes it (#201).
+        let prepared = (|| -> Result<_> {
+            native_creation_admission.check()?;
+            // The version is whatever this Windows formatted. One the lab
+            // never converted is accepted, and the run says that it is the
+            // first.
+            let refs_version = n2r_win32::target_refs_version::get();
+            if refs_version != n2r_win32::target_refs_version::DEFAULT {
+                println!(
+                    "Note: Windows formatted the working ReFS as version {}.{}. Conversions have been run in the lab to ReFS {}.{} only; this version is accepted and has not been tried.",
+                    refs_version.0,
+                    refs_version.1,
+                    n2r_win32::target_refs_version::DEFAULT.0,
+                    n2r_win32::target_refs_version::DEFAULT.1
+                );
+            }
+            // Only now, with a working volume that Windows did format, is the
+            // partition shrunk to the length that volume has.
+            let before = if let Some(super::boot::GeometryDecision::Shrink { .. }) = boot_geometry {
+                let authority = mode.source_change_authority(
+                    "the Windows NTFS driver shrink that prepares ReFS geometry",
+                )?;
+                let shrunk = super::boot::normalize_geometry(before, &run, &authority)?;
+                ensure!(
+                    shrunk.binding.identity.partition_bytes == converted_partition_bytes,
+                    "the Windows NTFS driver left the partition {} bytes long, not the {converted_partition_bytes} the working volume was formatted for",
+                    shrunk.binding.identity.partition_bytes
+                );
+                shrunk
+            } else {
+                before
+            };
+            let provider_commitment = staged.initial_host_backing_commitment()?;
+            // Record the provider identity as well as the disk identity: a
+            // guest reboot can remove the attachment while leaving the
+            // recovery backing intact. These facts locate the original
+            // shadow; they never grant source admission, formatting or
+            // journal replay authority.
+            save_new(&run.join("managed-shadow.json"), &staged.location())?;
+            save_new(
+                &run.join("managed-shadow-policy.json"),
+                &serde_json::json!({
+                    "schema_version":1,"kind":"requested-and-observed-shadow-format-policy",
+                    "requested_target_format":target_format,"shadow_binding":staged.binding(),
+                    "actual_shadow_policy":staged.format_policy(),
+                    "requested_designation_verified":true,"explicit_trust_or_filter_configuration_changed":false,
+                    "source_trust_inferred_from_shadow":false,
+                    "grants_source_or_replay_authority":false,
+                }),
+            )?;
+            Ok((before, provider_commitment))
+        })();
+        let (before, provider_commitment) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => return Err(stopped_unrecorded(staged, &run, error)),
+        };
         let result = super::resource::convert_owned_with_provider_commitment(
             n2r_win32::general_layout::GeneralSourceShadowBinding {
                 source: before.binding.clone(),
@@ -2107,12 +2125,20 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                 Ok(0)
             }
             Err(e) => {
-                // Preserve the permanent attachment/backing on every error,
-                // including committed-but-incomplete native finalization.
+                let committed = e
+                    .downcast_ref::<crate::resource_finalize::CommittedFinalizationError>()
+                    .is_some();
+                // A run that stopped before its preparation intent was
+                // written has nothing a recovery could start from, and its
+                // working volume serves nothing (#201).
+                if !committed && super::staging::recorded_nothing(&run) {
+                    return Err(stopped_unrecorded(staged, &run, e));
+                }
+                // Preserve the permanent attachment/backing on every other
+                // error, including committed-but-incomplete native
+                // finalization.
                 drop(staged);
-                if e.downcast_ref::<crate::resource_finalize::CommittedFinalizationError>()
-                    .is_some()
-                {
+                if committed {
                     eprintln!("{e:#}");
                     eprintln!(
                         "Preserve the recovery records at {}. Raw rollback is closed.",
@@ -2133,6 +2159,94 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                 }
                 Err(e)
             }
+        }
+    }
+
+    /// The diskpart commands that detach a working volume by hand.
+    fn detach_by_hand(shadow: &std::path::Path) -> String {
+        format!(
+            "in diskpart, `select vdisk file=\"{}\"` and `detach vdisk`",
+            shadow.display()
+        )
+    }
+
+    /// A run that stopped before it recorded anything to recover from: its
+    /// working volume serves nothing, and is retired as a diagnose run's is,
+    /// frozen, detached and removed. Where that stops short, a detach by its
+    /// path is tried. The run's error is returned; if the volume is still
+    /// attached after both, that error says so and how to detach it.
+    fn stopped_unrecorded(
+        staged: super::staging::StageOwner,
+        run: &std::path::Path,
+        error: anyhow::Error,
+    ) -> anyhow::Error {
+        let shadow = run.join("shadow.vhdx");
+        let retirement = staged.retire_unrecorded();
+        if let Err(save) = save_new(&run.join("shadow-retirement.json"), &retirement) {
+            eprintln!("The record of the working volume's removal could not be saved: {save:#}");
+        }
+        if retirement.success() {
+            eprintln!(
+                "The run stopped before it recorded anything to recover from. The working volume it had built was detached and removed; nothing in {} is needed any more, and the folder can be deleted.",
+                run.display()
+            );
+            return error;
+        }
+        let removal = format!(
+            "removing it stopped at {}: {}",
+            retirement.phase(),
+            retirement.error().unwrap_or("cleanup incomplete")
+        );
+        let detached = match shadow.try_exists() {
+            Ok(false) => Ok(false),
+            _ => n2r_win32::managed_shadow::detach_left_behind(&shadow),
+        };
+        match detached {
+            Ok(_) => {
+                eprintln!(
+                    "The run stopped before it recorded anything to recover from. Its working volume {} is detached ({removal}); nothing in {} is needed any more, and the folder can be deleted.",
+                    shadow.display(),
+                    run.display()
+                );
+                error
+            }
+            Err(detach) => error.context(format!(
+                "the run stopped before it recorded anything to recover from, and its working volume {} is still attached: {removal}, and detaching it then failed ({detach}). Detach it by hand, {}; then {} can be deleted. What stopped the run",
+                shadow.display(),
+                detach_by_hand(&shadow),
+                run.display()
+            )),
+        }
+    }
+
+    /// The run stopped while its working volume was created: Windows may
+    /// have attached the new image before the step that failed, and no owner
+    /// of it came back. It is detached by its path; the file and the
+    /// formatter's output beside it stay.
+    fn stopped_while_creating(
+        run: &std::path::Path,
+        shadow: &std::path::Path,
+        error: anyhow::Error,
+    ) -> anyhow::Error {
+        if !matches!(shadow.try_exists(), Ok(true)) {
+            return error;
+        }
+        match n2r_win32::managed_shadow::detach_left_behind(shadow) {
+            Ok(true) => {
+                eprintln!(
+                    "The run stopped before it recorded anything to recover from. Windows had attached its working volume {}; it was detached, and nothing in {} is needed any more.",
+                    shadow.display(),
+                    run.display()
+                );
+                error
+            }
+            Ok(false) => error,
+            Err(detach) => error.context(format!(
+                "the run stopped before it recorded anything to recover from, and its working volume {} may still be attached: detaching it failed ({detach}). Detach it by hand, {}; then {} can be deleted. What stopped the run",
+                shadow.display(),
+                detach_by_hand(shadow),
+                run.display()
+            )),
         }
     }
 }

@@ -118,6 +118,10 @@ struct Inner {
     made: std::time::Instant,
     fitted_ceiling: std::sync::atomic::AtomicU64,
     fitted_at_ms: std::sync::atomic::AtomicU64,
+    // When the working volume was last found to have free what this ledger
+    // has promised: what paces the look a growing file asks for
+    // (`check_free_while_growing`).
+    free_seen: n2r_win32::verify_policy::Paced,
     root: PathBuf,
     root_guid: String,
     allocation_slack: u64,
@@ -1169,6 +1173,7 @@ impl ArtifactArena {
             made: std::time::Instant::now(),
             fitted_ceiling: std::sync::atomic::AtomicU64::new(0),
             fitted_at_ms: std::sync::atomic::AtomicU64::new(0),
+            free_seen: n2r_win32::verify_policy::Paced::new(),
             root: fs::canonicalize(root)?,
             root_guid,
             allocation_slack,
@@ -2200,7 +2205,60 @@ impl ArtifactArena {
         Ok(())
     }
 
+    /// Holds what the ledger has promised, and `additional` bytes more, to
+    /// what the working volume has free now.
     fn check_free(&self, state: &State, additional: u64) -> Result<()> {
+        let pending = self.pending_bytes(state, additional)?;
+        self.look_at_free_space(pending)
+    }
+    /// As [`Self::check_free`] with nothing added, for a file that grows
+    /// inside what its group was already promised
+    /// ([`ArtifactPathPermit::extend`]).
+    ///
+    /// That is asked for every few megabytes a run writes, and under the
+    /// arena's lock: for each 4 MiB the capture compares, each row of its
+    /// index outside a batch, each encoded chunk of a source range writer,
+    /// each 16 MiB of spill. The volume is then looked at no more than a few
+    /// times a second, as the machine's memory is (`follow_the_machine`),
+    /// where the run checks once and no gate is open
+    /// ([`n2r_win32::verify_policy::Paced`]); a run with
+    /// `--recheck-everything`, a recovery before its finalizer and every
+    /// call inside the gate look each time.
+    ///
+    /// Only the question to the disk is paced. What the run may hold is the
+    /// ledger's own arithmetic, which the caller makes on every call before
+    /// this one, and everything this check makes of the ledger is made on
+    /// every call too: the poisoned ledger, the sums, the native journal's
+    /// own observation of its file, the accounting that must not underflow.
+    /// A call that adds to what the ledger has promised (a group, a file
+    /// with its allocation slack, a larger recovery reservation) does not
+    /// come here: it uses [`Self::check_free`] and looks every time.
+    ///
+    /// What the working volume has free is not state this process holds
+    /// still, as the paced checks of the offline source are: another program
+    /// can fill the volume. Pacing is sound for what this look is, an early
+    /// refusal and not a reservation (sampling reserves nothing): a volume
+    /// that has become too full is refused by the first look a quarter
+    /// second after the last one that passed, by every look from then on
+    /// (only a look that passed is remembered), by the next reservation at
+    /// once, and a write the volume has no room for fails by itself as it
+    /// always did. A volume that is short for less than that quarter second
+    /// and has room again at the next look is not refused for it. A
+    /// remembered figure is never compared: that could refuse what a look
+    /// would allow.
+    fn check_free_while_growing(&self, state: &State) -> Result<()> {
+        /// How often the working volume is looked at for a growing file.
+        const EVERY_MS: u64 = 250;
+        let pending = self.pending_bytes(state, 0)?;
+        if !self.0.free_seen.due(EVERY_MS) {
+            return Ok(());
+        }
+        self.look_at_free_space(pending)
+    }
+    /// What the ledger has promised, and `additional` bytes more, less what
+    /// its verified files already occupy on the working volume: what the
+    /// volume still has to have free.
+    fn pending_bytes(&self, state: &State, additional: u64) -> Result<u64> {
         ensure!(
             !state.allocation_poisoned,
             "artifact allocation ledger is poisoned"
@@ -2219,9 +2277,12 @@ impl ArtifactArena {
             .filter_map(|g| g.native_journal.as_ref())
             .try_fold(0u64, |n, owner| add(n, owner.observe()?.1))?;
         let actual = add(actual_files, native_credit)?;
-        let pending = add(held, additional)?
+        add(held, additional)?
             .checked_sub(actual)
-            .context("artifact physical accounting underflow")?;
+            .context("artifact physical accounting underflow")
+    }
+    /// Asks the working volume what it has free and holds `pending` to it.
+    fn look_at_free_space(&self, pending: u64) -> Result<()> {
         // Only the working volume's free space is asked for, and for the
         // root as this ledger resolved it when it was made: the root and
         // every directory above it have been held open since (`_parents`),
@@ -2232,6 +2293,9 @@ impl ArtifactArena {
             n2r_win32::resource_native::scratch_free_bytes(&self.0.root)? >= pending,
             "actual scratch free space cannot cover live reservations"
         );
+        // A look that covered `pending` and whatever was to be added covers
+        // what a growing file asks about, which adds nothing.
+        self.0.free_seen.passed();
         Ok(())
     }
     pub fn usage(&self) -> Result<ArenaUsage> {
@@ -2711,7 +2775,7 @@ impl ArtifactPathPermit {
                 && add(group.held, bytes)? <= group.maximum,
             "artifact group cannot extend reservation"
         );
-        self.group.arena.check_free(&state, 0)?;
+        self.group.arena.check_free_while_growing(&state)?;
         let entry = state
             .entries
             .get_mut(&self.path)

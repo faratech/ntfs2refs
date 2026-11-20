@@ -487,6 +487,33 @@ impl HeldFile {
     }
 }
 
+/// Says that this process holds the journal of `ticket` from here on: opened
+/// share-zero by the one owner that the reopened recovery keeps until it is
+/// dropped, and written to by this process only in the marker area in front
+/// of its body. A recovery (`verify_policy::repeat_once`) then reads the
+/// body in full once while it holds the journal, at the scan that follows,
+/// and not again at each later step; see
+/// [`n2r_win32::bulk_digest::JournalBodyHold`].
+///
+/// Only for the buffered, markerless journal, which is the one a paged
+/// recovery replays and whose handle is opened share-zero here
+/// (`NativeSelectedJournal::open_recovery_with_identity`). A journal with
+/// redundant markers has no hold and is read in full every time, as before.
+fn hold_journal_body(
+    ticket: &crate::selected_journal::SelectedTicket,
+) -> Option<n2r_win32::bulk_digest::JournalBodyHold> {
+    if ticket.marker_profile.is_some() {
+        return None;
+    }
+    let body_bytes = ticket.journal_length.checked_sub(super::BODY)?;
+    Some(n2r_win32::bulk_digest::JournalBodyHold::begin(
+        ticket.digest_algorithm(),
+        &ticket.immutable_sha256,
+        super::BODY,
+        body_bytes,
+    ))
+}
+
 /// Disk attributes of a source that is online and read-only: what
 /// finalization sets while Windows mounts the converted volume for its
 /// verification, and what a process that dies during that verification
@@ -925,6 +952,8 @@ pub(crate) struct ReopenedResourceRecovery {
     maps: Option<HeldFile>,
     windows_aliases: Option<HeldWindowsAliasFiles>,
     locator: DurableRecoveryLocator,
+    // Declared, and so dropped, before the journal whose hold it stands for.
+    _journal_body: Option<n2r_win32::bulk_digest::JournalBodyHold>,
     journal: BoundNativeRecoveryJournal,
     target: Option<ObservedTarget>,
     initial_state: n2r_win32::GeneralDiskState,
@@ -2619,6 +2648,10 @@ impl ReopenedResourceRecovery {
         }
         let _index_parent = hold_index_parent(index_path, &volume)
             .with_context(|| format!("holding the directory of {}", index_path.display()))?;
+        // From here this process holds the journal, and the scan below reads
+        // all of it. Declared after the journal, so that an early return
+        // drops it first.
+        let journal_body = hold_journal_body(locator.ticket());
         n2r_win32::perf::step("scan journal");
         let mut observation = BoundJournalObservation::open(
             &mut journal,
@@ -2783,6 +2816,7 @@ impl ReopenedResourceRecovery {
             maps,
             windows_aliases,
             locator,
+            _journal_body: journal_body,
             journal,
             target,
             initial_state,
@@ -2795,7 +2829,10 @@ impl ReopenedResourceRecovery {
         };
         // Complete the other side of the journal-scan boundary exactly once.
         // The expected and map files were hashed when opened, and remain held
-        // while this rehash and the native lifecycle/state checks run.
+        // while this rehash and the native lifecycle/state checks run. (Where
+        // an identical check is made once, `verify_policy::check_once` and a
+        // recovery's `repeat_once`, the files and the journal body that were
+        // just read in full are held to their identity here, not read again.)
         if recovered.mounted.is_some() {
             recovered.revalidate_online_terminal(events)?;
         } else {

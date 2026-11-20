@@ -300,7 +300,7 @@ impl BoundJournalObservation<'_> {
         // The apply step read every changed range back after writing it and
         // the source has been offline and read-only since. When that happened
         // in this same process the read-back is not made a second time; a
-        // recovery process always makes it.
+        // recovery process, which has read nothing back itself, makes it.
         let digest = if n2r_win32::selected_new_bytes_verified(
             &self.observation.ticket.immutable_sha256,
             &expected,

@@ -53,8 +53,10 @@ static VERIFY_ONCE: AtomicBool = AtomicBool::new(false);
 ///   back against its NEW digest after it is written;
 /// - the short-name links of a converted Windows volume probed once.
 ///
-/// A run with `--verify thorough`, a diagnosis, a recovery and every route
-/// that never calls this (and every test) keep every check as it was.
+/// A run with `--verify thorough`, a diagnosis and every route that never
+/// calls this (and every test) keep every check as it was. A recovery never
+/// calls it either: what a recovery makes once is said by [`repeat_once`]
+/// and [`repeat_once_as_verified`].
 pub fn verify_once() {
     VERIFY_ONCE.store(true, SeqCst);
 }
@@ -81,6 +83,15 @@ static REPEAT_ONCE: AtomicBool = AtomicBool::new(false);
 ///
 /// What another process checked, the conversion being recovered among them,
 /// never stands for a check here: a recovery reads what it finds.
+///
+/// Made once under it:
+///
+/// - the complete read of the journal's body, at the scan that follows the
+///   reopening of the journal. Every later step still holds the journal to
+///   its identity, its lifecycle markers, its index and the refusal of a
+///   second writer, and rebuilds its index from the record descriptors; the
+///   body is read again only by an owner that opens the journal again
+///   ([`crate::bulk_digest::JournalBodyHold`]).
 ///
 /// It is not [`check_once`], and a recovery never calls that when it starts.
 /// `check_once` leaves every full re-read to the [`Gate`] in front of the

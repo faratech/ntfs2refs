@@ -336,6 +336,52 @@ fn observe_in_parallel<T: Sync, U: Send>(
     Ok(reports)
 }
 
+/// [`observe_in_parallel`] for a pass that reads a volume back and changes
+/// nothing: one helper for each processor, each taking runs of neighbouring
+/// items ([`crate::ordered_observation::RUN`]).
+///
+/// The walks' items come in the order of the tree, so neighbours share a
+/// directory, and Windows works through one directory's objects one at a
+/// time for some of what a walk asks (`GetSecurityInfo`: eight threads in
+/// one directory were three times slower than eight threads in eight,
+/// #140). Handing the items out one by one put every thread in the same
+/// directory; a run keeps each helper in its own.
+///
+/// Every item of the batch is observed, also after one has failed: nothing
+/// is changed by observing, and the failure returned is the first in item
+/// order, as before. The results are in item order.
+///
+/// A batch that memory cut short of two runs would have one helper and a
+/// waiting caller: it is handed out item by item, as it was.
+fn observe_read_back<T: Sync, U: Send>(
+    items: &[T],
+    observe: impl Fn(&T) -> io::Result<U> + Sync,
+) -> io::Result<Vec<U>> {
+    if items.len() < 2 * crate::ordered_observation::RUN {
+        return observe_in_parallel(items, observe);
+    }
+    let helpers = std::thread::available_parallelism().map_or(1, |cores| cores.get());
+    if helpers < 2 || items.len() < 2 {
+        return items
+            .iter()
+            .map(|item| {
+                let _timed = crate::perf::scope(crate::perf::Point::InTurn);
+                observe(item)
+            })
+            .collect();
+    }
+    let observed =
+        crate::ordered_observation::observe_batch(items, helpers, &|item| Some(observe(item)));
+    let mut reports = Vec::with_capacity(items.len());
+    for result in observed {
+        match result {
+            Some(result) => reports.push(result?),
+            None => return Err(io::Error::other("read-back observation stopped early")),
+        }
+    }
+    Ok(reports)
+}
+
 /// The [`crate::content_digest`] of exactly `length` bytes, then confirmed EOF.
 /// Reads are at most 4 MiB; the buffer never exceeds the stream.
 fn hash_exact_stream(reader: &mut impl Read, length: u64) -> io::Result<String> {
@@ -3747,7 +3793,7 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
     let mut read_batch = |batch: &mut Vec<Residual<'_>>,
                           leases: &mut Vec<Option<Box<dyn report_memory::ReportMemoryLease>>>|
      -> io::Result<()> {
-        let read = observe_in_parallel(batch.as_slice(), &read_one);
+        let read = observe_read_back(batch.as_slice(), &read_one);
         leases.clear();
         for (residual, (id, sha)) in batch.drain(..).zip(read?) {
             let length = residual.expected.length;
@@ -5852,7 +5898,7 @@ fn run_role_content_domain_accounted(
             let items: Vec<Input<'_>> = owners.iter().map(|owner| owner.input()).collect();
             let rows = {
                 let _timed = crate::perf::scope(crate::perf::Point::ShadowObject);
-                observe_in_parallel(&items, &observe)?
+                observe_read_back(&items, &observe)?
             };
             for (mut row, (lease, peak)) in rows.into_iter().zip(leases) {
                 match (memory_accountant, lease) {

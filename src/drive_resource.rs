@@ -668,8 +668,12 @@ pub(super) fn recover_preparation_in_workspace(
             .path
             .parent()
             .context("delegated recovery publication has no parent directory")?;
+        // A run cut off between publishing its recovery records and printing
+        // its "To recover:" line has only the cancellation command it printed
+        // at its start. Whoever runs that asked for NTFS back, so the command
+        // that does that now comes first, and the one that finishes second.
         anyhow::bail!(
-            "preparation cancellation is closed; use normal recovery: ntfs2refs --recover \"{}\" --recovery-sha256 {}",
+            "this run had published its recovery records when it stopped, so the command that cancels a preparation no longer applies to it. Nothing was changed. To put NTFS back: ntfs2refs --recover \"{0}\" --recovery-sha256 {1} --rollback (possible until the conversion is committed). To finish the conversion instead: ntfs2refs --recover \"{0}\" --recovery-sha256 {1}",
             recovery_directory.display(),
             delegated.sha256
         );

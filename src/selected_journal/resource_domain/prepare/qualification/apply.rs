@@ -490,9 +490,11 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         checkpoint_native_events(events, &mut checkpoint_events)?;
         n2r_win32::lab_hold::reached("apply-activated");
         n2r_win32::perf::step("write changed ranges");
-        // The ranges are written in ascending order, each read first. The
-        // fault-injection path reads its first write back at once and must
-        // get it from the device, so it keeps reading range by range.
+        // The ranges are written in ascending order, each read first unless
+        // the run verifies each thing once (`write_span`), in which case
+        // nothing is read here. The fault-injection path reads its first
+        // write back at once and must get it from the device, so it keeps
+        // reading range by range.
         target.set_read_ahead(first_write_fault.is_none());
         let domain = prepared.inner._domain;
         for ordinal in 0..u64::from(ticket.range_count) {

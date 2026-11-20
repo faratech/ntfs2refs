@@ -285,6 +285,23 @@ fn progress(
     tree.placement_progress = progress_document(phase, charged_bytes, verified, pending, counters);
 }
 
+/// What a move's proof holds of its file's mapping, as the report and the
+/// progress artifact name it. `complete-file-mapping`: every proof has the
+/// whole mapping after the move (`retrieval_paging::ENCODING`).
+/// `moved-range-v1`, on the resource route of a run that verifies each thing
+/// once: the proof of a move that landed has the mapping of the range it
+/// moved (`retrieval_paging::RANGE_ENCODING`); any other proof still has the
+/// whole mapping. Each proof's `mapping_page_proof.encoding` says which of
+/// the two it is. The complete mapping of every stream is compared with its
+/// tracked pieces once, when placement ends.
+fn per_move_retrieval_scope(resource: bool) -> &'static str {
+    if resource && crate::verify_policy::verifies_once() {
+        "moved-range-v1"
+    } else {
+        "complete-file-mapping"
+    }
+}
+
 /// The progress artifact, rebuilt twice for every move. The recent phases
 /// and the pending step are moved into it; `json!` copied each of them once
 /// more, value by value, on the way in.
@@ -306,7 +323,9 @@ fn progress_document(
     let mut document = serde_json::json!({
         "schema_version":2,"kind":"private-placement-progress","phase":phase,
         "occupancy_evidence_scope":"destination-window-v1",
-        "per_move_retrieval_scope":"complete-file-mapping","phase_bitmap_scope":"full-volume",
+        // Only the resource route records its moves through a sink.
+        "per_move_retrieval_scope":per_move_retrieval_scope(verified.sink.is_some()),
+        "phase_bitmap_scope":"full-volume",
         "charged_move_bytes":charged_bytes,"verified_move_submissions":verified.len(),
         "counters":counters,
         "placement_complete":false,"resume_authorized":false,"conversion_qualified":false
@@ -2841,7 +2860,22 @@ fn run_domain_inner(
     let mut retained_bytes = 0u64;
     for &index in &indexes {
         let file = tree.file_by_slot(index)?;
-        file.check_placements()?;
+        // Every stream's complete mapping, read now and compared with every
+        // piece tracked for it. For a run that verifies each thing once this
+        // is the one comparison of the pieces a stream's moves did not
+        // themselves move: `indexes` is every stream slot of the tree, and
+        // no move follows this loop.
+        file.check_placements().map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "extent placement, final comparison of the complete mapping: stream slot \
+                     {index}, {} ({} tracked pieces): {error}",
+                    file.path,
+                    file.tracked_mappings().len()
+                ),
+            )
+        })?;
         let tracked = file.tracked_mappings();
         // The owning file records native tracking in VCN order and sorts and
         // coalesces each successful move. Check the entire in-memory ordering
@@ -2938,7 +2972,8 @@ fn run_domain_inner(
             .ok_or_else(|| invalid("actual paged evidence sink absent"))?
             .finish()?;
         let result = serde_json::json!({"schema_version":3,"kind":"private-unwritten-tree-placement-pages",
-            "occupancy_evidence_scope":"destination-window-v1","per_move_retrieval_scope":"complete-file-mapping",
+            "occupancy_evidence_scope":"destination-window-v1",
+            "per_move_retrieval_scope":per_move_retrieval_scope(true),
             "phase_bitmap_scope":"full-volume","paged_evidence":receipt,"move_count":evidence.len(),
             "original_coordinate_bytes":retained_bytes,"move_evidence_bytes":evidence.compact_bytes,
             "placement_artifact_bytes":evidence.saved_bytes,"max_placement_artifact_bytes":limits.evidence,

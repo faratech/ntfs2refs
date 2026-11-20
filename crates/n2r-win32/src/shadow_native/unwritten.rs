@@ -749,6 +749,15 @@ impl PrivatePlaceholder {
         // thousands of pieces was read twice for every piece moved: 25 s of
         // placing the full Windows volume's extents. A route that checks
         // once makes this comparison before a file's first move only.
+        //
+        // A run that verifies each thing once (`--verify fast`) holds a
+        // move that landed to the mapping of the range it moved, below, so
+        // its previous move did not compare every piece either. What stands
+        // for both is the comparison of the file's complete mapping with
+        // every tracked piece when placement ends
+        // (`check_placements`, for every stream, before anything is derived
+        // from the tracked pieces), and again whenever the file's validity
+        // is advanced or its payload supplied.
         let compared_by_last_move =
             self.move_submissions > 0 && crate::verify_policy::checks_once();
         if !compared_by_last_move
@@ -858,23 +867,59 @@ impl PrivatePlaceholder {
         self.poisoned = true; // Any missing post-I/O evidence must fail closed.
         self.move_submissions += 1;
         let moved = ctl(volume, 0x90074, &input, 0);
-        let capture = if let Some(resource) = &self.resource {
-            resource.capture(&self.file)?
-        } else {
-            crate::stream_native::retrieval_capture(&self.file)?
+        // After every move the file's whole mapping was read and recorded,
+        // and every tracked piece compared with it: work that grows with a
+        // file's moves times its extents, and most of what placing the
+        // full Windows volume's extents took. A run that verifies each
+        // thing once reads the mapping of the moved range alone. If the
+        // system call succeeded and that range now lies where it was sent,
+        // the move landed, and its proof records that mapping
+        // (`retrieval_paging::RANGE_ENCODING`). Every other piece of the
+        // file is compared once, with the file's complete mapping, when
+        // placement ends. A move the system refused, a range that is not
+        // where it was sent and a ranged query that fails are all held to
+        // the complete mapping, and recorded with it, as before.
+        let narrowed = match (&moved, &self.resource) {
+            (Ok(_), Some(resource)) if crate::verify_policy::verifies_once() => {
+                match resource.capture_range(&self.file, starting_vcn, end) {
+                    Ok(capture) => PreparedMapping::from_runs(capture.runs)?
+                        .matches(starting_vcn, destination_lcn, clusters)?
+                        .then_some((capture.canonical, capture.proof)),
+                    Err(_) => None,
+                }
+            }
+            _ => None,
         };
-        self.retrieval_extents = capture.runs.len();
-        let mapping = if self.resource.is_some() {
-            PreparedMapping::from_runs(capture.runs)?
-        } else {
-            PreparedMapping::parse(&capture.canonical)?
-        };
-        let mapped = mapping.matches(starting_vcn, destination_lcn, clusters)?;
         let native_error = moved.err().map(|e| e.raw_os_error().unwrap_or(31));
-        let mut all_placements_match = true;
-        for &(v, l, n) in &next {
-            all_placements_match &= mapping.matches(v, l, n)?;
-        }
+        let (mapped, all_placements_match, mapping_after, mapping_page_proof) =
+            if let Some((canonical, proof)) = narrowed {
+                // `all_placements_match` says of this form what was
+                // compared: the moved range, which is where it was sent.
+                (true, true, canonical, proof)
+            } else {
+                let capture = if let Some(resource) = &self.resource {
+                    resource.capture(&self.file)?
+                } else {
+                    crate::stream_native::retrieval_capture(&self.file)?
+                };
+                self.retrieval_extents = capture.runs.len();
+                let mapping = if self.resource.is_some() {
+                    PreparedMapping::from_runs(capture.runs)?
+                } else {
+                    PreparedMapping::parse(&capture.canonical)?
+                };
+                let mapped = mapping.matches(starting_vcn, destination_lcn, clusters)?;
+                let mut all_placements_match = true;
+                for &(v, l, n) in &next {
+                    all_placements_match &= mapping.matches(v, l, n)?;
+                }
+                (
+                    mapped,
+                    all_placements_match,
+                    capture.canonical,
+                    capture.proof,
+                )
+            };
         if native_error.is_none() && mapped && all_placements_match {
             self.placed = next;
             if let Some(resource) = self.resource.as_mut() {
@@ -894,8 +939,8 @@ impl PrivatePlaceholder {
             mapping_matches: mapped,
             all_placements_match,
             reposition,
-            mapping_after: capture.canonical,
-            mapping_page_proof: capture.proof,
+            mapping_after,
+            mapping_page_proof,
             destination_bitmap,
             _resource_memory: resource_memory,
         })

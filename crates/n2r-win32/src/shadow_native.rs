@@ -265,6 +265,173 @@ fn observe_in_turn<T, U>(items: &[T], observe: impl Fn(&T) -> U) -> Vec<U> {
         .collect()
 }
 
+/// What a helper thread of [`each_at_once`] holds whatever it works on: its
+/// stack and the buffer its queries answer into.
+const HELPER_THREAD_BYTES: u64 = 2 * 1024 * 1024 + crate::query_scratch::KEPT_BYTES as u64;
+
+/// `work` for every item, the results in the items' order.
+///
+/// The passes that restore metadata made their Windows calls for one object
+/// after another on one thread. Here the items whose `workspace` the ledger
+/// grants as spare memory are worked on by helper threads: one for each
+/// processor, as many as the ledger grants a stack and a query buffer, and
+/// no more than there are runs of neighbouring items to take. Neighbours
+/// tend to share a directory, and Windows takes one directory's objects one
+/// at a time for some calls, so a helper takes a run of them
+/// ([`crate::ordered_observation::RUN`], #140) and the helpers are spread
+/// over directories. Fewer than two helpers is none. Whatever is not worked
+/// on by a helper (no payer, a workspace refused, too few items) is worked
+/// on by the calling thread, in order, as before.
+///
+/// The caller hands in only items that do not depend on one another, and
+/// takes the results in order.
+fn each_at_once<T: Sync, U: Send>(
+    payer: Option<&dyn report_memory::ReportMemoryAccountant>,
+    items: &[T],
+    workspace: impl Fn(&T) -> Option<u64>,
+    work: impl Fn(&T) -> U + Sync,
+) -> Vec<U> {
+    let mut paid = Vec::new();
+    let mut helpers = Vec::new();
+    if let Some(payer) = payer {
+        for item in items {
+            match workspace(item).and_then(|bytes| payer.reserve_spare(bytes).ok()) {
+                Some(lease) => paid.push(lease),
+                None => break,
+            }
+        }
+        let wanted = std::thread::available_parallelism()
+            .map_or(1, |cores| cores.get())
+            .min(paid.len().div_ceil(crate::ordered_observation::RUN));
+        while wanted >= 2 && helpers.len() < wanted {
+            match payer.reserve_spare(HELPER_THREAD_BYTES) {
+                Ok(lease) => helpers.push(lease),
+                Err(_) => break,
+            }
+        }
+    }
+    let (together, in_turn) = items.split_at(if helpers.len() >= 2 { paid.len() } else { 0 });
+    let mut results = Vec::with_capacity(items.len());
+    if !together.is_empty() {
+        let worked =
+            crate::ordered_observation::observe_batch(together, helpers.len(), &|item: &T| {
+                Some(work(item))
+            });
+        for (item, result) in together.iter().zip(worked) {
+            results.push(match result {
+                Some(result) => result,
+                None => {
+                    let _timed = crate::perf::scope(crate::perf::Point::InTurn);
+                    work(item)
+                }
+            });
+        }
+    }
+    drop(helpers);
+    drop(paid);
+    results.extend(observe_in_turn(in_turn, &work));
+    results
+}
+
+/// One pass that changes objects of `input`, each through its own handles.
+///
+/// `objects` gives, in the pass's order, an object's ordinal for the
+/// progress line, its index and its group. Objects of one group do not
+/// depend on one another; a later group may depend on an earlier one (a
+/// directory's times on its children's), so a batch never crosses groups
+/// and a group is finished before the next begins.
+///
+/// `change` makes the pass's Windows calls for one object; it calls what it
+/// is handed before each mutation. `done` takes each object's result in the
+/// pass's order, on the calling thread: counting, naming the object in a
+/// failure, and stopping the pass or leaving the object behind.
+///
+/// Without `payer` every object is decoded, changed and taken before the
+/// next is decoded, and the capacity check ([`InputDomain::before_mutation`])
+/// is made where `change` asks for it: the pass as one thread made it. With
+/// one, a batch is decoded on the calling thread, the capacity checks of its
+/// `mutations` are made there before the batch's first change, and the
+/// objects are changed by [`each_at_once`]. An object that fails then leaves
+/// the rest of its batch changed already; the pass still ends with that
+/// object's failure. An object with no mutation to make is passed over.
+#[allow(clippy::too_many_arguments)]
+fn change_objects<D: InputDomain, A: Send>(
+    input: &D,
+    payer: Option<&dyn report_memory::ReportMemoryAccountant>,
+    objects: impl Iterator<Item = (usize, usize, usize)>,
+    workspace: u64,
+    progress: impl Fn(u64),
+    mutations: impl Fn(&Input<'_>) -> usize,
+    change: impl Fn(usize, &Input<'_>, &dyn Fn() -> io::Result<()>) -> io::Result<A> + Sync,
+    mut done: impl FnMut(usize, io::Result<A>) -> io::Result<()>,
+) -> io::Result<()> {
+    let Some(payer) = payer else {
+        for (ordinal, index, _) in objects {
+            progress(ordinal as u64);
+            let result = input
+                .object(index)
+                .and_then(|owned| change(index, &owned.input(), &|| input.before_mutation(0)));
+            done(index, result)?;
+        }
+        return Ok(());
+    };
+    let mut objects = objects.peekable();
+    let mut batch: Vec<(usize, usize)> = Vec::with_capacity(PARALLEL_BATCH);
+    loop {
+        batch.clear();
+        while let Some(&(ordinal, index, group)) = objects.peek() {
+            if batch.len() == PARALLEL_BATCH || batch.first().is_some_and(|&(_, g)| g != group) {
+                break;
+            }
+            if batch.is_empty() {
+                progress(ordinal as u64);
+            }
+            batch.push((index, group));
+            objects.next();
+        }
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let decoded: Vec<io::Result<D::Object>> = batch
+            .iter()
+            .map(|&(index, _)| input.object(index))
+            .collect();
+        let mut outcomes: Vec<Option<io::Result<A>>> = batch.iter().map(|_| None).collect();
+        let mut items = Vec::with_capacity(batch.len());
+        for (slot, owned) in decoded.iter().enumerate() {
+            let Ok(owned) = owned else {
+                continue;
+            };
+            let view = owned.input();
+            let count = mutations(&view);
+            if count == 0 {
+                continue;
+            }
+            match (0..count).try_for_each(|_| input.before_mutation(0)) {
+                Ok(()) => items.push((slot, batch[slot].0, view)),
+                Err(error) => outcomes[slot] = Some(Err(error)),
+            }
+        }
+        let changed = each_at_once(
+            Some(payer),
+            &items,
+            |_| Some(workspace),
+            |(_, index, view)| change(*index, view, &|| Ok(())),
+        );
+        for ((slot, _, _), result) in items.iter().zip(changed) {
+            outcomes[*slot] = Some(result);
+        }
+        drop(items);
+        for ((owned, outcome), &(index, _)) in decoded.into_iter().zip(outcomes).zip(&batch) {
+            match (owned, outcome) {
+                (Err(error), _) => done(index, Err(error))?,
+                (Ok(_), Some(result)) => done(index, result)?,
+                (Ok(_), None) => {}
+            }
+        }
+    }
+}
+
 /// How many objects a pass hands to [`observe_in_parallel`] at a time.
 ///
 /// Every batch starts its helper threads and waits for them to end, which

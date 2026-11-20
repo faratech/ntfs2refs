@@ -334,6 +334,8 @@ fn create_owned_domain_inner(
         )?;
     }
     let mut directories = BTreeMap::new();
+    // The files that have other names: only these are decoded again below.
+    let mut linked = Vec::new();
     input.for_each(|index, item| {
         if item.directory
             && directories
@@ -341,6 +343,9 @@ fn create_owned_domain_inner(
                 .is_some()
         {
             return Err(invalid("duplicate canonical hard-link parent"));
+        }
+        if !item.additional_names.is_empty() {
+            linked.push(index);
         }
         Ok(())
     })?;
@@ -357,13 +362,21 @@ fn create_owned_domain_inner(
             Ok(())
         })?;
     }
-    let mut created = Vec::new();
-    for index in 0..input.len() {
-        let owned = input.object(index)?;
-        let view = owned.input();
-        let item = &view;
+    // The volume root and the namespace limit, without the payer: what the
+    // links of one file are made with, on whichever thread makes them.
+    let limits = resources.map(|(maximum_names, root, _)| (maximum_names, root));
+    // A file's names are made one after another, each held to the link count
+    // the name before it left; that file is the unit. Files do not depend on
+    // one another, so on a fresh shadow the files that have other names are
+    // linked beside one another (`change_objects`). A recovery, and a domain
+    // without a payer, links one file at a time as before.
+    let link_file = |index: usize,
+                     item: &Input<'_>,
+                     before_mutation: &dyn Fn() -> io::Result<()>|
+     -> io::Result<Vec<serde_json::Value>> {
+        let mut created = Vec::new();
         if item.additional_names.is_empty() {
-            continue;
+            return Ok(created);
         }
         let file = handles
             .get(&index)
@@ -396,30 +409,25 @@ fn create_owned_domain_inner(
             // With the volume root known, the new name is looked up directly.
             // Listing the whole parent before and after every link was
             // quadratic: thousands of links into a directory of thousands.
-            let by_name = resources.map(|(_, root, _)| format!("{root}{}", path.join("\\")));
-            let (enumeration_budget, _enumeration_memory) =
-                if let Some((maximum_names, _, payer)) = resources {
-                    if parent_children > maximum_names {
-                        return Err(invalid(
-                            "resource hard-link parent exceeds admitted namespace",
-                        ));
-                    }
-                    let evidence = parent_children
+            // (A listing was paid for only where the name could not be looked
+            // up; with the volume root known it always can.)
+            let by_name = limits.map(|(_, root)| format!("{root}{}", path.join("\\")));
+            let enumeration_budget = if let Some((maximum_names, _)) = limits {
+                if parent_children > maximum_names {
+                    return Err(invalid(
+                        "resource hard-link parent exceeds admitted namespace",
+                    ));
+                }
+                Some(
+                    parent_children
                         .checked_add(2)
                         .and_then(|n| n.checked_mul(4096))
                         .and_then(|n| n.checked_add(namespace_layout::CAPACITY * 4))
-                        .ok_or_else(|| invalid("resource hard-link enumeration overflow"))?;
-                    let memory = if by_name.is_some() {
-                        None
-                    } else {
-                        Some(payer.reserve((evidence as u64).checked_mul(2).ok_or_else(
-                            || invalid("resource hard-link enumeration RAM overflow"),
-                        )?)?)
-                    };
-                    (Some(evidence), memory)
-                } else {
-                    (None, None)
-                };
+                        .ok_or_else(|| invalid("resource hard-link enumeration overflow"))?,
+                )
+            } else {
+                None
+            };
             let native_name: Vec<u16> = name.encode_utf16().collect();
             let named = |parent: &File| -> io::Result<Vec<(Vec<u8>, u32)>> {
                 match &by_name {
@@ -451,7 +459,7 @@ fn create_owned_domain_inner(
                 }
                 continue;
             }
-            input.before_mutation(0)?;
+            before_mutation()?;
             create_link(file, parent, name)?;
             let expected = if recovering {
                 current_links
@@ -488,6 +496,22 @@ fn create_owned_domain_inner(
                 "complete recovered hard-link count or identity differs",
             ));
         }
-    }
+        Ok(created)
+    };
+    let mut created = Vec::new();
+    change_objects(
+        input,
+        resources.filter(|_| !recovering).map(|(_, _, payer)| payer),
+        linked.iter().map(|&index| (index, index, 0)),
+        // A name's path, its two lookups and its record.
+        1024 * 1024,
+        |_| {},
+        |item| item.additional_names.len(),
+        link_file,
+        |_, linked| {
+            created.extend(linked?);
+            Ok(())
+        },
+    )?;
     Ok(created)
 }

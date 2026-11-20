@@ -282,6 +282,19 @@ fn progress(
         row["canonical_object_index"] = key.object_index.into();
         row["stream_name_utf16"] = serde_json::json!(&key.name_utf16);
     }
+    tree.placement_progress = progress_document(phase, charged_bytes, verified, pending, counters);
+}
+
+/// The progress artifact, rebuilt twice for every move. The recent phases
+/// and the pending step are moved into it; `json!` copied each of them once
+/// more, value by value, on the way in.
+fn progress_document(
+    phase: &str,
+    charged_bytes: u64,
+    verified: &Evidence<'_>,
+    pending: Option<serde_json::Value>,
+    counters: &Counters,
+) -> serde_json::Value {
     // Keep a bounded tail, not a second copy of the complete mapping proofs.
     let phases: Vec<_> = verified
         .moves
@@ -290,17 +303,20 @@ fn progress(
         .take(16)
         .map(|m| serde_json::json!({"object_index":m["object_index"],"phase":m["phase"]}))
         .collect();
-    tree.placement_progress = serde_json::json!({
+    let mut document = serde_json::json!({
         "schema_version":2,"kind":"private-placement-progress","phase":phase,
         "occupancy_evidence_scope":"destination-window-v1",
         "per_move_retrieval_scope":"complete-file-mapping","phase_bitmap_scope":"full-volume",
         "charged_move_bytes":charged_bytes,"verified_move_submissions":verified.len(),
-        "recent_verified_phases_newest_first":phases,"pending":pending,"counters":counters,
+        "counters":counters,
         "placement_complete":false,"resume_authorized":false,"conversion_qualified":false
     });
+    document["recent_verified_phases_newest_first"] = serde_json::Value::Array(phases);
+    document["pending"] = pending.unwrap_or(serde_json::Value::Null);
     if let Some(barrier) = &counters.post_evacuation_barrier {
-        tree.placement_progress["post_evacuation_barrier"] = barrier.clone();
+        document["post_evacuation_barrier"] = barrier.clone();
     }
+    document
 }
 
 /// Record the bounded quantity in the progress artifact and refuse.
@@ -3129,6 +3145,83 @@ mod move_record_tests {
             (new.compact_bytes, new.saved_bytes, new.len())
         );
         assert_eq!(old.moves, new.moves);
+    }
+
+    #[test]
+    fn the_progress_document_is_the_one_json_made() {
+        let document_before = |phase: &str,
+                               charged: u64,
+                               verified: &Evidence<'_>,
+                               pending: Option<serde_json::Value>,
+                               counters: &Counters| {
+            let phases: Vec<_> = verified
+                .moves
+                .iter()
+                .rev()
+                .take(16)
+                .map(|m| serde_json::json!({"object_index":m["object_index"],"phase":m["phase"]}))
+                .collect();
+            let mut document = serde_json::json!({
+                "schema_version":2,"kind":"private-placement-progress","phase":phase,
+                "occupancy_evidence_scope":"destination-window-v1",
+                "per_move_retrieval_scope":"complete-file-mapping","phase_bitmap_scope":"full-volume",
+                "charged_move_bytes":charged,"verified_move_submissions":verified.len(),
+                "recent_verified_phases_newest_first":phases,"pending":pending,"counters":counters,
+                "placement_complete":false,"resume_authorized":false,"conversion_qualified":false
+            });
+            if let Some(barrier) = &counters.post_evacuation_barrier {
+                document["post_evacuation_barrier"] = barrier.clone();
+            }
+            document
+        };
+        let mut sink = Recorded::default();
+        let mut with_sink = Evidence::new(Some(&mut sink), usize::MAX);
+        let mut without = Evidence::default();
+        let mut counters = Counters {
+            files: 7,
+            desired_runs: 12,
+            ..Counters::default()
+        };
+        let pending = serde_json::json!({"object_index":3,"logical_offset":4096,
+            "destination":1 << 30,"length":65536,"placement_result_recorded":false,
+            "budget_charged":false,"stream_name_utf16":[65, 66]});
+        for round in 0..20u64 {
+            for evidence in [&with_sink, &without] {
+                for pending in [None, Some(pending.clone())] {
+                    let document = progress_document(
+                        "original-coordinate",
+                        round << 20,
+                        evidence,
+                        pending.clone(),
+                        &counters,
+                    );
+                    assert_eq!(
+                        serde_json::to_vec(&document).unwrap(),
+                        serde_json::to_vec(&document_before(
+                            "original-coordinate",
+                            round << 20,
+                            evidence,
+                            pending,
+                            &counters
+                        ))
+                        .unwrap()
+                    );
+                }
+            }
+            let (index, phase, extents, error) = CASES[round as usize % CASES.len()];
+            let index = index.wrapping_add(round);
+            with_sink
+                .push_move_proof(index, phase, &resource(extents, error))
+                .unwrap();
+            without
+                .push_move(as_before(index, phase, extents, error))
+                .unwrap();
+            counters.final_submissions += 1;
+            if round == 10 {
+                counters.post_evacuation_barrier =
+                    Some(serde_json::json!({"moves":3,"ranges":[1,2]}));
+            }
+        }
     }
 
     /// `saved_size` as it was: the whole text printed, then measured.

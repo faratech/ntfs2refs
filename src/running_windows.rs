@@ -716,17 +716,44 @@ enum Recovered {
 /// recovery environment stays the default and its console stays open.
 pub const NEEDS_ATTENTION: u8 = 3;
 
+/// The memory limit among the options the converter was started with, as
+/// it was given there: `--memory-limit N` or `--memory-limit=N`. Only a
+/// number is taken. The converter refuses anything else before it opens a
+/// disk, so no conversion ran under it and no recovery is held to it.
+fn memory_limit_in(converter_args: &[String]) -> Option<&str> {
+    converter_args
+        .iter()
+        .enumerate()
+        .find_map(|(index, arg)| match arg.strip_prefix("--memory-limit")? {
+            "" => converter_args.get(index + 1).map(String::as_str),
+            value => value.strip_prefix('='),
+        })
+        .filter(|value| value.parse::<u64>().is_ok())
+}
+
 /// Runs the recovery command the converter printed: forward where the command
 /// allows it, and back to NTFS where that fails.
 fn recover_from(
     directory: &Path,
     command: &RecoverCommand,
+    session: &Session,
     note: &mut dyn FnMut(String),
 ) -> Recovered {
     let saved = directory.join(RECOVER_FILE);
     // The working volume may have another letter on this start than on the
     // one that printed the command: the directory is taken on this start's.
     let recovery_directory = rebased(&command.directory, directory);
+    // The ceiling the user gave the conversion is the recovery's as well:
+    // without it a recovery fits itself to the machine and takes up to two
+    // thirds of the memory that is free, whatever the run was told to keep
+    // to. Nothing else of the run's options is a recovery's: what it checks
+    // it reads from the run's records.
+    let memory_limit = memory_limit_in(&session.converter_args);
+    if let Some(mib) = memory_limit {
+        note(format!(
+            "The recovery keeps to the run's memory limit of {mib} MiB."
+        ));
+    }
     let recover = |rollback: bool| -> bool {
         let mut process = Command::new(directory.join("ntfs2refs.exe"));
         process.args([
@@ -736,6 +763,9 @@ fn recover_from(
             &command.sha256,
             "--yes",
         ]);
+        if let Some(mib) = memory_limit {
+            process.args(["--memory-limit", mib]);
+        }
         if rollback {
             process.arg("--rollback");
         }
@@ -927,7 +957,7 @@ fn run_or_recover(
             if code != 0 {
                 note(format!("Recovering from {}", command.directory));
             }
-            match recover_from(directory, &command, note) {
+            match recover_from(directory, &command, session, note) {
                 // A recovery without --rollback finishes a run that had
                 // started writing, and cancels one cut off before that
                 // (runc-cut-apply-11: cut before apply, back to NTFS). What

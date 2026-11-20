@@ -376,6 +376,20 @@ for ($round = 1; ; $round++) {
                 $result.recovery = $recovery -join ' '
                 $again = Invoke-Converter $recovery (Join-Path $dir 'recover')
                 Say "  ntfs2refs $($result.recovery): exit $($again.exit) after $($again.seconds) s"
+                # A run ended between publishing its recovery records and
+                # printing its "To recover:" line has only the cancellation
+                # command of its start, which then says which command puts
+                # NTFS back now. That is followed, as a person would.
+                if ($again.exit -ne 0 -and $cancel.Success -and -not $recover.Success) {
+                    $published = [regex]::Match("$($again.stderr)", 'To put NTFS back: ntfs2refs --recover "(.+?)" --recovery-sha256 ([0-9a-f]{64}) --rollback')
+                    if ($published.Success) {
+                        Say '  the run had published its recovery records: following the command its cancellation gave'
+                        $recovery = @('--recover', $published.Groups[1].Value, '--recovery-sha256', $published.Groups[2].Value, '--rollback')
+                        $result.recovery = $recovery -join ' '
+                        $again = Invoke-Converter $recovery (Join-Path $dir 'recover-published')
+                        Say "  ntfs2refs $($result.recovery): exit $($again.exit) after $($again.seconds) s"
+                    }
+                }
                 if ($again.exit -ne 0) { throw "the recovery ended with exit $($again.exit): $(($again.stderr -split "`n" | Where-Object { $_ -match '^error' } | Select-Object -Last 1))" }
                 # A run cut off before it wrote anything has nothing to resume:
                 # the recovery gives NTFS back, and says so (#177).

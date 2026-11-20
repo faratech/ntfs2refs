@@ -334,6 +334,8 @@ fn create_owned_domain_inner(
         )?;
     }
     let mut directories = BTreeMap::new();
+    // The files that have other names: only these are decoded again below.
+    let mut linked = Vec::new();
     input.for_each(|index, item| {
         if item.directory
             && directories
@@ -341,6 +343,9 @@ fn create_owned_domain_inner(
                 .is_some()
         {
             return Err(invalid("duplicate canonical hard-link parent"));
+        }
+        if !item.additional_names.is_empty() {
+            linked.push(index);
         }
         Ok(())
     })?;
@@ -497,7 +502,7 @@ fn create_owned_domain_inner(
     change_objects(
         input,
         resources.filter(|_| !recovering).map(|(_, _, payer)| payer),
-        (0..input.len()).map(|index| (index, index, 0)),
+        linked.iter().map(|&index| (index, index, 0)),
         // A name's path, its two lookups and its record.
         1024 * 1024,
         |_| {},

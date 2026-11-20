@@ -545,8 +545,18 @@ impl RootFileDomain for PagedInspection {
     ) -> Result<T> {
         self.files.with_file(ordinal, read)
     }
+    fn file_shared(&self, ordinal: u64) -> Result<std::sync::Arc<FileInventory>> {
+        self.files.file_shared(ordinal)
+    }
     fn find_record(&self, number: u64, sequence: Option<u16>) -> Result<Option<FileInventory>> {
         self.files.find_record(number, sequence)
+    }
+    fn find_record_shared(
+        &self,
+        number: u64,
+        sequence: Option<u16>,
+    ) -> Result<Option<std::sync::Arc<FileInventory>>> {
+        self.files.find_record_shared(number, sequence)
     }
     fn with_record<T>(
         &self,

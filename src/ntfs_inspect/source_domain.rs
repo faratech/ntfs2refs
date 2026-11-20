@@ -3,6 +3,7 @@
 use super::{FileInventory, NtfsGeometry};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Resource quantities supplied by the owning caller, never fixture counts.
 /// Wire pages/chunks bound working buffers; they do not limit source objects.
@@ -116,7 +117,23 @@ pub trait RootFileDomain {
     {
         read(&self.file(ordinal)?)
     }
+    /// The row at `ordinal` to keep, shared: for a caller that holds on to
+    /// the row beyond one read of it. This copies the row through
+    /// [`file`](Self::file); a domain that holds its rows shared hands out
+    /// the one it holds, and the caller is not given a copy for that.
+    fn file_shared(&self, ordinal: u64) -> Result<Arc<FileInventory>> {
+        self.file(ordinal).map(Arc::new)
+    }
     fn find_record(&self, number: u64, sequence: Option<u16>) -> Result<Option<FileInventory>>;
+    /// The record that [`find_record`](Self::find_record) finds to keep,
+    /// shared, on the terms of [`file_shared`](Self::file_shared).
+    fn find_record_shared(
+        &self,
+        number: u64,
+        sequence: Option<u16>,
+    ) -> Result<Option<Arc<FileInventory>>> {
+        Ok(self.find_record(number, sequence)?.map(Arc::new))
+    }
     /// What `read` makes of the record that [`find_record`](Self::find_record)
     /// finds, or `None` where it finds none. A domain that holds the row
     /// lends it: a caller that wants one name of a directory, or its parent,

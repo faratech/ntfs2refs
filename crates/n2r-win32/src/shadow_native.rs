@@ -3738,6 +3738,93 @@ fn residual_input_sha(input: &impl InputDomain, maximum: u64) -> io::Result<Stri
     Ok(hex::encode(digest))
 }
 
+/// The residual expectations that the pass which counts them held to the
+/// input, kept for the pass that reads them.
+///
+/// The residual observation goes through the input twice: before the walk,
+/// to hold every expectation of the provider to the stream it is for and to
+/// count them, and after it, to read each residual. The second time it
+/// decoded every object again and asked the provider for every expectation
+/// again, to derive and validate the list it had derived and validated
+/// before the walk. This is that list.
+///
+/// It is a cache. It is paid for as memory the run can do without
+/// (`reserve_optional`) before it is allocated, and is held where the
+/// ledger takes it back when what the run needs has no room
+/// ([`crate::evict::Evictable`]), which the walk between the two passes may
+/// well ask for. Refused, taken back or not kept at all, the reading pass
+/// derives its list again, as it always did: nothing depends on this.
+struct KeptResiduals {
+    list: Vec<LayoutResidualExpectation>,
+    /// How many the list was paid and allocated for.
+    room: usize,
+    leases: Vec<Box<dyn report_memory::ReportMemoryLease>>,
+    /// What is paid for and not yet taken by an expectation's strings.
+    unspent: u64,
+}
+impl KeptResiduals {
+    /// The strings of the expectations are paid for this much at a time.
+    const BLOCK_BYTES: u64 = 1024 * 1024;
+
+    /// A lease's own allocation and its place in `leases`.
+    fn lease_overhead(payer: &dyn report_memory::ReportMemoryAccountant) -> u64 {
+        payer
+            .lease_heap_bytes()
+            .saturating_add(mem::size_of::<Box<dyn report_memory::ReportMemoryLease>>() as u64)
+    }
+
+    /// Room for `count` expectations, paid for before it is allocated; None
+    /// where the ledger has none for a cache, or `count` is more than can
+    /// be allocated (the caller refuses such a count by itself).
+    fn with_room(payer: &dyn report_memory::ReportMemoryAccountant, count: u64) -> Option<Self> {
+        let room = usize::try_from(count).ok()?;
+        let slots = count.checked_mul(mem::size_of::<LayoutResidualExpectation>() as u64)?;
+        let lease = payer
+            .reserve_optional(slots.checked_add(Self::lease_overhead(payer))?)
+            .ok()?;
+        let mut list = Vec::new();
+        list.try_reserve_exact(room).ok()?;
+        Some(Self {
+            list,
+            room,
+            leases: vec![lease],
+            unspent: 0,
+        })
+    }
+
+    /// Keeps one more expectation. False where the list has no place left
+    /// for it or the ledger no room for its strings: the list is then of no
+    /// use, and the caller gives it up.
+    fn keep(
+        &mut self,
+        payer: &dyn report_memory::ReportMemoryAccountant,
+        expected: LayoutResidualExpectation,
+    ) -> bool {
+        if self.list.len() >= self.room {
+            return false;
+        }
+        let strings = (expected.sha256.capacity() as u64)
+            .saturating_add(2 * expected.stream_name_utf16.capacity() as u64);
+        if self.unspent < strings {
+            let block = Self::BLOCK_BYTES.max(strings);
+            if self.leases.try_reserve(1).is_err() {
+                return false;
+            }
+            let Some(lease) = block
+                .checked_add(Self::lease_overhead(payer))
+                .and_then(|bytes| payer.reserve_optional(bytes).ok())
+            else {
+                return false;
+            };
+            self.leases.push(lease);
+            self.unspent = self.unspent.saturating_add(block);
+        }
+        self.unspent -= strings;
+        self.list.push(expected);
+        true
+    }
+}
+
 pub(crate) fn observe_general_layout_residuals_paged_readonly_domain_with_memory(
     pair: GeneralSourceShadowBinding,
     input: &impl InputDomain,
@@ -3890,8 +3977,28 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
         }
         Ok(expected)
     };
+    // What this pass derives and validates is kept for the pass that reads
+    // the residuals ([`KeptResiduals`]): where something computed over the
+    // held input may be kept at all (the route checks once and no gate is
+    // open) and the ledger has room for a cache.
+    let mut kept = memory
+        .filter(|_| !crate::verify_policy::full_unremembered())
+        .and_then(|payer| KeptResiduals::with_room(payer, provider.len()))
+        .map(crate::evict::Evictable::new);
     let count = required_residuals(input, |ordinal, index, name, length| {
-        validate_expected(ordinal, index, name, length).map(|_| ())
+        let expected = validate_expected(ordinal, index, name, length)?;
+        let held = match (&kept, memory) {
+            (Some(list), Some(payer)) => list
+                .get_mut()
+                .is_some_and(|mut list| list.keep(payer, expected)),
+            _ => true,
+        };
+        if !held {
+            // Taken back by the ledger meanwhile, or no room for one more:
+            // the reading pass derives its list again.
+            kept = None;
+        }
+        Ok(())
     })?;
     if count != provider.len() || count > admission.data_streams {
         return Err(invalid("paged residual complete stream count differs"));
@@ -3955,13 +4062,13 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
         // The object's row, taken on this thread when the residual was
         // gathered: the helper threads read it and never ask for rows.
         row: rows::Pinned<'a>,
-        name: Vec<u16>,
     }
     const RESIDUAL_BATCH: usize = PARALLEL_BATCH;
     let objects = &native.objects;
     let read_one = |residual: &Residual<'_>| -> io::Result<([u8; 16], String)> {
         let expected = &residual.expected;
-        let name = residual.name.as_slice();
+        // The stream's name, which the expectation was held to.
+        let name = expected.stream_name_utf16.as_slice();
         {
             let object = residual.row.row();
             let (before_stream, after_stream) = if name.is_empty() {
@@ -4043,7 +4150,18 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
             })
             .transpose()
     };
-    let observed = required_residuals(input, |ordinal, index, name, length| {
+    /// Where the reading pass has a residual's expectation from.
+    enum Expectation<'a> {
+        /// As the counting pass validated and kept it ([`KeptResiduals`]).
+        Kept(LayoutResidualExpectation),
+        /// Derived from the input and held to the provider again: its
+        /// ordinal, its object, its stream's name and the stream's length.
+        Derived(u64, usize, &'a [u16], u64),
+    }
+    // One residual made ready to be read: its query memory, then the
+    // expectation it is held to, then its object's row, in that order
+    // whichever way the expectation comes.
+    let mut gather = |expectation: Expectation<'_>| -> io::Result<()> {
         // Each residual's query memory is paid for before it is read. If
         // the ledger cannot pay for one more beside those gathered, they
         // are read first; a refusal for a residual by itself is a failure,
@@ -4056,7 +4174,14 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
             }
             Err(error) => return Err(error),
         };
-        let expected = validate_expected(ordinal, index, name, length)?;
+        let expected = match expectation {
+            Expectation::Kept(expected) => expected,
+            Expectation::Derived(ordinal, index, name, length) => {
+                validate_expected(ordinal, index, name, length)?
+            }
+        };
+        // The object the expectation names, which is the one it was held to.
+        let index = expected.object_index;
         if index >= objects.len() {
             return Err(invalid("paged residual native object absent"));
         }
@@ -4083,16 +4208,48 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
             }
         }
         leases.push(lease);
-        batch.push(Residual {
-            expected,
-            row,
-            name: name.to_vec(),
-        });
+        batch.push(Residual { expected, row });
         if batch.len() == RESIDUAL_BATCH {
             read_batch(&mut batch, &mut leases)?;
         }
         Ok(())
-    })?;
+    };
+    // The residuals the counting pass kept are taken from its list, which
+    // is borrowed for one of them at a time: between two the ledger may
+    // take the list back, and the rest is then derived again below. A gate
+    // that is open by now derives all of them again.
+    let mut taken = 0u64;
+    let mut all_kept = false;
+    if let Some(kept) = kept
+        .as_ref()
+        .filter(|_| !crate::verify_policy::full_unremembered())
+    {
+        // The borrow ends inside `map`, before the residual is gathered.
+        while let Some(next) = kept.get().map(|list| {
+            usize::try_from(taken)
+                .ok()
+                .and_then(|at| list.list.get(at).cloned())
+        }) {
+            let Some(expected) = next else {
+                all_kept = taken == count;
+                break;
+            };
+            gather(Expectation::Kept(expected))?;
+            taken += 1;
+        }
+    }
+    drop(kept);
+    let observed = if all_kept {
+        taken
+    } else {
+        required_residuals(input, |ordinal, index, name, length| {
+            if ordinal < taken {
+                // Gathered from the kept list already.
+                return Ok(());
+            }
+            gather(Expectation::Derived(ordinal, index, name, length))
+        })?
+    };
     read_batch(&mut batch, &mut leases)?;
     if observed != count || provider.file_sha256() != provider_sha {
         return Err(invalid("paged residual expectation owner/count changed"));

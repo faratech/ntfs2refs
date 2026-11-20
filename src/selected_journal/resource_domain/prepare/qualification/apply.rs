@@ -708,7 +708,12 @@ impl ResourceReviewedConversion<'_, '_, '_, '_, '_, '_> {
     /// The digest of the selected ranges as the journal leaves them, which
     /// the sealed source was just authenticated against.
     pub(crate) fn new_selected_sha256(&self) -> [u8; 32] {
-        self.owner.prepared.prepared.inner.ticket.new_selected_sha256
+        self.owner
+            .prepared
+            .prepared
+            .inner
+            .ticket
+            .new_selected_sha256
     }
 }
 

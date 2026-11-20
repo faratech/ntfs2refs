@@ -617,6 +617,16 @@ the `conversion` folder of the run under the working directory, and the
 checksum is the SHA-256 of the `preparation-intent.json` in it
 (`Get-FileHash -Algorithm SHA256`).
 
+A run that ends before it prints the line above has recorded nothing to
+recover from, and the volume is online as it was (a shrink is not undone);
+only the working volume it was building may still be attached. A run that
+stops with an error then detaches it itself. One that is cut off cannot: the
+next conversion run, or `ntfs2refs --list` from an elevated terminal,
+detaches it and names the run's folder, which can then be deleted. A run that
+is still going is never touched (each run marks itself as running for as long
+as its process lives); a folder made by an earlier version is only named,
+with the diskpart commands that detach its volume.
+
 The lab ends the converter in two phases of preparation and runs exactly that
 command; the [recovery matrix](recovery-matrix.md#stopped-during-preparation)
 has the attempts. It ends the process. It has not turned the machine off

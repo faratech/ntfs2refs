@@ -719,6 +719,18 @@ it to its run.
 - **`--recheck-everything`** changes *how often*, not what: the full re-reads
   happen at every checkpoint instead of once at the gate. Much slower.
 
+Where two checks prove the same thing, a fast run makes one of them;
+`--verify thorough` and `--recheck-everything` make both:
+
+- **Placing the new volume's extents.** After each move only the mapping of
+  the moved range is read, to see that it landed where it was sent. Each
+  file's complete mapping is compared with every piece placed for it once,
+  when placement ends, instead of after every move. Both views of the
+  destination's allocation are still read before every move.
+- **Writing the changes.** Each changed range is held to its old contents
+  once, before the apply marker, then written and read back against its new
+  contents. It is not read again immediately before it is written.
+
 ### Look before you commit: `--review`
 
 ```powershell

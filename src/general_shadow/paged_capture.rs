@@ -891,7 +891,13 @@ fn capture_selected_inner(
         snapshot.file_bytes == packed,
         "durable literal backing length differs"
     );
-    let artifact = literal_permit.verify_closed_handle(&readonly, &literal_hash)?;
+    // Bytes of the volume, hashed with SHA-256 as they were written: held
+    // as that, whatever they begin with.
+    let artifact = literal_permit.verify_closed_handle_by(
+        n2r_win32::bulk_digest::Algorithm::Sha256,
+        &readonly,
+        &literal_hash,
+    )?;
     let literal = ClosedCaptureLiteral {
         file: RefCell::new(readonly),
         pin: LiteralCapturePin {

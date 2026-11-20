@@ -811,11 +811,7 @@ fn prepared_fingerprint(
                 "fingerprint pages must belong to the actual independent journal GUID volume"
             );
             ensure!(
-                hex::encode(n2r_win32::sha256_native::hash_range(
-                    &mut file,
-                    0,
-                    actual.file_bytes
-                )?) == page.file_sha256
+                hex::encode(n2r_win32::metadata_pages::pinning_digest(&mut file, actual.file_bytes)?) == page.file_sha256
                     && n2r_win32::reference_file::observe_reference_file_handle_with_limit(
                         &file,
                         page.wire_bytes

@@ -415,7 +415,7 @@ impl HeldFile {
         let modified = file.metadata()?.modified()?;
         let _ram = scratch.lease_ram(4 * 1024 * 1024)?;
         ensure!(
-            n2r_win32::sha256_native::hash_range(&mut file, 0, snapshot.file_bytes)? == expected
+            n2r_win32::metadata_pages::pinning_digest(&mut file, snapshot.file_bytes)? == expected
                 && n2r_win32::reference_file::observe_reference_file_handle_with_limit(
                     &file, maximum
                 )? == snapshot
@@ -454,11 +454,7 @@ impl HeldFile {
                 self.snapshot.file_bytes
             )? == self.snapshot
                 && self.file.metadata()?.modified()? == self.modified
-                && n2r_win32::sha256_native::hash_range(
-                    &mut self.file,
-                    0,
-                    self.snapshot.file_bytes
-                )? == self.sha256
+                && n2r_win32::metadata_pages::pinning_digest(&mut self.file, self.snapshot.file_bytes)? == self.sha256
                 && n2r_win32::reference_file::observe_reference_file_handle_with_limit(
                     &self.file,
                     self.snapshot.file_bytes

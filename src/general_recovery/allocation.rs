@@ -66,11 +66,7 @@ impl ResourceExpectationPin {
                 && self.file.metadata()?.modified()? == self.modified,
             "resource expectation identity/metadata changed"
         );
-        let sha = hex::encode(n2r_win32::sha256_native::hash_range(
-            &mut self.file,
-            0,
-            self.snapshot.file_bytes,
-        )?);
+        let sha = hex::encode(n2r_win32::metadata_pages::pinning_digest(&mut self.file, self.snapshot.file_bytes)?);
         ensure!(
             sha == self.sha256
                 && n2r_win32::reference_file::observe_reference_file_handle_with_limit(

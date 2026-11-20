@@ -3664,7 +3664,47 @@ fn required_residuals(
     }
     Ok(count)
 }
+/// What something kept with a held input was computed for, as one value
+/// that fits a slot of [`input_domain::InputDigestMemo`]: the parts, each
+/// with its length.
+fn memo_scope(parts: &[&[u8]]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    for part in parts {
+        hash.update((part.len() as u64).to_le_bytes());
+        hash.update(part);
+    }
+    hash.finalize().into()
+}
+
+/// Where a held input keeps the digest of its residual metadata, and what
+/// that digest was computed for ([`residual_input_sha`]).
+const RESIDUAL_INPUT_DIGEST: &str = "shadow_native::residual_input_sha/digest";
+const RESIDUAL_INPUT_SCOPE: &str = "shadow_native::residual_input_sha/scope";
+
+/// The SHA-256 of the input's metadata as the residual results name it.
+///
+/// Computing it serialises every object of the domain, and the residual
+/// observation asks for it twice: when it starts, and again when it ends to
+/// see that the input is still what it was. A domain that is held and
+/// immutable keeps it between the two where it keeps its input digest
+/// ([`InputDomain::input_digest_memo`]) and on the same terms: nothing is
+/// kept unless the route checks once, and inside a gate it is computed
+/// again, once. The serialisation is refused beyond `maximum` bytes, so
+/// what is kept answers only for the `maximum` it was computed with.
 fn residual_input_sha(input: &impl InputDomain, maximum: u64) -> io::Result<String> {
+    let memo = input.input_digest_memo();
+    let scope = memo_scope(&[b"residual-input-sha256", &maximum.to_le_bytes()]);
+    if let Some(memo) = memo {
+        // Both are asked for, whatever the first answers: inside a gate
+        // each slot has its own turn, and the two are taken together.
+        let digest = memo.get_keyed(RESIDUAL_INPUT_DIGEST);
+        let made_for = memo.get_keyed(RESIDUAL_INPUT_SCOPE);
+        if let (Some(digest), Some(made_for)) = (digest, made_for)
+            && made_for == scope
+        {
+            return Ok(hex::encode(digest));
+        }
+    }
     struct Hash {
         hash: Sha256,
         bytes: u64,
@@ -3690,7 +3730,12 @@ fn residual_input_sha(input: &impl InputDomain, maximum: u64) -> io::Result<Stri
         maximum,
     };
     serde_json::to_writer(&mut hash, &DomainMetadata(input)).map_err(io::Error::other)?;
-    Ok(hex::encode(hash.hash.finalize()))
+    let digest: [u8; 32] = hash.hash.finalize().into();
+    if let Some(memo) = memo {
+        memo.set_keyed(RESIDUAL_INPUT_SCOPE, scope);
+        memo.set_keyed(RESIDUAL_INPUT_DIGEST, digest);
+    }
+    Ok(hex::encode(digest))
 }
 
 pub(crate) fn observe_general_layout_residuals_paged_readonly_domain_with_memory(

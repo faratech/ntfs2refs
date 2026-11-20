@@ -26,6 +26,22 @@ pub fn checks_once() -> bool {
     ONCE.load(SeqCst)
 }
 
+static VERIFY_ONCE: AtomicBool = AtomicBool::new(false);
+
+/// Selects "verify once" for the rest of the process: the run was started
+/// with `--verify fast` (the default) and without `--recheck-everything`.
+/// A pass that only looks again at what another pass of the same run checks
+/// is then left out; a pass that produces something a later step needs
+/// never is. A route that never calls this (`--verify thorough`, a recovery,
+/// every test) keeps every pass.
+pub fn verify_once() {
+    VERIFY_ONCE.store(true, SeqCst);
+}
+
+pub fn verifies_once() -> bool {
+    VERIFY_ONCE.load(SeqCst)
+}
+
 /// The full verification that precedes the first write to the source. While
 /// one is alive, every full check runs for real, once.
 pub struct Gate(u64);

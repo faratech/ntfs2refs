@@ -107,6 +107,10 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
             events.checkpoint()?;
         }
     }
+    // A run whose handoff follows its verification (#148): its rollback is
+    // open until the finalizer has verified the converted volume and
+    // written the handoff, and a resume verifies before it hands off.
+    let verify_first = recovery.verify_before_handoff();
     let mut replayed = None;
     // A run cut off after it printed its "To recover:" line but before its
     // apply intent was durable wrote nothing to the source: the only way it
@@ -125,8 +129,13 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
     // fingerprint of its frozen source before NTFS is put online. The
     // fingerprint is reopened here, before anything is written, so that a
     // run whose records cannot be checked is refused with nothing changed.
-    let restored_source_check = if rollback && crate::review::check_restored_source(review, initial)
-    {
+    let restored_source_check = if rollback
+        && (crate::review::check_restored_source(review, initial)
+            || crate::verify_first::check_restored_source(
+                verify_first,
+                initial,
+                recovery.ticket().old_restored_selected_sha256.is_some(),
+            )) {
         Some(
             crate::review::reopen_source_fingerprint(
                 publication
@@ -136,7 +145,9 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
                 recovery.source_inspection_sha256(),
                 recovery.runtime_scratch(),
             )
-            .context("rollback of a review: nothing was written")?,
+            .context(
+                "rollback: the fingerprint of the source as it was frozen, which the restored                  volume is checked against, could not be reopened; nothing was written",
+            )?,
         )
     } else {
         None
@@ -151,6 +162,14 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
                 &mut events,
             )?;
             events.checkpoint()?;
+        }
+        // Sealed for its verification with every new byte, and recorded so:
+        // nothing is replayed and the disk is not made writable. The
+        // finalizer below verifies the volume and then writes the handoff.
+        (false, SelectedLifecycle::ApplyIntent) if recovery.sealed_for_verification()? => {
+            println!(
+                "The volume is sealed with every new sector written; verifying it before the handoff."
+            );
         }
         (false, SelectedLifecycle::ApplyIntent)
         | (true, SelectedLifecycle::ApplyIntent | SelectedLifecycle::RollbackIntent) => {
@@ -188,19 +207,20 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
     }
     if rollback {
         if let Some(fingerprint) = &restored_source_check {
-            // Today nothing checks the bytes outside the journaled ranges
-            // after a rollback; for a review run, whose converted volume was
-            // mounted, the restored NTFS volume is held to the fingerprint
-            // of the frozen source before it is put online.
+            // Nothing else checks the bytes outside the journaled ranges
+            // after a rollback; for a review run and a run whose handoff
+            // follows its verification, whose converted volume may have
+            // been mounted, the restored NTFS volume is held to the
+            // fingerprint of the frozen source before it is put online.
             events.phase("resource-review-restored-source-check");
             println!("Checking the restored NTFS volume against the source as it was frozen.");
             ensure!(
                 recovery.observed_lifecycle() == SelectedLifecycle::Aborted,
-                "rollback of a review: the journal does not record the rollback as done"
+                "rollback: the journal does not record the rollback as done"
             );
             ensure!(
                 recovery.source_matches_frozen_fingerprint(fingerprint, &mut events)?,
-                "rollback of a review: the restored NTFS volume differs from the fingerprint of \
+                "rollback: the restored NTFS volume differs from the fingerprint of \
                  its source as it was frozen before the conversion. It is left offline; the \
                  journal records the rollback. Nothing more is done: restore the volume from a \
                  backup"
@@ -270,7 +290,10 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
     }
     // HND is terminal. Release the original source/journal owners before the
     // common finalizer reopens and independently authenticates those same
-    // pinned artifacts; no opposite-direction replay is attempted.
+    // pinned artifacts; no opposite-direction replay is attempted. A run
+    // whose handoff follows its verification is still beside its apply
+    // intent here, every new byte on its source: the finalizer verifies the
+    // volume and writes the handoff, or stops with rollback open.
     drop(recovery);
     drop(events);
     drop(scratch);

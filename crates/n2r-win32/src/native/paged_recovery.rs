@@ -648,7 +648,7 @@ impl NewBytesState {
         match self {
             Self::Handoff => check_handoff_lifecycle(journal, pins),
             Self::ReviewApply => check_lifecycle(journal, pins, PagedRecoveryDirection::Resume)
-                .map_err(|_| invalid("a review stop requires the apply intent alone")),
+                .map_err(|_| invalid("a stop before the handoff requires the apply intent alone")),
         }
     }
     /// The refusal: the handoff's words, which every run before the review
@@ -719,7 +719,7 @@ fn verify_paged_new_bytes<R: Read + Seek>(
     {
         return Err(state.say(
             "handoff journal must be on a different physical disk",
-            "review journal must be on a different physical disk",
+            "the journal of a stop before the handoff must be on a different physical disk",
         ));
     }
     let facts = policy.facts()?;
@@ -732,7 +732,7 @@ fn verify_paged_new_bytes<R: Read + Seek>(
     {
         return Err(state.say(
             "handoff policy, source geometry or journal capacity differs",
-            "review policy, source geometry or journal capacity differs",
+            "before the handoff: policy, source geometry or journal capacity differs",
         ));
     }
     let before = verify_journal_owner(journal, pins, facts.journal_length)?;
@@ -747,7 +747,7 @@ fn verify_paged_new_bytes<R: Read + Seek>(
     {
         return Err(state.say(
             "handoff journal immutable body differs",
-            "review journal immutable body differs",
+            "before the handoff: the journal immutable body differs",
         ));
     }
     verify_index_against_journal(journal, policy, pins)?;
@@ -765,7 +765,7 @@ fn verify_paged_new_bytes<R: Read + Seek>(
     {
         return Err(state.say(
             "handoff journal changed during selected-byte verification",
-            "review journal changed during selected-byte verification",
+            "before the handoff: the journal changed during selected-byte verification",
         ));
     }
     verify_index_against_journal(journal, policy, pins)?;
@@ -778,7 +778,7 @@ fn verify_paged_new_bytes<R: Read + Seek>(
     {
         return Err(state.say(
             "handoff held journal identity changed",
-            "review held journal identity changed",
+            "before the handoff: the held journal identity changed",
         ));
     }
     Ok(())
@@ -952,7 +952,10 @@ impl GeneralFrozenPartition {
             .ok_or_else(|| invalid("protected converted observer requires V4 admission"))?;
         let (report, before, observed_readonly, after) = self
             .with_readonly_refs_binding_observation(events, |protected| {
-                crate::lab_hold::reached("finalize-source-readonly");
+                crate::lab_hold::reached_in_verification(
+                    "verify-source-readonly",
+                    "finalize-source-readonly",
+                );
                 let actual_label = protected_refs_label(protected.volume())?;
                 let enrollment_label = crate::volume_label::VolumeLabel::from_text("n2r-retained-shadow")?;
                 let effective_label = match expected_label {
@@ -1019,7 +1022,10 @@ impl GeneralFrozenPartition {
             aliases.plan_digest(),
         )?;
         let ((report,observed_aliases),before,observed_readonly,after)=self.with_readonly_refs_binding_observation(events,|protected|{
-            crate::lab_hold::reached("finalize-source-readonly");
+            crate::lab_hold::reached_in_verification(
+                    "verify-source-readonly",
+                    "finalize-source-readonly",
+                );
             let actual_label=protected_refs_label(protected.volume())?;
             let enrollment_label=crate::volume_label::VolumeLabel::from_text("n2r-retained-shadow")?;
             let effective_label=match expected_label{
@@ -1097,7 +1103,10 @@ impl GeneralFrozenPartition {
         let plan_digest = expectations.semantic_sha256()?;
         let ((report, observed_aliases), before, observed_readonly, after) = self
             .with_readonly_refs_binding_observation(events, |protected| {
-                crate::lab_hold::reached("finalize-source-readonly");
+                crate::lab_hold::reached_in_verification(
+                    "verify-source-readonly",
+                    "finalize-source-readonly",
+                );
                 let actual_label = protected_refs_label(protected.volume())?;
                 let enrollment_label =
                     crate::volume_label::VolumeLabel::from_text("n2r-retained-shadow")?;
@@ -1289,10 +1298,11 @@ impl GeneralFrozenPartition {
         Ok(())
     }
 
-    /// The review stop's reseal (#110): the same as the handoff's above, but
-    /// beside the apply intent alone, with every selected byte exactly NEW.
-    /// Only a run whose authenticated publication records that it stops for
-    /// a review calls this; the handoff is not written and rollback stays
+    /// The reseal before the handoff (the review stop, #110, and a run whose
+    /// handoff follows its verification, #148): the same as the handoff's
+    /// above, but beside the apply intent alone, with every selected byte
+    /// exactly NEW. Only a run whose authenticated publication records one
+    /// of the two calls this; the handoff is not written and rollback stays
     /// open. This never mounts the volume.
     pub fn seal_paged_review_for_observation(
         &mut self,
@@ -1304,7 +1314,7 @@ impl GeneralFrozenPartition {
         let before = self.state(events)?;
         if before.disk_attributes != OFFLINE {
             return Err(invalid(
-                "review reseal requires the same offline source owner",
+                "the reseal before the handoff requires the same offline source owner",
             ));
         }
         let binding = self.binding.clone();
@@ -1312,7 +1322,7 @@ impl GeneralFrozenPartition {
         verify_paged_review_stop(self, length, &binding, policy, journal, pins)?;
         if self.state(events)? != before {
             return Err(invalid(
-                "review source changed during selected NEW verification",
+                "before the handoff: the source changed during selected NEW verification",
             ));
         }
         let mut expected = before;
@@ -1320,13 +1330,15 @@ impl GeneralFrozenPartition {
         set_attributes(&self.file, OFFLINE | READ_ONLY, events)?;
         if general_disk_state(&self.file, &self.binding, events)? != expected {
             return Err(invalid(
-                "review read-only reseal identity or attributes differ",
+                "before the handoff: read-only reseal identity or attributes differ",
             ));
         }
         let path = format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number);
         let readonly = device_file(&path, false, true)?;
         if general_disk_state(&readonly, &self.binding, events)? != expected {
-            return Err(invalid("review readonly source handle route differs"));
+            return Err(invalid(
+                "before the handoff: readonly source handle route differs",
+            ));
         }
         self.file = readonly;
         self.frozen_state = expected;
@@ -1512,7 +1524,7 @@ impl GeneralFrozenPartition {
             return Err(invalid(match accepted {
                 FrozenSelected::Old => "actual excluded source selected bytes differ",
                 FrozenSelected::OldOrNew => {
-                    "the frozen source of a review run holds neither exactly the old nor \
+                    "the frozen source of a run that seals before its handoff holds neither exactly the old nor \
                      exactly the new selected bytes"
                 }
             }));
@@ -1772,6 +1784,29 @@ impl GeneralExclusiveRecoveryTarget {
         self.inner
             .inner
             .bring_online_after_paged_abort(policy, journal, pins, events)
+    }
+
+    /// The same beside the apply intent alone, for a run whose authenticated
+    /// publication records that its handoff follows its verification (#148):
+    /// a recovery replayed every new byte and seals the source again.
+    pub fn seal_paged_review_for_observation(
+        self,
+        policy: &HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &PagedRecoveryPins<'_>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralFrozenPartition> {
+        if self.inner.write_poisoned
+            || self.inner.policy.is_some()
+            || self.inner.paged_policy.is_some()
+        {
+            return Err(invalid(
+                "the reseal before the handoff requires an unarmed, unpoisoned recovery target",
+            ));
+        }
+        let mut source = self.inner.inner;
+        source.seal_paged_review_for_observation(policy, journal, pins, events)?;
+        Ok(source)
     }
 
     /// Return the same actual HND source to OFFLINE|READ_ONLY for a protected

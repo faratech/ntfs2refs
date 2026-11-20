@@ -1,5 +1,12 @@
 //! Complete a real resource-profile HND through a protected native observer.
 //! No source admission or replay authority is recreated during finalization.
+//!
+//! A run whose handoff follows its verification (#148, `verify_first`) comes
+//! here beside its apply intent alone: the same steps authenticate the new
+//! bytes, seal the source and verify the converted volume mounted read-only,
+//! and only then is the handoff written, with the source still sealed. A
+//! failure before that leaves rollback open and is returned as an
+//! `UncommittedVerificationError`.
 use crate::{
     artifact_arena::{ArtifactArena, ArtifactGroup},
     general_composite_target::paged_memory::ArenaReportMemory,
@@ -124,6 +131,35 @@ impl std::error::Error for CommittedFinalizationError {
     }
 }
 
+/// The verification of a run whose handoff follows it (#148) did not pass,
+/// or could not be made: the handoff is not written, the source is offline
+/// and rollback is open. Nothing is rolled back here; the message names the
+/// two ways on.
+#[derive(Debug)]
+pub(crate) struct UncommittedVerificationError {
+    directory: std::path::PathBuf,
+    publication_sha256: [u8; 32],
+    cause: anyhow::Error,
+}
+impl std::fmt::Display for UncommittedVerificationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}\n  What stopped it: {:#}",
+            crate::verify_first::failed_before_handoff(
+                &self.directory,
+                &hex::encode(self.publication_sha256)
+            ),
+            self.cause
+        )
+    }
+}
+impl std::error::Error for UncommittedVerificationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.cause.as_ref())
+    }
+}
+
 pub(crate) fn finalize_resource_handoff(
     pair: GeneralSourceShadowBinding,
     journal: GeneralJournalStorageBinding,
@@ -170,12 +206,53 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
     journal: GeneralJournalStorageBinding,
     publication: &Path,
     publication_sha256: [u8; 32],
+    resources: ResourceBudget,
+    output: &Path,
+    observer: &mut O,
+    windows_aliases: Option<
+        std::sync::Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>,
+    >,
+) -> Result<serde_json::Value> {
+    // Set once the records are reopened: whether the run is still before
+    // its handoff. Cleared when the handoff is written.
+    let before_handoff = std::cell::Cell::new(false);
+    let finalized = finalize_reopened(
+        pair,
+        journal,
+        publication,
+        publication_sha256,
+        resources,
+        output,
+        observer,
+        windows_aliases,
+        &before_handoff,
+    );
+    // The hold points of a verification before the handoff carry their own
+    // names only while this call verifies one.
+    n2r_win32::lab_hold::verifying_before_handoff(false);
+    match finalized {
+        Err(cause) if before_handoff.get() => Err(UncommittedVerificationError {
+            directory: publication.parent().unwrap_or(publication).to_path_buf(),
+            publication_sha256,
+            cause,
+        }
+        .into()),
+        other => other,
+    }
+}
+
+fn finalize_reopened<O: PreparationObserver>(
+    pair: GeneralSourceShadowBinding,
+    journal: GeneralJournalStorageBinding,
+    publication: &Path,
+    publication_sha256: [u8; 32],
     mut resources: ResourceBudget,
     output: &Path,
     observer: &mut O,
     windows_aliases: Option<
         std::sync::Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>,
     >,
+    before_handoff: &std::cell::Cell<bool>,
 ) -> Result<serde_json::Value> {
     resources.validate()?;
     ensure!(
@@ -219,8 +296,18 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
     )
     .context("finalization: reopening the published recovery records")?;
     events.checkpoint()?;
+    // A run whose handoff follows its verification (#148): everything up to
+    // the handoff below is made beside the apply intent alone, and a failure
+    // there leaves rollback open.
+    let verifies_first = recovery.verifying_before_handoff();
+    before_handoff.set(verifies_first);
+    n2r_win32::lab_hold::verifying_before_handoff(verifies_first);
     events.phase("resource-handoff-authentication");
-    n2r_win32::perf::step("authenticate handoff");
+    n2r_win32::perf::step(if verifies_first {
+        "authenticate new bytes before handoff"
+    } else {
+        "authenticate handoff"
+    });
     let handoff = recovery
         .verify_handoff(
             &group,
@@ -228,8 +315,16 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
             budget.scratch_bytes,
             &mut events,
         )
-        .context("finalization: authenticating the handoff")?;
-    n2r_win32::lab_hold::reached("finalize-authenticated");
+        .context(if verifies_first {
+            "finalization: authenticating the apply intent and the new bytes before the handoff"
+        } else {
+            "finalization: authenticating the handoff"
+        })?;
+    n2r_win32::lab_hold::reached(if verifies_first {
+        "verify-authenticated"
+    } else {
+        "finalize-authenticated"
+    });
     n2r_win32::perf::step("reopen verification metadata");
     let metadata = ReopenedVerificationMetadata::open(&handoff)
         .context("finalization: reopening verification metadata")?;
@@ -378,6 +473,30 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
     n2r_win32::perf::step("compare maps");
     let maps = metadata.compare_protected(&protected, &native)?;
     let matching_bindings = maps.bindings();
+    if protected.before_handoff() {
+        // The one verification of the converted volume has passed. Only now
+        // is the handoff written: rollback closes here and nowhere earlier.
+        events.checkpoint()?;
+        events.phase("resource-handoff-after-verification");
+        n2r_win32::lab_hold::reached("verify-passed");
+        n2r_win32::perf::step("write handoff marker");
+        println!("Converted volume verified; recording handoff.");
+        protected
+            .write_handoff_after_verified_observation(
+                &native,
+                &maps,
+                &group,
+                &output.join("handoff-after-verification.index"),
+                budget.scratch_bytes,
+                &mut events,
+            )
+            .context("finalization: writing the handoff after the verification")?;
+        before_handoff.set(false);
+        n2r_win32::lab_hold::verifying_before_handoff(false);
+        events.checkpoint()?;
+        // The same state as a handoff written in the apply step and sealed.
+        n2r_win32::lab_hold::reached("handoff-sealed");
+    }
     events.phase("resource-verified-handoff-online");
     n2r_win32::lab_hold::reached("finalize-before-online");
     n2r_win32::perf::step("bring online");

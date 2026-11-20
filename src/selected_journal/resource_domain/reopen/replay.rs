@@ -86,10 +86,19 @@ pub(super) struct MarkerlessReplayResult {
     pub handoff: Option<SelectedResult>,
 }
 
+/// Where a resumed replay ends: at the handoff, as every run did before, or
+/// before it, for a run whose handoff follows its verification (#148).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum ResumeEnd {
+    Handoff,
+    BeforeHandoff,
+}
+
 pub(super) enum MarkerlessRecoveryTarget {
     Frozen(GeneralFrozenPartition),
     /// The frozen source of a run whose authenticated publication records
-    /// that it stops for a review (#110): exactly old or exactly new.
+    /// that it stops for a review (#110) or that its handoff follows its
+    /// verification (#148): exactly old or exactly new.
     FrozenReview(GeneralFrozenPartition),
     Activated(GeneralExclusiveRecoveryTarget),
 }
@@ -189,6 +198,7 @@ impl BoundJournalObservation<'_> {
         target: MarkerlessRecoveryTarget,
         expected_source: &n2r_win32::general_layout::GeneralDiskBinding,
         direction: PagedRecoveryDirection,
+        resume_end: ResumeEnd,
         after_resume: F,
         events: &mut Vec<NativeEvent>,
     ) -> Result<MarkerlessReplayResult> {
@@ -253,9 +263,8 @@ impl BoundJournalObservation<'_> {
         };
         let (selected, handoff) = match direction {
             PagedRecoveryDirection::Resume => {
-                let (selected, handoff) =
-                    self.observation.resume_guarded(authority, after_resume)?;
-                (selected, Some(handoff))
+                self.observation
+                    .resume_guarded(authority, resume_end, after_resume)?
             }
             PagedRecoveryDirection::Rollback => {
                 let selected = self.observation.rollback_guarded(authority)?;
@@ -316,10 +325,11 @@ impl BoundJournalObservation<'_> {
         Ok(digest)
     }
 
-    /// The review stop's verification (#110): the apply intent alone, and
-    /// every selected byte exactly NEW, through the same held offline target.
-    /// Like the handoff's above, it is read-only and claims nothing about the
-    /// converted namespace.
+    /// The verification before a handoff (the review stop, #110, and a run
+    /// whose handoff follows its verification, #148): the apply intent alone,
+    /// and every selected byte exactly NEW, through the same held offline
+    /// target. Like the handoff's above, it is read-only and claims nothing
+    /// about the converted namespace.
     pub(super) fn verify_review_data<R: Read + Seek>(
         &mut self,
         target: &mut R,
@@ -328,7 +338,7 @@ impl BoundJournalObservation<'_> {
         self.observation.revalidate_index()?;
         ensure!(
             self.observation.lifecycle()? == SelectedLifecycle::ApplyIntent,
-            "a review stop requires the apply intent alone"
+            "verification before the handoff requires the apply intent alone"
         );
         let expected = self.observation.ticket.new_selected_sha256;
         let digest = if n2r_win32::selected_new_bytes_verified(
@@ -337,7 +347,7 @@ impl BoundJournalObservation<'_> {
         ) {
             ensure!(
                 target_length == self.observation.ticket.image_length,
-                "review target length differs"
+                "target length differs before the handoff"
             );
             expected
         } else {
@@ -346,11 +356,49 @@ impl BoundJournalObservation<'_> {
         };
         ensure!(
             self.observation.lifecycle()? == SelectedLifecycle::ApplyIntent,
-            "review lifecycle changed during target verification"
+            "the lifecycle changed during target verification before the handoff"
         );
         n2r_win32::note_selected_new_bytes_verified(
             &self.observation.ticket.immutable_sha256,
             &expected,
+        );
+        Ok(digest)
+    }
+
+    /// Writes the handoff of a run whose handoff follows its verification
+    /// (#148): the apply intent alone and every selected byte exactly NEW
+    /// are authenticated through the same held, sealed source first; the
+    /// marker is then written, flushed and read back as a replay's is. The
+    /// caller holds the proof that the converted volume passed its
+    /// verification; nothing is written to the source.
+    pub(super) fn write_handoff_after_verification<R: Read + Seek>(
+        &mut self,
+        target: &mut R,
+        target_length: u64,
+    ) -> Result<[u8; 32]> {
+        ensure!(
+            self.observation.ticket.marker_profile.is_none()
+                && self.facts.marker_native_qualified.is_none(),
+            "a handoff after the verification supports markerless journals only"
+        );
+        let digest = self.verify_review_data(target, target_length)?;
+        let (apply, rollback) =
+            sj::read_markers(self.observation.journal, self.observation.ticket)?;
+        ensure!(
+            apply && !rollback,
+            "handoff requires completed forward intent"
+        );
+        sj::write_lifecycle_marker(
+            self.observation.journal,
+            self.observation.ticket,
+            MarkerKind::Handoff,
+        )?;
+        self.observation
+            .journal
+            .require_native_mount_barriers(self.observation.ticket)?;
+        ensure!(
+            self.observation.lifecycle()? == SelectedLifecycle::Handoff,
+            "the handoff marker did not read back after the verification"
         );
         Ok(digest)
     }
@@ -823,8 +871,9 @@ impl JournalObservation<'_> {
     fn resume_guarded<F: FnOnce(&SelectedResult) -> Result<()>>(
         mut self,
         authority: ExcludedRecoveryAuthority<'_>,
+        end: ResumeEnd,
         after_resume: F,
-    ) -> Result<(SelectedResult, SelectedResult)> {
+    ) -> Result<(SelectedResult, Option<SelectedResult>)> {
         ensure!(
             sj::classify(self.journal, self.ticket)? == SelectedLifecycle::ApplyIntent,
             "resume requires observed apply intent"
@@ -842,6 +891,15 @@ impl JournalObservation<'_> {
             Some(self.ticket.new_selected_sha256),
             false,
         )?;
+        if end == ResumeEnd::BeforeHandoff {
+            // Every new byte is on the source again; the handoff is left to
+            // the finalizer, which writes it after its verification.
+            ensure!(
+                digest == resumed.selected_sha256,
+                "the replayed source changed before it could be sealed"
+            );
+            return Ok((resumed, None));
+        }
         sj::write_lifecycle_marker(self.journal, self.ticket, MarkerKind::Handoff)?;
         self.journal.require_native_mount_barriers(self.ticket)?;
         let closed = SelectedResult {
@@ -853,7 +911,7 @@ impl JournalObservation<'_> {
             conversion_qualified: false,
             old_restoration_bytes: None,
         };
-        Ok((resumed, closed))
+        Ok((resumed, Some(closed)))
     }
 
     fn rollback_guarded(

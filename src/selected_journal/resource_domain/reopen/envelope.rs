@@ -110,6 +110,10 @@ struct Publication {
     /// for such a run. Nothing else may be recorded here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     review_before_handoff: Option<bool>,
+    /// A run whose handoff follows the verification of the converted volume
+    /// (#148), written only for such a run. Nothing else may be recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    verify_before_handoff: Option<bool>,
     serialized_publication_grants_authority: bool,
 }
 
@@ -136,6 +140,19 @@ fn adopt_review(recorded: Option<bool>, route_has_review: bool) -> Result<bool> 
         Some(true) if route_has_review => Ok(true),
         Some(_) => anyhow::bail!(
             "the recovery publication records a review this recovery route does not have"
+        ),
+    }
+}
+
+/// Whether the publication records that the handoff follows the
+/// verification (#148). Only `true` may be recorded, and only by a
+/// whole-disk run: the partition route hands off in its apply step.
+fn adopt_verify_first(recorded: Option<bool>, route_verifies_first: bool) -> Result<bool> {
+    match recorded {
+        None => Ok(false),
+        Some(true) if route_verifies_first => Ok(true),
+        Some(_) => anyhow::bail!(
+            "the recovery publication records a handoff after the verification, which this              recovery route does not have"
         ),
     }
 }
@@ -498,12 +515,19 @@ fn interrupted_verification_left_source_online(
 /// the original and the new bytes instead of expecting the original alone
 /// (runc-cut-apply-10: "selected bytes differ" after a power cut halfway
 /// through apply). A prepared run that never wrote keeps the frozen state.
+///
+/// A run whose handoff follows its verification (#148) seals its source
+/// again under the apply intent alone, and records that. `stays_sealed` is
+/// that record's answer (`verify_first::stays_sealed_in_recovery_environment`):
+/// the writer was done, and the disk is left as the run left it.
 fn restore_writer_state_lost_in_recovery_environment(
     source: &GeneralDiskBinding,
     lifecycle: SelectedLifecycle,
+    stays_sealed: bool,
     events: &mut Vec<NativeEvent>,
 ) -> Result<()> {
     if !n2r_win32::offline_environment::in_recovery_environment()
+        || stays_sealed
         || !matches!(
             lifecycle,
             SelectedLifecycle::ApplyIntent
@@ -568,6 +592,54 @@ fn reseal_after_interrupted_verification(
         source.disk_number
     );
     Ok(changed)
+}
+
+/// The same for a run whose handoff follows its verification (#148): its
+/// verification runs under the apply intent alone, after the seal is
+/// recorded, with the disk online and read-only meanwhile. A review run's
+/// stop is in the same state and is sealed by `reseal_review_stop` below,
+/// which also refuses what a review must refuse; it is left to that.
+fn reseal_after_interrupted_verification_before_handoff(
+    source: &GeneralDiskBinding,
+    verify_before_handoff: bool,
+    review: bool,
+    lifecycle: SelectedLifecycle,
+    seal_recorded: bool,
+    events: &mut Vec<NativeEvent>,
+) -> Result<()> {
+    if review
+        || !verify_before_handoff
+        || lifecycle != SelectedLifecycle::ApplyIntent
+        || !seal_recorded
+    {
+        return Ok(());
+    }
+    let state = n2r_win32::observe_general_disk_state_readonly(source.clone(), events)
+        .context("observing the converted source disk before reopening it")?;
+    if !crate::verify_first::interrupted_verification_left_source_online(
+        verify_before_handoff,
+        lifecycle,
+        state.disk_attributes,
+        seal_recorded,
+    ) {
+        return Ok(());
+    }
+    let (sealed, _) = GeneralFrozenPartition::restore_exclusion(source.clone(), events)
+        .with_context(|| {
+            format!(
+                "disk {} was left online and read-only by a verification before the handoff \
+                 that did not finish; sealing it again failed (close anything that has its \
+                 volume open and retry)",
+                source.disk_number
+            )
+        })?;
+    drop(sealed);
+    eprintln!(
+        "Disk {} was online and read-only, as an interrupted verification before the handoff \
+         leaves it; it is sealed again and recovery continues.",
+        source.disk_number
+    );
+    Ok(())
 }
 
 /// Seals a review run's stop (#110) again before recovery reopens it: the
@@ -664,6 +736,20 @@ mod review_publication_tests {
     }
 }
 
+/// The same for a run whose handoff follows its verification (#148): its
+/// finalizer writes the handoff while the source is sealed offline and
+/// read-only (3), so a torn one is settled there as well as where every
+/// other run writes it.
+fn marker_source_attributes_of_run(
+    marker: crate::interrupted_marker::Marker,
+    verify_before_handoff: bool,
+) -> &'static [u64] {
+    match marker {
+        crate::interrupted_marker::Marker::Handoff if verify_before_handoff => &[1, 3],
+        marker => marker_source_attributes(marker),
+    }
+}
+
 #[cfg(test)]
 mod marker_source_state_tests {
     use super::marker_source_attributes as written_in;
@@ -710,6 +796,7 @@ fn settle_interrupted_marker(
     ticket: &super::sj::SelectedTicket,
     path: &Path,
     whole_disk_source: Option<&GeneralDiskBinding>,
+    verify_before_handoff: bool,
     events: &mut Vec<NativeEvent>,
 ) -> Result<()> {
     let (journal, _) = journal.split_for_observation()?;
@@ -730,7 +817,7 @@ fn settle_interrupted_marker(
             path,
             source.disk_number,
             state.disk_attributes,
-            marker_source_attributes(found.marker),
+            marker_source_attributes_of_run(found.marker, verify_before_handoff),
         )?;
     }
     let settled = super::sj::settle_interrupted_marker(journal, ticket)
@@ -948,6 +1035,7 @@ impl ReopenedPartitionResourceRecovery {
         adopt_target_cluster(publication.target_cluster_bytes)?;
         adopt_target_refs_version(publication.target_refs_version)?;
         adopt_review(publication.review_before_handoff, false)?;
+        adopt_verify_first(publication.verify_before_handoff, false)?;
         let mut canonical = HashSink {
             bytes: 0,
             maximum: size,
@@ -1281,6 +1369,7 @@ impl ReopenedPartitionResourceRecovery {
         adopt_target_cluster(publication.target_cluster_bytes)?;
         adopt_target_refs_version(publication.target_refs_version)?;
         adopt_review(publication.review_before_handoff, false)?;
+        adopt_verify_first(publication.verify_before_handoff, false)?;
         let mut canonical = HashSink {
             bytes: 0,
             maximum: size,
@@ -1509,6 +1598,7 @@ impl ReopenedPartitionResourceRecovery {
                 locator.ticket(),
                 locator.journal_path(),
                 None,
+                false,
                 events,
             )?;
         }
@@ -1841,8 +1931,11 @@ impl<'a> VerifiedResourceHandoff<'a> {
     ) -> Result<VerifiedProtectedHandoff<'a>> {
         let recovery = self.recovery;
         recovery.revalidate(events)?;
+        // A run whose handoff follows its verification (#148) is sealed and
+        // verified beside its apply intent alone.
+        let before_handoff = recovery.verifying_before_handoff();
         ensure!(
-            recovery.initial_lifecycle == SelectedLifecycle::Handoff
+            (recovery.initial_lifecycle == SelectedLifecycle::Handoff || before_handoff)
                 && self.selected_sha256 == recovery.locator.ticket().new_selected_sha256,
             "actual retained HND witness differs"
         );
@@ -1857,8 +1950,8 @@ impl<'a> VerifiedResourceHandoff<'a> {
             maximum_index_bytes,
         )?;
         ensure!(
-            bound.lifecycle()? == SelectedLifecycle::Handoff,
-            "actual held journal no longer reports HND"
+            bound.lifecycle()? == recovery.initial_lifecycle,
+            "actual held journal no longer reports the lifecycle that was authenticated"
         );
         let BoundJournalObservation {
             mut observation,
@@ -1883,6 +1976,11 @@ impl<'a> VerifiedResourceHandoff<'a> {
         let result = {
             let journal = observation.journal.markerless_recovery_file()?;
             match target {
+                // A recovery of such a run replayed every new byte and left
+                // the handoff unwritten: sealed beside the apply intent.
+                ObservedTarget::Activated(target) if before_handoff => {
+                    target.seal_paged_review_for_observation(&policy, journal, &pins, events)
+                }
                 ObservedTarget::Activated(target) => {
                     target.seal_paged_handoff_for_observation(&policy, journal, &pins, events)
                 }
@@ -1899,6 +1997,17 @@ impl<'a> VerifiedResourceHandoff<'a> {
         );
         recovery.initial_state = after;
         recovery.target = Some(ObservedTarget::Frozen(source));
+        if before_handoff {
+            // Sealed with every new byte and no writer: recorded before the
+            // volume is mounted for its verification, for a recovery
+            // environment, where the disk's attributes do not say it.
+            crate::verify_first::record_seal(
+                &crate::verify_first::record_path(&recovery.publication_path())?,
+                recovery.publication_file.sha256,
+                &recovery.publication.source,
+                recovery.locator.ticket().new_selected_sha256,
+            )?;
+        }
         recovery.revalidate(events)?;
         Ok(VerifiedProtectedHandoff {
             recovery,
@@ -1918,7 +2027,8 @@ impl<'a> VerifiedProtectedHandoff<'a> {
     /// any fresh apply still requires a different actual clear journal/owner.
     pub(crate) fn source_mut(&mut self) -> Result<&mut GeneralFrozenPartition> {
         ensure!(
-            self.recovery.initial_lifecycle == SelectedLifecycle::Handoff,
+            self.recovery.initial_lifecycle == SelectedLifecycle::Handoff
+                || self.recovery.verifying_before_handoff(),
             "protected converted observation requires durable HND"
         );
         match self
@@ -1947,7 +2057,21 @@ impl<'a> VerifiedProtectedHandoff<'a> {
         maximum_index_bytes: u64,
         events: &mut Vec<NativeEvent>,
     ) -> Result<&'a mut ReopenedResourceRecovery> {
-        map_proof.require_same(&self, observation)?;
+        self.require_verified_observation(observation, map_proof, SelectedLifecycle::Handoff)?;
+        self.finish_online(observation, group, index_path, maximum_index_bytes, events)
+    }
+
+    /// The proof every step after the protected observation takes: the same
+    /// actual observation of this sealed source, its exact reopened-map
+    /// comparison and its known-content coverage, beside the lifecycle the
+    /// step is made in.
+    fn require_verified_observation(
+        &self,
+        observation: &n2r_win32::GeneralLiveConvertedObservation,
+        map_proof: &crate::general_reconstruct::fast_verification::v4_maps::reopened::VerifiedMapComparison<'_>,
+        lifecycle: SelectedLifecycle,
+    ) -> Result<()> {
+        map_proof.require_same(self, observation)?;
         let mut expected_readonly = self.recovery.initial_state.clone();
         expected_readonly.disk_attributes = 2;
         let report = observation.report();
@@ -1960,7 +2084,7 @@ impl<'a> VerifiedProtectedHandoff<'a> {
             .as_ref()
             .context("protected known-content proof absent")?;
         ensure!(
-            self.recovery.initial_lifecycle == SelectedLifecycle::Handoff
+            self.recovery.initial_lifecycle == lifecycle
                 && self.selected_sha256 == self.recovery.locator.ticket().new_selected_sha256
                 && observation.before() == &self.recovery.initial_state
                 && observation.after() == &self.recovery.initial_state
@@ -1983,7 +2107,85 @@ impl<'a> VerifiedProtectedHandoff<'a> {
                 && known.payload_bytes_read == content.admitted_payload_bytes_read,
             "actual protected converted observation or known-content coverage differs"
         );
-        let native_observation = observation;
+        Ok(())
+    }
+
+    /// Whether this source was verified beside its apply intent alone: the
+    /// handoff of such a run (#148) is still to be written.
+    pub(crate) fn before_handoff(&self) -> bool {
+        self.recovery.verifying_before_handoff()
+    }
+
+    /// Writes the handoff of a run whose handoff follows its verification
+    /// (#148), and only for such a run: after the same actual protected
+    /// native observation and exact reopened-map comparison that bringing
+    /// the volume online requires have succeeded beside the apply intent
+    /// alone. The source stays sealed offline and read-only throughout;
+    /// every selected byte is authenticated NEW once more at the marker.
+    /// From here on rollback is closed, as after every handoff.
+    pub(crate) fn write_handoff_after_verified_observation(
+        &mut self,
+        observation: &n2r_win32::GeneralLiveConvertedObservation,
+        map_proof: &crate::general_reconstruct::fast_verification::v4_maps::reopened::VerifiedMapComparison<'_>,
+        group: &ArtifactGroupPermit,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<()> {
+        ensure!(
+            self.recovery.verifying_before_handoff(),
+            "a handoff after the verification is written only by a run that records it, \
+             beside its apply intent alone"
+        );
+        self.require_verified_observation(observation, map_proof, SelectedLifecycle::ApplyIntent)?;
+        let selected_sha256 = self.selected_sha256;
+        let recovery = &mut *self.recovery;
+        recovery.revalidate(events)?;
+        let volume = recovery.locator.journal_binding().disk.volume_path()?;
+        let _index_parent = hold_index_parent(index_path, &volume)?;
+        let mut bound = BoundJournalObservation::open(
+            &mut recovery.journal,
+            recovery.locator.ticket(),
+            group,
+            &recovery.scratch,
+            index_path,
+            maximum_index_bytes,
+        )?;
+        let Some(ObservedTarget::Frozen(target)) = recovery.target.as_mut() else {
+            anyhow::bail!(
+                "the handoff after the verification requires its source sealed offline and \
+                 read-only"
+            );
+        };
+        let before = target.state(events)?;
+        ensure!(
+            before == recovery.initial_state
+                && before.disk_attributes == 3
+                && target.binding() == recovery.locator.source(),
+            "the verified source is not the sealed source of this run"
+        );
+        let length = target.byte_len();
+        let digest = bound.write_handoff_after_verification(target, length)?;
+        ensure!(
+            digest == selected_sha256 && target.state(events)? == before,
+            "the verified source changed while its handoff was written"
+        );
+        bound.observation.retire()?;
+        recovery.initial_lifecycle = SelectedLifecycle::Handoff;
+        recovery.revalidate(events)?;
+        Ok(())
+    }
+
+    /// The online transition of `bring_online_after_verified_observation`,
+    /// after its proof was checked.
+    fn finish_online(
+        self,
+        native_observation: &n2r_win32::GeneralLiveConvertedObservation,
+        group: &ArtifactGroupPermit,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<&'a mut ReopenedResourceRecovery> {
         let recovery = self.recovery;
         recovery.revalidate(events)?;
         let volume = recovery.locator.journal_binding().disk.volume_path()?;
@@ -2167,6 +2369,7 @@ impl ReopenedResourceRecovery {
         adopt_target_cluster(publication.target_cluster_bytes)?;
         adopt_target_refs_version(publication.target_refs_version)?;
         adopt_review(publication.review_before_handoff, true)?;
+        adopt_verify_first(publication.verify_before_handoff, true)?;
         let mut canonical = HashSink {
             bytes: 0,
             maximum: size,
@@ -2338,6 +2541,7 @@ impl ReopenedResourceRecovery {
                 locator.ticket(),
                 locator.journal_path(),
                 Some(&publication.source),
+                publication.verify_before_handoff == Some(true),
                 events,
             )?;
         }
@@ -2407,11 +2611,41 @@ impl ReopenedResourceRecovery {
         let (target, initial_state, mounted) = match online {
             Some((mounted, state)) => (None, state, Some(mounted)),
             None => {
+                // A run whose handoff follows its verification (#148): what
+                // its own record says of the seal, read only where it
+                // decides something.
+                let verify_first = publication.verify_before_handoff == Some(true);
+                let seal_recorded = verify_first
+                    && initial_lifecycle == SelectedLifecycle::ApplyIntent
+                    && crate::verify_first::sealed(
+                        &crate::verify_first::record_path(path)?,
+                        independently_supplied_sha256,
+                        &publication.source,
+                        locator.ticket().new_selected_sha256,
+                    )?;
                 restore_writer_state_lost_in_recovery_environment(
                     &publication.source,
                     initial_lifecycle,
+                    crate::verify_first::stays_sealed_in_recovery_environment(
+                        verify_first,
+                        initial_lifecycle,
+                        seal_recorded,
+                    ),
                     events,
                 )?;
+                if allow_online_terminal {
+                    // Set by the recovery command alone, as the review's
+                    // reseal below: a verification before the handoff that
+                    // did not finish left the disk online and read-only.
+                    reseal_after_interrupted_verification_before_handoff(
+                        &publication.source,
+                        verify_first,
+                        publication.review_before_handoff == Some(true),
+                        initial_lifecycle,
+                        seal_recorded,
+                        events,
+                    )?;
+                }
                 if allow_online_terminal {
                     // Set by the recovery command alone: a review run's stop
                     // (#110) is online and read-only under its apply intent.
@@ -2690,6 +2924,22 @@ impl ReopenedResourceRecovery {
         );
         self.require_preparation_guard_delegated(events)?;
         let review = self.review_before_handoff();
+        // A run whose handoff follows its verification (#148): a resumed
+        // replay ends before the handoff, which its finalizer writes; and
+        // the record of its seal is withdrawn before anything here can make
+        // the source writable, so that a recovery environment never takes a
+        // source that is being written to for a sealed one.
+        let verify_first = self.verify_before_handoff();
+        let resume_end = if verify_first && direction == PagedRecoveryDirection::Resume {
+            super::replay::ResumeEnd::BeforeHandoff
+        } else {
+            super::replay::ResumeEnd::Handoff
+        };
+        if verify_first {
+            crate::verify_first::withdraw_seal(&crate::verify_first::record_path(
+                &self.publication_path(),
+            )?)?;
+        }
         let volume = self.locator.journal_binding().disk.volume_path()?;
         let _index_parent = hold_index_parent(index_path, &volume)?;
         let observation = BoundJournalObservation::open(
@@ -2708,9 +2958,10 @@ impl ReopenedResourceRecovery {
             ObservedTarget::Activated(target) => {
                 super::replay::MarkerlessRecoveryTarget::Activated(target)
             }
-            // Only a run whose authenticated publication records a review
-            // may find its frozen source exactly new under the apply intent.
-            ObservedTarget::Frozen(source) if review => {
+            // Only a run whose authenticated publication records a review,
+            // or a handoff after its verification, may find its frozen
+            // source exactly new under the apply intent.
+            ObservedTarget::Frozen(source) if review || verify_first => {
                 super::replay::MarkerlessRecoveryTarget::FrozenReview(source)
             }
             ObservedTarget::Frozen(source) => {
@@ -2721,6 +2972,7 @@ impl ReopenedResourceRecovery {
             target,
             self.locator.source(),
             direction,
+            resume_end,
             after_resume,
             events,
         ).context("resource replay stopped; reopen the excluded source and classify its actual journal before any further action")?;
@@ -2731,9 +2983,14 @@ impl ReopenedResourceRecovery {
         );
         self.initial_state = after;
         self.target = Some(ObservedTarget::Activated(replayed.target));
-        self.initial_lifecycle = match direction {
-            PagedRecoveryDirection::Resume => SelectedLifecycle::Handoff,
-            PagedRecoveryDirection::Rollback => SelectedLifecycle::Aborted,
+        self.initial_lifecycle = match (direction, resume_end) {
+            (PagedRecoveryDirection::Resume, super::replay::ResumeEnd::BeforeHandoff) => {
+                SelectedLifecycle::ApplyIntent
+            }
+            (PagedRecoveryDirection::Resume, super::replay::ResumeEnd::Handoff) => {
+                SelectedLifecycle::Handoff
+            }
+            (PagedRecoveryDirection::Rollback, _) => SelectedLifecycle::Aborted,
         };
         self.revalidate(events)?;
         Ok(ResourceReplayResult {
@@ -2753,8 +3010,12 @@ impl ReopenedResourceRecovery {
         events: &mut Vec<NativeEvent>,
     ) -> Result<VerifiedResourceHandoff<'a>> {
         self.revalidate(events)?;
+        // A run whose handoff follows its verification (#148) is
+        // authenticated beside its apply intent alone: every selected byte
+        // exactly NEW, as beside a handoff.
+        let before_handoff = self.verifying_before_handoff();
         ensure!(
-            self.initial_lifecycle == SelectedLifecycle::Handoff,
+            self.initial_lifecycle == SelectedLifecycle::Handoff || before_handoff,
             "durable HND required"
         );
         let volume = self.locator.journal_binding().disk.volume_path()?;
@@ -2783,7 +3044,11 @@ impl ReopenedResourceRecovery {
                     "handoff source binding differs"
                 );
                 let length = target.byte_len();
-                observation.verify_handoff_data(target, length)?
+                if before_handoff {
+                    observation.verify_review_data(target, length)?
+                } else {
+                    observation.verify_handoff_data(target, length)?
+                }
             }
             ObservedTarget::Frozen(target) => {
                 ensure!(
@@ -2791,7 +3056,11 @@ impl ReopenedResourceRecovery {
                     "handoff source binding differs"
                 );
                 let length = target.byte_len();
-                observation.verify_handoff_data(target, length)?
+                if before_handoff {
+                    observation.verify_review_data(target, length)?
+                } else {
+                    observation.verify_handoff_data(target, length)?
+                }
             }
         };
         ensure!(
@@ -3018,6 +3287,36 @@ impl ReopenedResourceRecovery {
     /// a review before its handoff (#110).
     pub(crate) fn review_before_handoff(&self) -> bool {
         self.publication.review_before_handoff == Some(true)
+    }
+
+    /// Whether the authenticated publication records that the run's handoff
+    /// follows the verification of the converted volume (#148).
+    pub(crate) fn verify_before_handoff(&self) -> bool {
+        self.publication.verify_before_handoff == Some(true)
+    }
+
+    /// Whether such a run is at its verification: beside its apply intent
+    /// alone, the handoff still to be written by the finalizer.
+    pub(crate) fn verifying_before_handoff(&self) -> bool {
+        self.verify_before_handoff() && self.initial_lifecycle == SelectedLifecycle::ApplyIntent
+    }
+
+    /// Whether such a run's source is sealed for its verification: held
+    /// offline and read-only beside the apply intent alone, with the seal
+    /// recorded. A recovery then has nothing to replay.
+    pub(crate) fn sealed_for_verification(&self) -> Result<bool> {
+        if !self.verifying_before_handoff()
+            || !matches!(self.target, Some(ObservedTarget::Frozen(_)))
+            || self.initial_state.disk_attributes != 3
+        {
+            return Ok(false);
+        }
+        crate::verify_first::sealed(
+            &crate::verify_first::record_path(&self.publication_path())?,
+            self.publication_file.sha256,
+            &self.publication.source,
+            self.locator.ticket().new_selected_sha256,
+        )
     }
 
     /// The review stop (#110): re-authenticate the apply intent alone and

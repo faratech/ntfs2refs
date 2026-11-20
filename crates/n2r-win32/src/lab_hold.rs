@@ -24,6 +24,13 @@ pub const POINTS: &[&str] = &[
     "apply-boot-granule-written",
     // Every new byte is written, flushed and read back; no handoff marker.
     "apply-before-handoff",
+    // A run whose handoff follows its verification (--verify fast, #148):
+    // the source is sealed offline and read-only again beside the apply
+    // marker alone; the seal is not yet recorded.
+    "apply-sealed",
+    // Such a run: the seal is recorded in verification-seal.json; the
+    // finalizer has not started.
+    "apply-seal-recorded",
     // A --review run only (#110): the source is sealed offline and
     // read-only again beside the apply marker alone; its stop is not yet
     // recorded and the volume was never mounted.
@@ -32,9 +39,21 @@ pub const POINTS: &[&str] = &[
     // is recorded in review-stop.json; the disk is still offline and
     // read-only and has not been put online.
     "review-recorded",
-    // The handoff marker is durable; the source is still writable.
+    // Such a run: the finalizer has authenticated the apply marker and the
+    // new bytes; the source is sealed, the handoff is not written.
+    "verify-authenticated",
+    // Such a run: the converted source is mounted read-only for its
+    // verification, beside the apply marker alone.
+    "verify-source-readonly",
+    // Such a run: verification passed and the source is sealed again; the
+    // handoff is not yet written and rollback is still open.
+    "verify-passed",
+    // The handoff marker is durable; the source is still writable
+    // (--verify thorough, where the apply step writes the handoff).
     "apply-handoff-durable",
-    // The source is sealed read-only again; finalization has not started.
+    // The handoff marker is durable and the source is sealed read-only.
+    // With --verify thorough finalization has not started; with --verify
+    // fast the verification has passed and the volume is not yet online.
     "handoff-sealed",
     // Finalization has authenticated the handoff; the source is still sealed.
     "finalize-authenticated",
@@ -48,6 +67,27 @@ pub const POINTS: &[&str] = &[
 ];
 
 static ARMED: OnceLock<&'static str> = OnceLock::new();
+
+static BEFORE_HANDOFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Says whether the finalizer of this process is verifying a converted
+/// volume before its handoff (#148). The points of the verification itself
+/// are reached from code that does not know the journal; it names them
+/// through [`reached_in_verification`].
+pub fn verifying_before_handoff(now: bool) {
+    BEFORE_HANDOFF.store(now, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// A point of the verification of the converted volume, under the name it
+/// has before the handoff or the one it has after it. The two are different
+/// states for a recovery: rollback is open in the first.
+pub fn reached_in_verification(before_handoff: &'static str, after_handoff: &'static str) {
+    if BEFORE_HANDOFF.load(std::sync::atomic::Ordering::SeqCst) {
+        reached(before_handoff);
+    } else {
+        reached(after_handoff);
+    }
+}
 
 fn known(point: &str) -> Option<&'static str> {
     POINTS.iter().copied().find(|known| *known == point)

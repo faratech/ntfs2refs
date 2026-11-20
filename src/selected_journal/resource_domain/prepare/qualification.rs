@@ -149,6 +149,12 @@ struct Publication<'a> {
     /// are unchanged. Recovery accepts a review run's own states from this.
     #[serde(skip_serializing_if = "Option::is_none")]
     review_before_handoff: Option<bool>,
+    /// `Some(true)` for a run whose handoff follows the verification of the
+    /// converted volume (`--verify fast` on the whole-disk route, #148);
+    /// written only then, so every other run's records are unchanged.
+    /// Recovery accepts such a run's own states from this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verify_before_handoff: Option<bool>,
     serialized_publication_grants_authority: bool,
 }
 
@@ -325,6 +331,8 @@ pub(crate) fn persist_partition_metadata(
             target_refs_version: n2r_win32::target_refs_version::recorded(),
             // The partition route has no review (#110).
             review_before_handoff: None,
+            // Nor the handoff after the verification (#148).
+            verify_before_handoff: None,
             serialized_publication_grants_authority: false,
         };
         source_scope
@@ -1105,6 +1113,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                             target_cluster_bytes: recorded_target_cluster(),
                             target_refs_version: n2r_win32::target_refs_version::recorded(),
                             review_before_handoff: crate::review::recorded(),
+                            verify_before_handoff: crate::verify_first::recorded(),
                             serialized_publication_grants_authority: false,
                         };
                         let artifacts = save_publication(

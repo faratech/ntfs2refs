@@ -38,12 +38,20 @@ Five profiles, each on a runner of its own:
 
 - `convert`: straight through.
 - `many`: straight through, with 20,000 to 100,000 small files.
-- `resume`: held at one of the twelve laboratory hold points, the process
-  ended there, then the recovery command the run printed.
+- `resume`: held at one of the laboratory hold points its run reaches, the
+  process ended there, then the recovery command the run printed.
 - `rollback`: held at a point before the handoff marker is durable, ended,
   then the recovery command with `--rollback`.
 - `cancel`: ended at a random moment within 40 seconds, without a hold, then
   whatever the run had printed.
+
+One round of four, by its seed, converts with `--verify thorough`, whose
+apply step writes the handoff marker; the others with `--verify fast`, the
+default, whose handoff follows the verification of the converted volume. The
+two reach different hold points (`crates/n2r-win32/src/lab_hold.rs`): a fast
+run's rollback rounds are held up to `verify-passed`, a thorough run's up to
+`apply-before-handoff`. Each round prints its mode and records it in
+`rounds.jsonl`.
 
 A failed round stops its runner and keeps its records (the converter's
 output, the listings' comparison) as the run's artifact. It is made again on

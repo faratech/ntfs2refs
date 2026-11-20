@@ -396,8 +396,10 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
     /// The same apply for a run that stops for a review (#110): every new
     /// byte is written, flushed and read back, and every check before the
     /// handoff is made, but the handoff marker is not written. Rollback
-    /// stays open. Only a process that chose a review, and so published a
-    /// recovery envelope that records it, may stop here.
+    /// stays open. A run whose handoff follows the verification of the
+    /// converted volume (#148) ends its apply the same way: its finalizer
+    /// writes the handoff. Only a process that chose one of the two, and so
+    /// published a recovery envelope that records it, may stop here.
     pub(crate) fn apply_for_review(
         self,
         events: &mut Vec<n2r_win32::NativeEvent>,
@@ -406,8 +408,9 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
     ) -> Result<ResourceReviewedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>>
     {
         ensure!(
-            crate::review::chosen(),
-            "apply: a review stop requires a run that chose --review"
+            crate::review::chosen() || crate::verify_first::chosen(),
+            "apply: ending before the handoff requires a run that chose --review or the \
+             handoff after its verification"
         );
         match self.apply_until(
             events,
@@ -619,7 +622,8 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         );
         if end == ApplyEnd::Review {
             // Everything a handoff is written after has been checked; the
-            // handoff itself is what a review leaves to `--recover`.
+            // handoff itself is what a review leaves to `--recover`, and a
+            // run that verifies first to its finalizer.
             n2r_win32::lab_hold::reached("apply-before-handoff");
             drop(target);
             drop(buffers);
@@ -679,8 +683,9 @@ enum Applied<'journal, 'domain, 'capture, 'proof, 'scope, 'expected> {
 }
 
 /// Every new byte written, flushed and read back, under the apply intent
-/// alone: the review stop (#110). It keeps every preparation owner alive
-/// until its source is sealed read-only again.
+/// alone: the review stop (#110), and the end of the apply of a run whose
+/// handoff follows its verification (#148). It keeps every preparation
+/// owner alive until its source is sealed read-only again.
 pub(crate) struct ResourceReviewedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
 {
     owner: ResourceFreshApply<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>,
@@ -710,7 +715,7 @@ impl ResourceReviewedConversion<'_, '_, '_, '_, '_, '_> {
         let ticket = &prepared.inner.ticket;
         ensure!(
             sj::classify(prepared.inner._journal, ticket)? == sj::SelectedLifecycle::ApplyIntent,
-            "review stop: the journal no longer holds the apply intent alone"
+            "sealing before the handoff: the journal no longer holds the apply intent alone"
         );
         let index = self
             .owner
@@ -732,7 +737,7 @@ impl ResourceReviewedConversion<'_, '_, '_, '_, '_, '_> {
             new_selected_sha256: ticket.new_selected_sha256,
         };
         let (source, _) = prepared.context.source_and_inspection()?;
-        n2r_win32::perf::step("seal review stop");
+        n2r_win32::perf::step("seal before handoff");
         prepared.inner._journal.seal_sealed_review_for_observation(
             source,
             &index.policy(),
@@ -741,13 +746,24 @@ impl ResourceReviewedConversion<'_, '_, '_, '_, '_, '_> {
         )?;
         ensure!(
             source.binding() == facts.source && source.state(events)?.disk_attributes == 3,
-            "review stop: the source did not keep its exact read-only exclusion"
+            "sealing before the handoff: the source did not keep its exact read-only exclusion"
         );
         checkpoint_native_events(events, &mut checkpoint_events)
     }
 
     pub(crate) fn source(&self) -> &n2r_win32::general_layout::GeneralDiskBinding {
         self.owner.prepared.prepared.inner._facts.source
+    }
+
+    /// The digest of the selected ranges as the journal leaves them, which
+    /// the sealed source was just authenticated against.
+    pub(crate) fn new_selected_sha256(&self) -> [u8; 32] {
+        self.owner
+            .prepared
+            .prepared
+            .inner
+            .ticket
+            .new_selected_sha256
     }
 }
 

@@ -335,7 +335,9 @@ pub(crate) fn changed_since_stop(path: &Path) -> anyhow::Error {
 /// The fingerprint of the run's frozen NTFS source, reopened from the run's
 /// own records (`source/source-frozen.json` in the conversion directory) and
 /// held to the source digest and inspection digest that its authenticated
-/// publication pins.
+/// publication pins. Its stores are read below the conversion directory as
+/// it is found now, wherever the working volume was mounted when they were
+/// written (`found_below_conversion_directory`).
 pub(crate) fn reopen_source_fingerprint(
     conversion_directory: &Path,
     publication_source_sha256: &str,
@@ -381,12 +383,86 @@ pub(crate) fn reopen_source_fingerprint(
         "rollback check: {} is not the record of this run's frozen source",
         path.display()
     );
-    frozen.fingerprint.open(scratch).with_context(|| {
+    let mut pins = frozen.fingerprint;
+    let mut moved = false;
+    for store in [&mut pins.allocated, &mut pins.covered, &mut pins.omitted] {
+        for page in [&mut store.data, &mut store.directory] {
+            let now = found_below_conversion_directory(&page.path, conversion_directory);
+            moved |= !now.as_os_str().eq_ignore_ascii_case(page.path.as_os_str());
+            page.path = now;
+        }
+    }
+    let stores = pins
+        .allocated
+        .data
+        .path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    if moved {
+        println!(
+            "The fingerprint of the frozen source was recorded on the working volume under \
+             another name than it has now; it is read in {}.",
+            stores.display()
+        );
+    }
+    pins.open(scratch).with_context(|| {
         format!(
-            "rollback check: reopening the fingerprint of {}",
-            path.display()
+            "rollback check: reopening the fingerprint of {} from its stores in {}",
+            path.display(),
+            stores.display()
         )
     })
+}
+
+/// Where a file the run recorded below its conversion directory is now.
+///
+/// The fingerprint's stores are recorded by the paths they were written at,
+/// which name the working volume as it was named then, by its drive letter.
+/// The working volume can come back under another letter, as the
+/// running-Windows route expects of its recovery environment from one start
+/// to the next, while the conversion directory is the one this recovery
+/// found and authenticated the run's publication in. A store recorded below
+/// that directory, as it was named then, is opened below it as it is found
+/// now: the two paths differ only in how the volume is named, the
+/// directories below it are the same. Any other path is opened as recorded.
+/// Either way the store is held to the size and the digests recorded for it
+/// when it is opened, and the fingerprint to the run's publication.
+fn found_below_conversion_directory(recorded: &Path, conversion_directory: &Path) -> PathBuf {
+    use std::path::Component;
+    // The names below the volume of an absolute path without `.` or `..`.
+    fn below_volume(path: &Path) -> Option<Vec<&std::ffi::OsStr>> {
+        let mut names = Vec::new();
+        let mut rooted = false;
+        for component in path.components() {
+            match component {
+                Component::Prefix(_) => {}
+                Component::RootDir => rooted = true,
+                Component::Normal(name) => names.push(name),
+                Component::CurDir | Component::ParentDir => return None,
+            }
+        }
+        rooted.then_some(names)
+    }
+    let Ok(now) = std::path::absolute(conversion_directory) else {
+        return recorded.to_path_buf();
+    };
+    let (Some(recorded_names), Some(now_names)) = (below_volume(recorded), below_volume(&now))
+    else {
+        return recorded.to_path_buf();
+    };
+    if recorded_names.len() > now_names.len()
+        && recorded_names
+            .iter()
+            .zip(&now_names)
+            .all(|(recorded, now)| recorded.eq_ignore_ascii_case(now))
+    {
+        recorded_names[now_names.len()..]
+            .iter()
+            .fold(now.clone(), |path, name| path.join(name))
+    } else {
+        recorded.to_path_buf()
+    }
 }
 
 #[cfg(test)]

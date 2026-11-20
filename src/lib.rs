@@ -123,6 +123,8 @@ pub(crate) mod short_name_disposition;
 pub(crate) mod source_fingerprint;
 pub mod source_volume_label;
 pub(crate) mod verification_policy;
+#[cfg(windows)]
+pub(crate) mod verify_first;
 
 #[cfg(windows)]
 pub(crate) mod resource_prepared_terminal;

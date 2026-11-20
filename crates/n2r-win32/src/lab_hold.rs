@@ -24,6 +24,15 @@ pub const POINTS: &[&str] = &[
     "apply-boot-granule-written",
     // Every new byte is written, flushed and read back; no handoff marker.
     "apply-before-handoff",
+    // --verify fast only (#148), where the handoff follows the verification:
+    // every new byte is written and read back, and the source is sealed
+    // offline and read-only again beside the apply marker alone; the seal
+    // is not yet recorded.
+    "apply-sealed",
+    // --verify fast only: the source is sealed beside the apply marker
+    // alone and the seal is recorded in verification-seal.json; the
+    // verification has not started.
+    "apply-seal-recorded",
     // A --review run only (#110): the source is sealed offline and
     // read-only again beside the apply marker alone; its stop is not yet
     // recorded and the volume was never mounted.
@@ -32,13 +41,27 @@ pub const POINTS: &[&str] = &[
     // is recorded in review-stop.json; the disk is still offline and
     // read-only and has not been put online.
     "review-recorded",
-    // The handoff marker is durable; the source is still writable.
+    // --verify fast only: the finalizer has authenticated the apply marker
+    // alone and every new byte; the source is sealed; no handoff marker.
+    "verify-authenticated",
+    // --verify fast only: the converted source is mounted read-only for its
+    // verification, beside the apply marker alone; no handoff marker.
+    "verify-source-readonly",
+    // --verify fast only: the verification passed and the source is sealed
+    // again; no handoff marker, so a rollback is still open.
+    "verify-passed",
+    // --verify thorough only, whose apply step writes the handoff: the
+    // handoff marker is durable; the source is still writable.
     "apply-handoff-durable",
-    // The source is sealed read-only again; finalization has not started.
+    // The handoff marker is durable and the source is sealed read-only:
+    // with --verify thorough before finalization, with --verify fast after
+    // the verification passed, before the volume is online.
     "handoff-sealed",
-    // Finalization has authenticated the handoff; the source is still sealed.
+    // --verify thorough only: finalization has authenticated the handoff; the
+    // source is still sealed.
     "finalize-authenticated",
-    // The converted source is mounted read-only for its verification.
+    // --verify thorough only: the converted source is mounted read-only for
+    // its verification, beside the handoff.
     "finalize-source-readonly",
     // Verification passed and the source is sealed again; not yet online.
     "finalize-before-online",
@@ -48,6 +71,27 @@ pub const POINTS: &[&str] = &[
 ];
 
 static ARMED: OnceLock<&'static str> = OnceLock::new();
+
+static BEFORE_HANDOFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Says whether the finalizer of this process is verifying a converted
+/// volume before its handoff (#148). The points of the verification itself
+/// are reached from code that does not know the journal; it names them
+/// through [`reached_in_verification`].
+pub fn verifying_before_handoff(now: bool) {
+    BEFORE_HANDOFF.store(now, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// A point of the verification of the converted volume, under the name it
+/// has before the handoff or the one it has after it. The two are different
+/// states for a recovery: rollback is open in the first.
+pub fn reached_in_verification(before_handoff: &'static str, after_handoff: &'static str) {
+    if BEFORE_HANDOFF.load(std::sync::atomic::Ordering::SeqCst) {
+        reached(before_handoff);
+    } else {
+        reached(after_handoff);
+    }
+}
 
 fn known(point: &str) -> Option<&'static str> {
     POINTS.iter().copied().find(|known| *known == point)

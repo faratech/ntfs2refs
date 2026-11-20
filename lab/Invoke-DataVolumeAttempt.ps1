@@ -90,6 +90,10 @@ param(
     [int]$FileCount = 500000,
     # Further converter arguments, for example '--diagnose'.
     [string[]]$ConverterArgs = @(),
+    # The converter's --verify: fast (its default), whose handoff follows the
+    # verification of the converted volume, or thorough, whose apply step
+    # writes it. Recorded in the verdict as `verify`.
+    [ValidateSet('fast', 'thorough')][string]$Verify,
     # A pattern the converter's error must match for a refusal to count as expected.
     [string]$ExpectRefusal,
     # A laboratory hold point (for example apply-mid-ranges or handoff-sealed):
@@ -265,6 +269,7 @@ if ($StopDuringPreparation -and ($InterruptAt -or $Diagnose)) { throw '-StopDuri
 if ($Tamper -and -not $Review) { throw '-Tamper writes to a volume that stopped for review: with -Review' }
 if ($Tamper -and ($InterruptAt -or $StopDuringPreparation)) { throw '-Tamper needs the run to reach its review stop: not with -InterruptAt or -StopDuringPreparation' }
 if ($Review -and ($NativeRefsControl -or $CheckOnly)) { throw '-Review is a conversion that stops for review: not with -NativeRefsControl or -CheckOnly' }
+if ($Verify -and @($ConverterArgs | Where-Object { $_ -like '--verify*' }).Count) { throw "-Verify $Verify and a --verify in -ConverterArgs: give the mode once" }
 if ($PowerOffDuringPreparation) {
     if (-not $StopDuringPreparation) { throw '-PowerOffDuringPreparation turns the VM off in a phase of preparation: name the phase with -StopDuringPreparation' }
     if ($SectorBytes -eq 4096) { throw '-PowerOffDuringPreparation is for a source whose virtual disk the guest attaches: the 4Kn disk of -SectorBytes 4096 is attached by the host, and comes back another way' }
@@ -281,6 +286,8 @@ $verdict = [ordered]@{
     name = $Name; outcome = 'harness-error'; vm_id = $VmId; run_as = $RunAs
     source = [ordered]@{ cluster_bytes = $ClusterBytes; sector_bytes = $SectorBytes; large_records = [bool]$LargeRecords; partition_mb = $PartitionMB; content = $Content }
     target = [ordered]@{ format = $TargetFormat; cluster_bytes_requested = $TargetClusterBytes }
+    # The mode the converter runs with: -Verify, else one in -ConverterArgs, else its default.
+    verify = $(if ($Verify) { $Verify } elseif (@($ConverterArgs | Where-Object { $_ -in 'thorough', '--verify=thorough', '--verify-full-content' }).Count) { 'thorough' } else { 'fast' })
     converter_sha256 = (Get-FileHash -LiteralPath $Binary -Algorithm SHA256).Hash.ToLowerInvariant()
     listing_tool_sha256 = (Get-FileHash -LiteralPath $ManifestBinary -Algorithm SHA256).Hash.ToLowerInvariant()
 }
@@ -953,6 +960,7 @@ public static class SiblingRaw {
     if ($SampleStacks) { $arguments += @('--sample-stacks', "$guestRoot\stacks.txt") }
     if ($Diagnose) { $arguments += '--diagnose' }
     if ($Review) { $arguments += '--review' }
+    if ($Verify) { $arguments += @('--verify', $Verify) }
     if ($CompareListing) { $arguments += '--compare-listing' }
     if ($DropShortNames) { $arguments += @('--short-names', 'drop') }
     # What --list says of the volume, as an elevated user sees it: whether a

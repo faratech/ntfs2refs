@@ -148,7 +148,12 @@ pub struct DriveArgs {
     /// What the run verifies: `fast` (the default) proves data that stays in
     /// place by the identity of its extents and reads only the rest;
     /// `thorough` reads and hashes the complete contents of every stream,
-    /// which is slower. This changes what is checked, not how often.
+    /// which is slower. This changes what is checked, not how often. With
+    /// `fast` the conversion is committed only after the converted volume
+    /// has passed that verification, and a rollback can put NTFS back until
+    /// then. With `thorough`, for a partition on the disk of the running
+    /// Windows or with --restart-media, and when an interrupted preparation
+    /// is resumed, it is committed just before it.
     #[arg(long, requires = "drive", value_enum, value_name = "MODE")]
     pub verify: Option<VerifyMode>,
     /// The earlier spelling of --verify thorough, kept for scripts.

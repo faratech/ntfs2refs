@@ -36,7 +36,8 @@ static VERIFY_ONCE: AtomicBool = AtomicBool::new(false);
 /// is. Such a run makes one of:
 ///
 /// - Windows reading the contents of a plain stream and the raw reading of
-///   it (Windows' map of the stream is still held to the raw run list);
+///   it (Windows' map of the stream is still held to the raw run list, and
+///   Windows still confirms that its valid data runs to its end);
 /// - the shadow's payloads and metadata read back before the capture and
 ///   again by the walk of the frozen shadow, and its directories listed again
 ///   after their metadata is restored;

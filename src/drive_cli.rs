@@ -210,9 +210,11 @@ pub struct DriveArgs {
     /// instead of once, immediately before the first write to the source.
     /// With --verify fast it also leaves nothing out: Windows reads the
     /// contents of every source stream its extents do not prove, the new
-    /// volume is read back before the changes are captured and its
-    /// short-name links are probed twice. Much slower; the result is the
-    /// same.
+    /// volume is read back before the changes are captured, each move of its
+    /// extents is followed by a read of the file's whole mapping, each
+    /// changed range of the volume is read again just before it is written
+    /// and the short-name links are probed twice. Much slower; the result is
+    /// the same.
     #[arg(long, requires = "drive", conflicts_with_all = ["list", "recover", "rollback"])]
     pub recheck_everything: bool,
     /// A ceiling on the memory the run may use, in MiB. Without it a run
@@ -332,7 +334,7 @@ fn describe_verification(policy: crate::verification_policy::VerificationPolicy)
 /// it: printed under the verification line unless `--recheck-everything`
 /// was given or the run is a diagnosis, which keep every pass.
 #[cfg_attr(not(windows), allow(dead_code))]
-const VERIFIES_ONCE: &str = "Fast checks each thing once. The source is read raw, and what Windows shows of it is still compared with that reading: every object's metadata and security, its streams and where each lies on the disk, every directory listing, and the contents of every stream the raw reading decodes or assembles. Only the contents of plain streams (uncompressed, unsparse, initialized to the end, all on disk) are not read a second time through Windows. The new volume's payloads and metadata are not read back again, nor its directory listings checked again after the metadata is restored, before the changes are captured; the short-name links of the converted volume are probed once. The converted volume is still verified in full after the changes are written.";
+const VERIFIES_ONCE: &str = "Fast checks each thing once. The source is read raw, and what Windows shows of it is still compared with that reading: every object's metadata and security, its streams and where each lies on the disk, every directory listing, and the contents of every stream the raw reading decodes or assembles. Only the contents of plain streams (uncompressed, unsparse, initialized to the end, all on disk) are not read a second time through Windows; Windows still confirms that their valid data runs to their end. The new volume's payloads and metadata are not read back again, nor its directory listings checked again after the metadata is restored, before the changes are captured. After each move of its extents only the moved range's mapping is read; each file's whole mapping is compared once, when placement ends. Each changed range of the volume is held to its old contents once, before the changes are applied, and read back after it is written, not read again just before. The short-name links of the converted volume are probed once. The converted volume is still verified in full after the changes are written.";
 
 impl DriveArgs {
     pub fn requested(&self) -> bool {

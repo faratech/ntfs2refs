@@ -737,23 +737,37 @@ it to its run.
   is mounted read-only and verified, and only then is the handoff written and
   the volume put online. Until then `--recover ... --rollback` puts NTFS back.
 
-  A fast run checks each thing once, and says so when it starts:
-  - The volume is read raw, once, and what Windows shows of it is still
-    compared with that reading: every file's and directory's attributes,
-    times and security, its streams with their names and sizes, where each
-    stream lies on the disk, and every directory listing. Windows still reads
-    the contents of every stream the raw reading has to decode or assemble:
-    resident, compressed, sparse and partly initialized streams, and those of
-    a file whose attributes span several file records. Only the contents of
-    a plain stream (one uncompressed, unsparse stream of a file, initialized
-    to its end, all of it on disk) are not read a second time through
-    Windows: where it lies is held to Windows' map of it, and the checksum
-    of its raw reading is what the new volume is checked against.
-  - What was written to the new volume is checked as it is written, and the
-    new volume is examined once when it is complete; its payloads and its
-    metadata are not read back a second time in between, and its directories
-    are not listed again after their metadata is restored.
-  - The short-name links of a converted Windows volume are probed once.
+  A fast run checks each thing once, and says so when it starts. Where two
+  checks prove the same thing, it makes one of them (`--verify thorough` and
+  `--recheck-everything` make both):
+  - **Reading the source.** The volume is read raw, once, and what Windows
+    shows of it is still compared with that reading: every file's and
+    directory's attributes, times and security, its streams with their
+    names and sizes, where each stream lies on the disk, and every directory
+    listing. Windows still reads the contents of every stream the raw
+    reading has to decode or assemble: resident, compressed, sparse and
+    partly initialized streams, and those of a file whose attributes span
+    several file records. Only the contents of a plain stream (one
+    uncompressed, unsparse stream of a file, initialized to its end, all of
+    it on disk) are not read a second time through Windows: where it lies
+    is held to Windows' map of it, Windows confirms, without reading it,
+    that its valid data runs to its end (a stream it does not say that of
+    is read through Windows like any other), and the checksum of its raw
+    reading is what the new volume is checked against.
+  - **Building the new volume.** What was written to it is checked as it is
+    written, and it is examined once when it is complete; its payloads and
+    its metadata are not read back a second time in between, and its
+    directories are not listed again after their metadata is restored.
+  - **Placing the new volume's extents.** After each move only the mapping
+    of the moved range is read, to see that it landed where it was sent.
+    Each file's complete mapping is compared with every piece placed for it
+    once, when placement ends, instead of after every move. Both views of
+    the destination's allocation are still read before every move.
+  - **Writing the changes.** Each changed range is held to its old contents
+    once, before the apply marker, then written and read back against its
+    new contents. It is not read again immediately before it is written.
+  - **Short names.** The short-name links of a converted Windows volume are
+    probed once.
 
   The converted volume is verified in full after the changes are written, in
   both modes. A diagnosis (`--diagnose`) leaves nothing out: it stops before
@@ -771,26 +785,16 @@ it to its run.
 - **`--verify thorough`** changes *what* is checked: every stream's complete
   contents are read and hashed, and every check a fast run leaves out is made:
   Windows reads the contents of every stream and they are compared with the
-  raw volume, and the new volume is read back before the changes are
-  captured. Not with `--minimize-scratch`. The earlier spelling
+  raw volume, the new volume is read back before the changes are captured,
+  each move of its extents is followed by a read of the file's complete
+  mapping, and each changed range is read again just before it is written.
+  Not with `--minimize-scratch`. The earlier spelling
   `--verify-full-content` is still accepted and means the same.
   It commits as soon as every new sector is written and read back, before
   the verification: from then on a rollback is closed.
 - **`--recheck-everything`** changes *how often*: the full re-reads happen at
   every checkpoint instead of once at the gate. With `--verify fast` it also
   makes every check a fast run leaves out. Much slower.
-
-Where two checks prove the same thing, a fast run makes one of them;
-`--verify thorough` and `--recheck-everything` make both:
-
-- **Placing the new volume's extents.** After each move only the mapping of
-  the moved range is read, to see that it landed where it was sent. Each
-  file's complete mapping is compared with every piece placed for it once,
-  when placement ends, instead of after every move. Both views of the
-  destination's allocation are still read before every move.
-- **Writing the changes.** Each changed range is held to its old contents
-  once, before the apply marker, then written and read back against its new
-  contents. It is not read again immediately before it is written.
 
 A partition on the disk of the running Windows, a conversion with
 `--restart-media`, and a run whose interrupted preparation is resumed (a

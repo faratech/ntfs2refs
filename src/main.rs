@@ -263,6 +263,8 @@ fn run() -> Result<u8> {
                                  "reading the new volume's payloads back a second time before the changes are captured",
                                  "reading the new volume's restored metadata back before it is frozen",
                                  "listing the new volume's directories a second time after its metadata is restored",
+                                 "reading a file's whole mapping after each move of the new volume's extents: only the moved range's mapping is read and held to where it was sent, and each file's whole mapping is compared with every piece placed for it once, when placement ends",
+                                 "reading each changed range of the volume again just before it is written: it is held to its old contents once, before the apply marker, and read back against its new contents after it is written",
                                  "the second probe of each short-name link on the converted volume",
                              ],
                              "source_still_checked_through_windows": "every object's metadata snapshot (times, attributes, both security views, extended attributes, reparse point, case mark); its streams' names, sizes and allocation; each non-resident stream's retrieval pointers, held to the raw run list; each stream's identity and end of file through an open read handle; for a plain stream whose contents are not read, that its valid data runs to its end; the contents of every stream that is neither proven by its extents (kept in place) nor plain: resident, compressed, sparse, partly initialized, assembled from an attribute list, system and every other copied stream; every directory listing",
@@ -274,7 +276,7 @@ fn run() -> Result<u8> {
                          "also_accepted": "--verify-full-content",
                          "changes": "what is checked: every stream's complete contents are read and hashed"},
                         {"option": "--recheck-everything", "name": "repeated re-reads",
-                         "changes": "full re-reads at every checkpoint instead of once before the first source write, and with --verify fast every check that checks_once leaves out is made: Windows reads the contents of every source stream its extents do not prove, the new volume is read back before the changes are captured and its short-name links are probed twice"},
+                         "changes": "full re-reads at every checkpoint instead of once before the first source write, and with --verify fast every check that checks_once leaves out is made: Windows reads the contents of every source stream its extents do not prove, the new volume is read back before the changes are captured, each move of its extents is followed by a read of the file's whole mapping, each changed range is read again just before it is written and the short-name links are probed twice"},
                     ],
                     "listing_comparison": {
                         "tool": "lab-volume-manifest",

@@ -328,6 +328,13 @@ pub(crate) fn convert_owned_with_provider_commitment(
     // run keeps its flow: the handoff in the apply step.
     if mode == crate::execution_mode::ExecutionMode::Convert && verification_policy.is_fast() {
         crate::verify_first::choose();
+        // No recovery command on this line: the recovery environment of
+        // the running-Windows route takes one from any line that has it.
+        println!(
+            "The conversion is committed only after the converted volume has passed its \
+             verification; until then the recovery command this run prints can also put NTFS \
+             back, with --rollback."
+        );
     }
     let prepared_output = run.join("conversion");
     // Working files are hashed when written and then held; the source is

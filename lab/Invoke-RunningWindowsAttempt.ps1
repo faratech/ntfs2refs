@@ -35,6 +35,8 @@ param(
     [Parameter(Mandatory)][string]$VmId,
     [Parameter(Mandatory)][string]$Binary,
     [int]$MemoryGB = 8,
+    # How long Windows has to come back with the run's report: from the
+    # restart, or from the power cut of -HoldAt.
     [int]$AwayMinutes = 120,
     [switch]$Diagnose,
     # Stop at a command prompt in the recovery environment (type into it with
@@ -220,14 +222,16 @@ function Invoke-WindowsUseTest([string]$Expected) {
     foreach ($step in $use.steps) { Say ("use: {0}: {1} ({2} s): {3}" -f $step.step, $(if ($null -eq $step.ok) { 'skipped' } elseif ($step.ok) { 'ok' } else { 'FAILED' }), $step.seconds, $step.detail) }
     $restartsOk = $true
     foreach ($round in 1, 2) {
-        try { Stop-VM -VM (Get-LabVm) -Force } catch { Stop-VM -VM (Get-LabVm) -TurnOff -Force }
-        Start-VM -VM (Get-LabVm)
-        $guest = Wait-Guest 15
-        if (-not $guest) { $result.restarts += "start ${round}: Windows did not come back"; $restartsOk = $false; break }
-        $state = Invoke-Command -Session $guest -ScriptBlock { $volume = Get-Volume -DriveLetter $env:SystemDrive[0]; "$($volume.FileSystem) $($volume.HealthStatus)" }
-        Remove-PSSession $guest
-        $result.restarts += "start ${round}: $state"
-        if ($state -ne "$Expected Healthy") { $restartsOk = $false }
+        try {
+            try { Stop-VM -VM (Get-LabVm) -Force } catch { Stop-VM -VM (Get-LabVm) -TurnOff -Force }
+            Start-VM -VM (Get-LabVm)
+            $guest = Wait-Guest 15
+            if (-not $guest) { $result.restarts += "start ${round}: Windows did not come back"; $restartsOk = $false; break }
+            $state = Invoke-Command -Session $guest -ScriptBlock { $volume = Get-Volume -DriveLetter $env:SystemDrive[0]; "$($volume.FileSystem) $($volume.HealthStatus)" }
+            Remove-PSSession $guest
+            $result.restarts += "start ${round}: $state"
+            if ($state -ne "$Expected Healthy") { $restartsOk = $false }
+        } catch { $result.restarts += "start ${round}: $($_.Exception.Message)"; $restartsOk = $false; break }
     }
     Say "use: shut down and started again twice: $($result.restarts -join '; ')"
     $result.passed = [bool]$use.passed -and $restartsOk
@@ -369,7 +373,6 @@ try {
     } finally { Remove-PSSession $session -ErrorAction SilentlyContinue }
 
     # Away: the recovery environment (the conversion), then Windows again.
-    $deadline = (Get-Date).AddMinutes($AwayMinutes)
     Start-Sleep -Seconds 45
     $cutMade = $false
     if ($HoldAt) {
@@ -411,6 +414,9 @@ try {
             $verdict.cut = [ordered]@{ hold_at = $HoldAt; decided_by = $why; minutes_after_restart = $minutes; latest_minutes = $CutAfterMinutes }
         }
     }
+    # Windows has AwayMinutes to come back: from the restart, or from the
+    # power cut, after which the run starts its recovery.
+    $deadline = $(if ($cutMade) { Get-Date } else { $restartedAt }).AddMinutes($AwayMinutes)
     $back = $null
     $found = $null
     do {
@@ -495,6 +501,10 @@ try {
     }
 } catch {
     $failure = $_
+    # Nothing here sets an outcome and then stops on purpose: an error after
+    # one was set (in the use test, say) must not leave it standing as the
+    # attempt's result.
+    if ($verdict.outcome -ne 'harness-error') { $verdict.result = $verdict.outcome; $verdict.outcome = 'harness-error' }
     $verdict.error = "$($_.Exception.Message)"
     Say "error: $($_.Exception.Message)"
 } finally {

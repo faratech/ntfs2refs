@@ -1616,8 +1616,11 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         $recordsLine = & $said '^Recovery completed\. Records: (.+)$'
         $result = $null
         if ($recordsLine) {
-            $result = Invoke-Command -Session $session -ArgumentList "$recordsLine" -ScriptBlock { param($directory) $file = Join-Path $directory 'result.json'; if (Test-Path -LiteralPath $file) { [string](Get-Content -LiteralPath $file -Raw -Encoding UTF8) } }
-            if ($result) { [IO.File]::WriteAllText((Join-Path $records 'recovery-result.json'), "$result", [Text.UTF8Encoding]::new($false)) }
+            # (A record that cannot be read is one that does not say it: the outcome set above must not stand on an error here.)
+            try {
+                $result = Invoke-Command -Session $session -ArgumentList "$recordsLine" -ErrorAction Stop -ScriptBlock { param($directory) $file = Join-Path $directory 'result.json'; if (Test-Path -LiteralPath $file) { [string](Get-Content -LiteralPath $file -Raw -Encoding UTF8) } }
+                if ($result) { [IO.File]::WriteAllText((Join-Path $records 'recovery-result.json'), "$result", [Text.UTF8Encoding]::new($false)) }
+            } catch { $result = $null; Say "the recovery's record could not be read: $($_.Exception.Message)" }
         }
         $parsed = try { "$result" | ConvertFrom-Json } catch { $null }
         $verified = if ($parsed -and $parsed.PSObject.Properties['source_fingerprint_verified']) { [bool]$parsed.source_fingerprint_verified } else { $null }

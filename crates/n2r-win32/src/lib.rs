@@ -84,6 +84,8 @@ pub mod retention_layout;
 pub mod retrieval_paging;
 #[cfg(windows)]
 pub mod run_environment;
+#[cfg(windows)]
+pub mod run_liveness;
 pub mod security_descriptor;
 #[cfg(windows)]
 pub mod sha256_native;

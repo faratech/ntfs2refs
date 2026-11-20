@@ -5,7 +5,7 @@ one table.
 
 .DESCRIPTION
 AGENTS.md says what has to pass before a change is committed. This script runs
-it: four sets, the first two at the same time.
+it: five sets, the first two at the same time.
 
   fixtures  on the reference VM: the 1-in-10 fixture, the 1-in-40 fixture as
             an administrator, and the interrupted runs of the 1-in-40 fixture
@@ -15,10 +15,21 @@ it: four sets, the first two at the same time.
             lived-in and many-file volumes, a shared disk, stops, recoveries,
             one volume with --recheck-everything, one held to the memory
             the estimate asks for it, one with middling memory held to a
-            time
+            time, and the runs that stop for review (--review): committed,
+            rolled back, written to after the stop (both commands refused),
+            and ended at the two holds of a review run and recovered
   full      on the reference VM, with the host to itself: the full Windows
             volume, converted and booted on ReFS
   server    on the Windows Server VM: standard ReFS and the Dev Drive
+  running   on the Windows 11 VMs other than the reference VM, with the host
+            to itself: the Windows each VM runs from (C:), converted with
+            one command in that Windows through its recovery environment
+            (Invoke-RunningWindowsAttempt.ps1): --diagnose, a conversion
+            that is then used, the power cut while the run prepares (NTFS
+            has to be back) and at the hold half way through the source
+            writes (the run has to recover to ReFS by itself). Each case
+            starts from the VM's baseline checkpoint; each VM gets a working
+            disk of its own first, made by a control-OS attempt
 
 A build is a directory holding ntfs2refs.exe and lab-volume-manifest.exe, a
 copy made for the round so that the tree can be built again meanwhile. Every
@@ -34,7 +45,9 @@ The VMs' memory comes from what the host has free at the moment. Where that
 is not enough for the reference VM's 24 GB beside the data VMs, the fixtures
 run with less; where it is not enough for every data VM, fewer are used; and
 where it is not enough for one, the data-volume cases wait for the fixtures.
-The full Windows run always has the host to itself.
+The full Windows run always has the host to itself, and so has the running
+set, which uses as many of its VMs as the host has memory and disk space
+for (65 GB of disk a VM, as a full attempt).
 
 .EXAMPLE
 lab\Invoke-GateRound.ps1 -Build D:\builds\candidate -Prefix g7
@@ -46,10 +59,13 @@ lab\Invoke-GateRound.ps1 -Build D:\builds\candidate -Prefix g7b -Sets fixtures, 
 param(
     [Parameter(Mandatory)][string]$Build,
     [Parameter(Mandatory)][ValidatePattern('^[a-z][a-z0-9]{0,7}$')][string]$Prefix,
-    [ValidateSet('fixtures', 'data', 'full', 'server')][string[]]$Sets = @('fixtures', 'data', 'full', 'server'),
+    [ValidateSet('fixtures', 'data', 'full', 'server', 'running')][string[]]$Sets = @('fixtures', 'data', 'full', 'server', 'running'),
     [string]$ReferenceVm = 'ntfs2refs-reference-isolated',
     [string[]]$DataVm = @('ntfs2refs-reference-b', 'ntfs2refs-reference-c'),
     [string]$ServerVm = 'ntfs2refs-server2025',
+    # The VMs whose own Windows the running set converts; the data VMs when
+    # none is named.
+    [string[]]$RunningVm = @(),
     # The most memory a lab VM is given, in GB. 24 is what the full Windows
     # volume is timed with; a host that shares its memory with other work
     # runs the round with less (12), slower, so that the other work's swings
@@ -65,6 +81,8 @@ $workspace = Split-Path -Parent $PSScriptRoot
 $attempts = Join-Path $workspace '.lab\hyperv\attempts'
 $boot = Join-Path $PSScriptRoot 'Invoke-BootConversionAttempt.ps1'
 $matrix = Join-Path $PSScriptRoot 'Invoke-DataVolumeMatrix.ps1'
+$running = Join-Path $PSScriptRoot 'Invoke-RunningWindowsAttempt.ps1'
+if (-not $RunningVm) { $RunningVm = $DataVm }
 if (-not $ServerCredentialPath) {
     $ServerCredentialPath = Join-Path $workspace '.lab\hyperv\ntfs2refs-server2025\secrets\guest-credential.xml'
 }
@@ -87,6 +105,8 @@ $wanted = @()
 if ($Sets -contains 'fixtures' -or $Sets -contains 'full') { $wanted += $ReferenceVm }
 if ($Sets -contains 'data') { $wanted += $DataVm }
 if ($Sets -contains 'server') { $wanted += $ServerVm }
+if ($Sets -contains 'running') { $wanted += $RunningVm }
+$wanted = @($wanted | Select-Object -Unique)
 $vms = @{}
 foreach ($name in $wanted) {
     $vm = @(Get-VM -Name $name -ErrorAction SilentlyContinue)
@@ -107,10 +127,13 @@ function Get-ExpectedBootOutcome([hashtable]$arguments) {
 }
 function Get-ExpectedDataOutcome([string]$arguments) {
     if ($arguments -match '-ExpectRefusal\b') { return 'refused-as-expected' }
+    if ($arguments -match '-Tamper\b') { return 'review-tampered-both-refused' }
     if ($arguments -match '-PowerOffDuringPreparation\b') { return 'preparation-cancelled-after-power-off' }
     if ($arguments -match '-StopDuringPreparation\b') { return 'preparation-cancelled' }
     if ($arguments -match '-Diagnose\b') { return 'diagnose-clean' }
-    if ($arguments -match '-InterruptAt\b') {
+    # A run that stopped for review and was then committed or rolled back
+    # ends as one that was interrupted and recovered.
+    if ($arguments -match '-(InterruptAt|Review)\b') {
         if ($arguments -match '-RecoverMode\s+rollback\b') { return 'rolled-back' }
         return 'resumed'
     }
@@ -187,6 +210,24 @@ $dataCases = @(
     # to go on and convert.
     'files-100k-memory-taken|-Content minimal -Features manyfiles -FileCount 100000 -TakeMemoryMB 3000 -TimeoutMinutes 25'
     'shortnames|-Content minimal -Features shortnames -Check -ExpectRefusal short-names.drop'
+    # --review (#110): the run stops with the volume mounted read-only as
+    # ReFS, listing as before; the command it printed then keeps the
+    # conversion, or puts NTFS back (compared exactly, and the recovery has
+    # to record that it held the volume to the source's fingerprint).
+    "review-commit|$lived -Review -Check -Acceptance"
+    "review-rollback|$lived -Review -RecoverMode rollback"
+    # Written to after the stop: both commands have to be refused, the one
+    # the case is named for first, with the disk left offline and read-only
+    # and no byte of the partition changed. (8 GiB, because the harness
+    # reads the whole partition twice to show that.)
+    'review-tamper-commit|-PartitionMB 8192 -Review -Tamper'
+    'review-tamper-rollback|-PartitionMB 8192 -Review -Tamper -RecoverMode rollback'
+    # Ended at the two holds of a review run alone (sealed again, its stop
+    # not yet recorded; recorded, not yet online), then recovered.
+    "review-sealed-resume|$lived -Review -InterruptAt review-sealed"
+    "review-sealed-rollback|$lived -Review -InterruptAt review-sealed -RecoverMode rollback"
+    "review-recorded-resume|$lived -Review -InterruptAt review-recorded"
+    "review-recorded-rollback|$lived -Review -InterruptAt review-recorded -RecoverMode rollback"
 )
 $serverCases = @(
     'std-4k|-TargetFormat standard -Check'
@@ -202,11 +243,25 @@ $serverCases = @(
     'std-handoff-resume|-TargetFormat standard -InterruptAt handoff-sealed -Check'
     'server-files-20k|-Content minimal -Features manyfiles -FileCount 20000 -TargetFormat default -Check'
 )
+# The Windows a VM runs from (Invoke-RunningWindowsAttempt.ps1). Each case
+# says what it has to end as: a run that was cut and recovered ends as what
+# its recovery left, and one whose cut fell elsewhere than asked is no pass.
+$runningCases = @(
+    @{ Name = 'c-diagnose'; Expected = 'PASSED'; Arguments = @{ Diagnose = $true } }
+    @{ Name = 'c-convert'; Expected = 'PASSED'; Arguments = @{ Acceptance = $true } }
+    # No hold: the power goes three minutes after the restart, while the run
+    # prepares. The next start cancels it: NTFS, healthy.
+    @{ Name = 'c-cut-preparation'; Expected = 'CUT-BACK-TO-NTFS'; Arguments = @{ HoldAt = 'none'; CutAfterMinutes = 3 } }
+    # The power goes half way through the source writes. The next start
+    # finishes the conversion: ReFS, healthy.
+    @{ Name = 'c-cut-apply-mid'; Expected = 'CUT-RECOVERED-TO-REFS'; Arguments = @{ HoldAt = 'apply-mid-ranges' } }
+)
 
 if ($Sets -contains 'fixtures') { foreach ($run in $fixtureRuns) { $expected["$Prefix-$($run.Name)"] = Get-ExpectedBootOutcome $run.Arguments } }
 if ($Sets -contains 'data') { foreach ($case in $dataCases) { $name, $rest = $case.Split('|', 2); $expected["$Prefix-$name"] = Get-ExpectedDataOutcome $rest } }
 if ($Sets -contains 'full') { $expected["$Prefix-$($fullRun.Name)"] = Get-ExpectedBootOutcome $fullRun.Arguments }
 if ($Sets -contains 'server') { foreach ($case in $serverCases) { $name, $rest = $case.Split('|', 2); $expected["$Prefix-$name"] = Get-ExpectedDataOutcome $rest } }
+if ($Sets -contains 'running') { foreach ($case in $runningCases) { $expected["$Prefix-$($case.Name)"] = $case.Expected } }
 
 # One boot attempt after another on one VM, each with its console output in a
 # file of its own. Run as a job, so that the data set can run beside it.
@@ -223,12 +278,33 @@ $bootChain = {
     }
 }
 
+# One running-Windows attempt after another on one VM, as a job beside the
+# other VMs'. Each restores the VM's baseline checkpoint first and gives the
+# VM back the disks it detached when it ends.
+$runningChain = {
+    param($running, $cases, $prefix, $vmId, $binary, $scratch, $memoryGB, $logs)
+    foreach ($case in @($cases)) {
+        $arguments = @{} + $case.Arguments
+        $arguments.Name = "$prefix-$($case.Name)"
+        $arguments.VmId = $vmId
+        $arguments.Binary = $binary
+        $arguments.ScratchVhdx = $scratch
+        $arguments.MemoryGB = $memoryGB
+        $arguments.Restore = $true
+        $arguments.Reattach = $true
+        try { & $running @arguments *> (Join-Path $logs "$($arguments.Name).log") }
+        catch { "$($arguments.Name) threw: $($_.Exception.Message)" | Add-Content -LiteralPath (Join-Path $logs 'errors.txt') }
+    }
+}
+
 function Stop-RoundVm([string]$name) {
     $vm = Get-VM -Name $name
     if ($vm.State -ne 'Off') { $vm | Stop-VM -Force -Confirm:$false }
     # The scratch disk of a control OS that was kept up for the data set, or
     # of an attempt of this round that was cut off.
-    foreach ($drive in @(Get-VMHardDiskDrive -VMName $name | Where-Object { $_.Path -like (Join-Path $attempts "$Prefix-*\scratch.vhdx") })) {
+    # (And the boot partition's disk a running-Windows attempt made beside
+    # its working disk.)
+    foreach ($drive in @(Get-VMHardDiskDrive -VMName $name | Where-Object { $_.Path -like (Join-Path $attempts "$Prefix-*\scratch.vhdx") -or $_.Path -like (Join-Path $attempts "$Prefix-*\boot.vhdx") })) {
         $path = $drive.Path
         Remove-VMHardDiskDrive -VMHardDiskDrive $drive
         Remove-Item -LiteralPath $path -Force
@@ -246,7 +322,7 @@ function Get-FreeGB { (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory
 # (The host keeps 8 GB, as the attempts themselves hold it to: counting 2.5 GB had a second data VM start its attempt and wait for memory the fixtures held.)
 function Get-DataVmCount([double]$freeGB) { [math]::Max(0, [math]::Min($DataVm.Count, [math]::Floor(($freeGB - 8) / 8.5))) }
 
-$fixtureJob = $null
+$fixtureJob = $null; $runningJobs = @()
 try {
     if ($Sets -contains 'fixtures') {
         $free = Get-FreeGB
@@ -332,9 +408,42 @@ try {
         if (-not $up) { throw "$ServerVm did not answer PowerShell Direct within ten minutes" }
         & $matrix -Prefix $Prefix -Cases $serverCases -VmId $vms[$ServerVm].Id.Guid -Binary $binary -ManifestBinary $manifest -CredentialPath $ServerCredentialPath -LogDirectory $logs *> (Join-Path $logs 'matrix-server.log')
     }
+    if ($Sets -contains 'running') {
+        # The host to itself, as for the full Windows volume: each case
+        # converts a whole Windows.
+        foreach ($name in $wanted) { Stop-RoundVm $name }
+        # A VM takes 8 GB and the host keeps 8; a conversion of the Windows
+        # volume grows the VM's disks and its working disk by about 60 GB.
+        $freeGB = Get-FreeGB
+        $diskGB = (Get-Volume -FilePath $attempts).SizeRemaining / 1GB
+        $count = [int][math]::Max(0, [math]::Min($RunningVm.Count, [math]::Min([math]::Floor(($freeGB - 8) / 8.5), [math]::Floor($diskGB / 65))))
+        if ($count -eq 0) { throw ('The running set needs 16.5 GB of host memory and 65 GB of disk space for one VM: {0:N1} GB of memory and {1:N1} GB of disk are free' -f $freeGB, $diskGB) }
+        $used = @($RunningVm | Select-Object -First $count)
+        $memoryGB = [int][math]::Max(8, [math]::Min($MaxVmGB, [math]::Floor(($freeGB - 8) / $count) - 1))
+        Say ('{0} running-Windows cases on {1}, {2} GB each ({3:N1} GB of host memory and {4:N1} GB of disk free)' -f $runningCases.Count, ($used -join ', '), $memoryGB, $freeGB, $diskGB)
+        for ($number = 0; $number -lt $used.Count; $number++) {
+            $name = $used[$number]
+            # The working disk: an NTFS volume on a disk of its own, made by a
+            # control-OS attempt, which is then shut down so that the volume
+            # is written out before the VM's checkpoint is restored under it.
+            $work = "$Prefix-c-work-$($number + 1)"
+            & $boot -Name $work -NoConvert -KeepScratch -ScratchFileSystem NTFS -MemoryGB 8 -VmId $vms[$name].Id.Guid -Binary $binary -ManifestBinary $manifest *> (Join-Path $logs "$work.log")
+            $verdict = Join-Path $attempts "$work\verdict.json"
+            if (-not (Test-Path -LiteralPath $verdict) -or (Get-Content -LiteralPath $verdict -Raw | ConvertFrom-Json).outcome -ne 'prepared-only') {
+                throw "The working disk of $name was not made: see $(Join-Path $logs "$work.log")"
+            }
+            Stop-VM -Name $name -Force -Confirm:$false
+            # Each VM takes every case whose place in the list is its own.
+            $mine = @(for ($i = $number; $i -lt $runningCases.Count; $i += $used.Count) { $runningCases[$i] })
+            Say "$name takes $(($mine | ForEach-Object { $_.Name }) -join ', ')"
+            $runningJobs += Start-Job -ScriptBlock $runningChain -ArgumentList $running, $mine, $Prefix, $vms[$name].Id.Guid, $binary, (Join-Path $attempts "$work\scratch.vhdx"), $memoryGB, $logs
+        }
+        $runningJobs | Wait-Job | Receive-Job | Out-File -LiteralPath (Join-Path $logs 'running-jobs.log')
+    }
 }
 finally {
     if ($fixtureJob -and $fixtureJob.State -eq 'Running') { $fixtureJob | Stop-Job }
+    foreach ($job in @($runningJobs)) { if ($job.State -eq 'Running') { $job | Stop-Job } }
     foreach ($name in $wanted) { try { Stop-RoundVm $name } catch { Say "could not turn $name off: $($_.Exception.Message)" } }
 }
 

@@ -2993,6 +2993,11 @@ impl ArtifactLease {
     pub(crate) fn same_group(&self, permit: &ArtifactGroupPermit) -> bool {
         self.group.group == permit.group && self.group.arena.same_arena(&permit.arena)
     }
+    /// The arena whose ledger accounts for this artifact: where a pass over
+    /// it asks for memory it can do without (`reserve_spare_ram`).
+    pub(crate) fn arena(&self) -> &ArtifactArena {
+        &self.group.arena
+    }
     pub fn path(&self) -> &Path {
         &self.path
     }

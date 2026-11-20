@@ -1339,11 +1339,23 @@ impl JournalObservation<'_> {
             "handoff requires completed forward intent"
         );
         authority.target.sync_all()?;
-        let digest = self.check_target(
-            authority.target,
-            Some(self.ticket.new_selected_sha256),
-            false,
-        )?;
+        // `execute` read every changed range back against the NEW digest
+        // after its last flush, through this same target, which this
+        // process has held armed for itself alone since and has not written
+        // to. A recovery that makes an identical check once
+        // (`verify_policy::repeats_once`) does not read them all a second
+        // time here, as the apply of a conversion does not after its own
+        // read-back; the marker checks and the flush around it stay. One
+        // started with `--recheck-everything` reads back again.
+        let digest = if n2r_win32::verify_policy::repeats_once() {
+            resumed.selected_sha256
+        } else {
+            self.check_target(
+                authority.target,
+                Some(self.ticket.new_selected_sha256),
+                false,
+            )?
+        };
         if end == ResumeEnd::BeforeHandoff {
             // Every new byte is on the source again; the handoff is left to
             // the finalizer, which writes it after its verification.

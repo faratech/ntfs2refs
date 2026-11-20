@@ -417,6 +417,21 @@ fn check_file_with_selectors(
                         && h.outcome.detail.is_none(),
                     "an unread plain stream must have a raw digest and no digest, EOF probe, read bytes or error"
                 );
+                // The raw reading's valid data length is what made it plain,
+                // and its raw digest is what Windows reads only if its valid
+                // data runs to its end: Windows answered that, without
+                // reading it, for this very stream.
+                ensure!(
+                    h.valid_data.as_deref().is_some_and(|q| {
+                        n2r_win32::attestation::valid_data_to_end(q, s.logical_size)
+                    }),
+                    "Windows did not confirm that the valid data of the unread plain stream \"{}\" runs to its end ({} bytes): FSCTL_QUERY_FILE_REGIONS answered {:?}",
+                    String::from_utf16_lossy(&s.name_utf16),
+                    s.logical_size,
+                    h.valid_data
+                        .as_deref()
+                        .map(|q| (q.native_error, hex::encode(&q.bytes)))
+                );
                 if pass_index == 0 {
                     unread_plain_streams.push(s.name_utf16.clone());
                     unread_plain_bytes = unread_plain_bytes

@@ -270,6 +270,29 @@ fn retrieval_capture_with_limits(
 fn info(file: &File, class: i32, length: usize) -> Query {
     info_kept(file, class, length, |response| response.len())
 }
+/// Windows' answer, through `data` and without reading it, to how much of a
+/// stream of `logical_size` bytes is valid data
+/// ([`crate::attestation::valid_data_request`]); none for a size that cannot
+/// be asked about. There is room for two regions, so that an answer whose
+/// valid data ends early is kept whole.
+fn valid_data(data: &File, logical_size: u64) -> Option<IoctlQuery> {
+    let input = crate::attestation::valid_data_request(logical_size)?;
+    Some(ioctl(
+        data,
+        crate::attestation::QUERY_FILE_REGIONS,
+        &input,
+        16 + 2 * 24,
+    ))
+}
+// What the comparison holds the answer to is Windows' own query and layout.
+const _: () = assert!(
+    crate::attestation::QUERY_FILE_REGIONS
+        == windows_sys::Win32::System::Ioctl::FSCTL_QUERY_FILE_REGIONS
+        && crate::attestation::REGION_VALID_CACHED_DATA
+            == windows_sys::Win32::System::Ioctl::FILE_REGION_USAGE_VALID_CACHED_DATA
+        && std::mem::size_of::<windows_sys::Win32::System::Ioctl::FILE_REGION_INPUT>() == 24
+        && std::mem::size_of::<windows_sys::Win32::System::Ioctl::FILE_REGION_OUTPUT>() == 16 + 24
+);
 /// The stream list of a file (class 7). Windows does not say how much of the
 /// buffer it filled, so the entries are followed to their end and only they
 /// are copied out. A list that cannot be followed is returned whole, for the
@@ -509,6 +532,7 @@ fn hash_stream(
         outcome: crate::logical_hash::Outcome::refused(io::Error::other(
             "data read was not started",
         )),
+        valid_data: None,
     };
     let mut data = match read_handle(file, id, !name.is_empty()) {
         Ok(f) => f,
@@ -565,21 +589,34 @@ fn hash_stream(
             },
             Err(e) => crate::logical_hash::Outcome::refused(e),
         }
-    } else if skip_read {
+    } else {
         // A plain stream of a run that verifies once: its raw digest is a
         // straight read of the clusters its run list names, and that list
-        // is held to this stream's retrieval pointers. Its identity and
-        // EOF are still queried here, before and after; nothing is read.
-        crate::logical_hash::Outcome {
-            status: crate::logical_hash::Status::NotReadPlainRunsV1,
-            bytes_read: 0,
-            eof_confirmed: false,
-            sha256: None,
-            native_error: None,
-            detail: None,
+        // is held to this stream's retrieval pointers. That digest is what
+        // Windows reads only if the stream's valid data runs to its end
+        // (past it Windows reads zeros), and the raw reading's valid data
+        // length is what made it plain. So Windows is asked that, without
+        // reading the stream; its identity and EOF are still queried here,
+        // before and after. Where it does not answer that the valid data
+        // runs to the end (the query fails, is not supported, or says
+        // otherwise), the stream is read as every other stream is.
+        let valid = skip_read
+            .then(|| valid_data(&data, expected))
+            .flatten()
+            .filter(|answer| crate::attestation::valid_data_to_end(answer, expected));
+        if let Some(answer) = valid {
+            out.valid_data = Some(Box::new(answer));
+            crate::logical_hash::Outcome {
+                status: crate::logical_hash::Status::NotReadPlainRunsV1,
+                bytes_read: 0,
+                eof_confirmed: false,
+                sha256: None,
+                native_error: None,
+                detail: None,
+            }
+        } else {
+            crate::logical_hash::read(&mut data, expected, budget)
         }
-    } else {
-        crate::logical_hash::read(&mut data, expected, budget)
     };
     let after = info(&data, 18, 24);
     let valid = binding(&after, r, id);
@@ -737,6 +774,7 @@ pub(crate) fn capture(
                 outcome: crate::logical_hash::Outcome::refused(io::Error::other(
                     "extent-identity native volume context missing",
                 )),
+                valid_data: None,
             }
         } else {
             // A stream the request proves by its extents is never one whose

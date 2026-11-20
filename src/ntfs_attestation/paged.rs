@@ -130,7 +130,9 @@ impl<'a> PagedObservationRequest<'a> {
 /// list, uncompressed and unsparse, initialized to its end, every run on
 /// disk, with a complete raw digest. That digest is then a straight read of
 /// the clusters the run list names; nothing in it is decoded or zero-filled.
-/// Any doubt is "not plain", and such a stream is read through Windows.
+/// Any doubt is "not plain", and such a stream is read through Windows. So
+/// is a plain one whose valid data Windows does not confirm runs to its end
+/// (the collector asks, `n2r_win32::attestation::valid_data_to_end`).
 pub(crate) fn plain_content_stream(
     source: &PagedInspection,
     file: &crate::ntfs_inspect::FileInventory,
@@ -753,7 +755,7 @@ fn compare_domain_with_header(
         })());
         if logical_data.matched && !evidence.unread_plain_streams.is_empty() {
             logical_data.detail = format!(
-                "native observations match the supplied raw model; Windows did not read the contents of {} plain stream(s) ({} bytes), as a run that verifies once does: their run lists are held to Windows' retrieval pointers and their raw digests stand: {}",
+                "native observations match the supplied raw model; Windows did not read the contents of {} plain stream(s) ({} bytes), as a run that verifies once does: their run lists are held to Windows' retrieval pointers, Windows confirmed that their valid data runs to their end, and their raw digests stand: {}",
                 evidence.unread_plain_streams.len(),
                 evidence.unread_plain_bytes,
                 evidence

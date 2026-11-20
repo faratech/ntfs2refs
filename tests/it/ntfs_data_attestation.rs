@@ -64,6 +64,7 @@ fn observation(f: &FileInventory, serial: u64) -> LogicalFile {
                     native_error: None,
                     detail: None,
                 },
+                valid_data: None,
             }
         })
         .collect();

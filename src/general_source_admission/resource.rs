@@ -1523,8 +1523,8 @@ impl ResourceSourceContext {
                     "logical_bytes":skipped.logical_bytes,
                     "requested_with":"--verify fast (verify once)",
                     "streams_skipped":"plain streams: one non-resident, uncompressed, unsparse DATA attribute of a user file, not assembled from an attribute list, initialized to its end, every run on disk",
-                    "still_checked_through_windows":"each stream's enumeration, sizes, identity and EOF, and its retrieval pointers held to the raw run list; the contents of every other stream its extents do not prove; directory listings",
-                    "not_confirmed_through_windows":"the attribute-header fields that make a stream plain (flags, compression unit, valid data length)",
+                    "still_checked_through_windows":"each stream's enumeration, sizes, identity and EOF, its retrieval pointers held to the raw run list, and that its valid data runs to its end (FSCTL_QUERY_FILE_REGIONS, without reading it; a plain stream Windows does not say that of is read); the contents of every other stream its extents do not prove; directory listings",
+                    "not_confirmed_through_windows":"the attribute-header fields that make a stream plain other than its valid data length (its flags and compression unit)",
                     "contents_held_by":"the raw digest of the clusters the run list names, then the shadow and the verification of the converted volume",
                     "row_marker":"logical_hash status not_read_plain_runs_v1"
                 });

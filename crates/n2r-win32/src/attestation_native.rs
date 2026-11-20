@@ -679,7 +679,9 @@ struct SourceObjects<'a> {
     /// does not read through Windows the contents of an object's plain
     /// streams ([`NativeRequestDomain::plain_content_streams`]): each is
     /// still enumerated, opened, mapped and queried for identity and EOF,
-    /// and its row says that its content read was skipped.
+    /// Windows is asked whether its valid data runs to its end, and its row
+    /// says that its content read was skipped. One Windows does not say that
+    /// of is read as before.
     skip_plain_reads: bool,
 }
 impl SourceObjects<'_> {

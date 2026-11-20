@@ -20,7 +20,10 @@ pub enum Status {
     /// run on disk), so its raw digest is a straight read of the clusters
     /// its run list names, and those runs are held to Windows' retrieval
     /// pointers. Identity and EOF are still queried through an open read
-    /// handle; this outcome contains no digest, EOF probe or read byte.
+    /// handle, and through it Windows answered that the stream's valid data
+    /// runs to its end (`StreamHash::valid_data`); a stream it does not say
+    /// that of is read instead. This outcome contains no digest, EOF probe or
+    /// read byte.
     NotReadPlainRunsV1,
     BudgetExceeded,
     ReadRefused,

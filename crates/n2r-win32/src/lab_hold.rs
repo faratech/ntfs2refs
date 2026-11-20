@@ -24,6 +24,14 @@ pub const POINTS: &[&str] = &[
     "apply-boot-granule-written",
     // Every new byte is written, flushed and read back; no handoff marker.
     "apply-before-handoff",
+    // A --review run only (#110): the source is sealed offline and
+    // read-only again beside the apply marker alone; its stop is not yet
+    // recorded and the volume was never mounted.
+    "review-sealed",
+    // A --review run only: the fingerprint of the whole converted partition
+    // is recorded in review-stop.json; the disk is still offline and
+    // read-only and has not been put online.
+    "review-recorded",
     // The handoff marker is durable; the source is still writable.
     "apply-handoff-durable",
     // The source is sealed read-only again; finalization has not started.

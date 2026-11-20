@@ -51,6 +51,7 @@ pub(crate) fn reconcile_operational_partition(
     )?;
     publication_file.file.seek(SeekFrom::Start(0))?;
     let publication: Publication = serde_json::from_reader(&mut publication_file.file)?;
+    adopt_review(publication.review_before_handoff, false)?;
     let mut canonical = HashSink {
         bytes: 0,
         maximum: size,

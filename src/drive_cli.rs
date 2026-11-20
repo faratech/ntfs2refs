@@ -131,6 +131,17 @@ pub struct DriveArgs {
     /// preparation that had not finished. Possible until the handoff only.
     #[arg(long, requires = "recover")]
     pub rollback: bool,
+    /// Stop before the conversion is committed: every new byte is written,
+    /// flushed and read back, then the volume is mounted read-only as ReFS
+    /// under its letter and the run ends. Look at it, then run the printed
+    /// --recover command to commit, or the same with --rollback to put NTFS
+    /// back. Do not make the volume writable: once it was, neither is
+    /// possible. For a data volume on a disk of its own.
+    #[arg(long, requires = "drive", conflicts_with_all = [
+        "list", "recover", "windows_boot_volume", "offline_recovery_media",
+        "check", "diagnose", "compare_listing", "minimize_scratch",
+    ])]
+    pub review: bool,
     /// What the run verifies: `fast` (the default) proves data that stays in
     /// place by the identity of its extents and reads only the rest;
     /// `thorough` reads and hashes the complete contents of every stream,
@@ -402,6 +413,50 @@ impl DriveArgs {
         Ok(ExecutionMode::Diagnose)
     }
 }
+/// The key of `drive-selection.json` that says a run chose `--review`.
+#[cfg_attr(not(windows), allow(dead_code))]
+const REVIEW_SELECTION_KEY: &str = "review_before_handoff";
+
+/// Whether the run whose conversion directory this is chose `--review`, as
+/// its `drive-selection.json` says. Used only to refuse continuing such a
+/// run's cut-off preparation without its review.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn run_chose_review(conversion_directory: &std::path::Path) -> bool {
+    conversion_directory
+        .parent()
+        .map(|run| run.join("drive-selection.json"))
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|selection| selection[REVIEW_SELECTION_KEY] == serde_json::Value::Bool(true))
+}
+
+/// What a run that stopped for review says last.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn review_stop_message(
+    directory: &std::path::Path,
+    sha256: &str,
+    mount_paths: &[String],
+    record: &std::path::Path,
+) -> String {
+    let at = if mount_paths.is_empty() {
+        "without a drive letter".to_owned()
+    } else {
+        format!("at {}", mount_paths.join(", "))
+    };
+    format!(
+        "Stopped for review: the volume is converted and mounted read-only as ReFS {at}. Nothing \
+         is committed yet; the NTFS volume can still be put back.\n\
+         Look at it, then either\n  \
+         keep the conversion: ntfs2refs --recover \"{dir}\" --recovery-sha256 {sha256}\n  \
+         or put NTFS back:    ntfs2refs --recover \"{dir}\" --recovery-sha256 {sha256} --rollback\n\
+         Do not make the volume or its disk writable: once it has been, ntfs2refs refuses both. \
+         Until you decide, the volume's label is the working one, and the record of this stop \
+         is {record}.",
+        dir = directory.display(),
+        record = record.display()
+    )
+}
+
 pub fn run(args: DriveArgs) -> Result<u8> {
     #[cfg(windows)]
     {
@@ -962,6 +1017,14 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             if has_preparation
                 && super::resource::preparation_intent_matches(&directory, &checksum)?
             {
+                ensure!(
+                    args.rollback || !super::run_chose_review(&directory),
+                    "the run in {} was started with --review, and its preparation was cut off. \
+                     Resuming it would convert without the review: cancel it with the same \
+                     command and --rollback, then run the conversion again with --review. \
+                     Nothing was changed.",
+                    directory.display()
+                );
                 return super::resource::recover_preparation_in_workspace(
                     &directory,
                     &checksum,
@@ -1116,6 +1179,11 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                 "laboratory holds apply only to a dedicated or Windows boot source"
             );
             ensure!(
+                !args.review,
+                "--review is for a data volume on a disk of its own; a partition on the disk of \
+                 the running Windows is converted without one. Nothing was changed."
+            );
+            ensure!(
                 target_cluster == n2r_win32::target_cluster::DEFAULT_BYTES,
                 "a {target_cluster}-byte ReFS allocation unit is for a volume on a disk of its own; a partition on the running Windows disk uses 4096"
             );
@@ -1145,6 +1213,27 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             args.lab_fail_at.is_none(),
             "laboratory failure points apply only to a run that restarts the machine: a partition on the running Windows disk"
         );
+        if args.review {
+            // The parser refuses these too; this holds whatever built the
+            // arguments. A Windows boot volume is not started half way.
+            ensure!(
+                !args.windows_boot_volume && args.offline_recovery_media.is_none(),
+                "--review is for a data volume, not with --windows-boot-volume or --restart-media. Nothing was changed."
+            );
+            ensure!(
+                mode == crate::execution_mode::ExecutionMode::Convert,
+                "--review is for a conversion, not with --diagnose. Nothing was changed."
+            );
+            // A rollback of a review run is held to the fingerprint of the
+            // frozen source; with --minimize-scratch no rollback restores
+            // what unused space held, and that has not been shown to stay
+            // outside the fingerprint.
+            ensure!(
+                !args.minimize_scratch,
+                "--review is not offered with --minimize-scratch. Nothing was changed."
+            );
+            crate::review::choose();
+        }
         let source_role = if args.windows_boot_volume {
             Role::OfflineWindowsSource
         } else {
@@ -1171,6 +1260,17 @@ The machine restarts, possibly more than once. Do not switch it off while the co
         ensure!(
             before.filesystem == "NTFS",
             "selected partition must currently be NTFS"
+        );
+        // The review stop puts the whole disk online read-only: every other
+        // partition on it would come back write-protected for as long as the
+        // review lasts, and one made writable would forfeit both directions.
+        ensure!(
+            !args.review
+                || before.binding.layout_profile
+                    == n2r_win32::general_layout::GeneralDiskLayoutProfile::DedicatedData,
+            "--review is for a data volume on a disk of its own; disk {} has other partitions, \
+             which the review would leave read-only. Nothing was changed.",
+            before.binding.disk_number
         );
         // A disk the volume shares with other partitions: what else is on
         // it, for the lines before the prompt. Refused here where the
@@ -1771,10 +1871,13 @@ The machine restarts, possibly more than once. Do not switch it off while the co
         let run = parent.join(&id);
         fs::create_dir(&run)
             .with_context(|| format!("creating this run's directory {}", run.display()))?;
-        save_new(
-            &run.join("drive-selection.json"),
-            &serde_json::json!({"selected":selected,"source":before,"confirmation":"interactive affirmative","journal_budget_bytes":journal_bytes,"requested_target_format":target_format,"explicit_trust_or_filter_configuration_requested":false,"source_write_authority":false,"lab_hold_point":n2r_win32::lab_hold::armed()}),
-        )?;
+        let mut selection = serde_json::json!({"selected":selected,"source":before,"confirmation":"interactive affirmative","journal_budget_bytes":journal_bytes,"requested_target_format":target_format,"explicit_trust_or_filter_configuration_requested":false,"source_write_authority":false,"lab_hold_point":n2r_win32::lab_hold::armed()});
+        if crate::review::chosen() {
+            // Read back only to refuse resuming this run's preparation
+            // without its review; it grants nothing.
+            selection[super::REVIEW_SELECTION_KEY] = true.into();
+        }
+        save_new(&run.join("drive-selection.json"), &selection)?;
         if let Some(root) = &compare_listing {
             // Before anything of this run touches the volume.
             super::listing::before(root, &run)?;
@@ -1897,6 +2000,21 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                     eprintln!("The temporary-shadow cleanup receipt could not be saved: {error}");
                 }
                 report_diagnosis(&run, &outcome, retirement.success())
+            }
+            Ok(super::resource::ConversionOutcome::Reviewed {
+                directory,
+                sha256,
+                mount_paths,
+                record,
+            }) => {
+                // The working volume and its backing stay, as after any run
+                // that has not finished: the decision is `--recover`'s.
+                drop(staged);
+                println!(
+                    "{}",
+                    review_stop_message(&directory, &sha256, &mount_paths, &record)
+                );
+                Ok(0)
             }
             Ok(super::resource::ConversionOutcome::Converted) => {
                 // This live Ok comes only after V4 HND/native finalization
@@ -2096,6 +2214,83 @@ mod tests {
         Cli::try_parse_from(arguments).map(|cli| cli.drive)
     }
     const NONCE: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    #[test]
+    fn a_review_is_for_a_conversion_of_a_data_volume() {
+        assert!(parse(&["--review"]).unwrap().review);
+        assert!(!parse(&[]).unwrap().review);
+        // A lab hold may stop a review run, as it stops any conversion.
+        assert!(
+            parse(&[
+                "--review",
+                "--lab-hold-at",
+                "review-sealed",
+                "--acknowledge-lab-hold-never-completes"
+            ])
+            .is_ok()
+        );
+        for refused in [
+            &["--windows-boot-volume"][..],
+            &["--restart-media", "E:\\"],
+            &["--check"],
+            &["--diagnose"],
+            &["--compare-listing"],
+            &["--minimize-scratch"],
+        ] {
+            let mut arguments = vec!["--review"];
+            arguments.extend_from_slice(refused);
+            assert!(parse(&arguments).is_err(), "--review with {refused:?}");
+        }
+        // Not with --recover: a recovery decides what a review left.
+        assert!(
+            Cli::try_parse_from([
+                "ntfs2refs",
+                "--recover",
+                "C:\\run\\conversion",
+                "--recovery-sha256",
+                NONCE,
+                "--review"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_resumed_preparation_knows_whether_its_run_chose_a_review() {
+        let run = tempfile::tempdir().unwrap();
+        let conversion = run.path().join("conversion");
+        std::fs::create_dir(&conversion).unwrap();
+        assert!(!run_chose_review(&conversion), "no selection record");
+        std::fs::write(
+            run.path().join("drive-selection.json"),
+            br#"{"selected":{}}"#,
+        )
+        .unwrap();
+        assert!(!run_chose_review(&conversion));
+        std::fs::write(
+            run.path().join("drive-selection.json"),
+            br#"{"selected":{},"review_before_handoff":true}"#,
+        )
+        .unwrap();
+        assert!(run_chose_review(&conversion));
+    }
+
+    #[test]
+    fn the_review_stop_says_how_to_commit_and_how_to_roll_back() {
+        let said = review_stop_message(
+            std::path::Path::new("C:\\w\\run\\conversion"),
+            "ab",
+            &["V:\\".to_owned()],
+            std::path::Path::new("C:\\w\\run\\conversion\\review-stop.json"),
+        );
+        assert!(said.contains("read-only as ReFS at V:\\"), "{said}");
+        assert!(
+            said.contains("--recover \"C:\\w\\run\\conversion\" --recovery-sha256 ab\n"),
+            "{said}"
+        );
+        assert!(said.contains("--recovery-sha256 ab --rollback"), "{said}");
+        assert!(said.contains("writable"), "{said}");
+    }
 
     #[test]
     fn short_names_are_refused_unless_the_run_is_asked_to_drop_them() {

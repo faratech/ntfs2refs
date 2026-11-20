@@ -222,6 +222,17 @@ fn run() -> Result<u8> {
                         "on_a_data_volume_to_shrink": "makes the read-only check of --check alone, and says so: a diagnosis never shrinks",
                         "failure_limit": {"option": "--diagnose-limit", "default": 500, "zero_means": "no limit"},
                     },
+                    "review": {
+                        "option": "--review",
+                        "stops": "before the handoff: every new byte written, flushed and read back, the converted volume mounted read-only as ReFS",
+                        "then": {"commit": "--recover <dir> --recovery-sha256 <sum>",
+                                 "roll_back": "--recover <dir> --recovery-sha256 <sum> --rollback"},
+                        "refuses_both_once_writable": true,
+                        "restored_ntfs_held_to_source_fingerprint": true,
+                        "for": "a data volume on a disk of its own",
+                        "refused_with": ["--windows-boot-volume", "--restart-media", "--check", "--diagnose", "--compare-listing", "--minimize-scratch", "a partition on the running Windows disk", "a disk with other partitions"],
+                        "lab_evidence": false,
+                    },
                     "verification_modes": [
                         {"option": "--verify fast", "name": "fast, extent identity (default)",
                          "changes": "data that stays in place is proven by the identity of its extents; everything else is read and checksummed"},

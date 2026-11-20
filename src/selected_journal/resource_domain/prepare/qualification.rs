@@ -144,6 +144,11 @@ struct Publication<'a> {
     /// 3.14 every earlier run had.
     #[serde(skip_serializing_if = "Option::is_none")]
     target_refs_version: Option<(u32, u32)>,
+    /// `Some(true)` for a run that stops for a review before its handoff
+    /// (`--review`, #110); written only then, so every other run's records
+    /// are unchanged. Recovery accepts a review run's own states from this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    review_before_handoff: Option<bool>,
     serialized_publication_grants_authority: bool,
 }
 
@@ -318,6 +323,8 @@ pub(crate) fn persist_partition_metadata(
             expected_source_label: &label,
             target_cluster_bytes: recorded_target_cluster(),
             target_refs_version: n2r_win32::target_refs_version::recorded(),
+            // The partition route has no review (#110).
+            review_before_handoff: None,
             serialized_publication_grants_authority: false,
         };
         source_scope
@@ -1097,6 +1104,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                             expected_source_label: context.expected_label(),
                             target_cluster_bytes: recorded_target_cluster(),
                             target_refs_version: n2r_win32::target_refs_version::recorded(),
+                            review_before_handoff: crate::review::recorded(),
                             serialized_publication_grants_authority: false,
                         };
                         let artifacts = save_publication(

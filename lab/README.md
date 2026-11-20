@@ -185,6 +185,43 @@ NTFS volume listing exactly as before (`rolled-back`). `-Diagnose` runs the
 converter with `--diagnose`; whatever it reports, the volume must list exactly
 as before (`diagnose-clean`, `diagnose-found-failures`).
 
+#### `--review` (#110): cases for the test round
+
+A review run stops before its handoff with the volume mounted read-only as
+ReFS and exits 0; `--recover` commits it and `--recover --rollback` undoes it.
+The harness does not have a `-Review` switch yet. It needs one that passes
+`--review` through `-ConverterArgs`, expects exit 0 with the line `Stopped for
+review`, checks that `V:` is mounted read-only as ReFS (a write to it fails),
+lists it (the listing must match the one before, as a conversion's does),
+then runs the printed command with or without `--rollback` and judges the
+result as `-InterruptAt` does (`resumed` / `rolled-back`). A `-Tamper` switch
+clears the disk's read-only attribute (`Set-Disk -IsReadOnly $false`), writes
+one file to `V:`, sets read-only back, and expects both recovery commands to be
+refused with `not what it was when the run stopped for review`, the volume
+left offline and read-only. The cases, each on the 1-in-40 fixture or a
+`-Content lived-in` data volume:
+
+| Case | Expected |
+|---|---|
+| `-Review` then commit | `resumed`, identical listing |
+| `-Review` then `--rollback` | `rolled-back`, `compare --exact`; recovery reports `source_fingerprint_verified` |
+| `-Review -Tamper`, commit | refused, nothing written, disk offline read-only |
+| `-Review -Tamper`, `--rollback` | refused, nothing written, disk offline read-only |
+| `-Review`, disk set writable without a write, commit | refused at open (`online and writable`) |
+| `-Review -InterruptAt apply-mid-ranges`, resume / rollback | as today: `resumed` / `rolled-back` |
+| `-Review -InterruptAt apply-before-handoff`, resume / rollback | as today |
+| `-Review -InterruptAt review-sealed`, resume / rollback | frozen source exactly NEW under the apply marker is accepted: `resumed` / `rolled-back` |
+| `-Review -InterruptAt review-recorded`, resume / rollback | the same, and the stop's fingerprint is compared |
+| `-Review -InterruptAt review-sealed -InterruptKind vm`, resume / rollback | as the process case |
+| `-Review` with Explorer open on `V:`, commit | refused with the dismount message; closed, it commits |
+| `-Review`, the control OS restarted at the stop, then commit / rollback | the disk comes back online read-only by itself; `resumed` / `rolled-back` |
+| `-Review`, the recovery ended after it sealed the disk again, then recovery again (both directions) | the second recovery compares the fingerprint and finishes |
+| `-Review`, the recovery ended after it made the disk writable (offline), then recovery again | as above, from offline writable |
+| `-Review -Content lived-in`, `--rollback` | `rolled-back`, `compare --exact` |
+| `-Review -Siblings` | refused before anything is opened (a disk of its own only) |
+| `-Review` with `--minimize-scratch` | refused by the parser |
+| a default run at `apply-activated`, `handoff-sealed` | unchanged from today |
+
 `-StopDuringPreparation <phase>` ends the converter as soon as its progress
 names that phase of preparation (`payload_supply`, `recovery_journal`, ...):
 before it has printed a recovery command, and before anything is written to

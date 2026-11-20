@@ -273,6 +273,18 @@ fn verify_selected_digest<R: Read + Seek>(
     policy: &HeldPagedWritePolicy,
     expected: [u8; 32],
 ) -> io::Result<()> {
+    if selected_digest(source, policy)? != expected {
+        return Err(invalid("actual excluded source selected bytes differ"));
+    }
+    Ok(())
+}
+
+/// The digest of the source's selected ranges, framed as the journal frames
+/// its OLD and NEW digests.
+fn selected_digest<R: Read + Seek>(
+    source: &mut R,
+    policy: &HeldPagedWritePolicy,
+) -> io::Result<[u8; 32]> {
     let previous = source.stream_position()?;
     let result = (|| {
         let facts = policy.facts()?;
@@ -291,10 +303,7 @@ fn verify_selected_digest<R: Read + Seek>(
                 remaining -= count as u64;
             }
         }
-        if hash.finish()? != expected {
-            return Err(invalid("actual excluded source selected bytes differ"));
-        }
-        Ok(())
+        hash.finish()
     })();
     source.seek(SeekFrom::Start(previous))?;
     result
@@ -600,6 +609,58 @@ pub fn selected_new_bytes_verified(
             .contains(&(*immutable_sha256, *new_selected_sha256))
 }
 
+/// What a frozen source under the apply intent may hold before recovery
+/// makes it writable.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FrozenSelected {
+    /// Exactly the old selected bytes: every run.
+    Old,
+    /// Exactly the old or exactly the new: only a run recorded as stopping
+    /// for a review, whose source is sealed again after every new byte.
+    OldOrNew,
+}
+
+impl FrozenSelected {
+    /// Whether the digest of the frozen source's selected ranges is one this
+    /// run may make writable for recovery.
+    fn admits(self, actual: [u8; 32], pins: &PagedRecoveryPins<'_>) -> bool {
+        match self {
+            Self::Old => actual == pins.old_selected_sha256,
+            Self::OldOrNew => {
+                actual == pins.old_selected_sha256 || actual == pins.new_selected_sha256
+            }
+        }
+    }
+}
+
+/// The durable state beside which the selected NEW bytes are authenticated.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum NewBytesState {
+    /// The handoff marker beside the apply intent: rollback is closed.
+    Handoff,
+    /// The apply intent alone, for a run whose authenticated records say it
+    /// stops for a review before its handoff. Rollback is still open.
+    ReviewApply,
+}
+
+impl NewBytesState {
+    fn check(self, journal: &mut File, pins: &PagedRecoveryPins<'_>) -> io::Result<()> {
+        match self {
+            Self::Handoff => check_handoff_lifecycle(journal, pins),
+            Self::ReviewApply => check_lifecycle(journal, pins, PagedRecoveryDirection::Resume)
+                .map_err(|_| invalid("a review stop requires the apply intent alone")),
+        }
+    }
+    /// The refusal: the handoff's words, which every run before the review
+    /// had, or the review's.
+    fn say(self, handoff: &'static str, review: &'static str) -> io::Error {
+        invalid(match self {
+            Self::Handoff => handoff,
+            Self::ReviewApply => review,
+        })
+    }
+}
+
 /// Authenticate HND and the complete selected NEW bytes using held owners.
 /// The caller brackets this with actual source device-state observations.
 fn verify_paged_handoff<R: Read + Seek>(
@@ -610,13 +671,55 @@ fn verify_paged_handoff<R: Read + Seek>(
     journal: &mut File,
     pins: &PagedRecoveryPins<'_>,
 ) -> io::Result<()> {
+    verify_paged_new_bytes(
+        source,
+        source_length,
+        source_binding,
+        policy,
+        journal,
+        pins,
+        NewBytesState::Handoff,
+    )
+}
+
+/// The same for a review stop: the apply intent alone, with every selected
+/// byte exactly NEW.
+fn verify_paged_review_stop<R: Read + Seek>(
+    source: &mut R,
+    source_length: u64,
+    source_binding: &crate::general_layout::GeneralDiskBinding,
+    policy: &HeldPagedWritePolicy,
+    journal: &mut File,
+    pins: &PagedRecoveryPins<'_>,
+) -> io::Result<()> {
+    verify_paged_new_bytes(
+        source,
+        source_length,
+        source_binding,
+        policy,
+        journal,
+        pins,
+        NewBytesState::ReviewApply,
+    )
+}
+
+fn verify_paged_new_bytes<R: Read + Seek>(
+    source: &mut R,
+    source_length: u64,
+    source_binding: &crate::general_layout::GeneralDiskBinding,
+    policy: &HeldPagedWritePolicy,
+    journal: &mut File,
+    pins: &PagedRecoveryPins<'_>,
+    state: NewBytesState,
+) -> io::Result<()> {
     pins.journal_binding.validate()?;
     if source_binding.disk_number == pins.journal_binding.disk.disk_number
         || crate::layout::guid_bytes(&source_binding.identity.disk_guid)?
             == crate::layout::guid_bytes(&pins.journal_binding.disk.identity.disk_guid)?
     {
-        return Err(invalid(
+        return Err(state.say(
             "handoff journal must be on a different physical disk",
+            "review journal must be on a different physical disk",
         ));
     }
     let facts = policy.facts()?;
@@ -627,13 +730,14 @@ fn verify_paged_handoff<R: Read + Seek>(
         || facts.journal_length > pins.journal_profile.max_journal_bytes()
         || facts.journal_immutable_sha256 != pins.immutable_sha256
     {
-        return Err(invalid(
+        return Err(state.say(
             "handoff policy, source geometry or journal capacity differs",
+            "review policy, source geometry or journal capacity differs",
         ));
     }
     let before = verify_journal_owner(journal, pins, facts.journal_length)?;
     let modified = journal.metadata()?.modified()?;
-    check_handoff_lifecycle(journal, pins)?;
+    state.check(journal, pins)?;
     if crate::sha256_native::journal_body(
         journal,
         BODY,
@@ -641,14 +745,17 @@ fn verify_paged_handoff<R: Read + Seek>(
         &pins.immutable_sha256,
     )? != pins.immutable_sha256
     {
-        return Err(invalid("handoff journal immutable body differs"));
+        return Err(state.say(
+            "handoff journal immutable body differs",
+            "review journal immutable body differs",
+        ));
     }
     verify_index_against_journal(journal, policy, pins)?;
     if !selected_new_bytes_already_verified(pins) {
         verify_selected_digest(source, policy, pins.new_selected_sha256)?;
         note_selected_new_bytes_verified(&pins.immutable_sha256, &pins.new_selected_sha256);
     }
-    check_handoff_lifecycle(journal, pins)?;
+    state.check(journal, pins)?;
     if crate::sha256_native::journal_body(
         journal,
         BODY,
@@ -656,19 +763,23 @@ fn verify_paged_handoff<R: Read + Seek>(
         &pins.immutable_sha256,
     )? != pins.immutable_sha256
     {
-        return Err(invalid(
+        return Err(state.say(
             "handoff journal changed during selected-byte verification",
+            "review journal changed during selected-byte verification",
         ));
     }
     verify_index_against_journal(journal, policy, pins)?;
-    check_handoff_lifecycle(journal, pins)?;
+    state.check(journal, pins)?;
     let after = verify_journal_owner(journal, pins, facts.journal_length)?;
     if before.identity != after.identity
         || before.file_bytes != after.file_bytes
         || !before.final_path.eq_ignore_ascii_case(&after.final_path)
         || journal.metadata()?.modified()? != modified
     {
-        return Err(invalid("handoff held journal identity changed"));
+        return Err(state.say(
+            "handoff held journal identity changed",
+            "review held journal identity changed",
+        ));
     }
     Ok(())
 }
@@ -1178,16 +1289,182 @@ impl GeneralFrozenPartition {
         Ok(())
     }
 
+    /// The review stop's reseal (#110): the same as the handoff's above, but
+    /// beside the apply intent alone, with every selected byte exactly NEW.
+    /// Only a run whose authenticated publication records that it stops for
+    /// a review calls this; the handoff is not written and rollback stays
+    /// open. This never mounts the volume.
+    pub fn seal_paged_review_for_observation(
+        &mut self,
+        policy: &HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &PagedRecoveryPins<'_>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        let before = self.state(events)?;
+        if before.disk_attributes != OFFLINE {
+            return Err(invalid(
+                "review reseal requires the same offline source owner",
+            ));
+        }
+        let binding = self.binding.clone();
+        let length = self.byte_len();
+        verify_paged_review_stop(self, length, &binding, policy, journal, pins)?;
+        if self.state(events)? != before {
+            return Err(invalid(
+                "review source changed during selected NEW verification",
+            ));
+        }
+        let mut expected = before;
+        expected.disk_attributes = OFFLINE | READ_ONLY;
+        set_attributes(&self.file, OFFLINE | READ_ONLY, events)?;
+        if general_disk_state(&self.file, &self.binding, events)? != expected {
+            return Err(invalid(
+                "review read-only reseal identity or attributes differ",
+            ));
+        }
+        let path = format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number);
+        let readonly = device_file(&path, false, true)?;
+        if general_disk_state(&readonly, &self.binding, events)? != expected {
+            return Err(invalid("review readonly source handle route differs"));
+        }
+        self.file = readonly;
+        self.frozen_state = expected;
+        self.freeze_observation = None;
+        Ok(())
+    }
+
+    /// Put a sealed review stop online, read-only (#110): the disk goes from
+    /// OFFLINE|READ_ONLY to READ_ONLY and stays there when this process
+    /// ends, so that Windows mounts the converted volume write-protected.
+    /// The apply intent alone and every selected byte exactly NEW are
+    /// authenticated first. Nothing is written to the disk, and the handoff
+    /// is not written: `--recover` commits, `--recover --rollback` undoes.
+    pub fn present_paged_review_readonly(
+        self,
+        policy: &HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &PagedRecoveryPins<'_>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<super::GeneralDiskState> {
+        let mut source = self;
+        let before = source.state(events)?;
+        if before.disk_attributes != OFFLINE | READ_ONLY {
+            return Err(invalid(
+                "a review is presented only from the offline read-only source",
+            ));
+        }
+        let binding = source.binding.clone();
+        let length = source.byte_len();
+        verify_paged_review_stop(&mut source, length, &binding, policy, journal, pins)?;
+        if source.state(events)? != before {
+            return Err(invalid("review source changed during its verification"));
+        }
+        let management = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", source.binding.disk_number),
+            true,
+            false,
+        )?;
+        if general_disk_state(&management, &source.binding, events)? != before {
+            return Err(invalid("review presentation control-handle route differs"));
+        }
+        let mut expected = before;
+        expected.disk_attributes = READ_ONLY;
+        set_attributes(&management, READ_ONLY, events)?;
+        super::control(
+            &management,
+            "refresh-review-readonly-refs-properties",
+            super::UPDATE_PROPERTIES,
+            &[],
+            0,
+            events,
+        )?;
+        let mut published = false;
+        for _ in 0..60 {
+            if super::attributes(&management, events)? != READ_ONLY {
+                return Err(invalid("the review disk lost its read-only state"));
+            }
+            match device_file(&source.binding.volume_path()?, false, false) {
+                Ok(volume) => {
+                    close_file(volume, "close-review-presentation-volume", events)?;
+                    published = true;
+                    break;
+                }
+                Err(error) if matches!(error.raw_os_error(), Some(2 | 3 | 21 | 1167)) => {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if !published {
+            return Err(invalid(
+                "the read-only ReFS volume of the review was not published within 15 seconds",
+            ));
+        }
+        let after = general_disk_state(&management, &source.binding, events)?;
+        if after != expected {
+            return Err(invalid("review presentation identity or attributes differ"));
+        }
+        close_file(management, "close-review-presentation-management", events)?;
+        // The frozen owner's read handle closes here; the persistent
+        // READ_ONLY attribute is what keeps the volume write-protected.
+        drop(source);
+        Ok(after)
+    }
+
     /// Recover the protected crash window in which AP reached the journal but
     /// the fresh source never left OFFLINE|READ_ONLY. Require the complete OLD
     /// selected source digest before making the same actual disk writable; a
     /// partially changed target must use ordinary OFFLINE recovery instead.
     pub fn into_paged_recovery_target_from_frozen(
+        self,
+        policy: &HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &PagedRecoveryPins<'_>,
+        direction: PagedRecoveryDirection,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralExclusiveRecoveryTarget> {
+        self.into_paged_recovery_target_from_frozen_accepting(
+            policy,
+            journal,
+            pins,
+            direction,
+            FrozenSelected::Old,
+            events,
+        )
+    }
+
+    /// The same for a run whose authenticated publication records that it
+    /// stops for a review before its handoff (#110). Such a run seals its
+    /// source again after every new byte is written, so its frozen source
+    /// under the apply intent holds either exactly the OLD selected bytes
+    /// (cut before its first write) or exactly the NEW ones (the review
+    /// stop). Anything else, a mixture included, is refused here as well.
+    pub fn into_paged_recovery_target_from_frozen_for_review(
+        self,
+        policy: &HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &PagedRecoveryPins<'_>,
+        direction: PagedRecoveryDirection,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralExclusiveRecoveryTarget> {
+        self.into_paged_recovery_target_from_frozen_accepting(
+            policy,
+            journal,
+            pins,
+            direction,
+            FrozenSelected::OldOrNew,
+            events,
+        )
+    }
+
+    fn into_paged_recovery_target_from_frozen_accepting(
         mut self,
         policy: &HeldPagedWritePolicy,
         journal: &mut File,
         pins: &PagedRecoveryPins<'_>,
         direction: PagedRecoveryDirection,
+        accepted: FrozenSelected,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<GeneralExclusiveRecoveryTarget> {
         pins.journal_binding.validate()?;
@@ -1230,7 +1507,16 @@ impl GeneralFrozenPartition {
             return Err(invalid("protected recovery journal immutable body differs"));
         }
         verify_index_against_journal(journal, policy, pins)?;
-        verify_selected_digest(&mut self, policy, pins.old_selected_sha256)?;
+        let actual = selected_digest(&mut self, policy)?;
+        if !accepted.admits(actual, pins) {
+            return Err(invalid(match accepted {
+                FrozenSelected::Old => "actual excluded source selected bytes differ",
+                FrozenSelected::OldOrNew => {
+                    "the frozen source of a review run holds neither exactly the old nor \
+                     exactly the new selected bytes"
+                }
+            }));
+        }
         if self.state(events)? != before {
             return Err(invalid(
                 "protected recovery source changed during OLD verification",
@@ -1735,4 +2021,136 @@ pub(super) fn authenticate_partition_paged_source(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod review_gate_tests {
+    use super::*;
+
+    fn with_pins<T>(test: impl FnOnce(&PagedRecoveryPins<'_>) -> T) -> T {
+        let binding = GeneralJournalStorageBinding {
+            disk: crate::general_layout::GeneralDiskBinding {
+                disk_number: 5,
+                volume_guid: "5f2d3e41-5555-4444-aabb-123456789abc".into(),
+                identity: crate::layout::PartitionIdentity {
+                    disk_guid: "12345678-1111-2222-aaaa-123456789abc".into(),
+                    partition_guid: "23456789-2222-3333-bbbb-123456789abc".into(),
+                    partition_number: 2,
+                    disk_bytes: 8 << 30,
+                    partition_offset: 1 << 20,
+                    partition_bytes: 6 << 30,
+                    logical_sector_bytes: 512,
+                    physical_sector_bytes: 4096,
+                },
+                layout_profile: Default::default(),
+            },
+            externally_enrolled_disk_unique_id: "test".into(),
+            allow_additional_partitions: false,
+        };
+        let identity = JournalFileIdentity {
+            volume_serial_number: 1,
+            file_id_128: [1; 16],
+            volume_guid: [2; 16],
+            disk_guid: [3; 16],
+            partition_guid: [4; 16],
+            partition_number: 2,
+            disk_bytes: 8 << 30,
+            partition_offset: 1 << 20,
+            partition_bytes: 6 << 30,
+            logical_sector_bytes: 512,
+            physical_sector_bytes: 4096,
+        };
+        let pins = PagedRecoveryPins {
+            journal_binding: &binding,
+            journal_identity: &identity,
+            journal_path: Path::new("J:\\journal"),
+            journal_profile: JournalProfile::CapacityPinnedV3 {
+                max_journal_bytes: 1 << 30,
+            },
+            immutable_sha256: [7; 32],
+            old_selected_sha256: [8; 32],
+            old_restored_selected_sha256: None,
+            new_selected_sha256: [9; 32],
+        };
+        test(&pins)
+    }
+
+    /// A journal whose completion granule and intent granule hold these.
+    fn journal(completion: Option<&[u8; 8]>, intent: Option<&[u8; 8]>) -> tempfile::NamedTempFile {
+        with_pins(|pins| {
+            let mut file = tempfile::NamedTempFile::new().unwrap();
+            let mut body = vec![0u8; (2 * GRANULE) as usize];
+            let selected = |magic: &[u8; 8]| match magic {
+                b"N2RSAP01" | b"N2RSHN01" => pins.new_selected_sha256,
+                _ => pins.old_selected_sha256,
+            };
+            if let Some(magic) = completion {
+                body[..GRANULE as usize].copy_from_slice(&marker(
+                    magic,
+                    &pins.immutable_sha256,
+                    &selected(magic),
+                ));
+            }
+            if let Some(magic) = intent {
+                body[GRANULE as usize..].copy_from_slice(&marker(
+                    magic,
+                    &pins.immutable_sha256,
+                    &selected(magic),
+                ));
+            }
+            file.write_all(&body).unwrap();
+            file
+        })
+    }
+
+    #[test]
+    fn the_handoff_gate_and_the_review_gate_each_take_their_own_state_only() {
+        type Case<'a> = (
+            &'a str,
+            Option<&'a [u8; 8]>,
+            Option<&'a [u8; 8]>,
+            bool,
+            bool,
+        );
+        let cases: [Case<'_>; 5] = [
+            ("clear", None, None, false, false),
+            ("apply intent", None, Some(b"N2RSAP01"), false, true),
+            ("handoff", Some(b"N2RSHN01"), Some(b"N2RSAP01"), true, false),
+            ("rollback intent", None, Some(b"N2RSRB01"), false, false),
+            ("abort", Some(b"N2RSAB01"), Some(b"N2RSRB01"), false, false),
+        ];
+        for (name, completion, intent, handoff, review) in cases {
+            let held = journal(completion, intent);
+            with_pins(|pins| {
+                let mut file = File::open(held.path()).unwrap();
+                assert_eq!(
+                    NewBytesState::Handoff.check(&mut file, pins).is_ok(),
+                    handoff,
+                    "handoff gate, {name}"
+                );
+                assert_eq!(
+                    NewBytesState::ReviewApply.check(&mut file, pins).is_ok(),
+                    review,
+                    "review gate, {name}"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn a_frozen_source_is_admitted_exactly_old_for_every_run_and_exactly_new_for_a_review() {
+        with_pins(|pins| {
+            let (old, new, mixed) = (
+                pins.old_selected_sha256,
+                pins.new_selected_sha256,
+                [0xaa; 32],
+            );
+            assert!(FrozenSelected::Old.admits(old, pins));
+            assert!(!FrozenSelected::Old.admits(new, pins));
+            assert!(!FrozenSelected::Old.admits(mixed, pins));
+            assert!(FrozenSelected::OldOrNew.admits(old, pins));
+            assert!(FrozenSelected::OldOrNew.admits(new, pins));
+            assert!(!FrozenSelected::OldOrNew.admits(mixed, pins));
+        });
+    }
 }

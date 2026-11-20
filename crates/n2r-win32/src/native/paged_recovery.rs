@@ -620,6 +620,19 @@ enum FrozenSelected {
     OldOrNew,
 }
 
+impl FrozenSelected {
+    /// Whether the digest of the frozen source's selected ranges is one this
+    /// run may make writable for recovery.
+    fn admits(self, actual: [u8; 32], pins: &PagedRecoveryPins<'_>) -> bool {
+        match self {
+            Self::Old => actual == pins.old_selected_sha256,
+            Self::OldOrNew => {
+                actual == pins.old_selected_sha256 || actual == pins.new_selected_sha256
+            }
+        }
+    }
+}
+
 /// The durable state beside which the selected NEW bytes are authenticated.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum NewBytesState {
@@ -1494,19 +1507,15 @@ impl GeneralFrozenPartition {
             return Err(invalid("protected recovery journal immutable body differs"));
         }
         verify_index_against_journal(journal, policy, pins)?;
-        match accepted {
-            FrozenSelected::Old => {
-                verify_selected_digest(&mut self, policy, pins.old_selected_sha256)?
-            }
-            FrozenSelected::OldOrNew => {
-                let actual = selected_digest(&mut self, policy)?;
-                if actual != pins.old_selected_sha256 && actual != pins.new_selected_sha256 {
-                    return Err(invalid(
-                        "the frozen source of a review run holds neither exactly the old nor \
-                         exactly the new selected bytes",
-                    ));
+        let actual = selected_digest(&mut self, policy)?;
+        if !accepted.admits(actual, pins) {
+            return Err(invalid(match accepted {
+                FrozenSelected::Old => "actual excluded source selected bytes differ",
+                FrozenSelected::OldOrNew => {
+                    "the frozen source of a review run holds neither exactly the old nor \
+                     exactly the new selected bytes"
                 }
-            }
+            }));
         }
         if self.state(events)? != before {
             return Err(invalid(
@@ -2012,4 +2021,136 @@ pub(super) fn authenticate_partition_paged_source(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod review_gate_tests {
+    use super::*;
+
+    fn with_pins<T>(test: impl FnOnce(&PagedRecoveryPins<'_>) -> T) -> T {
+        let binding = GeneralJournalStorageBinding {
+            disk: crate::general_layout::GeneralDiskBinding {
+                disk_number: 5,
+                volume_guid: "5f2d3e41-5555-4444-aabb-123456789abc".into(),
+                identity: crate::layout::PartitionIdentity {
+                    disk_guid: "12345678-1111-2222-aaaa-123456789abc".into(),
+                    partition_guid: "23456789-2222-3333-bbbb-123456789abc".into(),
+                    partition_number: 2,
+                    disk_bytes: 8 << 30,
+                    partition_offset: 1 << 20,
+                    partition_bytes: 6 << 30,
+                    logical_sector_bytes: 512,
+                    physical_sector_bytes: 4096,
+                },
+                layout_profile: Default::default(),
+            },
+            externally_enrolled_disk_unique_id: "test".into(),
+            allow_additional_partitions: false,
+        };
+        let identity = JournalFileIdentity {
+            volume_serial_number: 1,
+            file_id_128: [1; 16],
+            volume_guid: [2; 16],
+            disk_guid: [3; 16],
+            partition_guid: [4; 16],
+            partition_number: 2,
+            disk_bytes: 8 << 30,
+            partition_offset: 1 << 20,
+            partition_bytes: 6 << 30,
+            logical_sector_bytes: 512,
+            physical_sector_bytes: 4096,
+        };
+        let pins = PagedRecoveryPins {
+            journal_binding: &binding,
+            journal_identity: &identity,
+            journal_path: Path::new("J:\\journal"),
+            journal_profile: JournalProfile::CapacityPinnedV3 {
+                max_journal_bytes: 1 << 30,
+            },
+            immutable_sha256: [7; 32],
+            old_selected_sha256: [8; 32],
+            old_restored_selected_sha256: None,
+            new_selected_sha256: [9; 32],
+        };
+        test(&pins)
+    }
+
+    /// A journal whose completion granule and intent granule hold these.
+    fn journal(completion: Option<&[u8; 8]>, intent: Option<&[u8; 8]>) -> tempfile::NamedTempFile {
+        with_pins(|pins| {
+            let mut file = tempfile::NamedTempFile::new().unwrap();
+            let mut body = vec![0u8; (2 * GRANULE) as usize];
+            let selected = |magic: &[u8; 8]| match magic {
+                b"N2RSAP01" | b"N2RSHN01" => pins.new_selected_sha256,
+                _ => pins.old_selected_sha256,
+            };
+            if let Some(magic) = completion {
+                body[..GRANULE as usize].copy_from_slice(&marker(
+                    magic,
+                    &pins.immutable_sha256,
+                    &selected(magic),
+                ));
+            }
+            if let Some(magic) = intent {
+                body[GRANULE as usize..].copy_from_slice(&marker(
+                    magic,
+                    &pins.immutable_sha256,
+                    &selected(magic),
+                ));
+            }
+            file.write_all(&body).unwrap();
+            file
+        })
+    }
+
+    #[test]
+    fn the_handoff_gate_and_the_review_gate_each_take_their_own_state_only() {
+        type Case<'a> = (
+            &'a str,
+            Option<&'a [u8; 8]>,
+            Option<&'a [u8; 8]>,
+            bool,
+            bool,
+        );
+        let cases: [Case<'_>; 5] = [
+            ("clear", None, None, false, false),
+            ("apply intent", None, Some(b"N2RSAP01"), false, true),
+            ("handoff", Some(b"N2RSHN01"), Some(b"N2RSAP01"), true, false),
+            ("rollback intent", None, Some(b"N2RSRB01"), false, false),
+            ("abort", Some(b"N2RSAB01"), Some(b"N2RSRB01"), false, false),
+        ];
+        for (name, completion, intent, handoff, review) in cases {
+            let held = journal(completion, intent);
+            with_pins(|pins| {
+                let mut file = File::open(held.path()).unwrap();
+                assert_eq!(
+                    NewBytesState::Handoff.check(&mut file, pins).is_ok(),
+                    handoff,
+                    "handoff gate, {name}"
+                );
+                assert_eq!(
+                    NewBytesState::ReviewApply.check(&mut file, pins).is_ok(),
+                    review,
+                    "review gate, {name}"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn a_frozen_source_is_admitted_exactly_old_for_every_run_and_exactly_new_for_a_review() {
+        with_pins(|pins| {
+            let (old, new, mixed) = (
+                pins.old_selected_sha256,
+                pins.new_selected_sha256,
+                [0xaa; 32],
+            );
+            assert!(FrozenSelected::Old.admits(old, pins));
+            assert!(!FrozenSelected::Old.admits(new, pins));
+            assert!(!FrozenSelected::Old.admits(mixed, pins));
+            assert!(FrozenSelected::OldOrNew.admits(old, pins));
+            assert!(FrozenSelected::OldOrNew.admits(new, pins));
+            assert!(!FrozenSelected::OldOrNew.admits(mixed, pins));
+        });
+    }
 }

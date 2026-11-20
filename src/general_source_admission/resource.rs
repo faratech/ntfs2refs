@@ -1626,6 +1626,8 @@ impl ResourceSourceContext {
                 windows_aliases.is_some(),
             )?;
             let (mut case_marks, mut case_mark_example) = (0u64, None::<String>);
+            // Whether the root directory (FILE 5) is one of them.
+            let mut case_mark_on_root = false;
             let mut case_marks_writer = SortedRecordWriter::new(
                 &output.join("case-sensitive-directories"),
                 *b"N2RCASE1",
@@ -1788,6 +1790,7 @@ impl ResourceSourceContext {
                                 .checked_add(1)
                                 .context("case-match count overflow")?;
                             if row.case_sensitive_mark {
+                                case_mark_on_root |= file.record_number == 5;
                                 let path = ntfs_admission::paged::refused_object_path(&raw, &file)
                                     .map(|path| format!("\\{}", path.join("\\")));
                                 case_marks_writer.push(
@@ -1847,6 +1850,10 @@ impl ResourceSourceContext {
                     &mut reservations,
                 )?;
             }
+            // A marked root leaves the whole volume without the mark, as
+            // every such volume was converted before: the new root is never
+            // empty when its mark could be set.
+            let case_mark_carry = case_mark_carry.with_source_root(case_mark_on_root);
             if case_marks != 0 {
                 println!(
                     "{}",
@@ -3024,9 +3031,27 @@ mod case_mark_tests {
                 && policy.contains("this is Windows 10.0.26300"),
             "{policy}"
         );
-        // Both keep the same source records, and neither admits two names
+        // A marked root: the record of a run that sets no mark, with why.
+        let marked_root = case_mark_record(
+            CaseMarkCarry::Carried.with_source_root(true),
+            "cd",
+            7,
+            records.clone(),
+        );
+        assert_eq!(
+            marked_root["kind"],
+            "case-sensitive-directory-marks-not-carried-over-v1"
+        );
+        assert_eq!(marked_root["target_has_the_mark"], false);
+        assert!(
+            marked_root["policy"]
+                .as_str()
+                .unwrap()
+                .contains("root directory is itself marked")
+        );
+        // All keep the same source records, and none admits two names
         // that differ only by case.
-        for record in [&carried, &not_carried] {
+        for record in [&carried, &not_carried, &marked_root] {
             assert_eq!(record["records"], records);
             assert_eq!(record["directories"], 7);
             assert_eq!(record["source_inspection_sha256"], "cd");

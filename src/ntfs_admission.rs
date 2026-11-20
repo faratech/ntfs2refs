@@ -891,6 +891,14 @@ mod refusal_tests {
                 && on_windows.contains("data volumes only"),
             "{on_windows}"
         );
+        // A marked root: the same words a harness reads, and why.
+        let root = case_mark_note(2, Some("\\"), CaseMarkCarry::Carried.with_source_root(true));
+        assert!(
+            root.contains("The converter does not set the mark on the new volume")
+                && root.contains("root directory is itself marked")
+                && root.contains("listed in the run's records"),
+            "{root}"
+        );
         // Where it is carried over, the note says so and gives no reason
         // for the opposite.
         let carried = case_mark_note(3, Some("\\src"), CaseMarkCarry::Carried);

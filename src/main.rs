@@ -159,6 +159,7 @@ fn run() -> Result<u8> {
                             "how": "every directory of the new volume is made with the mark its source directory has, the mark is read back, and a directory whose mark differs afterwards fails the run",
                             "not_set": ["on any other Windows: Windows 11 build 26300 stops with a bugcheck when a ReFS volume holding a marked directory is taken offline, which a conversion does with the volume it builds",
                                         "in a recovery or installation environment",
+                                        "on a volume whose root directory is itself marked: the new root is never empty when its mark could be set, so no mark is set on that volume",
                                         "on a volume that holds a Windows (--windows-boot-volume, and the running Windows)",
                                         "on a partition of the running Windows disk, which is converted through a restart"],
                             "the_run_says": "before the prompt, and --check: how many directories are marked, whether the mark is set, and where it is not, why",

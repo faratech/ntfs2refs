@@ -248,6 +248,13 @@ pub enum WhyNotCarried {
     /// The volume holds a Windows installation: the Windows that mounts it
     /// afterwards is the one on it, not the one the converter runs on.
     WindowsVolume,
+    /// The source's root directory is itself marked. The new volume's root
+    /// is not made by the converter: Windows formats it and puts System
+    /// Volume Information in it, so it is never empty when its mark could
+    /// be set, and the mark of a directory that holds something is not one
+    /// to count on changing. Such a volume converted before the mark was
+    /// carried anywhere, and still does: no mark is set on it at all.
+    MarkedRoot,
 }
 
 impl CaseMarkCarry {
@@ -281,6 +288,17 @@ impl CaseMarkCarry {
         ))
     }
 
+    /// The decision for a source whose root directory is marked
+    /// case-sensitive or not: a marked root leaves a decision to carry the
+    /// mark as one not to, for the whole volume. A decision not to carry
+    /// keeps its own reason.
+    pub fn with_source_root(self, root_marked: bool) -> Self {
+        match self {
+            Self::Carried if root_marked => Self::NotCarried(WhyNotCarried::MarkedRoot),
+            decided => decided,
+        }
+    }
+
     pub fn carried(self) -> bool {
         self == Self::Carried
     }
@@ -299,6 +317,7 @@ impl WhyNotCarried {
             Self::RecoveryEnvironment => format!(
                 "The converter sets the mark only when it runs on {shown}, where Windows was shown to keep such a directory on ReFS; this is a recovery or installation environment."
             ),
+            Self::MarkedRoot => "The volume's root directory is itself marked, and the root of the new volume is never empty when its mark could be set (Windows makes System Volume Information in it when it formats the volume), so no mark is set on this volume.".to_owned(),
             Self::WindowsVolume => format!(
                 "The converter sets the mark on data volumes only, on {shown}: the Windows that will start from this volume is not the one the converter runs on."
             ),
@@ -348,6 +367,37 @@ mod tests {
         );
         assert!(CaseMarkCarry::Carried.carried());
         assert!(!CaseMarkCarry::decide([10, 0, 26300], false, false, false).carried());
+    }
+
+    #[test]
+    fn a_marked_root_leaves_the_whole_volume_without_the_mark() {
+        let carried = CaseMarkCarry::Carried;
+        assert_eq!(carried.with_source_root(false), CaseMarkCarry::Carried);
+        assert_eq!(
+            carried.with_source_root(true),
+            CaseMarkCarry::NotCarried(WhyNotCarried::MarkedRoot)
+        );
+        assert!(!carried.with_source_root(true).carried());
+        // A decision not to carry keeps the reason it had.
+        for why in [
+            WhyNotCarried::Windows {
+                version: [10, 0, 26300],
+                server: false,
+            },
+            WhyNotCarried::RecoveryEnvironment,
+            WhyNotCarried::WindowsVolume,
+        ] {
+            let decided = CaseMarkCarry::NotCarried(why);
+            assert_eq!(decided.with_source_root(true), decided);
+            assert_eq!(decided.with_source_root(false), decided);
+        }
+        let sentence = WhyNotCarried::MarkedRoot.sentence();
+        assert!(
+            sentence.contains("root directory is itself marked")
+                && sentence.contains("never empty")
+                && sentence.contains("no mark is set on this volume"),
+            "{sentence}"
+        );
     }
 
     #[test]

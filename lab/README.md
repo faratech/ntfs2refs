@@ -299,7 +299,8 @@ file of `-BigFileGB` GiB), `full` (a nearly full, fragmented volume), `copy`
 (a directory of the control OS, copied with its security), `usn` (a change
 journal), `casemark` (directories marked case-sensitive, none holding two
 names that differ only by case, and an ordinary directory inside a marked
-one) and `shortnames-stripped` (8.3 names removed
+one), `casemark-root` (the root directory itself marked: no mark is set on
+such a volume, and the run says so) and `shortnames-stripped` (8.3 names removed
 with `fsutil`, the remedy the refusal gives). `-Content lived-in` is the mixed content with `copy`,
 `objectids`, `security`, `ea`, `links`, `longpath`, `deep`, `bigdir` and `usn`.
 

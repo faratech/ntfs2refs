@@ -153,10 +153,19 @@ fn describe(comparison: &Comparison, report: &Path) -> Vec<String> {
     lines
 }
 
+/// Whether a listing shows the volume's root directory as marked
+/// case-sensitive.
+fn root_marked(listing: &[Record]) -> bool {
+    listing
+        .iter()
+        .any(|record| record.path == "\\" && record.directory && record.case_sensitive)
+}
+
 /// Lists the converted volume, compares it with the listing taken before,
 /// keeps the report and says what it found. `Ok(true)` when the two agree.
-/// `case_marks` is whether this run set the directories' case-sensitive
-/// marks on the new volume.
+/// `case_marks` is whether a run on this Windows, of this kind of volume,
+/// sets the directories' case-sensitive marks on the new volume; a root
+/// that the listing taken before shows as marked leaves the volume without.
 pub(super) fn after(
     root: &str,
     run: &Path,
@@ -165,6 +174,7 @@ pub(super) fn after(
     println!("Listing the converted volume and comparing it with the listing taken before.");
     let now = list(root, &run.join(AFTER))?;
     let then = read(&run.join(BEFORE))?;
+    let case_marks = case_marks.with_source_root(root_marked(&then));
     // A run is held to exactly what it said it leaves behind: a short name
     // it was asked to drop, and a case-sensitive mark where it said it does
     // not set one, are counted when they are gone, not differences. Where
@@ -226,6 +236,23 @@ mod tests {
             text.contains("of which 15620 are the 8.3 names as links"),
             "{text}"
         );
+
+        // A root the listing shows as marked, and only the root.
+        let directory = |path: &str, case_sensitive: bool| Record {
+            path: path.to_owned(),
+            directory: true,
+            case_sensitive,
+            ..Record::default()
+        };
+        assert!(root_marked(&[
+            directory("\\", true),
+            directory("\\src", false)
+        ]));
+        assert!(!root_marked(&[
+            directory("\\", false),
+            directory("\\src", true)
+        ]));
+        assert!(!root_marked(&[]));
 
         // Marks the run said it leaves behind are counted in what it says,
         // and nothing is said of them where none was left.

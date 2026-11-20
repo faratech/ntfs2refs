@@ -168,6 +168,7 @@ $dataCases = @(
     'links|-Content minimal -Features links -Check'
     'bigdir|-Content minimal -Features bigdir -Check'
     'casemark|-Content minimal -Features casemark -Check'
+    'casemark-root|-Content minimal -Features casemark-root -Check'
     # What the Windows Subsystem for Linux leaves on a volume, and names
     # that Win32 does not take and the file systems hold.
     'wsl|-Content minimal -Features wsl -Check'
@@ -206,6 +207,9 @@ $serverCases = @(
     'devdrive-casemark|-Content minimal -Features casemark -TargetFormat dev-drive -Check -Acceptance'
     'std-casemark-apply-mid-resume|-Content minimal -Features casemark -TargetFormat standard -InterruptAt apply-mid-ranges -Check'
     'std-casemark-apply-mid-rollback|-Content minimal -Features casemark -TargetFormat standard -InterruptAt apply-mid-ranges -RecoverMode rollback -Check'
+    # A root directory that is itself marked: no mark is set on that volume,
+    # here as on Windows 11, and the run says so.
+    'std-casemark-root|-Content minimal -Features casemark-root -TargetFormat standard -Check -Acceptance'
     'std-apply-mid-rollback|-TargetFormat standard -InterruptAt apply-mid-ranges -RecoverMode rollback -Check'
     'std-handoff-resume|-TargetFormat standard -InterruptAt handoff-sealed -Check'
     'server-files-20k|-Content minimal -Features manyfiles -FileCount 20000 -TargetFormat default -Check'

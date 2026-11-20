@@ -326,6 +326,19 @@ public static class ManyFiles {
             [IO.File]::WriteAllBytes("$dir\Plain\note.txt", (Bytes 50))
             $made[$feature] = "$marked directories marked case-sensitive, none holding two names that differ only by case; an ordinary directory inside a marked one: $(if ($plain) { 'made' } else { "not made ($plainSaid)" })"
         }
+        'casemark-root' {
+            # The volume's root directory itself marked, and a directory in
+            # it. A conversion sets no mark on such a volume on any Windows
+            # and says why: the new root is never empty when its mark could
+            # be set. If Windows does not mark this root (it may refuse a
+            # directory that holds something), the feature is not made.
+            $said = "$(& fsutil.exe file setCaseSensitiveInfo "$drive\" enable 2>&1)".Trim()
+            if ("$(& fsutil.exe file queryCaseSensitiveInfo "$drive\" 2>&1)" -notmatch 'is enabled') { throw "the root directory is not marked case-sensitive after fsutil file setCaseSensitiveInfo: $said" }
+            $null = New-Item -ItemType Directory -Path $dir -Force
+            [IO.File]::WriteAllBytes("$dir\Readme.txt", (Bytes 100))
+            $inner = "$(& fsutil.exe file queryCaseSensitiveInfo $dir 2>&1)" -match 'is enabled'
+            $made[$feature] = "the root directory marked case-sensitive; a directory made in it is $(if ($inner) { 'marked too' } else { 'not marked' })"
+        }
         'casemark-control' {
             # The control for 'casemark', for a volume Windows formatted as
             # ReFS itself (-NativeRefsControl): what Windows does with the

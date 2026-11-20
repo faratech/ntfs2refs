@@ -95,7 +95,11 @@ static REPEAT_ONCE: AtomicBool = AtomicBool::new(false);
 /// - the complete read of each recovery file (the publication, the expected
 ///   pages and their binding, the maps, the alias records), when it is
 ///   reopened read-only, denying writers. Every later step still holds the
-///   same open file to its identity, length, attributes and timestamp.
+///   same open file to its identity, length, attributes and timestamp. The
+///   finalizer of a resumed recovery reopens the same files: the recovery's
+///   handles stay open until the finalizer's own are, so that the files are
+///   at no moment unheld, and the finalizer compares the digest of that one
+///   read with the pin it was given.
 ///
 /// It is not [`check_once`], and a recovery never calls that when it starts.
 /// `check_once` leaves every full re-read to the [`Gate`] in front of the

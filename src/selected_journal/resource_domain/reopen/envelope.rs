@@ -256,9 +256,87 @@ struct HeldFile {
     file: File,
     snapshot: ReferenceFileSnapshot,
     modified: SystemTime,
+    // The digest that pins the file, and which digest it is.
     sha256: [u8; 32],
+    algorithm: n2r_win32::bulk_digest::Algorithm,
     expected_binding: Option<Box<HeldFile>>,
     _binding_memory: Option<SourceRamLease>,
+}
+
+/// A recovery file that a recovery read in full when it reopened it and has
+/// held open, denying writers, ever since: its handle, kept open for the
+/// finalizer of the same process, which reopens the same file next.
+///
+/// A resumed recovery releases everything it holds before its finalizer
+/// reopens and authenticates the same records. A digest that was merely
+/// remembered across that release would stand for a file nobody held in
+/// between, which `verify_policy::repeat_once` does not allow. So the
+/// handle itself is carried across: it closes only after the finalizer's
+/// own handle on the same file is open, and the file is never unheld.
+struct ParkedFile {
+    file: File,
+    snapshot: ReferenceFileSnapshot,
+    modified: SystemTime,
+    algorithm: n2r_win32::bulk_digest::Algorithm,
+    digest: [u8; 32],
+}
+static PARKED_FILES: std::sync::Mutex<Vec<ParkedFile>> = std::sync::Mutex::new(Vec::new());
+
+/// Closes every parked file that was not claimed.
+fn release_parked_files() {
+    PARKED_FILES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+}
+
+/// The parked handle on exactly this file, if a recovery of this process
+/// parked one: the same identity, length, attributes, link count and
+/// timestamp, pinned by the same algorithm, and the parked handle itself
+/// still says so. It is taken off the list; whoever claims it keeps it open
+/// until its own handle has passed its checks. Only under
+/// `verify_policy::repeat_once`, and never inside a gate, where every
+/// complete read is made; anything else is read in full, as before.
+fn claim_parked_file(
+    snapshot: &ReferenceFileSnapshot,
+    modified: SystemTime,
+    algorithm: n2r_win32::bulk_digest::Algorithm,
+) -> Option<ParkedFile> {
+    if !n2r_win32::verify_policy::repeats_once() || n2r_win32::verify_policy::open_gate().is_some()
+    {
+        return None;
+    }
+    let claimed = {
+        let mut parked = PARKED_FILES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let at = parked.iter().position(|parked| {
+            parked.snapshot == *snapshot
+                && parked.modified == modified
+                && parked.algorithm == algorithm
+        })?;
+        parked.swap_remove(at)
+    };
+    let unchanged = n2r_win32::reference_file::observe_reference_file_handle_with_limit(
+        &claimed.file,
+        claimed.snapshot.file_bytes,
+    )
+    .is_ok_and(|now| now == claimed.snapshot)
+        && claimed
+            .file
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|now| now == claimed.modified);
+    unchanged.then_some(claimed)
+}
+
+/// The recovery files a recovery parked for its finalizer. Whatever the
+/// finalizer did not claim is closed when this is dropped.
+pub(crate) struct ParkedRecoveryFiles(());
+impl Drop for ParkedRecoveryFiles {
+    fn drop(&mut self) {
+        release_parked_files();
+    }
 }
 
 fn hold_expected_binding(
@@ -432,22 +510,63 @@ impl HeldFile {
         );
         let modified = file.metadata()?.modified()?;
         let _ram = scratch.lease_ram(4 * 1024 * 1024)?;
+        // The digest that pins it: every byte read (what `pinning_digest`
+        // does), or, for a file the recovery of this process read in full
+        // and has held open ever since, the digest of that read. Either is
+        // compared with `expected`, and the identity checks that follow are
+        // made of this handle; the parked one closes after them.
+        let algorithm = n2r_win32::metadata_pages::file_digest_algorithm(&mut file)?;
+        let parked = claim_parked_file(&snapshot, modified, algorithm);
+        let actual = match &parked {
+            Some(parked) => {
+                // Where a complete read leaves it.
+                file.seek(SeekFrom::Start(snapshot.file_bytes))?;
+                parked.digest
+            }
+            None => {
+                n2r_win32::bulk_digest::hash_range(algorithm, &mut file, 0, snapshot.file_bytes)?
+            }
+        };
         ensure!(
-            n2r_win32::metadata_pages::pinning_digest(&mut file, snapshot.file_bytes)? == expected
+            actual == expected
                 && n2r_win32::reference_file::observe_reference_file_handle_with_limit(
                     &file, maximum
                 )? == snapshot
                 && file.metadata()?.modified()? == modified,
             "recovery artifact identity or digest differs"
         );
+        drop(parked);
         Ok(Self {
             file,
             snapshot,
             modified,
             sha256: expected,
+            algorithm,
             expected_binding: None,
             _binding_memory: None,
         })
+    }
+    /// Parks this file's handle, and its binding's, for the finalizer.
+    fn park(self, parked: &mut Vec<ParkedFile>) {
+        let Self {
+            file,
+            snapshot,
+            modified,
+            sha256,
+            algorithm,
+            expected_binding,
+            _binding_memory,
+        } = self;
+        if let Some(binding) = expected_binding {
+            binding.park(parked);
+        }
+        parked.push(ParkedFile {
+            file,
+            snapshot,
+            modified,
+            algorithm,
+            digest: sha256,
+        });
     }
     fn revalidate(&mut self, scratch: &SourceScratch) -> Result<()> {
         if let Some(binding) = &mut self.expected_binding {
@@ -2437,6 +2556,10 @@ impl ReopenedResourceRecovery {
         events: &mut Vec<NativeEvent>,
         allow_online_terminal: bool,
     ) -> Result<Self> {
+        // What a recovery of this process parked for this reopening
+        // (`park_recovery_files`) and it does not claim is closed when it
+        // returns, whichever way: nothing stays parked past it.
+        let _unclaimed = ParkedRecoveryFiles(());
         ensure!(
             group.group() == ArtifactGroup::RecoveryCopy
                 && maximum_publication_bytes > 0
@@ -2843,6 +2966,51 @@ impl ReopenedResourceRecovery {
             recovered.revalidate(events)?;
         }
         Ok(recovered)
+    }
+
+    /// Releases the journal, the source and everything else this recovery
+    /// holds, for the finalizer of the same process that reopens them next;
+    /// only its recovery files stay open, parked for that reopening.
+    ///
+    /// Each was read in full when this recovery reopened it and has been
+    /// held open, denying writers, since. The finalizer's reopening opens
+    /// its own handle on the same file while the parked one is still open,
+    /// holds it to the same identity, length and timestamp, and compares
+    /// the digest of that complete read with the pin it was given: the file
+    /// is read in full once in the process and is at no moment unheld. Under
+    /// `verify_policy::repeat_once` only; otherwise nothing is parked and
+    /// the finalizer reads every file in full, as it does anything the
+    /// recovery did not hold (the locator, the guard, the journal).
+    ///
+    /// Whatever the finalizer's reopening does not claim is closed when that
+    /// reopening returns, and at the latest when the returned value is
+    /// dropped.
+    pub(crate) fn park_recovery_files(self) -> ParkedRecoveryFiles {
+        let parked_until = ParkedRecoveryFiles(());
+        if n2r_win32::verify_policy::repeats_once() {
+            let Self {
+                publication_file,
+                expected,
+                maps,
+                windows_aliases,
+                ..
+            } = self;
+            let mut parked = Vec::new();
+            publication_file.park(&mut parked);
+            expected.park(&mut parked);
+            if let Some(maps) = maps {
+                maps.park(&mut parked);
+            }
+            if let Some(aliases) = windows_aliases {
+                aliases.data.park(&mut parked);
+                aliases.directory.park(&mut parked);
+            }
+            PARKED_FILES
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .extend(parked);
+        }
+        parked_until
     }
 
     /// Rechecks held files and the real excluded target; no raw writes occur.

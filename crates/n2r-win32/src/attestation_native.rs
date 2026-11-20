@@ -286,6 +286,13 @@ fn source_directory_case(file: &File, queries: &[Query]) -> Option<Query> {
         .then(|| query(file, 23, 4))
 }
 
+/// FileCaseSensitiveInfo of a directory of the new volume whose mark is
+/// carried over: the same query, asked of every such directory whenever it
+/// is observed. A failed query keeps Windows' error, never flags zero.
+pub(crate) fn target_directory_case(directory: &File) -> Query {
+    query(directory, 23, 4)
+}
+
 fn source_snapshot(file: &File, require_case: bool) -> Snapshot {
     let mut snapshot = snapshot_with_ea(file);
     if require_case {

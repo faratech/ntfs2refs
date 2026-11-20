@@ -556,12 +556,15 @@ fn read(
             }
         }
     }
-    // Two names that differ only by case would have stopped the reading;
-    // the mark alone is not carried over, and a conversion says so.
+    // Two names that differ only by case would have stopped the reading.
+    // Whether the mark alone is set on the new volume depends on the
+    // running Windows, and a conversion says which, as this does. (A check
+    // reads data volumes only.)
     if case_sensitive != 0 {
         report.notes.push(ntfs_admission::case_mark_note(
             case_sensitive,
             case_example.as_deref(),
+            n2r_win32::directory_case::CaseMarkCarry::of_this_windows(false)?,
         ));
     }
     if case_unknown != 0 {

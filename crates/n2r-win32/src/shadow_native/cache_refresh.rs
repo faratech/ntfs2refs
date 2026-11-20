@@ -1119,7 +1119,8 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         let security_same = security_matches(item, actual, &same_security)?;
         let ea_same = extended_attributes_match(item, actual)?;
         let reparse_same = reparse_matches(item, actual)?;
-        if !(identity_same && basic_same && security_same && ea_same && reparse_same) {
+        let case_same = directory_case_matches(item, actual)?;
+        if !(identity_same && basic_same && security_same && ea_same && reparse_same && case_same) {
             let basic_detail = if basic_same {
                 String::new()
             } else {
@@ -1134,12 +1135,21 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             } else {
                 format!(" {}", security_difference(item, actual))
             };
+            let case_detail = if case_same {
+                String::new()
+            } else {
+                format!(
+                    " case-sensitive mark: {}",
+                    directory_case_difference(item, actual)
+                )
+            };
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
                     "final owned source metadata readback differs: identity_same={identity_same} \
                      basic_same={basic_same} security_same={security_same} ea_same={ea_same} \
-                     reparse_same={reparse_same}{basic_detail}{detail}"
+                     reparse_same={reparse_same} case_mark_same={case_same}\
+                     {basic_detail}{detail}{case_detail}"
                 ),
             ));
         }
@@ -1576,6 +1586,7 @@ pub fn run(
             || !security_matches(item, &actual, &same_security)?
             || !extended_attributes_match(item, &actual)?
             || !reparse_matches(item, &actual)?
+            || !directory_case_matches(item, &actual)?
         {
             return Err(invalid(
                 "final shadow metadata readback differs from source",

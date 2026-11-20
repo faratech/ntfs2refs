@@ -127,6 +127,14 @@ pub struct Input<'a> {
     pub expected_api_security: Option<&'a [u8]>,
     pub extended_attributes: Option<&'a crate::extended_attributes::Set>,
     pub reparse: Option<&'a crate::reparse_layout::Point>,
+    /// A directory whose case-sensitive mark is carried over: whether the
+    /// source's directory is marked. The directory is made with that mark,
+    /// and every later observation of it asks Windows for the mark and
+    /// holds it to this. None makes no claim and asks nothing: an object
+    /// that is not a directory, and every directory of a run that does not
+    /// carry the mark over ([`crate::directory_case::CaseMarkCarry`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub case_sensitive: Option<bool>,
     #[serde(skip)]
     pub payload: &'a [u8],
     /// Source-backed expectations carry EOF separately from supplied payload.
@@ -1436,12 +1444,89 @@ fn reparse_matches(input: &Input<'_>, actual: &Snapshot) -> io::Result<bool> {
     }
     Ok(observed.point.as_ref() == input.reparse)
 }
+/// Whether a directory's case-sensitive mark is what its source's is, where
+/// the mark is carried over. A directory that makes no claim was not asked,
+/// and an answer for one is refused as an observation of something else. A
+/// query Windows failed is an error with Windows' code: an unanswered mark
+/// is never taken for an unmarked directory.
+fn directory_case_matches(input: &Input<'_>, actual: &Snapshot) -> io::Result<bool> {
+    let expected = input.case_sensitive.filter(|_| input.directory);
+    match (expected, &actual.directory_case_sensitivity) {
+        (None, None) => Ok(true),
+        (None, Some(_)) => Err(invalid(
+            "a case-sensitive mark was observed for an object that carries none over",
+        )),
+        (Some(_), None) => Err(invalid(
+            "the case-sensitive mark of a directory that carries it over was not observed",
+        )),
+        (Some(marked), Some(query)) => {
+            if let Some(code) = query.native_error {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "asking Windows for the directory's case-sensitive mark failed with error {code}"
+                    ),
+                ));
+            }
+            if query.class != 23 || query.bytes.len() != 4 {
+                return Err(invalid("native directory case query is malformed"));
+            }
+            Ok(layout::u32_at(&query.bytes, 0)? == u32::from(marked))
+        }
+    }
+}
+/// What a mark that differs is, for a refusal: "the source's directory is
+/// marked case-sensitive and the new one has flags 0x0".
+fn directory_case_difference(input: &Input<'_>, actual: &Snapshot) -> String {
+    format!(
+        "the source's directory is {} and the new one has flags {}",
+        match input.case_sensitive {
+            Some(true) => "marked case-sensitive",
+            Some(false) => "not marked case-sensitive",
+            None => "not asked for its case-sensitive mark",
+        },
+        actual
+            .directory_case_sensitivity
+            .as_ref()
+            .filter(|query| query.native_error.is_none() && query.bytes.len() == 4)
+            .and_then(|query| layout::u32_at(&query.bytes, 0).ok())
+            .map_or_else(
+                || "that were not read".to_owned(),
+                |flags| format!("{flags:#x}")
+            )
+    )
+}
+/// Adds the mark's query to the snapshot of a directory that carries it over.
+fn with_directory_case(file: &File, input: &Input<'_>, mut observed: Snapshot) -> Snapshot {
+    if input.directory && input.case_sensitive.is_some() {
+        observed.directory_case_sensitivity =
+            Some(crate::attestation_native::target_directory_case(file));
+    }
+    observed
+}
+/// Gives a directory that was just made, and is still empty, the mark its
+/// source directory has, and reads it back. Nothing is asked or changed
+/// where the mark is not carried over.
+fn settle_new_directory_case(path: &str, input: &Input<'_>) -> io::Result<()> {
+    let Some(marked) = input.case_sensitive else {
+        return Ok(());
+    };
+    let named = |what: &str, error: io::Error| {
+        io::Error::new(error.kind(), format!("new directory {path}: {what}{error}"))
+    };
+    let directory = open(path, true, true)
+        .map_err(|error| named("opening it to set its case-sensitive mark: ", error))?;
+    crate::directory_case::settle(&directory, marked)
+        .map(|_| ())
+        .map_err(|error| named("", error))
+}
 fn metadata_snapshot(file: &File, input: &Input<'_>) -> Snapshot {
-    if input.extended_attributes.is_some() || input.reparse.is_some() {
+    let observed = if input.extended_attributes.is_some() || input.reparse.is_some() {
         snapshot_with_ea(file)
     } else {
         snapshot(file)
-    }
+    };
+    with_directory_case(file, input, observed)
 }
 fn metadata_snapshot_with_limit(file: &File, input: &Input<'_>, maximum: Option<u64>) -> Snapshot {
     if let Some(maximum) = maximum {
@@ -1457,7 +1542,7 @@ fn metadata_snapshot_with_limit(file: &File, input: &Input<'_>, maximum: Option<
         if input.extended_attributes.is_none() && input.reparse.is_none() {
             observed.reparse = None;
         }
-        observed
+        with_directory_case(file, input, observed)
     } else {
         metadata_snapshot(file, input)
     }
@@ -1499,6 +1584,11 @@ fn repeat_snapshot(file: &File, previous: &Snapshot) -> Snapshot {
     if previous.extended_attributes.is_none() && previous.extended_attributes_error.is_none() {
         observation.extended_attributes = None;
         observation.extended_attributes_error = None;
+    }
+    // A directory whose mark was observed is asked for it again.
+    if previous.directory_case_sensitivity.is_some() {
+        observation.directory_case_sensitivity =
+            Some(crate::attestation_native::target_directory_case(file));
     }
     observation
 }
@@ -1769,6 +1859,19 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
                 || !reparse_matches(i, &o.after)?)
         {
             return Err(invalid("existing shadow extended attributes differ"));
+        }
+        // The mark is set when the directory is made, so it is held to the
+        // source's in every walk, before the other metadata is restored too.
+        for observed in [&o.before, &o.after] {
+            if !directory_case_matches(i, observed)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "the case-sensitive mark of the new volume's directory differs: {}",
+                        directory_case_difference(i, observed)
+                    ),
+                ));
+            }
         }
         let expected_owned = basic_bytes(i);
         if i.components.is_empty()
@@ -2843,7 +2946,10 @@ fn create(
     let name = wide(path);
     if i.directory {
         // SAFETY: NUL-terminated bounded path, live validated descriptor.
-        return check(unsafe { CreateDirectoryW(name.as_ptr(), &sa) });
+        check(unsafe { CreateDirectoryW(name.as_ptr(), &sa) })?;
+        // Before anything is made inside it: a directory made in a marked
+        // one takes the mark from it.
+        return settle_new_directory_case(path, i);
     }
     let h = unsafe {
         CreateFileW(
@@ -6070,6 +6176,7 @@ mod tests {
             expected_api_security: None,
             extended_attributes: None,
             reparse: None,
+            case_sensitive: None,
             payload: &[],
             expected_length: Some(20480),
             expected_sha256: Some(digest),
@@ -6105,6 +6212,7 @@ mod tests {
                 expected_api_security: None,
                 extended_attributes: None,
                 reparse: None,
+                case_sensitive: None,
                 payload: &[],
                 expected_length: Some(length),
                 expected_sha256: None,
@@ -6326,6 +6434,7 @@ mod tests {
             expected_api_security: Some(&[2]),
             extended_attributes: None,
             reparse: None,
+            case_sensitive: None,
             payload: &[],
             expected_length: None,
             expected_sha256: None,
@@ -6355,6 +6464,132 @@ mod tests {
         actual.security = vec![1];
         assert!(!security_matches(&input, &actual, &same).unwrap());
     }
+    /// A directory of the new volume that states `case_sensitive`, and a
+    /// snapshot of it in which Windows answered the mark's query with
+    /// `flags`, or failed it with `error`, or was not asked.
+    fn case_input(directory: bool, case_sensitive: Option<bool>) -> Input<'static> {
+        Input {
+            components: &[],
+            additional_names: &[],
+            directory,
+            times: [1; 4],
+            attributes: if directory { 16 } else { 32 },
+            security: &[1],
+            expected_api_security: None,
+            extended_attributes: None,
+            reparse: None,
+            case_sensitive,
+            payload: &[],
+            expected_length: None,
+            expected_sha256: None,
+            source_offset: None,
+            source_runs: vec![],
+            named_streams: Vec::new(),
+            sparse: None,
+        }
+    }
+    fn case_snapshot(answer: Option<Result<u32, i32>>) -> Snapshot {
+        Snapshot {
+            extended_attributes: None,
+            reparse: None,
+            extended_attributes_error: None,
+            directory_case_sensitivity: answer.map(|answer| crate::attestation::Query {
+                class: 23,
+                bytes: answer.map_or(Vec::new(), |flags| flags.to_le_bytes().to_vec()),
+                native_error: answer.err(),
+            }),
+            queries: vec![],
+            security: vec![1],
+            security_error: None,
+            kernel_security: None,
+        }
+    }
+    #[test]
+    fn a_carried_case_mark_is_held_to_the_source_in_every_observation() {
+        // What the source's directory is, and what the new one reports.
+        for (marked, flags, same) in [
+            (true, 1, true),
+            (false, 0, true),
+            // The mark is missing on the new volume: the run fails.
+            (true, 0, false),
+            // A directory took the mark from its parent and kept it.
+            (false, 1, false),
+            // Flags the converter does not know are never a match.
+            (true, 3, false),
+            (false, 2, false),
+        ] {
+            let input = case_input(true, Some(marked));
+            let actual = case_snapshot(Some(Ok(flags)));
+            assert_eq!(
+                directory_case_matches(&input, &actual).unwrap(),
+                same,
+                "{marked} {flags}"
+            );
+        }
+        let missing =
+            directory_case_difference(&case_input(true, Some(true)), &case_snapshot(Some(Ok(0))));
+        assert_eq!(
+            missing,
+            "the source's directory is marked case-sensitive and the new one has flags 0x0"
+        );
+        let kept =
+            directory_case_difference(&case_input(true, Some(false)), &case_snapshot(Some(Ok(1))));
+        assert_eq!(
+            kept,
+            "the source's directory is not marked case-sensitive and the new one has flags 0x1"
+        );
+    }
+    #[test]
+    fn an_unanswered_case_mark_is_an_error_and_never_an_unmarked_directory() {
+        // Windows failed the query: its code is given, for either claim.
+        for marked in [true, false] {
+            let failed = directory_case_matches(
+                &case_input(true, Some(marked)),
+                &case_snapshot(Some(Err(50))),
+            )
+            .unwrap_err();
+            assert!(
+                failed.to_string().contains("failed with error 50"),
+                "{failed}"
+            );
+        }
+        // The directory carries the mark over and was not asked for it.
+        assert!(
+            directory_case_matches(&case_input(true, Some(false)), &case_snapshot(None)).is_err()
+        );
+        // An answer of the wrong shape.
+        let mut short = case_snapshot(Some(Ok(1)));
+        short
+            .directory_case_sensitivity
+            .as_mut()
+            .unwrap()
+            .bytes
+            .pop();
+        assert!(directory_case_matches(&case_input(true, Some(true)), &short).is_err());
+        let mut other = case_snapshot(Some(Ok(1)));
+        other.directory_case_sensitivity.as_mut().unwrap().class = 22;
+        assert!(directory_case_matches(&case_input(true, Some(true)), &other).is_err());
+    }
+    #[test]
+    fn where_no_mark_is_carried_over_nothing_is_asked_or_claimed() {
+        // A run that does not carry the mark, and a file in any run.
+        for input in [
+            case_input(true, None),
+            case_input(false, None),
+            case_input(false, Some(true)),
+        ] {
+            assert!(directory_case_matches(&input, &case_snapshot(None)).unwrap());
+            // An answer for such an object is an observation of something
+            // else, not a match.
+            assert!(directory_case_matches(&input, &case_snapshot(Some(Ok(0)))).is_err());
+        }
+        // Its input is written as it was before the field existed, so the
+        // digests over the inputs of such a run are what they were.
+        let silent = serde_json::to_string(&case_input(true, None)).unwrap();
+        assert!(!silent.contains("case_sensitive"), "{silent}");
+        let stated = serde_json::to_string(&case_input(true, Some(false))).unwrap();
+        assert!(stated.contains("\"case_sensitive\":false"), "{stated}");
+    }
     #[test]
     fn a_file_with_no_attributes_matches_the_normal_attribute_windows_reports() {
         let input = Input {
@@ -6367,6 +6602,7 @@ mod tests {
             expected_api_security: None,
             extended_attributes: None,
             reparse: None,
+            case_sensitive: None,
             payload: &[],
             expected_length: None,
             expected_sha256: None,
@@ -6427,6 +6663,7 @@ mod tests {
             expected_api_security: Some(&[0xbb, 0x02]),
             extended_attributes: None,
             reparse: None,
+            case_sensitive: None,
             payload: &[],
             expected_length: None,
             expected_sha256: None,

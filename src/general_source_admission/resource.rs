@@ -70,12 +70,44 @@ struct ShortNamesNotCarried {
     path: Option<String>,
     short_names: Vec<String>,
 }
-/// A directory whose case-sensitive mark is not set on the target.
+/// A directory of the source that is marked case-sensitive. Whether the mark
+/// is set on the target is in the record that lists them.
 #[derive(Serialize)]
 struct CaseSensitiveDirectory {
     record_number: u64,
     sequence_number: u16,
     path: Option<String>,
+}
+/// The run's record of the source's marked directories: which they are
+/// (`records`), and whether the new volume's directories carry the mark.
+fn case_mark_record(
+    carry: n2r_win32::directory_case::CaseMarkCarry,
+    inspection_sha: &str,
+    directories: u64,
+    records: serde_json::Value,
+) -> serde_json::Value {
+    use n2r_win32::directory_case::CaseMarkCarry;
+    let (kind, policy) = match carry {
+        CaseMarkCarry::Carried => (
+            "case-sensitive-directory-marks-carried-over-v1",
+            "every directory of the target is made with the mark its source directory has, set or not, and each observation of the target reads the mark back and holds it to the source's; a directory that holds two names differing only by case is refused when its names are reconciled".to_owned(),
+        ),
+        CaseMarkCarry::NotCarried(why) => (
+            "case-sensitive-directory-marks-not-carried-over-v1",
+            format!(
+                "the mark is not set on the target; a directory that holds two names differing only by case is refused when its names are reconciled. {}",
+                why.sentence()
+            ),
+        ),
+    };
+    serde_json::json!({
+        "kind":kind,
+        "source_inspection_sha256":inspection_sha,
+        "directories":directories, "records":records,
+        "names_that_differ_only_by_case":0,
+        "target_has_the_mark":carry.carried(),
+        "policy":policy,
+    })
 }
 #[derive(Serialize)]
 struct ObjectRow {
@@ -136,6 +168,14 @@ pub struct ResourceSourceContext {
     source: ResourceSourceOwner,
     raw: PagedInspection,
     windows_aliases: Option<Arc<crate::boot_alias::WindowsAliasDomain>>,
+    /// Whether the tree this run derives states every directory's
+    /// case-sensitive mark, so that the new volume's directories are made
+    /// with the source's marks and held to them: decided once, when the
+    /// source is admitted, with what the run says and records. It is so
+    /// where the source has a marked directory and this Windows is one the
+    /// mark is carried on. A source without one has nothing to carry, and
+    /// its directories are made and observed as they always were.
+    carry_case_marks: bool,
     storage_hint_normalization: Option<Arc<n2r_win32::BootStorageHintNormalization>>,
     storage_hint_records: Option<SortedRecordStore>,
     _storage_hint_ram: Option<SourceRamLease>,
@@ -1580,6 +1620,11 @@ impl ResourceSourceContext {
                 &scratch,
             )?;
             // Directories marked case-sensitive: counted, one named, all archived.
+            // Whether their marks are set on the new volume is decided here,
+            // once, for the Windows this runs on and the kind of volume.
+            let case_mark_carry = n2r_win32::directory_case::CaseMarkCarry::of_this_windows(
+                windows_aliases.is_some(),
+            )?;
             let (mut case_marks, mut case_mark_example) = (0u64, None::<String>);
             let mut case_marks_writer = SortedRecordWriter::new(
                 &output.join("case-sensitive-directories"),
@@ -1805,19 +1850,21 @@ impl ResourceSourceContext {
             if case_marks != 0 {
                 println!(
                     "{}",
-                    ntfs_admission::case_mark_note(case_marks, case_mark_example.as_deref())
+                    ntfs_admission::case_mark_note(
+                        case_marks,
+                        case_mark_example.as_deref(),
+                        case_mark_carry
+                    )
                 );
                 save(
                     output,
                     "source-case-sensitive-directories.json",
-                    &serde_json::json!({
-                        "kind":"case-sensitive-directory-marks-not-carried-over-v1",
-                        "source_inspection_sha256":inspection_sha,
-                        "directories":case_marks, "records":&case_marks_pin,
-                        "names_that_differ_only_by_case":0,
-                        "target_has_the_mark":false,
-                        "policy":"the mark is not set on the target; a directory that holds two names differing only by case is refused when its names are reconciled",
-                    }),
+                    &case_mark_record(
+                        case_mark_carry,
+                        &inspection_sha,
+                        case_marks,
+                        serde_json::to_value(&case_marks_pin)?,
+                    ),
                     &scratch,
                     &mut metadata,
                     &mut reservations,
@@ -2191,6 +2238,7 @@ impl ResourceSourceContext {
                 source: ResourceSourceOwner::dedicated(source),
                 raw,
                 windows_aliases,
+                carry_case_marks: case_mark_carry.carried() && case_marks != 0,
                 storage_hint_normalization,
                 storage_hint_records,
                 _storage_hint_ram: storage_hint_ram,
@@ -2850,6 +2898,7 @@ impl ResourceSourceContext {
                 output,
                 scratch,
                 self.indexes.data_object_ids_owned().as_deref(),
+                self.carry_case_marks,
             )
         }
     }
@@ -2931,4 +2980,63 @@ fn json_sha(value: &impl Serialize, maximum: u64) -> Result<String> {
     };
     serde_json::to_writer(&mut sink, value)?;
     Ok(hex::encode(sink.hash.finalize()))
+}
+
+#[cfg(test)]
+mod case_mark_tests {
+    use super::case_mark_record;
+    use n2r_win32::directory_case::{CaseMarkCarry, WhyNotCarried};
+
+    #[test]
+    fn the_record_of_marked_directories_says_whether_the_target_carries_the_mark() {
+        let records = serde_json::json!({"sha256": "ab"});
+        let carried = case_mark_record(CaseMarkCarry::Carried, "cd", 7, records.clone());
+        assert_eq!(
+            carried["kind"],
+            "case-sensitive-directory-marks-carried-over-v1"
+        );
+        assert_eq!(carried["target_has_the_mark"], true);
+        assert!(
+            carried["policy"]
+                .as_str()
+                .unwrap()
+                .contains("reads the mark back")
+        );
+
+        let not_carried = case_mark_record(
+            CaseMarkCarry::NotCarried(WhyNotCarried::Windows {
+                version: [10, 0, 26300],
+                server: false,
+            }),
+            "cd",
+            7,
+            records.clone(),
+        );
+        // The kind a run wrote before the mark was carried anywhere.
+        assert_eq!(
+            not_carried["kind"],
+            "case-sensitive-directory-marks-not-carried-over-v1"
+        );
+        assert_eq!(not_carried["target_has_the_mark"], false);
+        let policy = not_carried["policy"].as_str().unwrap();
+        assert!(
+            policy.starts_with("the mark is not set on the target")
+                && policy.contains("this is Windows 10.0.26300"),
+            "{policy}"
+        );
+        // Both keep the same source records, and neither admits two names
+        // that differ only by case.
+        for record in [&carried, &not_carried] {
+            assert_eq!(record["records"], records);
+            assert_eq!(record["directories"], 7);
+            assert_eq!(record["source_inspection_sha256"], "cd");
+            assert_eq!(record["names_that_differ_only_by_case"], 0);
+            assert!(
+                record["policy"]
+                    .as_str()
+                    .unwrap()
+                    .contains("two names differing only by case is refused")
+            );
+        }
+    }
 }

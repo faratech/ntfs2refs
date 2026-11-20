@@ -2101,6 +2101,25 @@ fn allocate_domain_with_memory(
             })?;
         }
     }
+    // The directories the formatter made, the root among them, are given
+    // the case-sensitive mark their source directories have where it is
+    // carried over, likewise before anything is created inside them. Every
+    // other directory is given its mark as it is made.
+    for (index, handle) in &metadata_targets {
+        let owner = input.object(*index)?;
+        let item = owner.input();
+        if let Some(marked) = item.case_sensitive.filter(|_| item.directory) {
+            input.before_mutation(0)?;
+            crate::directory_case::settle(handle, marked).map_err(|error| {
+                super::cache_refresh::at_object(
+                    input,
+                    "formatter directory case-sensitive mark",
+                    *index,
+                    error,
+                )
+            })?;
+        }
+    }
     let global_query_memory = memory
         .as_ref()
         .map(|m| {
@@ -2166,6 +2185,9 @@ fn allocate_domain_with_memory(
                         expected_api_security: None,
                         extended_attributes: None,
                         reparse: None,
+                        // Given its source's mark as it is made, like
+                        // any other directory.
+                        case_sensitive: item.case_sensitive,
                         payload: &[],
                         expected_length: None,
                         expected_sha256: None,
@@ -2257,6 +2279,10 @@ fn allocate_domain_with_memory(
                     expected_api_security: None,
                     extended_attributes: None,
                     reparse: None,
+                    // The directory is made with its source's mark, while
+                    // it is empty: what is made inside it afterwards may
+                    // depend on the mark.
+                    case_sensitive: item.case_sensitive,
                     payload: &[],
                     expected_length: None,
                     expected_sha256: None,

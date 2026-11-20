@@ -1206,6 +1206,9 @@ impl ResourceSourceContext {
                 "fresh_cached_complete_payload_bytes":cache.fresh_complete_payload_bytes,
                 "old_owner_or_guard_reused":false,"new_source_freeze_observed":true,
                 "native_per_file_recollection_performed":false,
+                // The saved Windows rows are compared again, not taken
+                // again; this says which contents they did not read.
+                WINDOWS_CONTENT_READS_SKIPPED:cache.windows_content_reads_skipped,
                 "source_admitted":false,"execution_authorized":false}),
                     &scratch,
                     &mut metadata,

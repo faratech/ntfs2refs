@@ -59,6 +59,35 @@ fn attach_resume_backing(
     observer.attach_backing_guard(guard)
 }
 
+/// What a resumed preparation checks of the source it saved, and what not.
+const SAVED_SOURCE_EVIDENCE: &str = "Saved source evidence is checked again before continuing: the volume is held to its saved fingerprint and saved raw reading, and the Windows view the first run took of each object is compared with that reading again; Windows is not asked for each object again.";
+
+/// A preparation whose saved Windows view of the source did not read the
+/// contents of plain streams, as a `--verify fast` run that verifies once
+/// does, is not resumed: a resumed process does not verify once, and its
+/// comparison holds every stream's Windows reading to the raw digest. It is
+/// refused here, from the pinned native witness alone, before the volume is
+/// isolated or anything is asked.
+fn refuse_unread_saved_contents(
+    source: &crate::general_source_admission::resource::SourceCacheOriginPins,
+    directory: &Path,
+    sha: [u8; 32],
+) -> Result<()> {
+    if let Some(skipped) = source.windows_content_reads_skipped()? {
+        anyhow::bail!(
+            "The preparation in {} cannot be resumed. It was made by a --verify fast run, which verifies once: Windows did not read the contents of {} plain stream(s) of {} object(s) ({} bytes) and held only where they lie to the raw reading (see windows_content_reads_skipped in {}). A resumed preparation does not verify once and needs every stream read through Windows. Cancel it with: ntfs2refs --recover \"{}\" --recovery-sha256 {} --rollback, then start the conversion again.",
+            directory.display(),
+            skipped["streams"],
+            skipped["objects"],
+            skipped["logical_bytes"],
+            source.native_witness.path.display(),
+            directory.display(),
+            hex::encode(sha)
+        );
+    }
+    Ok(())
+}
+
 fn launch_root(directory: &Path) -> Result<PathBuf> {
     let candidates: Vec<_> = directory
         .ancestors()
@@ -120,9 +149,10 @@ pub(super) fn resume_preparation_in_workspace(
             && origin.parent_resources.resources == parent.resources,
         "legacy budget/root changed during resume discovery"
     );
+    refuse_unread_saved_contents(&origin.origin, directory, old_sha)?;
     let backing_guard = resume_backing_guard(&origin.pair)?;
     println!(
-        "Resume saved preparation: disk {}, partition {}.\nReusing source evidence, expected tree and existing private ReFS shadow.\nThe remaining placement is planned from current native mappings.",
+        "Resume saved preparation: disk {}, partition {}.\nReusing the expected tree and existing private ReFS shadow.\n{SAVED_SOURCE_EVIDENCE}\nThe remaining placement is planned from current native mappings.",
         origin.pair.source.disk_number, origin.pair.source.identity.partition_number
     );
     print!("Resume this conversion? [y/N] ");
@@ -505,8 +535,9 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32], workspace: Option<&Pat
             && session.saved.parent_resources.resources == bootstrap.parent_resources.resources,
         "saved session bootstrap changed before paid adoption"
     );
+    refuse_unread_saved_contents(&session.source, directory, intent_sha)?;
     println!(
-        "Resume checkpoint: {}\nSource: disk {}, partition {}.\nSaved source evidence will be revalidated before continuing.",
+        "Resume checkpoint: {}\nSource: disk {}, partition {}.\n{SAVED_SOURCE_EVIDENCE}",
         directory.display(),
         pair.source.disk_number,
         pair.source.identity.partition_number

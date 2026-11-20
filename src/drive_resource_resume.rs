@@ -8,7 +8,8 @@ use crate::{
         ResumePreparation,
         resume_origin::{LegacyResumeOrigin, peek_parent_resources},
         resume_session_inputs::{
-            ResumeSessionInputs, peek_saved_resume_request, probe_resume_session,
+            ResumeSessionInputs, peek_saved_resume_request, peek_saved_source_cache_origin,
+            probe_resume_session,
         },
     },
 };
@@ -457,6 +458,14 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32], workspace: Option<&Pat
         "publication file exists without authenticated delegation; preserve it and recover its independent publication pin"
     );
     let bootstrap = peek_saved_resume_request(directory, intent_sha, maximum)?;
+    // A saved Windows view with unread contents is refused here, before a
+    // new working folder is created or an arena opened for it.
+    refuse_unread_saved_contents(
+        &peek_saved_source_cache_origin(directory, intent_sha, maximum)?,
+        directory,
+        intent_sha,
+        false,
+    )?;
     ensure!(
         !(workspace.is_some()
             && matches!(
@@ -559,6 +568,8 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32], workspace: Option<&Pat
             && session.saved.parent_resources.resources == bootstrap.parent_resources.resources,
         "saved session bootstrap changed before paid adoption"
     );
+    // The same view, now adopted: it is still refused if it left contents
+    // unread.
     refuse_unread_saved_contents(&session.source, directory, intent_sha, false)?;
     println!(
         "Resume checkpoint: {}\nSource: disk {}, partition {}.\n{SAVED_SOURCE_EVIDENCE}",

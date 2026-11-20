@@ -476,7 +476,9 @@ back (one USB drive will do):
 - `E:` is an NTFS volume for the working files.
 - `B:` is a FAT32 partition of 100 MB or more. The machine starts the recovery
   environment from it, because the disk a machine starts from cannot be taken
-  offline, and the conversion takes the Windows disk offline.
+  offline, and the conversion takes the Windows disk offline. If the working
+  directory's disk has exactly one FAT32 partition with a drive letter,
+  `--boot-partition` can be left out: that one is used.
 
 The run stages the machine's `winre.wim` (found by `reagentc /info`) with a
 start script under `E:\runs\n2r-running`, writes boot files and a boot store of

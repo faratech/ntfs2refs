@@ -694,9 +694,42 @@ mod windows {
             gib(in_use),
             gib(wanted)
         );
-        let boot = args.boot_partition.context(
-            "the running Windows converts through its recovery environment, which the machine starts from a FAT32 partition on another disk: format one (a USB stick will do, 100 MB or more) and give its letter with --boot-partition. Nothing was changed.",
-        )?;
+        // Without --boot-partition, the one FAT32 partition with a drive
+        // letter on the working directory's disk, if there is exactly one:
+        // a single USB drive with an NTFS and a FAT32 partition needs no
+        // second argument.
+        let on_scratch_disk: Vec<char> = inventory
+            .disks
+            .iter()
+            .filter(|disk| {
+                disk.partitions.iter().any(|part| {
+                    part.mount_paths
+                        .iter()
+                        .any(|path| path.eq_ignore_ascii_case(&scratch_root))
+                })
+            })
+            .flat_map(|disk| disk.partitions.iter())
+            .filter(|part| part.filesystem.as_deref() == Some("FAT32"))
+            .filter_map(|part| {
+                part.mount_paths.iter().find_map(|path| {
+                    let bytes = path.as_bytes();
+                    (bytes.len() == 3 && bytes[0].is_ascii_alphabetic() && &path[1..] == ":\\")
+                        .then(|| (bytes[0] as char).to_ascii_uppercase())
+                })
+            })
+            .collect();
+        let boot = match (args.boot_partition, on_scratch_disk.as_slice()) {
+            (Some(boot), _) => boot,
+            (None, [only]) => {
+                println!(
+                    "Boot partition: {only}: (the FAT32 partition on the working directory's disk)."
+                );
+                *only
+            }
+            (None, _) => anyhow::bail!(
+                "the running Windows converts through its recovery environment, which the machine starts from a FAT32 partition on another disk: format one (a USB stick will do, 100 MB or more; on the working directory's disk it is found by itself) and give its letter with --boot-partition. Nothing was changed."
+            ),
+        };
         let root = format!("{}:\\", boot.to_ascii_uppercase());
         let boot_disk = inventory
             .disks

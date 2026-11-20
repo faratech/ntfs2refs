@@ -28,14 +28,19 @@ const MAX_FILE_SUBMISSIONS: usize = super::private_tree::MAX_PLACEMENT_SUBMISSIO
 /// Per-placeholder tracked entries (and tracked entries plus deferred holes).
 /// A retained stream has at most 1024 NTFS runs; each may end as up to four
 /// coalesced pieces (placed, split by metadata, and remainders on each side).
-/// Every move still matches all entries against the complete retrieval map.
+/// Every move matches all entries against the complete retrieval map, except
+/// in a run that verifies each thing once: there a move that landed is held
+/// to the mapping of the range it moved, and all entries are matched against
+/// the complete map when placement ends (`check_placements`).
 /// Prepared matching skips runs outside each checked VCN interval.
 const MAX_FILE_PLACEMENTS: usize = 4096;
 
 /// An immutable, fully validated fresh retrieval map. Construction parses the
 /// complete canonical response once; only then may interval matching use its
 /// ordered, disjoint VCN endpoints for binary search. It never substitutes a
-/// retained map for a new native capture or omits a tracked placement check.
+/// retained map for a new native capture. Built from a ranged capture
+/// (`retrieval_paging::RANGE_ENCODING`) it holds only that range, and an
+/// interval outside it does not match.
 struct PreparedMapping {
     runs: Vec<crate::stream_layout::Run>,
 }
@@ -86,6 +91,26 @@ impl PreparedMapping {
             }
         }
         Ok(covered == limit)
+    }
+
+    /// What `vcn` maps to, for an error that has to say where a tracked
+    /// piece is now.
+    fn describe(&self, vcn: u64) -> String {
+        let at = self
+            .runs
+            .partition_point(|run| run.vcn + run.clusters <= vcn);
+        match self.runs.get(at).filter(|run| run.vcn <= vcn) {
+            Some(run) => match run.lcn {
+                Some(lcn) => format!(
+                    "LCN {} (an extent of {} clusters from VCN {})",
+                    lcn.saturating_add(vcn - run.vcn),
+                    run.clusters,
+                    run.vcn
+                ),
+                None => format!("a hole of {} clusters from VCN {}", run.clusters, run.vcn),
+            },
+            None => "nothing (the mapping ends before it)".into(),
+        }
     }
 }
 
@@ -170,8 +195,10 @@ pub(super) struct Placement {
     _resource_memory: Option<Box<dyn super::report_memory::ReportMemoryLease>>,
 }
 
-/// A resource move's proof: every field as JSON except the file's complete
-/// mapping after the move, which stays as its canonical bytes. That mapping
+/// A resource move's proof: every field as JSON except the mapping after the
+/// move, which stays as its canonical bytes. It is the file's complete
+/// mapping, or in a run that verifies each thing once that of the range the
+/// move landed in; `mapping_page_proof.encoding` says which. That mapping
 /// is the one part of a proof that grows with the file, and as a JSON value
 /// it was one value per byte, built and then copied once more for every
 /// move: a file in thousands of pieces paid for both at every move. It
@@ -829,6 +856,12 @@ impl PrivatePlaceholder {
             clusters: u64::from(clusters),
         };
         let limits = destination_limits(clusters)?;
+        // Both views of the destination are read before every move, also in
+        // a run that verifies each thing once: they are two answers of the
+        // volume (the second asked with the metadata mask), and nothing here
+        // shows that one implies the other. They are also what keeps a move
+        // off clusters that some piece occupies without being tracked there,
+        // until the final comparison of complete mappings would find it.
         let legacy = bitmap_window_native::capture(volume, request, &[0; 8], limits)?;
         let mut ex = [0u8; 16];
         ex[8] = 1;
@@ -1033,7 +1066,19 @@ impl PrivatePlaceholder {
         };
         for &(vcn, lcn, clusters) in &self.placed {
             if !mapping.matches(vcn, lcn, clusters)? {
-                return Err(invalid("private mapping changed after valid-data flush"));
+                // In a run that verifies each thing once, the comparison
+                // when placement ends (whose caller adds that phase) is
+                // where a piece that no move of its own touched is first
+                // compared: say which piece, and where it is now. (This
+                // said "after valid-data flush", whichever check it was.)
+                return Err(invalid(&format!(
+                    "the complete mapping of {} differs from a piece tracked for it \
+                     ({} pieces): {clusters} clusters from VCN {vcn} were placed at LCN \
+                     {lcn}; VCN {vcn} now maps to {}",
+                    self.path,
+                    self.placed.len(),
+                    mapping.describe(vcn)
+                )));
             }
         }
         Ok(())
@@ -1208,7 +1253,11 @@ impl PrivatePlaceholder {
     }
 
     /// Canonical extents in this file's latest complete retrieval capture
-    /// (tracking or the last move), for bounding the next move's proof.
+    /// (tracking or the last move that read the complete mapping), for
+    /// bounding the next move's proof. A move held to the mapping of its
+    /// range does not change it; the resource route, the only one that
+    /// makes such moves, bounds a proof by the most extents its queries
+    /// admit and uses this count only to check it against that.
     pub(super) fn retrieval_extents(&self) -> usize {
         self.retrieval_extents
     }

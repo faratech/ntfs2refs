@@ -145,6 +145,12 @@ struct Counters {
     deferred_scratch_submissions: usize,
     evacuation_submissions: usize,
     final_submissions: usize,
+    // Recorded moves whose proof holds the mapping of the range they moved
+    // (`retrieval_paging::RANGE_ENCODING`); every other one holds the file's
+    // complete mapping. Only a run that verifies each thing once has any:
+    // fewer than its submissions means ranged queries fell back.
+    #[serde(skip_serializing_if = "zero_count")]
+    moved_range_proofs: usize,
     move_submissions_limit: usize,
     move_evidence_bytes: usize,
     move_evidence_reservation_bytes: usize,
@@ -161,6 +167,12 @@ struct Counters {
 
 fn zero_count(value: &usize) -> bool {
     *value == 0
+}
+/// Counts a verified move whose proof holds the mapping of its range only.
+fn count_proof_form(counters: &mut Counters, proof: &serde_json::Value) {
+    if proof["mapping_page_proof"]["encoding"] == crate::retrieval_paging::RANGE_ENCODING {
+        counters.moved_range_proofs += 1;
+    }
 }
 fn zero_bytes(value: &u64) -> bool {
     *value == 0
@@ -292,8 +304,13 @@ fn progress(
 /// once: the proof of a move that landed has the mapping of the range it
 /// moved (`retrieval_paging::RANGE_ENCODING`); any other proof still has the
 /// whole mapping. Each proof's `mapping_page_proof.encoding` says which of
-/// the two it is. The complete mapping of every stream is compared with its
-/// tracked pieces once, when placement ends.
+/// the two it is (a range that starts at VCN 0 has the complete form's
+/// layout, so the encoding is what tells them apart). The complete mapping of
+/// every stream is compared with its tracked pieces once, when placement
+/// ends. Nothing reads a move's mapping back from the records: an
+/// interrupted placement is recovered, and a recovered one audited
+/// (`audit_recovered_maps`), from the files' current native mappings and both
+/// complete bitmaps, whichever form the records were written in.
 fn per_move_retrieval_scope(resource: bool) -> &'static str {
     if resource && crate::verify_policy::verifies_once() {
         "moved-range-v1"
@@ -1436,6 +1453,7 @@ fn allocate_deferred(
         } else {
             counters.deferred_scratch_submissions += 1;
         }
+        count_proof_form(counters, &proof);
         let recorded = evidence.push_move_proof(step.index as u64, step.phase, &proof);
         counters.move_evidence_bytes = evidence.compact_bytes;
         counters.placement_artifact_bytes = evidence.saved_bytes;
@@ -2199,8 +2217,10 @@ fn run_domain_inner(
     let indexes: Vec<_> = tree.stream_slots.keys().copied().collect();
     // Bind existing allocated ownership of every file before any native move.
     // Tracking only reads a placeholder's own live retrieval map, a move never
-    // changes another placeholder's mapping, and every move still verifies its
-    // file's complete tracked mapping first. No user bytes are initialized.
+    // changes another placeholder's mapping, and a file's complete tracked
+    // mapping is verified before its first move and again when placement
+    // ends (and after every move unless the run verifies each thing once).
+    // No user bytes are initialized.
     let mut hole_memory = if limits.resource {
         Some(StepMemory::new(
             payer
@@ -2504,6 +2524,7 @@ fn run_domain_inner(
                 return Err(invalid(&refusal));
             }
             counters.evacuation_submissions += 1;
+            count_proof_form(&mut counters, &proof);
             let recorded = evidence.push_move_proof(
                 u64::from(movement.file_index),
                 "evacuate-blocker",
@@ -2783,6 +2804,7 @@ fn run_domain_inner(
                                 return Err(invalid(&message));
                             }
                             counters.final_submissions += 1;
+                            count_proof_form(&mut counters, &proof);
                             let recorded = evidence.push_move_proof(
                                 index as u64,
                                 "original-coordinate",

@@ -313,7 +313,16 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
     // whose handoff follows its verification is still beside its apply
     // intent here, every new byte on its source: the finalizer verifies the
     // volume and writes the handoff, or stops with rollback open.
-    drop(recovery);
+    //
+    // The recovery files alone are not released: each was read in full when
+    // this recovery reopened it and has been held open since, and its handle
+    // stays open until the finalizer has opened the same file itself, so
+    // that the finalizer compares the digest of that read with its pin and
+    // does not read the file a second time (`repeat_once`; with
+    // `--recheck-everything` nothing is kept and everything is read again).
+    // What the finalizer's reopening does not claim is closed when that
+    // reopening returns, and here at the latest.
+    let _parked = recovery.park_recovery_files();
     drop(events);
     drop(scratch);
     drop(group);

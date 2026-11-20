@@ -294,63 +294,124 @@ pub fn pinning_digest(file: &mut File, bytes: u64) -> io::Result<[u8; 32]> {
     let algorithm = file_digest_algorithm(file)?;
     bulk_digest::hash_range(algorithm, file, 0, bytes)
 }
-/// A file a [`Writer`] in this process finished.
-struct Written {
+/// A file this process has seen every byte and every record of: one a
+/// [`Writer`] here finished, or one a [`Reader`] here read completely (the
+/// whole file hashed and held to its pin, every page held to its digest in
+/// the index and every record parsed).
+struct Known {
     bytes: u64,
     modified: SystemTime,
-    // The complete file's digest: always of the algorithm this build writes.
+    // The algorithm of `digest`: the one this build writes for a file
+    // written here, the one the file's magic names for a file read here.
+    algorithm: Algorithm,
+    // The complete file's digest.
     digest: [u8; 32],
     // XXH3-64 of each page body, in page order.
     page_sums: std::sync::Arc<Vec<u64>>,
+    // A writer of this process produced it; otherwise a reader checked it.
+    written: bool,
 }
 /// By file identity and final path.
-type WrittenFiles = std::collections::HashMap<(String, String), Written>;
-static WRITTEN: std::sync::Mutex<Option<WrittenFiles>> = std::sync::Mutex::new(None);
+type KnownFiles = std::collections::HashMap<(String, String), Known>;
+static KNOWN: std::sync::Mutex<Option<KnownFiles>> = std::sync::Mutex::new(None);
 
 fn note_written(snapshot: &Snapshot, digest: [u8; 32], page_sums: Vec<u64>) {
-    WRITTEN
+    KNOWN
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get_or_insert_with(WrittenFiles::new)
+        .get_or_insert_with(KnownFiles::new)
         .insert(
             (snapshot.id.clone(), snapshot.final_path.clone()),
-            Written {
+            Known {
                 bytes: snapshot.bytes,
                 modified: snapshot.modified,
+                algorithm: Algorithm::WRITTEN,
                 digest,
                 page_sums: std::sync::Arc::new(page_sums),
+                written: true,
             },
         );
 }
 
-/// Whether this process wrote exactly this file, unchanged since, with this
-/// digest of this algorithm. Its writer refused any record that was not valid JSON under a
-/// strictly increasing key and hashed every byte, so under the check-once
-/// policy a reader need not hash and parse the whole file again to open it.
-/// Each page is still checked whenever it is loaded: against the checksum the
-/// writer kept in memory (returned here), which costs a few percent of the
-/// digest in the page index and catches the same damage to a file nobody
-/// else can have written. Inside the gate before the first write to the
-/// source this is never true, and pages are checked by their digest.
-fn written_here(
+/// Records what a reader's complete validation of exactly this file found:
+/// `page_sums` are of the page bodies it had just held to their digests.
+/// What is already known of the same file in the same state is kept: a file
+/// written here stays one written here. Returns the checksums on record.
+fn note_read(
     snapshot: &Snapshot,
     algorithm: Algorithm,
-    digest: &[u8; 32],
-) -> Option<std::sync::Arc<Vec<u64>>> {
-    if crate::verify_policy::full_unremembered() || algorithm != Algorithm::WRITTEN {
+    digest: [u8; 32],
+    page_sums: Vec<u64>,
+) -> std::sync::Arc<Vec<u64>> {
+    let mut known = KNOWN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let files = known.get_or_insert_with(KnownFiles::new);
+    let key = (snapshot.id.clone(), snapshot.final_path.clone());
+    if let Some(same) = files.get(&key).filter(|known| {
+        known.bytes == snapshot.bytes
+            && known.modified == snapshot.modified
+            && known.algorithm == algorithm
+            && known.digest == digest
+    }) {
+        return std::sync::Arc::clone(&same.page_sums);
+    }
+    let page_sums = std::sync::Arc::new(page_sums);
+    files.insert(
+        key,
+        Known {
+            bytes: snapshot.bytes,
+            modified: snapshot.modified,
+            algorithm,
+            digest,
+            page_sums: std::sync::Arc::clone(&page_sums),
+            written: false,
+        },
+    );
+    page_sums
+}
+
+/// The checksum of each page of a file this process knows, and whether a
+/// writer here produced the file.
+struct KnownPages {
+    page_sums: std::sync::Arc<Vec<u64>>,
+    written: bool,
+}
+
+/// Whether this process wrote exactly this file, or read it completely,
+/// unchanged since, with this digest of this algorithm. Its writer refused
+/// any record that was not valid JSON under a strictly increasing key and
+/// hashed every byte, and a reader that read it completely held every byte
+/// to the pin and every record to the same rules, so under the check-once
+/// policy a reader need not hash and parse the whole file again to open it.
+/// Each page is still checked whenever it is loaded: against the checksum
+/// kept in memory (returned here), which costs a few percent of the digest
+/// in the page index and catches the same damage to a file nobody else can
+/// have written.
+///
+/// What is known is used only where `verify_policy::full_unremembered` is
+/// false, which the callers ask: inside the gate before the first write to
+/// the source a known file is read completely and its pages are checked by
+/// their digest. Without the check-once policy nothing is known at all.
+fn known_file(snapshot: &Snapshot, algorithm: Algorithm, digest: &[u8; 32]) -> Option<KnownPages> {
+    if !crate::verify_policy::checks_once() {
         return None;
     }
-    WRITTEN
+    KNOWN
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .as_ref()
-        .and_then(|written| written.get(&(snapshot.id.clone(), snapshot.final_path.clone())))
+        .and_then(|known| known.get(&(snapshot.id.clone(), snapshot.final_path.clone())))
         .filter(|known| {
             known.bytes == snapshot.bytes
                 && known.modified == snapshot.modified
+                && known.algorithm == algorithm
                 && known.digest == *digest
         })
-        .map(|known| std::sync::Arc::clone(&known.page_sums))
+        .map(|known| KnownPages {
+            page_sums: std::sync::Arc::clone(&known.page_sums),
+            written: known.written,
+        })
 }
 
 /// The digest a [`Writer`] in this process computed for exactly this file
@@ -364,12 +425,14 @@ pub fn digest_if_written_here(file: &File) -> Option<[u8; 32]> {
         return None;
     }
     let snapshot = Snapshot::observe(file).ok()?;
-    WRITTEN
+    KNOWN
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .as_ref()
-        .and_then(|written| written.get(&(snapshot.id.clone(), snapshot.final_path.clone())))
-        .filter(|known| known.bytes == snapshot.bytes && known.modified == snapshot.modified)
+        .and_then(|known| known.get(&(snapshot.id.clone(), snapshot.final_path.clone())))
+        .filter(|known| {
+            known.written && known.bytes == snapshot.bytes && known.modified == snapshot.modified
+        })
         .map(|known| known.digest)
 }
 
@@ -655,6 +718,14 @@ impl Writer {
     }
 }
 
+/// The checksum this process keeps of one page body, and whose it is: the
+/// writer's, or a reader's that had just held the page to its digest.
+#[derive(Clone, Copy)]
+struct PageSum {
+    sum: u64,
+    written: bool,
+}
+
 #[derive(Clone, Copy)]
 struct Entry {
     offset: u64,
@@ -694,9 +765,9 @@ fn load_page(
     body_limit: usize,
     body: &mut Vec<u8>,
     statistics: &mut PageCacheStatistics,
-    // The writer's in-memory checksum of this page, when the file is one this
-    // process wrote: checked in place of the page's digest.
-    written_sum: Option<u64>,
+    // This process's in-memory checksum of this page, when the file is one
+    // it wrote or read completely: checked in place of the page's digest.
+    known_sum: Option<PageSum>,
     // The digest the file's index carries for its pages.
     algorithm: Algorithm,
 ) -> io::Result<()> {
@@ -726,10 +797,14 @@ fn load_page(
     body.resize(e.bytes as usize - FRAME as usize, 0);
     file.read_exact(body)?;
     statistics.page_loads = statistics.page_loads.saturating_add(1);
-    if let Some(sum) = written_sum {
+    if let Some(known) = known_sum {
         return require(
-            xxhash_rust::xxh3::xxh3_64(body) == sum,
-            "metadata page differs from the page this process wrote",
+            xxhash_rust::xxh3::xxh3_64(body) == known.sum,
+            if known.written {
+                "metadata page differs from the page this process wrote"
+            } else {
+                "metadata page differs from the page this process read and held to its digest"
+            },
         );
     }
     statistics.page_hash_bytes = statistics.page_hash_bytes.saturating_add(body.len() as u64);
@@ -820,8 +895,12 @@ pub struct Reader {
     starts: Vec<u32>,
     // Opened as a file this process wrote, without reading all of it again.
     written_here: bool,
-    // That writer's checksum of each page, when there is one per page.
+    // This process's checksum of each page, when there is one per page: that
+    // writer's, or the one taken as a reader here (this one, or one before
+    // it) held every page of the file to its digest.
     page_sums: Option<std::sync::Arc<Vec<u64>>>,
+    // Whose they are: the writer's, or a reader's.
+    page_sums_written: bool,
     body_limit: usize,
     // Optional second authenticated page, supplied by an explicitly prepaid
     // caller. The primary slot is most recently used; swaps retain each page's
@@ -928,14 +1007,25 @@ impl Reader {
         // (A file that is no store fails its pin or, below, its header, as
         // it always has.)
         let algorithm = algorithm_of(&actual_header[..8]).unwrap_or(Algorithm::Sha256);
-        let page_sums = written_here(&snapshot, algorithm, &sha256);
-        let written_here = page_sums.is_some();
-        if !written_here {
+        let known = known_file(&snapshot, algorithm, &sha256);
+        // Written here or read completely here: neither is read completely
+        // again to be opened, except inside the gate.
+        let known_here = known.is_some() && !crate::verify_policy::full_unremembered();
+        // A file written here: what the owners of a store are told, who then
+        // leave out checks of their own that only its writer answers for.
+        let written_here = known_here && known.as_ref().is_some_and(|known| known.written);
+        if !known_here {
             require(
                 file_hash(algorithm, &mut file, snapshot.bytes)? == sha256,
                 "metadata complete-file digest differs",
             )?;
         }
+        // The checksum of each page as this complete read holds it to its
+        // digest, for the page loads and the readers that follow. Taken only
+        // where it may be used, under the check-once policy (inside its gate
+        // too, for when it has closed), and only for a file that is not
+        // known already.
+        let mut read_sums = (known.is_none() && crate::verify_policy::checks_once()).then(Vec::new);
         read_at(&mut file, 0, &mut actual_header)?;
         require(
             actual_header == header(algorithm, purpose, budget),
@@ -985,9 +1075,9 @@ impl Reader {
                 e.offset == cursor && e.first == count && add(cursor, e.bytes as u64)? <= index,
                 "metadata page index has a gap/overlap or missing records",
             )?;
-            if written_here {
+            if known_here {
                 // The index, checked against the footer above, is walked for
-                // gaps; the pages it names are hashed when they are loaded.
+                // gaps; the pages it names are checked when they are loaded.
                 cursor = add(cursor, e.bytes as u64)?;
                 count = add(count, e.count as u64)?;
                 require(count <= records, "metadata page records exceed footer")?;
@@ -1019,6 +1109,10 @@ impl Reader {
                 at == body.len(),
                 "metadata page has unindexed trailing records/bytes",
             )?;
+            // Of the bytes that have just passed their digest and parsed.
+            if let Some(sums) = &mut read_sums {
+                sums.push(xxhash_rust::xxh3::xxh3_64(&body));
+            }
             cursor = add(cursor, e.bytes as u64)?;
             count = add(count, e.count as u64)?;
             require(count <= records, "metadata page records exceed footer")?;
@@ -1028,6 +1122,13 @@ impl Reader {
             cursor == index && count == records && Snapshot::observe(&file)? == snapshot,
             "metadata full validation did not cover the immutable file",
         )?;
+        // Only now, with every byte and every record of the unchanged file
+        // seen, is the file one this process knows.
+        let (page_sums, page_sums_written) = match (read_sums, known) {
+            (Some(sums), _) => (Some(note_read(&snapshot, algorithm, sha256, sums)), false),
+            (None, Some(known)) => (Some(known.page_sums), known.written),
+            (None, None) => (None, false),
+        };
         Ok(Self {
             file,
             snapshot,
@@ -1044,6 +1145,7 @@ impl Reader {
             starts: Vec::new(),
             written_here,
             page_sums: page_sums.filter(|sums| sums.len() as u64 == pages),
+            page_sums_written,
             body_limit,
             secondary: None,
             resident: None,
@@ -1124,7 +1226,7 @@ impl Reader {
             let mut body = Vec::new();
             body.try_reserve_exact(e.bytes as usize - FRAME as usize)
                 .map_err(io::Error::other)?;
-            let written_sum = self.written_sum(page);
+            let known_sum = self.known_sum(page);
             load_page(
                 &mut self.file,
                 e,
@@ -1133,7 +1235,7 @@ impl Reader {
                 self.body_limit,
                 &mut body,
                 &mut self.statistics,
-                written_sum,
+                known_sum,
                 self.algorithm,
             )?;
             let mut starts = Vec::new();
@@ -1171,9 +1273,6 @@ impl Reader {
         self.resident = Some(resident);
         Ok(())
     }
-    /// Whether this reader accepted the file as one this process wrote
-    /// (check-once policy) instead of hashing and parsing all of it. A
-    /// caller with a whole-content check of its own may then leave it out.
     /// This reader does not decide by itself to hold its whole file in
     /// memory, however it is read. For a file whose owner keeps what it
     /// reads from it: the walk's rows file, read back a block at a time,
@@ -1185,19 +1284,27 @@ impl Reader {
     pub fn read_page_by_page(&mut self) {
         self.page_by_page = true;
     }
+    /// Whether this reader accepted the file as one this process wrote
+    /// (check-once policy) instead of hashing and parsing all of it. A
+    /// caller with a whole-content check of its own may then leave it out.
+    /// Only a file a writer of this process produced: one this process has
+    /// read completely before opens without being read again as well, but
+    /// this is false for it, and its owner's own checks of its content are
+    /// made.
     pub fn written_by_this_process(&self) -> bool {
         self.written_here
     }
-    /// The checksum to check page `page` by, in place of its SHA-256: only for
-    /// a file this process wrote, and never inside a gate.
-    fn written_sum(&self, page: u64) -> Option<u64> {
+    /// The checksum to check page `page` by, in place of its digest: only for
+    /// a file this process wrote or read completely, and never inside a gate.
+    fn known_sum(&self, page: u64) -> Option<PageSum> {
         if crate::verify_policy::full_unremembered() {
             return None;
         }
-        self.page_sums
-            .as_ref()?
-            .get(usize::try_from(page).ok()?)
-            .copied()
+        let sum = *self.page_sums.as_ref()?.get(usize::try_from(page).ok()?)?;
+        Some(PageSum {
+            sum,
+            written: self.page_sums_written,
+        })
     }
     pub fn pages_resident(&self) -> bool {
         self.resident
@@ -1362,7 +1469,7 @@ impl Reader {
             self.cached = None;
             self.cached_record = None;
             self.starts.clear();
-            let written_sum = self.written_sum(low - 1);
+            let known_sum = self.known_sum(low - 1);
             load_page(
                 &mut self.file,
                 e,
@@ -1371,7 +1478,7 @@ impl Reader {
                 self.body_limit,
                 &mut self.body,
                 &mut self.statistics,
-                written_sum,
+                known_sum,
                 self.algorithm,
             )?;
             // Without its offsets the page is still read correctly, by

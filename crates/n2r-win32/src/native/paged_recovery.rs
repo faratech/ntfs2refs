@@ -623,8 +623,11 @@ fn selected_new_bytes_already_verified(pins: &PagedRecoveryPins<'_>) -> bool {
 }
 
 /// Whether [`note_selected_new_bytes_verified`] was called for this journal in
-/// this process and the route checks once. Never true in a recovery process,
-/// which has read nothing back itself.
+/// this process and the route checks once. A recovery has read nothing back
+/// when it starts and checks once only from its finalizer on, so there this
+/// is false until that finalizer has read the bytes back itself. (What a
+/// recovery repeats before then is `verify_policy::repeat_once`'s to say:
+/// the journal's body, which it reads in full once while it holds it.)
 pub fn selected_new_bytes_verified(
     immutable_sha256: &[u8; 32],
     new_selected_sha256: &[u8; 32],

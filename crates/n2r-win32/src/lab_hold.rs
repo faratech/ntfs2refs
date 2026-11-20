@@ -24,12 +24,14 @@ pub const POINTS: &[&str] = &[
     "apply-boot-granule-written",
     // Every new byte is written, flushed and read back; no handoff marker.
     "apply-before-handoff",
-    // A run whose handoff follows its verification (--verify fast, #148):
-    // the source is sealed offline and read-only again beside the apply
-    // marker alone; the seal is not yet recorded.
+    // --verify fast only (#148), where the handoff follows the verification:
+    // every new byte is written and read back, and the source is sealed
+    // offline and read-only again beside the apply marker alone; the seal
+    // is not yet recorded.
     "apply-sealed",
-    // Such a run: the seal is recorded in verification-seal.json; the
-    // finalizer has not started.
+    // --verify fast only: the source is sealed beside the apply marker
+    // alone and the seal is recorded in verification-seal.json; the
+    // verification has not started.
     "apply-seal-recorded",
     // A --review run only (#110): the source is sealed offline and
     // read-only again beside the apply marker alone; its stop is not yet
@@ -39,25 +41,27 @@ pub const POINTS: &[&str] = &[
     // is recorded in review-stop.json; the disk is still offline and
     // read-only and has not been put online.
     "review-recorded",
-    // Such a run: the finalizer has authenticated the apply marker and the
-    // new bytes; the source is sealed, the handoff is not written.
+    // --verify fast only: the finalizer has authenticated the apply marker
+    // alone and every new byte; the source is sealed; no handoff marker.
     "verify-authenticated",
-    // Such a run: the converted source is mounted read-only for its
-    // verification, beside the apply marker alone.
+    // --verify fast only: the converted source is mounted read-only for its
+    // verification, beside the apply marker alone; no handoff marker.
     "verify-source-readonly",
-    // Such a run: verification passed and the source is sealed again; the
-    // handoff is not yet written and rollback is still open.
+    // --verify fast only: the verification passed and the source is sealed
+    // again; no handoff marker, so a rollback is still open.
     "verify-passed",
-    // The handoff marker is durable; the source is still writable
-    // (--verify thorough, where the apply step writes the handoff).
+    // --verify thorough only, whose apply step writes the handoff: the
+    // handoff marker is durable; the source is still writable.
     "apply-handoff-durable",
-    // The handoff marker is durable and the source is sealed read-only.
-    // With --verify thorough finalization has not started; with --verify
-    // fast the verification has passed and the volume is not yet online.
+    // The handoff marker is durable and the source is sealed read-only:
+    // with --verify thorough before finalization, with --verify fast after
+    // the verification passed, before the volume is online.
     "handoff-sealed",
-    // Finalization has authenticated the handoff; the source is still sealed.
+    // Finalization has authenticated the handoff; the source is still sealed
+    // (with --verify fast only in the recovery of a run past its handoff).
     "finalize-authenticated",
-    // The converted source is mounted read-only for its verification.
+    // The converted source is mounted read-only for its verification beside
+    // the handoff (with --verify fast only in such a recovery).
     "finalize-source-readonly",
     // Verification passed and the source is sealed again; not yet online.
     "finalize-before-online",

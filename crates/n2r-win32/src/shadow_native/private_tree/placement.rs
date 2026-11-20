@@ -355,12 +355,32 @@ fn destination_drifted(error: &io::Error) -> bool {
 /// Bytes `value` adds to the saved document as one element of a top-level
 /// array: separator, two indentation levels before it and on each of its
 /// inner lines (serde_json's pretty formatter indents two spaces).
-fn saved_size(value: &serde_json::Value) -> Result<usize, String> {
-    let pretty = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
-    let lines = pretty.iter().filter(|&&b| b == b'\n').count();
-    lines
+fn saved_size(value: &(impl serde::Serialize + ?Sized)) -> Result<usize, String> {
+    // Counted as it is written: the text itself is not needed.
+    struct Count {
+        bytes: usize,
+        lines: usize,
+    }
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.bytes = self
+                .bytes
+                .checked_add(bytes.len())
+                .ok_or_else(|| invalid("placement saved size overflow"))?;
+            self.lines += bytes.iter().filter(|&&b| b == b'\n').count();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count { bytes: 0, lines: 0 };
+    serde_json::to_writer_pretty(&mut count, value).map_err(|e| e.to_string())?;
+    count
+        .lines
         .checked_mul(4)
-        .and_then(|n| n.checked_add(pretty.len() + 6))
+        .and_then(|n| n.checked_add(count.bytes))
+        .and_then(|n| n.checked_add(6))
         .ok_or_else(|| "placement evidence accounting overflow".to_owned())
 }
 
@@ -614,20 +634,9 @@ impl Reservation {
     /// ledger, at the start of placement (#129). The bounds are the same to the byte
     /// (`the_move_bounds_are_those_of_the_record_built_whole`).
     fn with_pages(pages: usize) -> Result<Self, String> {
-        let one = saved_size(&widest_move_record(0, 1)?)?;
-        let per_page = saved_size(&widest_move_record(0, 2)?)?
-            .checked_sub(one)
-            .ok_or("placement evidence page reservation differs")?;
-        let base = match pages.checked_sub(1) {
-            // No page: the list is empty, not a page shorter.
-            None => saved_size(&widest_move_record(0, 0)?)?,
-            Some(more) => per_page
-                .checked_mul(more)
-                .and_then(|n| n.checked_add(one))
-                .ok_or("placement evidence reservation overflow")?,
-        };
-        let per_extent = saved_size(&widest_move_record(1, 1)?)?
-            .checked_sub(one)
+        let base = widest_move_record_size(0, pages)?;
+        let per_extent = widest_move_record_size(1, pages)?
+            .checked_sub(base)
             .ok_or("placement evidence reservation differs")?;
         let empty_destination = saved_size(&serde_json::json!({
             "proof":{"destination_bitmap":serde_json::Value::Null}
@@ -675,9 +684,22 @@ impl Reservation {
         // Use the exact enclosing shape so the pretty-printed indentation and
         // line count are charged at the proof's real nesting depth. Replacing
         // null here adds exactly the same bytes as in widest_move_record.
-        let destination_bytes = saved_size(&serde_json::json!({
-            "proof":{"destination_bitmap":destination}
-        }))?
+        // Measured as it is written, not built as a JSON value first: a
+        // pretty-printed object takes the same bytes and lines whatever the
+        // order of its keys.
+        #[derive(serde::Serialize)]
+        struct Destination<'a> {
+            destination_bitmap: &'a unwritten::DestinationWindows,
+        }
+        #[derive(serde::Serialize)]
+        struct Enclosing<'a> {
+            proof: Destination<'a>,
+        }
+        let destination_bytes = saved_size(&Enclosing {
+            proof: Destination {
+                destination_bitmap: destination,
+            },
+        })?
         .checked_sub(self.empty_destination)
         .ok_or("placement destination evidence accounting differs")?;
         self.per_extent
@@ -686,6 +708,23 @@ impl Reservation {
             .and_then(|n| n.checked_add(destination_bytes))
             .ok_or_else(|| "placement evidence reservation overflow".into())
     }
+}
+
+/// `saved_size` of `widest_move_record(extents, pages)`. A run's resource
+/// limits allow thousands of pages, and the record was built and printed
+/// with all of them. Its page proofs are identical elements of one array,
+/// so from the first one on each further page adds the same bytes and lines.
+fn widest_move_record_size(extents: usize, pages: usize) -> Result<usize, String> {
+    if pages <= 2 {
+        return saved_size(&widest_move_record(extents, pages)?);
+    }
+    let one = saved_size(&widest_move_record(extents, 1)?)?;
+    let page = saved_size(&widest_move_record(extents, 2)?)?
+        .checked_sub(one)
+        .ok_or("placement evidence reservation differs")?;
+    page.checked_mul(pages - 1)
+        .and_then(|n| n.checked_add(one))
+        .ok_or_else(|| "placement evidence reservation overflow".into())
 }
 
 fn widest_move_record(extents: usize, pages: usize) -> Result<serde_json::Value, String> {
@@ -3090,6 +3129,93 @@ mod move_record_tests {
             (new.compact_bytes, new.saved_bytes, new.len())
         );
         assert_eq!(old.moves, new.moves);
+    }
+
+    /// `saved_size` as it was: the whole text printed, then measured.
+    fn printed_size(value: &serde_json::Value) -> usize {
+        let pretty = serde_json::to_vec_pretty(value).unwrap();
+        pretty.iter().filter(|&&b| b == b'\n').count() * 4 + pretty.len() + 6
+    }
+
+    #[test]
+    fn sizes_measured_as_written_are_the_sizes_of_the_printed_values() {
+        for (index, phase, extents, error) in CASES {
+            let record = as_before(index, phase, extents, error);
+            assert_eq!(saved_size(&record).unwrap(), printed_size(&record));
+        }
+        // The widest record, for every count of pages a run may allow.
+        for extents in [0, 1] {
+            for pages in (0..40).chain([255, 1_000, 4_097]) {
+                assert_eq!(
+                    widest_move_record_size(extents, pages).unwrap(),
+                    printed_size(&widest_move_record(extents, pages).unwrap()),
+                    "{extents} extents, {pages} pages"
+                );
+            }
+        }
+        // A move's bound, with the destination windows as a JSON value.
+        let reservation = Reservation::with_resource_limits(crate::retrieval_paging::Limits {
+            max_returned_bytes: 1 << 20,
+            max_extents: 3_000,
+            max_pages: 37,
+        })
+        .unwrap();
+        for (extents, clusters) in [(1, 1), (40, 4_096), (2_999, 131_072)] {
+            let destination = placement(extents, 9_000, clusters, None).destination_bitmap;
+            let printed = printed_size(&serde_json::json!({
+                "proof":{"destination_bitmap":&destination}
+            })) - reservation.empty_destination;
+            assert_eq!(
+                reservation
+                    .bound(extents, u64::from(clusters) * 4096, &destination)
+                    .unwrap(),
+                reservation.per_extent * 3_000 + reservation.base + printed
+            );
+        }
+    }
+
+    /// Sizing a move's bound and the widest record, before and after. Not run
+    /// by default:
+    /// `cargo test --release -p n2r-win32 reservation_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn reservation_cost() {
+        use std::time::Instant;
+        let reservation = Reservation::with_pages(1).unwrap();
+        let destination = placement(1, 9_000, 131_072, None).destination_bitmap;
+        let rounds = 20_000;
+        let start = Instant::now();
+        for _ in 0..rounds {
+            std::hint::black_box(printed_size(&serde_json::json!({
+                "proof":{"destination_bitmap":&destination}
+            })));
+        }
+        let before = start.elapsed().as_secs_f64() / f64::from(rounds);
+        let start = Instant::now();
+        for _ in 0..rounds {
+            std::hint::black_box(reservation.bound(1, 1 << 29, &destination).unwrap());
+        }
+        let after = start.elapsed().as_secs_f64() / f64::from(rounds);
+        println!(
+            "a move's bound: {:.1} us before, {:.1} us after",
+            before * 1e6,
+            after * 1e6
+        );
+        for pages in [1_000, 10_000, 160_000] {
+            let start = Instant::now();
+            for extents in [0, 1] {
+                std::hint::black_box(printed_size(&widest_move_record(extents, pages).unwrap()));
+            }
+            let before = start.elapsed().as_secs_f64();
+            let start = Instant::now();
+            std::hint::black_box(Reservation::with_pages(pages).unwrap());
+            let after = start.elapsed().as_secs_f64();
+            println!(
+                "the widest record of {pages} pages: {:.1} ms before, {:.3} ms after",
+                before * 1e3,
+                after * 1e3
+            );
+        }
     }
 
     /// The JSON work of recording one move, before and after, for files in

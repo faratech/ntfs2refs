@@ -88,12 +88,20 @@ struct LastRow {
 /// a few thousand rows later. Inside the gate before the first write to the
 /// source, and without the check-once policy, nothing is served from here
 /// and nothing is added.
+///
+/// The optional memory of a run is one pool, a third of its budget, and
+/// the expected tree's decoded objects are paid from it too, later in the
+/// run. The rows are decoded first and would take all of it on a machine
+/// with little memory, so they take no more than half of it
+/// ([`DECODED_ROW_SHARE`]): the rows beyond that are decoded as before.
 #[derive(Default)]
 struct DecodedRows {
     // Declared before the blocks, so the rows are dropped before the
     // credit that pays for them.
     rows: Vec<Option<Arc<FileInventory>>>,
     leases: Vec<SourceRamLease>,
+    // What the blocks hold together, and what of it no row has taken yet.
+    leased: u64,
     unspent: u64,
     // Rows still to pass by before a block is asked for again.
     refused_for: u32,
@@ -114,6 +122,7 @@ impl DecodedRowCache {
         self.last_served.set(None);
         let taken = {
             let mut decoded = self.state.borrow_mut();
+            decoded.leased = 0;
             decoded.unspent = 0;
             decoded.refused_for = 0;
             (
@@ -135,6 +144,7 @@ impl n2r_win32::evict::Evict for DecodedRowCache {
         // that paid for them.
         let taken = match self.state.try_borrow_mut() {
             Ok(mut decoded) if !decoded.leases.is_empty() => {
+                decoded.leased = 0;
                 decoded.unspent = 0;
                 // Memory was short: not asked for again at once.
                 decoded.refused_for = DECODED_ROW_RETRY_ROWS;
@@ -153,6 +163,9 @@ impl n2r_win32::evict::Evict for DecodedRowCache {
 }
 const DECODED_ROW_BLOCK_BYTES: u64 = 16 * 1024 * 1024;
 const DECODED_ROW_RETRY_ROWS: u32 = 4096;
+/// The part of the RAM budget the decoded rows may hold: a sixth, which is
+/// half of what all optional caches of a run may hold together.
+const DECODED_ROW_SHARE: u64 = 6;
 /// Beside what a row holds on the heap: the row itself, the counts it is
 /// shared by and what the allocator keeps for it.
 const DECODED_ROW_OVERHEAD_BYTES: u64 = std::mem::size_of::<FileInventory>() as u64 + 64;
@@ -336,14 +349,23 @@ impl PagedRawFiles {
         }
         if decoded.unspent < bytes {
             let block = DECODED_ROW_BLOCK_BYTES.max(bytes);
-            // Optional cache pressure must not become a source admission
+            // The rows keep to their share of the optional memory, and
+            // optional cache pressure must not become a source admission
             // limit: a refusal is the ordinary answer of a full ledger.
-            match self.scratch.lease_optional_ram(block) {
-                Ok(lease) => {
+            let within_share = decoded
+                .leased
+                .checked_add(block)
+                .is_some_and(|leased| leased <= self.budget().ram_bytes / DECODED_ROW_SHARE);
+            match within_share
+                .then(|| self.scratch.lease_optional_ram(block).ok())
+                .flatten()
+            {
+                Some(lease) => {
                     decoded.leases.push(lease);
+                    decoded.leased += block;
                     decoded.unspent += block;
                 }
-                Err(_) => {
+                None => {
                     decoded.refused_for = DECODED_ROW_RETRY_ROWS;
                     return false;
                 }

@@ -143,10 +143,27 @@ fn run() -> Result<u8> {
                              "record": "each is matched with the volume's object-ID index and kept in the run's records; their number is printed"},
                             {"what": "the NTFS compression flag", "why": "compressed data is stored as ordinary data on ReFS"},
                             {"what": "the change journal", "why": "the converted volume starts a new one"},
-                            {"what": "the case-sensitive mark of a directory in which no two names differ only by case",
+                            {"what": "the case-sensitive mark of a directory in which no two names differ only by case, except where case_sensitive_mark.set_on lists the running Windows",
                              "why": "the converter does not set it on the new volume; every name stays reachable",
-                             "record": "the directories are kept in the run's records and their number is printed before the prompt"},
+                             "record": "the directories are kept in the run's records, and their number and the reason are printed before the prompt"},
                         ],
+                        // A directory's case-sensitive mark: where it is
+                        // set on the new volume, and where it is not.
+                        "case_sensitive_mark": {
+                            "set_on": n2r_win32::windows_build::CASE_MARK_BUILDS
+                                .iter()
+                                .map(|shown| serde_json::json!({
+                                    "windows": shown.name, "build": shown.build, "server_edition": shown.server,
+                                }))
+                                .collect::<Vec<_>>(),
+                            "how": "every directory of the new volume is made with the mark its source directory has, the mark is read back, and a directory whose mark differs afterwards fails the run",
+                            "not_set": ["on any other Windows: Windows 11 build 26300 stops with a bugcheck when a ReFS volume holding a marked directory is taken offline, which a conversion does with the volume it builds",
+                                        "in a recovery or installation environment",
+                                        "on a volume that holds a Windows (--windows-boot-volume, and the running Windows)",
+                                        "on a partition of the running Windows disk, which is converted through a restart"],
+                            "the_run_says": "before the prompt, and --check: how many directories are marked, whether the mark is set, and where it is not, why",
+                            "two_names_that_differ_only_by_case": "refused everywhere, with both names",
+                        },
                         "refused_by_name": [
                             {"what": "8.3 short names", "remedy": "fsutil 8dot3name strip, then fsutil 8dot3name set <drive>: 1",
                              "or": "--short-names drop converts without them: every object under its long name, each short name kept in the run's records"},

@@ -207,7 +207,12 @@ impl Artifact {
                 "preparation intent is not on actual Windows C",
             )?;
         }
-        let observed = crate::sha256_native::hash_range(&mut held, 0, actual.file_bytes)?;
+        // By the algorithm the artifact is pinned with (#140): BLAKE3 for a
+        // native metadata store of this build (its magic says so), SHA-256
+        // for an earlier build's store and for every other artifact. A plain
+        // SHA-256 here refused every partition run of this build reopened
+        // after a restart.
+        let observed = crate::metadata_pages::pinning_digest(&mut held, actual.file_bytes)?;
         need(
             observed == expected
                 && crate::reference_file::observe_reference_file_handle_with_limit(&held, limit)?
@@ -297,7 +302,12 @@ impl Artifact {
                 "preparation intent is not on actual Windows C",
             )?;
         }
-        let observed = crate::sha256_native::hash_range(&mut held, 0, actual.file_bytes)?;
+        // By the algorithm the artifact is pinned with (#140): BLAKE3 for a
+        // native metadata store of this build (its magic says so), SHA-256
+        // for an earlier build's store and for every other artifact. A plain
+        // SHA-256 here refused every partition run of this build reopened
+        // after a restart.
+        let observed = crate::metadata_pages::pinning_digest(&mut held, actual.file_bytes)?;
         need(
             observed == expected
                 && crate::reference_file::observe_reference_file_handle_with_limit(&held, limit)?
@@ -326,7 +336,7 @@ impl Artifact {
                 &self.file,
                 self.snapshot.file_bytes,
             )? == self.snapshot
-                && crate::sha256_native::hash_range(&mut self.file, 0, self.snapshot.file_bytes)?
+                && crate::metadata_pages::pinning_digest(&mut self.file, self.snapshot.file_bytes)?
                     == self.sha,
             "held restoration artifact changed",
         )
@@ -647,8 +657,15 @@ impl Origin {
                         .map_err(io::Error::other)?,
             "locator source/journal/restored-OLD lineage differs",
         )?;
+        // A ticket without a `digest` label is an older build's: SHA-256.
+        let ticket_digest = match ticket.get("digest") {
+            None => crate::bulk_digest::Algorithm::Sha256,
+            Some(Value::String(label)) => crate::bulk_digest::Algorithm::from_label(Some(label))?,
+            Some(_) => return Err(bad("published ticket digest label is not a string")),
+        };
         need(
-            json_bytes(&ticket["immutable_sha256"])? == pins.immutable_sha256
+            ticket_digest == pins.digest
+                && json_bytes(&ticket["immutable_sha256"])? == pins.immutable_sha256
                 && json_bytes(&ticket["old_selected_sha256"])? == pins.old_selected_sha256
                 && json_bytes(&ticket["new_selected_sha256"])? == pins.new_selected_sha256,
             "published ticket differs from actual closed-J pins",

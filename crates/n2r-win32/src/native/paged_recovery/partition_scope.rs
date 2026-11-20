@@ -10,6 +10,7 @@ pub(crate) struct OwnedPartitionJournalPins {
     identity: JournalFileIdentity,
     path: PathBuf,
     profile: JournalProfile,
+    digest: crate::bulk_digest::Algorithm,
     immutable: [u8; 32],
     old: [u8; 32],
     restored: Option<[u8; 32]>,
@@ -22,6 +23,7 @@ impl OwnedPartitionJournalPins {
             identity: p.journal_identity.clone(),
             path: p.journal_path.to_owned(),
             profile: p.journal_profile,
+            digest: p.digest,
             immutable: p.immutable_sha256,
             old: p.old_selected_sha256,
             restored: p.old_restored_selected_sha256,
@@ -34,6 +36,7 @@ impl OwnedPartitionJournalPins {
             journal_identity: &self.identity,
             journal_path: &self.path,
             journal_profile: self.profile,
+            digest: self.digest,
             immutable_sha256: self.immutable,
             old_selected_sha256: self.old,
             old_restored_selected_sha256: self.restored,
@@ -45,6 +48,7 @@ impl OwnedPartitionJournalPins {
             || self.identity != *p.journal_identity
             || self.path != p.journal_path
             || self.profile != p.journal_profile
+            || self.digest != p.digest
             || self.immutable != p.immutable_sha256
             || self.old != p.old_selected_sha256
             || self.restored != p.old_restored_selected_sha256
@@ -244,12 +248,13 @@ fn verify_mixed<R: Read + Seek>(
     source: &mut R,
     policy: &HeldPagedWritePolicy,
     j: &mut File,
+    algorithm: crate::bulk_digest::Algorithm,
 ) -> io::Result<[u8; 32]> {
     let facts = policy.facts()?;
     let previous = source.stream_position()?;
     let result =
         (|| {
-            let mut hash = crate::sha256_native::Sha256::new()?;
+            let mut hash = crate::bulk_digest::Hasher::new(algorithm)?;
             // Three 64 KiB buffers plus the free table stay within the owner's
             // existing explicit 256 KiB auxiliary metadata allowance.
             const BUFFER: usize = 64 * 1024;
@@ -449,7 +454,8 @@ pub(in crate::native) fn authenticate_scoped_partition_reader<R: Read + Seek>(
     lifecycle(j, p, phase)?;
     let mut lifecycle_before = [0; (2 * GRANULE) as usize];
     read_at(j, 0, &mut lifecycle_before)?;
-    if crate::sha256_native::hash_range(j, BODY, facts.journal_length - BODY)? != p.immutable_sha256
+    if crate::bulk_digest::hash_range(p.digest, j, BODY, facts.journal_length - BODY)?
+        != p.immutable_sha256
     {
         return Err(invalid("scoped partition immutable journal differs"));
     }
@@ -457,19 +463,19 @@ pub(in crate::native) fn authenticate_scoped_partition_reader<R: Read + Seek>(
     let mut mixed = None;
     match phase {
         PartitionJournalPhase::FreshOld => {
-            verify_selected_digest(source, policy, p.old_selected_sha256)?
+            verify_selected_digest(source, policy, p.digest, p.old_selected_sha256)?
         }
         PartitionJournalPhase::Applying | PartitionJournalPhase::Replaying(_) => (),
         PartitionJournalPhase::Mixed(_) => {
-            mixed = Some(verify_mixed(source, policy, j)?);
+            mixed = Some(verify_mixed(source, policy, j, p.digest)?);
         }
         PartitionJournalPhase::New | PartitionJournalPhase::Handoff => {
-            verify_selected_digest(source, policy, p.new_selected_sha256)?
+            verify_selected_digest(source, policy, p.digest, p.new_selected_sha256)?
         }
         PartitionJournalPhase::Aborted => {
             let abandoned = check_aborted_lifecycle(j, p)?;
             if abandoned {
-                verify_selected_digest(source, policy, p.old_selected_sha256)?;
+                verify_selected_digest(source, policy, p.digest, p.old_selected_sha256)?;
             } else {
                 verify_restored_digest(source, policy, p)?;
             }
@@ -501,7 +507,8 @@ pub(in crate::native) fn authenticate_scoped_partition_reader<R: Read + Seek>(
         }
     }
     lifecycle(j, p, phase)?;
-    if crate::sha256_native::hash_range(j, BODY, facts.journal_length - BODY)? != p.immutable_sha256
+    if crate::bulk_digest::hash_range(p.digest, j, BODY, facts.journal_length - BODY)?
+        != p.immutable_sha256
     {
         return Err(invalid(
             "scoped partition journal changed around source verification",

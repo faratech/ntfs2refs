@@ -107,9 +107,10 @@ pub(super) fn check_selected<T: Read + Seek>(
     target: &mut T,
     domain: &ResourceJournalDomain<'_>,
     buffer: &mut [u8],
+    algorithm: n2r_win32::bulk_digest::Algorithm,
     expected: [u8; 32],
 ) -> Result<[u8; 32]> {
-    let mut aggregate = aggregate_pin_hash()?;
+    let mut aggregate = aggregate_pin_hash(algorithm)?;
     for ordinal in 0..u64::from(domain.facts.range_count) {
         let row = domain.row(ordinal)?;
         frame(
@@ -422,6 +423,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             journal_identity: facts.identity,
             journal_path: facts.path,
             journal_profile: facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,
@@ -521,6 +523,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             &mut target,
             domain,
             &mut buffers.current,
+            ticket.digest_algorithm(),
             ticket.new_selected_sha256,
         );
         target.set_read_ahead(false);
@@ -553,6 +556,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                 &mut target,
                 domain,
                 &mut buffers.current,
+                ticket.digest_algorithm(),
                 ticket.new_selected_sha256,
             )?
         };
@@ -676,6 +680,7 @@ impl ResourceReviewedConversion<'_, '_, '_, '_, '_, '_> {
             journal_identity: facts.identity,
             journal_path: facts.path,
             journal_profile: facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,
@@ -737,6 +742,7 @@ impl ResourceAppliedConversion<'_, '_, '_, '_, '_, '_> {
             journal_identity: facts.identity,
             journal_path: facts.path,
             journal_profile: facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,

@@ -164,7 +164,7 @@ pub(super) fn finish_prepared(
         request.maximum_evidence_bytes,
     )?;
     let mut readback = file;
-    let digest = n2r_win32::sha256_native::hash_range(&mut readback, 0, pin.file_bytes)?;
+    let digest = n2r_win32::metadata_pages::pinning_digest(&mut readback, pin.file_bytes)?;
     ensure!(
         n2r_win32::reference_file::observe_reference_file_handle_with_limit(
             &readback,

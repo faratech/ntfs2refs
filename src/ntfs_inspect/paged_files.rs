@@ -411,7 +411,8 @@ impl PagedRawFiles {
             if let Some(row) = held {
                 ensure!(
                     row.record_number == number,
-                    "decoded row differs from its canonical ordinal"
+                    "the decoded row held for ordinal {ordinal} of the source file store is FILE {}, where the store's index has FILE {number}",
+                    row.record_number
                 );
                 self.decoded.last_used.set(n2r_win32::evict::now());
                 self.decoded.last_served.set(Some((number, ordinal)));
@@ -473,6 +474,30 @@ impl PagedRawFiles {
             self.retain_last(ordinal, &file)?;
         }
         Ok(file)
+    }
+    /// The row of the record `number`, for a lookup by number that did not
+    /// find it with the directories: its place is the remembered one or is
+    /// searched for, and the row is the held one or is decoded.
+    ///
+    /// A directory that the decoded rows served is held with the directories
+    /// from here on. Every path that is built asks for the directories above
+    /// its object by their numbers, which the directories answer at once;
+    /// the decoded rows are found by ordinal, after a search of the index,
+    /// and once every row is decoded nothing else would put a directory
+    /// there.
+    fn searched_row(&self, number: u64) -> Result<Option<Arc<FileInventory>>> {
+        let ordinal = match self.last_ordinal_of(number) {
+            Some(ordinal) => ordinal,
+            None => match self.ordinal(number)? {
+                Some(ordinal) => ordinal,
+                None => return Ok(None),
+            },
+        };
+        let file = self.row(ordinal)?;
+        if file.is_directory && self.serves_decoded() {
+            self.retain_directory(ordinal, &file)?;
+        }
+        Ok(Some(file))
     }
     /// The ordinal of the row decoded or served last, if it is the record
     /// `number`: asking for that record again needs no search for its place.
@@ -732,14 +757,9 @@ impl RootFileDomain for PagedRawFiles {
                 );
             }
         }
-        let ordinal = match self.last_ordinal_of(number) {
-            Some(ordinal) => ordinal,
-            None => match self.ordinal(number)? {
-                Some(ordinal) => ordinal,
-                None => return Ok(None),
-            },
+        let Some(file) = self.searched_row(number)? else {
+            return Ok(None);
         };
-        let file = self.row(ordinal)?;
         Ok(if sequence.is_none_or(|s| s == file.sequence_number) {
             Some(Arc::unwrap_or_clone(file))
         } else {
@@ -768,16 +788,10 @@ impl RootFileDomain for PagedRawFiles {
         };
         let file = match held {
             Some(file) => file,
-            None => {
-                let ordinal = match self.last_ordinal_of(number) {
-                    Some(ordinal) => ordinal,
-                    None => match self.ordinal(number)? {
-                        Some(ordinal) => ordinal,
-                        None => return Ok(None),
-                    },
-                };
-                self.row(ordinal)?
-            }
+            None => match self.searched_row(number)? {
+                Some(file) => file,
+                None => return Ok(None),
+            },
         };
         Ok(sequence
             .is_none_or(|wanted| wanted == file.sequence_number)
@@ -804,16 +818,10 @@ impl RootFileDomain for PagedRawFiles {
         };
         let file = match held {
             Some(file) => file,
-            None => {
-                let ordinal = match self.last_ordinal_of(number) {
-                    Some(ordinal) => ordinal,
-                    None => match self.ordinal(number)? {
-                        Some(ordinal) => ordinal,
-                        None => return Ok(None),
-                    },
-                };
-                self.row(ordinal)?
-            }
+            None => match self.searched_row(number)? {
+                Some(file) => file,
+                None => return Ok(None),
+            },
         };
         if sequence.is_none_or(|wanted| wanted == file.sequence_number) {
             read(&file).map(Some)

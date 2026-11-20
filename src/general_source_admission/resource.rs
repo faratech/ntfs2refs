@@ -162,6 +162,10 @@ pub(crate) mod partition;
 #[path = "raw_target_security.rs"]
 mod raw_target_security;
 pub use cache::{SourceCacheFilePin, SourceCacheOriginPins};
+
+/// Where the native witness records the content reads that a run which
+/// verifies once did not ask of Windows.
+const WINDOWS_CONTENT_READS_SKIPPED: &str = "windows_content_reads_skipped";
 pub struct ResourceSourceContext {
     early_preparation_guard:
         Option<crate::resource_preparation::early_guard::EarlyPreparationGuard>,
@@ -1491,29 +1495,34 @@ impl ResourceSourceContext {
                 .map(|(_, _, group)| group.seal())
                 .transpose()?;
             let mut native_witness = serde_json::json!({
-                    "schema_version":1,
-                    "kind":"actual-protected-resource-source-native-witness",
-                    "source_inspection_sha256":inspection_sha,
-                    "source_fingerprint_before_native":source_sha,
-                    "native_pages_sha256":native.domain().sha256(),
-                    "native_observation_origin":native.origin(),
-                    "protected_windows_txf_markers":native.windows_txf_markers().map(|proof| proof.audit()),
-                    "protected_windows_object_ids":native.windows_object_ids().map(|proof| proof.audit()),
-                    "txf":native.txf(),
-                    "txf_error":native.txf_error(),
-                    "before":native.before(),
-                    "after":native.after(),
-                    "source_admitted":false,
-                    "execution_authorized":false
+                "schema_version":1,
+                "kind":"actual-protected-resource-source-native-witness",
+                "source_inspection_sha256":inspection_sha,
+                "source_fingerprint_before_native":source_sha,
+                "native_pages_sha256":native.domain().sha256(),
+                "native_observation_origin":native.origin(),
+                "protected_windows_txf_markers":native.windows_txf_markers().map(|proof| proof.audit()),
+                "protected_windows_object_ids":native.windows_object_ids().map(|proof| proof.audit()),
+                "txf":native.txf(),
+                "txf_error":native.txf_error(),
+                "before":native.before(),
+                "after":native.after(),
+                "source_admitted":false,
+                "execution_authorized":false
             });
-            if native.domain().header().content_passes == 0 {
-                // What this run asked Windows of each object, and what it
-                // took from the raw volume alone.
-                native_witness["per_object_scope"] = serde_json::json!({
-                    "asked_of_windows":"one open and one metadata snapshot: both security views, the case-sensitive mark of a directory, times, attributes, extended attributes, reparse point",
-                    "not_asked_of_windows":["streams and their mappings","stream contents","directory listings"],
-                    "taken_from":"the raw inspection of the frozen volume",
-                    "requested_with":"--verify fast"
+            if let Some(skipped) = native.domain().header().content_reads_skipped {
+                // What this run did not ask Windows to read, and what still
+                // holds those streams. A resumed preparation reads this
+                // record before it starts and refuses such a view.
+                native_witness[WINDOWS_CONTENT_READS_SKIPPED] = serde_json::json!({
+                    "objects":skipped.objects,
+                    "streams":skipped.streams,
+                    "logical_bytes":skipped.logical_bytes,
+                    "requested_with":"--verify fast (verify once)",
+                    "streams_skipped":"plain streams: one non-resident, uncompressed, unsparse DATA attribute of a user file, not assembled from an attribute list, initialized to its end, every run on disk",
+                    "still_checked_through_windows":"each stream's enumeration, sizes, identity and EOF, and its retrieval pointers held to the raw run list; every other stream's contents; directory listings",
+                    "contents_held_by":"the raw digest of the clusters the run list names, then the shadow and the verification of the converted volume",
+                    "row_marker":"logical_hash status not_read_plain_runs_v1"
                 });
             }
             save(

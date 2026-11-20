@@ -236,6 +236,17 @@ pub trait NativeRequestDomain {
     fn windows_object_id_identity(&self, _index: usize) -> io::Result<Option<FileIdentity>> {
         Ok(None)
     }
+    /// The names of the object's plain streams: those the raw reading holds
+    /// as one non-resident, uncompressed, unsparse DATA attribute,
+    /// initialized to its end with every run on disk, whose raw digest is
+    /// therefore a straight read of the clusters its run list names. A run
+    /// that verifies once maps them through Windows and holds that mapping to
+    /// the raw run list, but does not read their contents a second time.
+    /// This selects reads only; the comparison recomputes the set from the
+    /// raw reading and refuses a skipped stream outside it.
+    fn plain_content_streams(&self, _index: usize) -> io::Result<Vec<Vec<u16>>> {
+        Ok(Vec::new())
+    }
     fn revalidate(&self) -> io::Result<()>;
     fn require_paged_source(
         &self,
@@ -931,11 +942,50 @@ pub struct Report {
     /// 2: each stream's content is read twice through its open handle. 1: read
     /// once and mirrored, with stability proven by the caller's bracket over the
     /// frozen, physically read-only source (allocation-bounded mode).
-    /// 0: a run that verifies once asked Windows of each object for its
-    /// metadata snapshot alone. No row holds a stream capture, a content
-    /// digest or a directory listing, and none may be read from it.
     #[serde(default = "two_content_passes")]
     pub content_passes: u8,
+    /// The streams whose contents a run that verifies once did not read
+    /// through Windows (`logical_hash::Status::NotReadPlainRunsV1`), counted
+    /// from the rows and validated against them. None when every stream
+    /// that the request does not prove by its extents was read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_reads_skipped: Option<SkippedContentReads>,
+}
+
+/// What [`Report::content_reads_skipped`] counts: the objects with at least
+/// one such stream, the streams and their logical bytes.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SkippedContentReads {
+    pub objects: u64,
+    pub streams: u64,
+    pub logical_bytes: u64,
+}
+impl SkippedContentReads {
+    /// Counts one object's skipped streams; false when it has none.
+    pub(crate) fn add_object(&mut self, hashes: &[StreamHash]) -> io::Result<bool> {
+        let overflow = || io::Error::other("skipped content read count overflow");
+        let mut any = false;
+        for h in hashes
+            .iter()
+            .filter(|h| h.outcome.status == crate::logical_hash::Status::NotReadPlainRunsV1)
+        {
+            any = true;
+            self.streams = self.streams.checked_add(1).ok_or_else(overflow)?;
+            self.logical_bytes = self
+                .logical_bytes
+                .checked_add(h.logical_size)
+                .ok_or_else(overflow)?;
+        }
+        if any {
+            self.objects = self.objects.checked_add(1).ok_or_else(overflow)?;
+        }
+        Ok(any)
+    }
+    /// None when nothing was skipped, as the report records it.
+    pub fn recorded(self) -> Option<Self> {
+        (self.streams != 0).then_some(self)
+    }
 }
 
 /// Complete source evidence with one owned row at a time. The header retains
@@ -1557,9 +1607,10 @@ fn validate_regular_paged_resources(
     let mut observed = 0u64;
     let mut complete_reservations = 0u64;
     let mut complete_streams = 0u64;
-    if !matches!(header.content_passes, 0 | 1 | 2) {
+    if !matches!(header.content_passes, 1 | 2) {
         return Err(invalid());
     }
+    let mut skipped = SkippedContentReads::default();
     let mut bad_logical = false;
     let mut bad_observation = false;
     let mut bad_namespace = false;
@@ -1605,15 +1656,13 @@ fn validate_regular_paged_resources(
                 13 | 14 | 15 | 16
             ))?;
         }
-        if header.content_passes == 0 && !owner.holds_metadata_only()? {
-            return Err(invalid());
-        }
         let file = owner.logical()?;
         let selected = Some(owner.request());
         // A single content pass is mirrored into `after`; count it once.
         if header.content_passes == 1 && file.after != file.before {
             return Err(invalid());
         }
+        skipped.add_object(&file.before)?;
         let passes: &[&Vec<StreamHash>] = if header.content_passes == 1 {
             &[&file.before]
         } else {
@@ -1629,6 +1678,24 @@ fn validate_regular_paged_resources(
                 return Err(invalid());
             }
             for h in pass {
+                // Only a paged collection that verifies once skips a plain
+                // stream's content read, never one the request proves by its
+                // extents, and such an outcome holds nothing read.
+                if h.outcome.status == crate::logical_hash::Status::NotReadPlainRunsV1
+                    && ((header.request.schema_version, header.schema_version) != (8, 16)
+                        || h.outcome.bytes_read != 0
+                        || h.outcome.eof_confirmed
+                        || h.outcome.sha256.is_some()
+                        || h.outcome.native_error.is_some()
+                        || h.outcome.detail.is_some()
+                        || selected.as_ref().is_some_and(|s| {
+                            s.extent_identity_streams
+                                .iter()
+                                .any(|wanted| wanted.name_utf16 == h.name_utf16)
+                        }))
+                {
+                    return Err(invalid());
+                }
                 if h.outcome.status == crate::logical_hash::Status::NotReadExtentIdentityV1
                     && (!matches!(
                         (header.request.schema_version, header.schema_version),
@@ -1770,6 +1837,10 @@ fn validate_regular_paged_resources(
         ] {
             mark_native_identity(&mut identities, identity, bit, count)?;
         }
+    }
+    // The header says exactly which content reads the rows skipped.
+    if skipped.recorded() != header.content_reads_skipped {
+        return Err(invalid());
     }
     measured_allocation_resources(&mut actual, header, profile)?;
     let streaming_shape = match header.schema_version {
@@ -1960,7 +2031,8 @@ fn validate_domain_resources_irregular(domain: &impl NativeObservationDomain) ->
     let mut observed = 0u64;
     let mut complete_reservations = 0u64;
     let mut complete_streams = 0u64;
-    if !matches!(header.content_passes, 1 | 2) {
+    // Only the regular paged form above may skip a plain stream's read.
+    if !matches!(header.content_passes, 1 | 2) || header.content_reads_skipped.is_some() {
         return Err(invalid());
     }
     for index in 0..domain.logical_len() {
@@ -1990,6 +2062,9 @@ fn validate_domain_resources_irregular(domain: &impl NativeObservationDomain) ->
                 return Err(invalid());
             }
             for h in pass {
+                if h.outcome.status == crate::logical_hash::Status::NotReadPlainRunsV1 {
+                    return Err(invalid());
+                }
                 if h.outcome.status == crate::logical_hash::Status::NotReadExtentIdentityV1
                     && (!matches!(
                         (header.request.schema_version, header.schema_version),

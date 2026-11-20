@@ -14,6 +14,14 @@ pub enum Status {
     /// No content or EOF probe was read. Identity, EOF metadata and the full
     /// physical map are separate evidence; this outcome contains no digest.
     NotReadExtentIdentityV1,
+    /// A run that verifies once did not read this stream's contents through
+    /// Windows: the raw reading names it a plain stream (one non-resident,
+    /// uncompressed, unsparse DATA attribute, initialized to its end, every
+    /// run on disk), so its raw digest is a straight read of the clusters
+    /// its run list names, and those runs are held to Windows' retrieval
+    /// pointers. Identity and EOF are still queried through an open read
+    /// handle; this outcome contains no digest, EOF probe or read byte.
+    NotReadPlainRunsV1,
     BudgetExceeded,
     ReadRefused,
     UnexpectedEof,

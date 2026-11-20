@@ -676,12 +676,11 @@ struct SourceObjects<'a> {
     paged_security_limit: Option<usize>,
     limits: ResourceLimits,
     /// A run that verifies once ([`crate::verify_policy::verifies_once`])
-    /// asks Windows of each object only what the raw volume cannot say: one
-    /// open and one metadata snapshot (both security views, and whether a
-    /// directory is marked case-sensitive; the times, attributes, extended
-    /// attributes and reparse point come with the same handle). Its
-    /// streams, their mappings and their contents are not asked for.
-    per_need_only: bool,
+    /// does not read through Windows the contents of an object's plain
+    /// streams ([`NativeRequestDomain::plain_content_streams`]): each is
+    /// still enumerated, opened, mapped and queried for identity and EOF,
+    /// and its row says that its content read was skipped.
+    skip_plain_reads: bool,
 }
 impl SourceObjects<'_> {
     /// The stream evidence an object may hold, taken after objects that
@@ -696,13 +695,17 @@ impl SourceObjects<'_> {
     /// stream evidence and its content read against `read_budget`. Nothing
     /// is counted against the run's totals here ([`account_source_object`]
     /// does that), so the same object observed on any thread is the same.
+    /// `plain` names the object's plain streams, whose contents are not read
+    /// where the run skips plain reads.
     fn observe(
         &self,
         selected: &NativeRequestRow,
+        plain: &[Vec<u16>],
         row_stream_budget: usize,
         read_budget: &mut crate::logical_hash::Budget,
     ) -> (Observation, LogicalFile) {
         let request = self.request;
+        let plain = if self.skip_plain_reads { plain } else { &[] };
         let identity = &selected.identity;
         let row_request;
         let capture_request = if request.has_paged_selectors() {
@@ -765,12 +768,6 @@ impl SourceObjects<'_> {
             None => source_snapshot(file, request.requires_directory_case_sensitivity()),
         };
         obs.before = Some(snapshot(&file));
-        if self.per_need_only {
-            // No stream is opened, mapped or read: the row holds no stream
-            // capture and no content digest, and says nothing about them.
-            obs.after = obs.before.clone();
-            return (obs, logical);
-        }
         let (capture, hashes) = crate::stream_native::capture(
             &file,
             capture_request,
@@ -778,6 +775,7 @@ impl SourceObjects<'_> {
             read_budget,
             row_stream_budget,
             self.extent_context,
+            plain,
         );
         obs.streams_before = Some(capture);
         logical.before = hashes;
@@ -798,6 +796,7 @@ impl SourceObjects<'_> {
                     )
                     .saturating_sub(hash_retained_bytes(&logical.before)),
                 self.extent_context,
+                plain,
             );
             obs.streams_after = Some(capture);
             logical.after = hashes;
@@ -876,15 +875,18 @@ struct Taken<'s> {
     read_budget: crate::logical_hash::Budget,
     stream_bytes: usize,
     security_bytes: usize,
+    /// The content reads skipped so far, as the report's header records them.
+    skipped: crate::attestation::SkippedContentReads,
     /// What the helper threads hold for themselves; none once given up.
     helper_workspaces: Vec<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>,
 }
-/// An object ready to be observed: its selector, the stream evidence it may
-/// hold if taken after the objects gathered before it, whether a helper
-/// observes it ahead of its turn, and the memory its selector is paid with
-/// while it waits for its turn.
+/// An object ready to be observed: its selector, its plain streams, the
+/// stream evidence it may hold if taken after the objects gathered before
+/// it, whether a helper observes it ahead of its turn, and the memory its
+/// selector is paid with while it waits for its turn.
 struct Selected<'r> {
     row: Cow<'r, NativeRequestRow>,
+    plain: Vec<Vec<u16>>,
     row_stream_budget: usize,
     ahead: bool,
     _paid: Option<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>,
@@ -1065,9 +1067,10 @@ pub(crate) fn collect_file_metadata_with_routes(
     let paged_security_limit = sink
         .as_deref()
         .map(|sink| usize::try_from(sink.maximum_row_bytes()).unwrap_or(usize::MAX));
-    // Only the paged collection of a conversion that verifies once: every
-    // other caller, and every test, observes each object in full.
-    let per_need_only = crate::verify_policy::verifies_once()
+    // Only the paged collection of a conversion that verifies once skips
+    // the content reads of plain streams: every other caller, and every
+    // test, reads every stream the request does not prove by its extents.
+    let skip_plain_reads = crate::verify_policy::verifies_once()
         && sink.is_some()
         && request.schema_version == 8
         && matches!(
@@ -1081,7 +1084,7 @@ pub(crate) fn collect_file_metadata_with_routes(
         single_content_pass,
         paged_security_limit,
         limits,
-        per_need_only,
+        skip_plain_reads,
     };
     // Objects ahead of the one being taken are observed on helper threads
     // where the collection's memory is accounted (each helper's workspace and
@@ -1110,6 +1113,7 @@ pub(crate) fn collect_file_metadata_with_routes(
         read_budget,
         stream_bytes,
         security_bytes: 0,
+        skipped: crate::attestation::SkippedContentReads::default(),
         helper_workspaces,
     };
     crate::ordered_observation::in_order(
@@ -1119,6 +1123,11 @@ pub(crate) fn collect_file_metadata_with_routes(
         &mut taken,
         |taken, index, first| {
             let row = selectors.row(index)?;
+            let plain = if skip_plain_reads {
+                selectors.plain_content_streams(index)?
+            } else {
+                Vec::new()
+            };
             // What the object may hold if it is taken after what the objects
             // taken so far hold: right for every object of the batch while
             // the row limit, not the run's total, is what bounds it.
@@ -1132,7 +1141,11 @@ pub(crate) fn collect_file_metadata_with_routes(
             });
             let mut paid = None;
             if let (Some(payer), Cow::Owned(owned)) = (ahead, &row) {
-                match payer.reserve_spare(request_row_bytes(owned)) {
+                let plain_bytes = plain.iter().fold(
+                    plain.capacity().saturating_mul(mem::size_of::<Vec<u16>>()),
+                    |sum, name| sum.saturating_add(name.capacity().saturating_mul(2)),
+                ) as u64;
+                match payer.reserve_spare(request_row_bytes(owned).saturating_add(plain_bytes)) {
                     Ok(lease) => paid = Some(lease),
                     // Held as one object at a time holds it.
                     Err(_) if first => {}
@@ -1141,6 +1154,7 @@ pub(crate) fn collect_file_metadata_with_routes(
             }
             Ok(Some(Selected {
                 row,
+                plain,
                 row_stream_budget,
                 ahead: ahead.is_some(),
                 _paid: paid,
@@ -1149,8 +1163,12 @@ pub(crate) fn collect_file_metadata_with_routes(
         |selected| {
             let payer = row_payer.filter(|_| selected.ahead)?;
             let mut read = template.fresh();
-            let (observation, logical) =
-                objects.observe(&selected.row, selected.row_stream_budget, &mut read);
+            let (observation, logical) = objects.observe(
+                &selected.row,
+                &selected.plain,
+                selected.row_stream_budget,
+                &mut read,
+            );
             let paid = payer
                 .reserve_spare(held_bytes(&observation, &logical).ok()?)
                 .ok()?;
@@ -1182,8 +1200,12 @@ pub(crate) fn collect_file_metadata_with_routes(
                     None => {
                         let _in_turn =
                             (helpers >= 2).then(|| crate::perf::scope(crate::perf::Point::InTurn));
-                        let (obs, logical) =
-                            objects.observe(&selected.row, row_stream_budget, read_budget);
+                        let (obs, logical) = objects.observe(
+                            &selected.row,
+                            &selected.plain,
+                            row_stream_budget,
+                            read_budget,
+                        );
                         (obs, logical, None)
                     }
                 };
@@ -1194,6 +1216,7 @@ pub(crate) fn collect_file_metadata_with_routes(
                     &mut taken.stream_bytes,
                     &mut taken.security_bytes,
                 )?;
+                taken.skipped.add_object(&logical.before)?;
                 if let Some(sink) = taken.sink.as_deref_mut() {
                     sink.file(&selected.row, &obs, &logical)?;
                 } else {
@@ -1214,6 +1237,7 @@ pub(crate) fn collect_file_metadata_with_routes(
         logical_files,
         read_budget,
         mut stream_bytes,
+        skipped,
         ..
     } = taken;
     sink = returned;
@@ -1242,32 +1266,15 @@ pub(crate) fn collect_file_metadata_with_routes(
         return Err(invalid("native allocation evidence budget exhausted"));
     }
     let namespace = if let Some(sink) = sink.as_deref_mut() {
-        if per_need_only {
-            // No directory is listed through Windows, and no object is
-            // opened a second time for it: each object's row says only
-            // which object it is.
-            for index in 0..selectors.len() {
-                sink.namespace(&NamespaceFile {
-                    identity: selectors.identity(index)?,
-                    open_error: None,
-                    identity_before: None,
-                    identity_after: None,
-                    standard: None,
-                    before: None,
-                    after: None,
-                })?;
-            }
-        } else {
-            let row_limit = usize::try_from(sink.maximum_row_bytes()).map_err(io::Error::other)?;
-            crate::namespace_native::collect_rows_domain(
-                &volume,
-                request,
-                selectors,
-                true,
-                Some(row_limit),
-                |row| sink.namespace(&row),
-            )?;
-        }
+        let row_limit = usize::try_from(sink.maximum_row_bytes()).map_err(io::Error::other)?;
+        crate::namespace_native::collect_rows_domain(
+            &volume,
+            request,
+            selectors,
+            true,
+            Some(row_limit),
+            |row| sink.namespace(&row),
+        )?;
         NamespaceData { files: Vec::new() }
     } else {
         crate::namespace_native::collect(&volume, request)
@@ -1320,15 +1327,8 @@ pub(crate) fn collect_file_metadata_with_routes(
             files: logical_files,
         }),
         namespace: Some(namespace),
-        // 0 says that no stream was read at all: the report holds each
-        // object's metadata snapshot and is validated and read as that.
-        content_passes: if per_need_only {
-            0
-        } else if single_content_pass {
-            1
-        } else {
-            2
-        },
+        content_passes: if single_content_pass { 1 } else { 2 },
+        content_reads_skipped: skipped.recorded(),
     };
     if let Some(profile) = request.resource_profile {
         let mut resources = report.measured_resources(profile)?;
@@ -1566,7 +1566,7 @@ mod helper_observation_tests {
             single_content_pass: false,
             paged_security_limit: Some(1 << 20),
             limits: request.limits(),
-            per_need_only: false,
+            skip_plain_reads: false,
         };
         let unbounded = || {
             crate::logical_hash::Budget::with_limits(u64::MAX, i64::MAX as u64, u64::MAX).unwrap()
@@ -1582,13 +1582,13 @@ mod helper_observation_tests {
                 |_, index, _| Ok(Some(&rows[index])),
                 |row| {
                     let mut read = template.fresh();
-                    let seen = objects.observe(row, 1 << 20, &mut read);
+                    let seen = objects.observe(row, &[], 1 << 20, &mut read);
                     Some((seen, read))
                 },
                 |(budget, seen), _, row, observed| {
                     let one = match observed.filter(|(_, read)| budget.absorb(read)) {
                         Some((one, _)) => one,
-                        None => objects.observe(row, 1 << 20, budget),
+                        None => objects.observe(row, &[], 1 << 20, budget),
                     };
                     let mut one = serde_json::to_value(&one).unwrap();
                     without_access_times(&mut one);

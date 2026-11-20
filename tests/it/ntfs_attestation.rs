@@ -198,6 +198,7 @@ fn fixture() -> (ntfs_inspect::NtfsInspection, Report) {
     p64(&mut attrs, 8, 2);
     let report = Report {
         content_passes: 2,
+        content_reads_skipped: None,
         resources: None,
         namespace: None,
         schema_version: 2,

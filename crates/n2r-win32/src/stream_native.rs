@@ -479,6 +479,7 @@ fn hash_stream(
         &IoctlQuery,
         &[IoctlQuery],
     )>,
+    skip_read: bool,
 ) -> StreamHash {
     let mut out = StreamHash {
         name_utf16: name.to_vec(),
@@ -546,6 +547,19 @@ fn hash_stream(
             },
             Err(e) => crate::logical_hash::Outcome::refused(e),
         }
+    } else if skip_read {
+        // A plain stream of a run that verifies once: its raw digest is a
+        // straight read of the clusters its run list names, and that list
+        // is held to this stream's retrieval pointers. Its identity and
+        // EOF are still queried here, before and after; nothing is read.
+        crate::logical_hash::Outcome {
+            status: crate::logical_hash::Status::NotReadPlainRunsV1,
+            bytes_read: 0,
+            eof_confirmed: false,
+            sha256: None,
+            native_error: None,
+            detail: None,
+        }
     } else {
         crate::logical_hash::read(&mut data, expected, budget)
     };
@@ -572,6 +586,7 @@ pub(crate) fn capture(
     budget: &mut crate::logical_hash::Budget,
     evidence_limit: usize,
     extent_context: Option<ExtentContext>,
+    plain: &[Vec<u16>],
 ) -> (StreamCapture, Vec<StreamHash>) {
     let mut hashes = vec![];
     let resource = match request_resource_bytes(r) {
@@ -706,7 +721,19 @@ pub(crate) fn capture(
                 )),
             }
         } else {
-            hash_stream(f, r, id, &entry.name, entry.logical_size, budget, omission)
+            // A stream the request proves by its extents is never one whose
+            // read is skipped as plain.
+            let skip_read = wanted.is_none() && plain.contains(&entry.name);
+            hash_stream(
+                f,
+                r,
+                id,
+                &entry.name,
+                entry.logical_size,
+                budget,
+                omission,
+                skip_read,
+            )
         };
         hashes.push(hash);
         let after = info(f, 18, 24);

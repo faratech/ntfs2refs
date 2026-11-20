@@ -27,14 +27,6 @@ impl Check {
             },
         }
     }
-    /// A view that a run which verifies once does not ask Windows for: it
-    /// is taken from the raw volume alone, and nothing is held against it.
-    pub(crate) fn not_asked() -> Self {
-        Self {
-            matched: true,
-            detail: "not asked of Windows (--verify fast): taken from the raw volume".into(),
-        }
-    }
 }
 #[derive(Debug, Serialize)]
 pub struct FileCheck {

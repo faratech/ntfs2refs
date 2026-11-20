@@ -406,6 +406,11 @@ impl PagedInspection {
     ) -> Result<Option<crate::ntfs_attribute_list::Assembly>> {
         self.assemblies[0].find(file_key(record))
     }
+    /// Whether the record's attributes were assembled from an attribute
+    /// list. Only the store's keys are searched; no assembly is decoded.
+    pub(crate) fn has_attribute_list_assembly(&self, record: u64) -> Result<bool> {
+        Ok(self.assemblies[0].find_ordinal(file_key(record))?.is_some())
+    }
     /// Bounded directory metadata from the already authenticated stores. No
     /// row is decoded or allocated before its actual wire length is known.
     pub(crate) fn checked_record_wire_sizes(&self, record: u64) -> Result<(u64, Option<u64>)> {

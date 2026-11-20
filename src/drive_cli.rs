@@ -148,8 +148,9 @@ pub struct DriveArgs {
     /// which is slower. This changes what is checked, not how often. With
     /// `fast` the conversion is committed only after the converted volume
     /// has passed that verification, and a rollback can put NTFS back until
-    /// then. With `thorough`, and for a partition on the disk of the running
-    /// Windows or with --restart-media, it is committed just before it.
+    /// then. With `thorough`, for a partition on the disk of the running
+    /// Windows or with --restart-media, and when an interrupted preparation
+    /// is resumed, it is committed just before it.
     #[arg(long, requires = "drive", value_enum, value_name = "MODE")]
     pub verify: Option<VerifyMode>,
     /// The earlier spelling of --verify thorough, kept for scripts.

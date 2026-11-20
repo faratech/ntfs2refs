@@ -734,9 +734,12 @@ it to its run.
 - **`--recheck-everything`** changes *how often*, not what: the full re-reads
   happen at every checkpoint instead of once at the gate. Much slower.
 
-A partition on the disk of the running Windows, and a conversion with
-`--restart-media`, still commit before the verification, as `--verify
-thorough` does.
+A partition on the disk of the running Windows, a conversion with
+`--restart-media`, and a run whose interrupted preparation is resumed (its
+`--recover` command without `--rollback`, or with `--resume-workspace`) still
+commit before the verification, as `--verify thorough` does: from their
+handoff on a rollback is closed. A resumed preparation says so before it
+writes to the volume.
 
 **If the verification does not pass** (with `--verify fast`), nothing is
 committed and nothing is rolled back. The run ends with an error that says

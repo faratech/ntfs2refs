@@ -1578,7 +1578,7 @@ impl ArtifactArena {
         site: RamSite,
         refused: &mut anyhow::Error,
     ) -> Option<ArenaRamLease> {
-        if !self.caches_hold_room_for(bytes, self.0.budget.ram_bytes) {
+        if !self.caches_hold_room_for(bytes, |state| self.needed_ceiling(state)) {
             return None;
         }
         while n2r_win32::evict::evict_oldest() {
@@ -1591,7 +1591,7 @@ impl ArtifactArena {
     }
     /// Whether `bytes` more would be within `ceiling` if no cache held
     /// anything, in a ledger that is not poisoned.
-    fn caches_hold_room_for(&self, bytes: u64, ceiling: u64) -> bool {
+    fn caches_hold_room_for(&self, bytes: u64, ceiling: impl Fn(&State) -> u64) -> bool {
         self.0.state.lock().is_ok_and(|state| {
             !state.ram_poisoned
                 && state.optional_ram_bytes != 0
@@ -1600,8 +1600,23 @@ impl ArtifactArena {
                     .checked_sub(state.optional_ram_bytes)
                     .and_then(|needed| needed.checked_add(bytes))
                     .and_then(|needed| needed.checked_add(state.index_bytes))
-                    .is_some_and(|needed| needed <= ceiling)
+                    .is_some_and(|needed| needed <= ceiling(&state))
         })
+    }
+    /// The most the ledger may hold with what the run cannot do without:
+    /// its budget and what was granted beyond it, or, for a run that fits
+    /// itself to the machine, what the machine has now where that is more.
+    /// [`Self::reserve_ram_at`] grants up to it, and the caches are given
+    /// up for a request that fits it without them. (They were judged
+    /// against the bare budget, so a request that the allowance beyond it,
+    /// or the machine, had room for once the caches went was refused, or
+    /// had the walk's rows written out, beside them.)
+    fn needed_ceiling(&self, state: &State) -> u64 {
+        self.0
+            .budget
+            .ram_bytes
+            .saturating_add(state.beyond_budget_bytes)
+            .max(self.speed_budget())
     }
     /// As [`Self::reserve_ram`], for memory the caller does without when
     /// there is no room (a row kept for the next lookup, a small table held
@@ -1627,10 +1642,7 @@ impl ArtifactArena {
         // a shortage of memory on a machine that had 8 GB free: the full
         // Windows volume, round rc1.)
         ensure!(
-            !state.ram_poisoned
-                && add(leased, state.index_bytes)?
-                    <= add(self.0.budget.ram_bytes, state.beyond_budget_bytes)?
-                        .max(self.speed_budget()),
+            !state.ram_poisoned && add(leased, state.index_bytes)? <= self.needed_ceiling(&state),
             "aggregate artifact arena RAM exhausted or poisoned: leased={} (of which optional caches {}), registry={}, requested={} at {}:{}, limit={}, poisoned={}; the largest reservations: {}",
             state.leased_ram_bytes,
             state.optional_ram_bytes,
@@ -1712,7 +1724,7 @@ impl ArtifactArena {
             Ok(granted) => return Ok(granted),
             Err(refused) => refused,
         };
-        if !self.caches_hold_room_for(bytes, self.cache_ceiling()) {
+        if !self.caches_hold_room_for(bytes, |_| self.cache_ceiling()) {
             return Err(refused);
         }
         while n2r_win32::evict::evict_oldest() {
@@ -3337,6 +3349,25 @@ mod cache_tests {
         // A cache gets none of it: it is held only while the budget has room.
         assert!(arena.reserve_cache_ram(MIB).is_err());
         drop((held_already, beyond, within));
+        assert_eq!(held(&arena), (0, 0));
+    }
+
+    #[test]
+    fn caches_are_given_up_for_what_the_allowance_beyond_the_budget_has_room_for() {
+        const MIB: u64 = 1024 * 1024;
+        let (_directory, arena) = ledger();
+        let cache = Evictable::new(arena.reserve_cache_ram(LIMIT / 8).unwrap());
+        let needed = arena.reserve_ram(LIMIT - LIMIT / 8 - MIB).unwrap();
+        // The budget came short and Windows allowed 16 MiB beyond it.
+        assert!(arena.go_beyond_budget_with(8 * MIB, 4096 * MIB));
+        assert_eq!(arena.0.state.lock().unwrap().beyond_budget_bytes, 16 * MIB);
+        // 20 MiB fit beside what is needed within the allowance, but not
+        // beside the cache too: the cache goes. (Judged against the bare
+        // budget, it stayed and the request was refused.)
+        let more = arena.reserve_ram(20 * MIB).unwrap();
+        assert!(!cache.is_held());
+        assert_eq!(held(&arena), (LIMIT - LIMIT / 8 - MIB + 20 * MIB, 0));
+        drop((more, needed));
         assert_eq!(held(&arena), (0, 0));
     }
 

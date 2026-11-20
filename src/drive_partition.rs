@@ -9,7 +9,6 @@ use crate::{
     },
     selected_capacity::SelectedCapacityPolicy,
     selected_journal::resource_domain::source_scope::ResourceRecoverySourceScope,
-    verification_policy::VerificationPolicy,
 };
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
@@ -425,10 +424,10 @@ pub(super) fn convert(
     println!("Experimental shared-disk path: native qualification is still in progress.");
     println!(
         "Target: {format}; allocation-bounded {} verification.",
-        if args.verify_full_content {
-            "full-content"
+        if args.verification_policy()?.is_full_content() {
+            "thorough (full-content)"
         } else {
-            "extent-identity"
+            "fast (extent-identity)"
         }
     );
     if args.minimize_scratch {
@@ -487,11 +486,7 @@ pub(super) fn convert(
         maximum_staging_allocation_bytes: plan.stage,
         maximum_evidence_bytes: plan.evidence,
         minimum_free_bytes: plan.keep,
-        verification_policy: if args.verify_full_content {
-            VerificationPolicy::FullContent
-        } else {
-            VerificationPolicy::ExtentIdentityV1
-        },
+        verification_policy: args.verification_policy()?,
         target_format: format,
         selected_capacity_policy: if args.minimize_scratch {
             SelectedCapacityPolicy::SourceFreeActualBytesV1

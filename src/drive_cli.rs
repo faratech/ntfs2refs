@@ -22,6 +22,16 @@ mod resource;
 #[path = "drive_staging.rs"]
 mod staging;
 
+/// The value of `--verify`.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VerifyMode {
+    /// Data that stays in place is proven by the identity of its extents;
+    /// everything else is read and checksummed.
+    Fast,
+    /// Every stream's complete contents are read and hashed.
+    Thorough,
+}
+
 #[derive(Args, Debug)]
 pub struct DriveArgs {
     /// Show the disks and partitions, and for each NTFS partition whether
@@ -110,16 +120,20 @@ pub struct DriveArgs {
     /// preparation that had not finished. Possible until the handoff only.
     #[arg(long, requires = "recover")]
     pub rollback: bool,
-    /// Read and hash the complete contents of every stream. By default,
-    /// data that stays in place is proven by the identity of its extents and
-    /// only the rest is read. Slower. This changes what is checked.
-    #[arg(long, requires = "drive")]
+    /// What the run verifies: `fast` (the default) proves data that stays in
+    /// place by the identity of its extents and reads only the rest;
+    /// `thorough` reads and hashes the complete contents of every stream,
+    /// which is slower. This changes what is checked, not how often.
+    #[arg(long, requires = "drive", value_enum, value_name = "MODE")]
+    pub verify: Option<VerifyMode>,
+    /// The earlier spelling of --verify thorough, kept for scripts.
+    #[arg(long, hide = true, requires = "drive")]
     pub verify_full_content: bool,
     /// Experimental: reduce the working storage by not saving what unused
     /// NTFS space holds, so a rollback does not restore it. It first moves
     /// files on the volume through NTFS; those moves are not undone if the
-    /// run stops later. Refused with --verify-full-content and on a volume
-    /// with shadow copies.
+    /// run stops later. Refused with --verify thorough and on a volume with
+    /// shadow copies.
     #[arg(long, requires = "drive", conflicts_with = "verify_full_content")]
     pub minimize_scratch: bool,
     /// Check the volume while it stays online: nothing is frozen, formatted
@@ -268,6 +282,16 @@ fn confirmation_prompt(mode: crate::execution_mode::ExecutionMode) -> &'static s
     }
 }
 
+/// The line a conversion prints for the verification it was asked for.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn describe_verification(policy: crate::verification_policy::VerificationPolicy) -> &'static str {
+    if policy.is_full_content() {
+        "Verification: thorough (--verify thorough): every stream's complete contents are read and hashed."
+    } else {
+        "Verification: fast, the default: data that stays in place is proven by the identity of its extents; everything else is read and checksummed. --verify thorough reads every stream in full."
+    }
+}
+
 impl DriveArgs {
     pub fn requested(&self) -> bool {
         self.list || self.drive.is_some() || self.recover.is_some()
@@ -294,6 +318,33 @@ impl DriveArgs {
         ),
         ("--lab-hold-at", "it stops a run that writes to the source"),
     ];
+
+    /// The verification this run asked for: `--verify`, or its hidden
+    /// earlier spelling `--verify-full-content`, or the fast default. Two
+    /// spellings that disagree, and `--minimize-scratch` with a thorough
+    /// verification, are refused: the parser rejects only some of these
+    /// combinations, and this holds whatever built the arguments.
+    pub(crate) fn verification_policy(
+        &self,
+    ) -> Result<crate::verification_policy::VerificationPolicy> {
+        use crate::verification_policy::VerificationPolicy;
+        let mode = match (self.verify, self.verify_full_content) {
+            (Some(VerifyMode::Fast), true) => anyhow::bail!(
+                "--verify fast contradicts --verify-full-content (the earlier spelling of --verify thorough); give one of them. Nothing was changed."
+            ),
+            (Some(mode), _) => mode,
+            (None, true) => VerifyMode::Thorough,
+            (None, false) => VerifyMode::Fast,
+        };
+        ensure!(
+            !(mode == VerifyMode::Thorough && self.minimize_scratch),
+            "--minimize-scratch cannot be combined with --verify thorough: a run with reduced working storage is admitted only with the fast verification. Nothing was changed."
+        );
+        Ok(match mode {
+            VerifyMode::Fast => VerificationPolicy::ExtentIdentityV1,
+            VerifyMode::Thorough => VerificationPolicy::FullContent,
+        })
+    }
 
     /// `--yes` answers the question that names the volume, so it is taken
     /// only with something else that names it: the volume's serial number
@@ -639,6 +690,8 @@ mod windows {
     }
     pub(super) fn run(args: DriveArgs) -> Result<u8> {
         let mode = args.execution_mode()?;
+        // Refuses contradictory verification options before anything is opened.
+        args.verification_policy()?;
         if args.unattended()? {
             crate::confirmation::assume_yes();
         }
@@ -1035,14 +1088,11 @@ mod windows {
         println!(
             "Windows will report the converted volume's actual developer designation and trust state."
         );
-        let verification_policy = if !args.verify_full_content {
-            crate::verification_policy::VerificationPolicy::ExtentIdentityV1
-        } else {
-            crate::verification_policy::VerificationPolicy::FullContent
-        };
+        let verification_policy = args.verification_policy()?;
         println!(
             "Mode: allocation-bounded (compares and writes only the ranges the new ReFS allocates; free space is not verified)"
         );
+        println!("{}", describe_verification(verification_policy));
         println!(
             "NTFS-compressed streams, when present, are decoded into ordinary ReFS data and require space for their logical contents."
         );
@@ -2107,6 +2157,87 @@ mod tests {
                 "{arguments:?}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn verify_names_the_mode_and_the_earlier_spelling_still_means_thorough() {
+        use crate::verification_policy::VerificationPolicy;
+        let policy = |extra: &[&str]| parse(extra).unwrap().verification_policy();
+        assert_eq!(policy(&[]).unwrap(), VerificationPolicy::ExtentIdentityV1);
+        assert_eq!(
+            policy(&["--verify", "fast"]).unwrap(),
+            VerificationPolicy::ExtentIdentityV1
+        );
+        assert_eq!(
+            policy(&["--verify", "thorough"]).unwrap(),
+            VerificationPolicy::FullContent
+        );
+        assert_eq!(
+            policy(&["--verify-full-content"]).unwrap(),
+            VerificationPolicy::FullContent
+        );
+        assert_eq!(
+            policy(&["--verify", "thorough", "--verify-full-content"]).unwrap(),
+            VerificationPolicy::FullContent
+        );
+        // Two spellings that disagree are refused, not decided for the user.
+        let refusal = policy(&["--verify", "fast", "--verify-full-content"])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refusal.contains("--verify fast") && refusal.contains("--verify-full-content"),
+            "{refusal}"
+        );
+        assert!(parse(&["--verify", "complete"]).is_err());
+        // A mode is a matter of a conversion of a selected volume.
+        assert!(
+            Cli::try_parse_from(["ntfs2refs", "--verify", "thorough"]).is_err(),
+            "--verify without --drive"
+        );
+    }
+
+    #[test]
+    fn reduced_working_storage_is_refused_with_a_thorough_verification_in_either_spelling() {
+        // The earlier spelling is refused by the parser, as it always was.
+        assert_eq!(
+            parse(&["--minimize-scratch", "--verify-full-content"])
+                .unwrap_err()
+                .kind(),
+            ErrorKind::ArgumentConflict
+        );
+        // The new one is refused before anything is opened.
+        let refusal = parse(&["--minimize-scratch", "--verify", "thorough"])
+            .unwrap()
+            .verification_policy()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refusal.contains("--minimize-scratch") && refusal.contains("--verify thorough"),
+            "{refusal}"
+        );
+        // And whatever built the arguments.
+        let mut arguments = parse(&["--minimize-scratch"]).unwrap();
+        assert!(arguments.verification_policy().unwrap().is_fast());
+        arguments.verify_full_content = true;
+        assert!(arguments.verification_policy().is_err());
+        // The fast verification takes it.
+        assert!(
+            parse(&["--minimize-scratch", "--verify", "fast"])
+                .unwrap()
+                .verification_policy()
+                .unwrap()
+                .is_fast()
+        );
+    }
+
+    #[test]
+    fn the_run_says_which_verification_it_makes() {
+        use crate::verification_policy::VerificationPolicy;
+        let fast = describe_verification(VerificationPolicy::ExtentIdentityV1);
+        let thorough = describe_verification(VerificationPolicy::FullContent);
+        assert!(fast.contains("fast") && fast.contains("default"), "{fast}");
+        assert!(thorough.contains("--verify thorough"), "{thorough}");
+        assert_ne!(fast, thorough);
     }
 
     #[test]

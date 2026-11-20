@@ -643,7 +643,7 @@ differences it accepts.
 | `--restart-media <dir>` | Windows installation media, for a partition on the disk of the running Windows: it is converted through a restart |
 | `--recover <dir> --recovery-sha256 <sum>` `[--rollback]` | Finishes, or undoes, an interrupted run |
 | `--yes` `--volume-serial XXXX-XXXX` | Runs without asking; see below |
-| `--verify-full-content` | Reads and hashes the complete contents of every stream |
+| `--verify fast\|thorough` | What is verified: `fast` (the default) proves data that stays in place by its extents; `thorough` reads and hashes every stream in full |
 | `--recheck-everything` | Repeats the full re-reads at every checkpoint |
 | `--minimize-scratch` | Experimental: less working storage; see below |
 
@@ -663,13 +663,14 @@ it to its run.
 
 ### Verification
 
-- **Default.** Data that stays in place is proven by the identity of its
-  extents; resident, compressed, sparse and partly initialized streams, tails
-  and everything rewritten are read and checksummed. Working files and the
-  volume are re-read in full once, at the gate before the first write to the
-  volume.
-- **`--verify-full-content`** changes *what* is checked: every stream's
-  complete contents are read and hashed.
+- **`--verify fast`, the default.** Data that stays in place is proven by the
+  identity of its extents; resident, compressed, sparse and partly initialized
+  streams, tails and everything rewritten are read and checksummed. Working
+  files and the volume are re-read in full once, at the gate before the first
+  write to the volume.
+- **`--verify thorough`** changes *what* is checked: every stream's complete
+  contents are read and hashed. Not with `--minimize-scratch`. The earlier
+  spelling `--verify-full-content` is still accepted and means the same.
 - **`--recheck-everything`** changes *how often*, not what: the full re-reads
   happen at every checkpoint instead of once at the gate. Much slower.
 

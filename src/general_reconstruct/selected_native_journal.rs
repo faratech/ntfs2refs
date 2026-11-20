@@ -487,6 +487,22 @@ impl NativeSelectedJournal {
             _ => anyhow::bail!("sealed markerless journal owner absent"),
         }
     }
+    /// The review stop's reseal (#110): beside the apply intent alone.
+    pub(crate) fn seal_sealed_review_for_observation(
+        &mut self,
+        source: &mut n2r_win32::GeneralFrozenPartition,
+        policy: &n2r_win32::HeldPagedWritePolicy,
+        pins: &n2r_win32::PagedRecoveryPins<'_>,
+        events: &mut Vec<n2r_win32::NativeEvent>,
+    ) -> Result<()> {
+        self.require_prepared_body_seal()?;
+        match &mut self.storage {
+            Storage::Buffered(file) => {
+                Ok(source.seal_paged_review_for_observation(policy, file, pins, events)?)
+            }
+            _ => anyhow::bail!("sealed markerless journal owner absent"),
+        }
+    }
     /// Same-handle volume-GUID route for a future recovery locator. A
     /// drive-letter alias supplied by the caller is never persisted as proof.
     fn observed_guid_path(&self, binding: &GeneralJournalStorageBinding) -> Result<PathBuf> {

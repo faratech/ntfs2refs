@@ -286,7 +286,7 @@ impl BoundJournalObservation<'_> {
     /// Observe a fully authenticated durable HND and its exact selected target
     /// bytes through the same held offline target. This is read-only and does
     /// not establish namespace, payload-map or mounted-filesystem validity.
-    pub(super) fn verify_handoff_data<R: Read + Seek>(
+    pub(super) fn verify_handoff_data<R: OrderedSource>(
         &mut self,
         target: &mut R,
         target_length: u64,
@@ -312,7 +312,7 @@ impl BoundJournalObservation<'_> {
             expected
         } else {
             self.observation
-                .check_target_reader(target, target_length, Some(expected), false)?
+                .check_target_ahead(target, target_length, Some(expected), false)?
         };
         ensure!(
             self.observation.lifecycle()? == SelectedLifecycle::Handoff,
@@ -333,7 +333,7 @@ impl BoundJournalObservation<'_> {
     /// and every selected byte exactly NEW, through the same held offline
     /// target. Like the handoff's above, it is read-only and claims nothing
     /// about the converted namespace.
-    pub(super) fn verify_review_data<R: Read + Seek>(
+    pub(super) fn verify_review_data<R: OrderedSource>(
         &mut self,
         target: &mut R,
         target_length: u64,
@@ -355,7 +355,7 @@ impl BoundJournalObservation<'_> {
             expected
         } else {
             self.observation
-                .check_target_reader(target, target_length, Some(expected), false)?
+                .check_target_ahead(target, target_length, Some(expected), false)?
         };
         ensure!(
             self.observation.lifecycle()? == SelectedLifecycle::ApplyIntent,
@@ -374,7 +374,7 @@ impl BoundJournalObservation<'_> {
     /// marker is then written, flushed and read back as a replay's is. The
     /// caller holds the proof that the converted volume passed its
     /// verification; nothing is written to the source.
-    pub(super) fn write_handoff_after_verification<R: Read + Seek>(
+    pub(super) fn write_handoff_after_verification<R: OrderedSource>(
         &mut self,
         target: &mut R,
         target_length: u64,
@@ -443,7 +443,7 @@ impl BoundJournalObservation<'_> {
         Ok(digest)
     }
 
-    pub(super) fn verify_aborted_data<R: Read + Seek>(
+    pub(super) fn verify_aborted_data<R: OrderedSource>(
         &mut self,
         target: &mut R,
         target_length: u64,
@@ -456,7 +456,7 @@ impl BoundJournalObservation<'_> {
         let mut intent = [0u8; GRANULE as usize];
         at(self.observation.journal, GRANULE, &mut intent)?;
         let digest = if intent.iter().all(|&b| b == 0) {
-            self.observation.check_target_reader(
+            self.observation.check_target_ahead(
                 target,
                 target_length,
                 Some(self.observation.ticket.old_selected_sha256),
@@ -464,7 +464,7 @@ impl BoundJournalObservation<'_> {
             )?
         } else {
             self.observation
-                .check_restored_reader(target, target_length)?
+                .check_restored_ahead(target, target_length)?
         };
         ensure!(
             self.observation.lifecycle()? == SelectedLifecycle::Aborted,
@@ -480,7 +480,7 @@ impl BoundJournalObservation<'_> {
     /// source writes. A marker write that fails here is an explicit error; one
     /// that a power loss cut short is settled by the next recovery, before it
     /// reads the lifecycle (`interrupted_marker`).
-    pub(super) fn abandon_clear_data<R: Read + Seek>(
+    pub(super) fn abandon_clear_data<R: OrderedSource>(
         &mut self,
         target: &mut R,
         target_length: u64,
@@ -491,7 +491,7 @@ impl BoundJournalObservation<'_> {
     /// The callback exists only inside this actual clear-journal/OLD-source
     /// proof boundary. It may retire a preparation-only guard before ABT; no
     /// saved phase or successful earlier observation can invoke it separately.
-    pub(super) fn abandon_clear_data_with_before_abort<R: Read + Seek>(
+    pub(super) fn abandon_clear_data_with_before_abort<R: OrderedSource>(
         &mut self,
         target: &mut R,
         target_length: u64,
@@ -507,7 +507,7 @@ impl BoundJournalObservation<'_> {
             self.observation.lifecycle()? == SelectedLifecycle::PreparedClear,
             "actual journal is not clear for abandonment"
         );
-        self.observation.check_target_reader(
+        self.observation.check_target_ahead(
             target,
             target_length,
             Some(self.observation.ticket.old_selected_sha256),
@@ -554,6 +554,48 @@ fn record(row: Record) -> JournalRecord {
             _ => unreachable!(),
         },
         new_sha256: row.new_hash,
+    }
+}
+
+/// A held source whose changed ranges a pass reads in ascending order and
+/// can therefore read ahead: the journaled target of a replay, the excluded
+/// target it leaves, and the frozen source. Nothing writes to the source
+/// during such a pass, and the read-ahead window is dropped when it ends,
+/// so no later read is served from memory.
+pub(super) trait OrderedSource: Read + Seek {
+    /// Runs `pass` with read-ahead on, and turns it off again.
+    fn reading_ahead<T>(&mut self, pass: impl FnOnce(&mut Self) -> T) -> T;
+    /// Tells read-ahead where the ranges the pass reads next end.
+    fn reach(&mut self, end: u64);
+}
+impl OrderedSource for GeneralJournaledPartition {
+    fn reading_ahead<T>(&mut self, pass: impl FnOnce(&mut Self) -> T) -> T {
+        self.set_read_ahead(true);
+        let result = pass(self);
+        self.set_read_ahead(false);
+        result
+    }
+    fn reach(&mut self, end: u64) {
+        self.set_read_ahead_reach(end);
+    }
+}
+impl OrderedSource for GeneralExclusiveRecoveryTarget {
+    fn reading_ahead<T>(&mut self, pass: impl FnOnce(&mut Self) -> T) -> T {
+        self.set_read_ahead(true);
+        let result = pass(self);
+        self.set_read_ahead(false);
+        result
+    }
+    fn reach(&mut self, end: u64) {
+        self.set_read_ahead_reach(end);
+    }
+}
+impl OrderedSource for GeneralFrozenPartition {
+    fn reading_ahead<T>(&mut self, pass: impl FnOnce(&mut Self) -> T) -> T {
+        self.with_read_ahead(pass)
+    }
+    fn reach(&mut self, end: u64) {
+        self.set_read_ahead_reach(end);
     }
 }
 
@@ -606,7 +648,22 @@ impl JournalObservation<'_> {
         fresh_old: bool,
     ) -> Result<[u8; 32]> {
         let length = GeneralJournaledPartition::byte_len(target);
-        self.check_target_reader(target, length, expected, fresh_old)
+        self.check_target_ahead(target, length, expected, fresh_old)
+    }
+
+    /// [`Self::check_target_reader`] for a source that reads ahead. The pass
+    /// reads every changed range once, in ascending order, and writes
+    /// nothing; read-ahead is on for the pass alone.
+    fn check_target_ahead<R: OrderedSource>(
+        &mut self,
+        target: &mut R,
+        target_length: u64,
+        expected: Option<[u8; 32]>,
+        fresh_old: bool,
+    ) -> Result<[u8; 32]> {
+        target.reading_ahead(|target| {
+            self.check_target_reaching(target, target_length, expected, fresh_old, R::reach)
+        })
     }
 
     /// The same complete selected-byte check also applies to a held
@@ -618,6 +675,23 @@ impl JournalObservation<'_> {
         expected: Option<[u8; 32]>,
         fresh_old: bool,
     ) -> Result<[u8; 32]> {
+        self.check_target_reaching(target, target_length, expected, fresh_old, |_, _| ())
+    }
+
+    /// [`Self::check_target_reader`] for a target that may read ahead:
+    /// `reach(target, end)` is told, at the first of each group of ranges
+    /// that lie close together, where the group ends, so a read-ahead window
+    /// holds those ranges and not the megabyte that follows the first of
+    /// them. The rows are taken in the same order and each is read from the
+    /// journal as before; only the index entries are looked at a few ahead.
+    fn check_target_reaching<R: Read + Seek>(
+        &mut self,
+        target: &mut R,
+        target_length: u64,
+        expected: Option<[u8; 32]>,
+        fresh_old: bool,
+        mut reach: impl FnMut(&mut R, u64),
+    ) -> Result<[u8; 32]> {
         let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::TargetCheck);
         ensure!(
             target_length == self.ticket.image_length,
@@ -625,7 +699,14 @@ impl JournalObservation<'_> {
         );
         let mut digest = pin_hash(self.ticket.digest_algorithm())?;
         let mut buffers = Buffers::new();
-        for ordinal in 0..u64::from(self.ticket.range_count) {
+        let mut rows = n2r_win32::AscendingRanges::new(u64::from(self.ticket.range_count));
+        while let Some((ordinal, group_end)) = rows.next(|ordinal| {
+            self.index_entry(ordinal)
+                .map(|(offset, length, _, _)| (ordinal, offset, length))
+        })? {
+            if let Some(end) = group_end {
+                reach(target, end);
+            }
             let row = self.record(ordinal)?;
             frame(&mut digest, &row.range())?;
             let record = record(row);
@@ -706,7 +787,18 @@ impl JournalObservation<'_> {
 
     fn check_restored(&mut self, target: &mut GeneralJournaledPartition) -> Result<[u8; 32]> {
         let length = target.byte_len()?;
-        self.check_restored_reader(target, length)
+        self.check_restored_ahead(target, length)
+    }
+
+    /// [`Self::check_restored_reader`] for a source that reads ahead, as
+    /// [`Self::check_target_ahead`] is.
+    fn check_restored_ahead<R: OrderedSource>(
+        &mut self,
+        target: &mut R,
+        target_length: u64,
+    ) -> Result<[u8; 32]> {
+        target
+            .reading_ahead(|target| self.check_restored_reaching(target, target_length, R::reach))
     }
 
     fn check_restored_reader<R: Read + Seek>(
@@ -714,12 +806,24 @@ impl JournalObservation<'_> {
         target: &mut R,
         target_length: u64,
     ) -> Result<[u8; 32]> {
+        self.check_restored_reaching(target, target_length, |_, _| ())
+    }
+
+    /// [`Self::check_restored_reader`] for a target that may read ahead; see
+    /// [`Self::check_target_reaching`].
+    fn check_restored_reaching<R: Read + Seek>(
+        &mut self,
+        target: &mut R,
+        target_length: u64,
+        mut reach: impl FnMut(&mut R, u64),
+    ) -> Result<[u8; 32]> {
         let Some(expected) = self.ticket.old_restored_selected_sha256 else {
-            return self.check_target_reader(
+            return self.check_target_reaching(
                 target,
                 target_length,
                 Some(self.ticket.old_selected_sha256),
                 false,
+                reach,
             );
         };
         // The same pass over the changed ranges as `check_target_reader`,
@@ -731,7 +835,14 @@ impl JournalObservation<'_> {
         );
         let mut digest = pin_hash(self.ticket.digest_algorithm())?;
         let mut buffers = Buffers::new();
-        for ordinal in 0..u64::from(self.ticket.range_count) {
+        let mut rows = n2r_win32::AscendingRanges::new(u64::from(self.ticket.range_count));
+        while let Some((ordinal, group_end)) = rows.next(|ordinal| {
+            self.index_entry(ordinal)
+                .map(|(offset, length, _, _)| (ordinal, offset, length))
+        })? {
+            if let Some(end) = group_end {
+                reach(target, end);
+            }
             let row = self.record(ordinal)?;
             if row.old_kind != 2 {
                 frame(&mut digest, &row.range())?;
@@ -844,6 +955,11 @@ impl JournalObservation<'_> {
         );
         n2r_win32::perf::step("replay: classify changed ranges");
         target.sync_all()?;
+        // Read-ahead is on for this pass and for the read-back below, each
+        // of which reads every changed range in ascending order and writes
+        // nothing (`check_target`, `check_restored`). It is off across the
+        // write pass and the flushes between them, so nothing read there, or
+        // read back afterwards, comes from memory a write went through.
         self.check_target(target, None, false)?;
         n2r_win32::perf::step("replay: write changed ranges");
         if !forward && self.ticket.marker_profile.is_some() {

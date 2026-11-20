@@ -480,6 +480,50 @@ impl<'a> Evidence<'a> {
         Ok(())
     }
 
+    /// Record a verified move: `{"object_index","phase","proof"}`, as
+    /// `push_move` records it. A sink receives the record serialized once,
+    /// straight from the proof; without one it is kept as a JSON value.
+    fn push_move_proof(
+        &mut self,
+        object_index: u64,
+        phase: &'static str,
+        proof: &resource::MoveProof,
+    ) -> Result<(), String> {
+        if self.sink.is_none() {
+            return self.push_move(serde_json::json!({
+                "object_index":object_index,"phase":phase,"proof":proof
+            }));
+        }
+        let json = move_record_json(object_index, phase, proof)?;
+        let size = json.len();
+        let compact = size
+            .checked_add(self.compact_bytes)
+            .ok_or("placement evidence accounting overflow")?;
+        let total = self
+            .saved_bytes
+            .checked_add(size)
+            .filter(|n| *n <= self.maximum)
+            .ok_or("paged placement evidence resource exhausted")?;
+        self.sink
+            .as_mut()
+            .ok_or("placement evidence sink absent")?
+            .push_compact("move", &json)
+            .map_err(|e| e.to_string())?;
+        drop(json);
+        self.saved_bytes = total;
+        self.count = self
+            .count
+            .checked_add(1)
+            .ok_or("placement move count overflow")?;
+        let recent = serde_json::json!({"object_index":object_index,"phase":phase});
+        if self.moves.len() == 16 {
+            self.moves.remove(0);
+        }
+        self.moves.push(recent);
+        self.compact_bytes = compact;
+        Ok(())
+    }
+
     fn failed_move(&mut self, value: serde_json::Value) -> Result<serde_json::Value, String> {
         if self.sink.is_none() {
             return Ok(value);
@@ -518,6 +562,28 @@ impl<'a> Evidence<'a> {
         }
         Ok(())
     }
+}
+
+/// The compact JSON of a move record: the bytes of
+/// `json!({"object_index":object_index,"phase":phase,"proof":proof})`,
+/// whose keys a JSON value keeps in this order, without building that value.
+fn move_record_json(
+    object_index: u64,
+    phase: &'static str,
+    proof: &resource::MoveProof,
+) -> Result<Vec<u8>, String> {
+    #[derive(serde::Serialize)]
+    struct Record<'a> {
+        object_index: u64,
+        phase: &'static str,
+        proof: &'a resource::MoveProof,
+    }
+    serde_json::to_vec(&Record {
+        object_index,
+        phase,
+        proof,
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// Upper bound on a move record before native submission. Retrieval fields
@@ -1296,9 +1362,7 @@ fn allocate_deferred(
         } else {
             counters.deferred_scratch_submissions += 1;
         }
-        let recorded = evidence.push_move(
-            serde_json::json!({"object_index":step.index,"phase":step.phase,"proof":proof}),
-        );
+        let recorded = evidence.push_move_proof(step.index as u64, step.phase, &proof);
         counters.move_evidence_bytes = evidence.compact_bytes;
         counters.placement_artifact_bytes = evidence.saved_bytes;
         if let Err(message) = recorded {
@@ -2336,8 +2400,10 @@ fn run_domain_inner(
                 return Err(invalid(&refusal));
             }
             counters.evacuation_submissions += 1;
-            let recorded = evidence.push_move(
-                serde_json::json!({"object_index":movement.file_index,"phase":"evacuate-blocker","proof":proof}),
+            let recorded = evidence.push_move_proof(
+                u64::from(movement.file_index),
+                "evacuate-blocker",
+                &proof,
             );
             counters.move_evidence_bytes = evidence.compact_bytes;
             counters.placement_artifact_bytes = evidence.saved_bytes;
@@ -2613,9 +2679,11 @@ fn run_domain_inner(
                                 return Err(invalid(&message));
                             }
                             counters.final_submissions += 1;
-                            let recorded = evidence.push_move(
-                            serde_json::json!({"object_index":index,"phase":"original-coordinate","proof":proof}),
-                        );
+                            let recorded = evidence.push_move_proof(
+                                index as u64,
+                                "original-coordinate",
+                                &proof,
+                            );
                             counters.move_evidence_bytes = evidence.compact_bytes;
                             counters.placement_artifact_bytes = evidence.saved_bytes;
                             if let Err(message) = recorded {
@@ -2912,5 +2980,173 @@ mod tests {
             assert_eq!(move_clusters(131_072).unwrap(), 2);
             assert_eq!(cluster_span(2, 3).unwrap(), (131_072, 327_680));
         });
+    }
+}
+
+#[cfg(test)]
+mod move_record_tests {
+    use super::*;
+    use crate::shadow_native::unwritten::proof_samples::placement;
+
+    /// What a sink is given: each record as the compact JSON it stores.
+    #[derive(Default)]
+    struct Recorded(Vec<(&'static str, Vec<u8>)>);
+    impl PlacementEvidenceSink for Recorded {
+        fn maximum_bytes(&self) -> u64 {
+            u64::MAX
+        }
+        fn reserve_next(&mut self, _: u64) -> io::Result<()> {
+            Ok(())
+        }
+        fn push(&mut self, kind: &'static str, value: &serde_json::Value) -> io::Result<()> {
+            self.0.push((kind, serde_json::to_vec(value)?));
+            Ok(())
+        }
+        fn push_compact(&mut self, kind: &'static str, json: &[u8]) -> io::Result<()> {
+            self.0.push((kind, json.to_vec()));
+            Ok(())
+        }
+        fn finish(&mut self) -> io::Result<serde_json::Value> {
+            Ok(serde_json::Value::Null)
+        }
+    }
+
+    fn resource(extents: usize, native_error: Option<i32>) -> resource::MoveProof {
+        resource::MoveProof::Resource(
+            placement(extents, 9_000 + extents as u64, 4_096, native_error)
+                .into_resource_value()
+                .unwrap(),
+        )
+    }
+    /// The record as it was made before: the whole proof as one JSON value.
+    fn as_before(index: u64, phase: &str, extents: usize, error: Option<i32>) -> serde_json::Value {
+        let proof =
+            serde_json::to_value(placement(extents, 9_000 + extents as u64, 4_096, error)).unwrap();
+        serde_json::json!({"object_index":index,"phase":phase,"proof":proof})
+    }
+
+    const CASES: [(u64, &str, usize, Option<i32>); 6] = [
+        (0, DEFERRED_ORIGINAL, 1, None),
+        (3, DEFERRED_SCRATCH, 0, None),
+        (17, "evacuate-blocker", 1024, None),
+        (u32::MAX as u64, "original-coordinate", 1025, None),
+        (u64::MAX, "original-coordinate", 4_000, None),
+        (5, "original-coordinate", 2, Some(87)),
+    ];
+
+    #[test]
+    fn a_move_record_is_the_bytes_of_the_value_it_was_made_as() {
+        for (index, phase, extents, error) in CASES {
+            let before = as_before(index, phase, extents, error);
+            let proof = resource(extents, error);
+            let json = move_record_json(index, phase, &proof).unwrap();
+            assert_eq!(json, serde_json::to_vec(&before).unwrap());
+            assert_eq!(json.len(), compact_size(&before).unwrap());
+            // A refused move's record, and the record kept without a sink.
+            let value = serde_json::json!({"object_index":index,"phase":phase,"proof":proof});
+            assert_eq!(value, before);
+            // The fields a refusal is decided and reported by.
+            for key in ["native_error", "mapping_matches", "all_placements_match"] {
+                assert_eq!(proof[key], before["proof"][key], "{key}");
+            }
+        }
+    }
+
+    #[test]
+    fn evidence_records_a_move_proof_as_it_recorded_its_value() {
+        // With a sink, as a resource placement records: the same bytes,
+        // counts and recent phases.
+        let mut old_sink = Recorded::default();
+        let mut new_sink = Recorded::default();
+        let mut old = Evidence::new(Some(&mut old_sink), usize::MAX);
+        let mut new = Evidence::new(Some(&mut new_sink), usize::MAX);
+        for round in 0..4 {
+            for (index, phase, extents, error) in CASES {
+                let index = index.wrapping_add(round);
+                old.push_move(as_before(index, phase, extents, error))
+                    .unwrap();
+                new.push_move_proof(index, phase, &resource(extents, error))
+                    .unwrap();
+            }
+        }
+        assert_eq!(
+            (old.compact_bytes, old.saved_bytes, old.count, old.len()),
+            (new.compact_bytes, new.saved_bytes, new.count, new.len())
+        );
+        assert_eq!(old.moves, new.moves);
+        drop((old, new));
+        assert_eq!(old_sink.0, new_sink.0);
+        // Without one, every proof is kept as a value, as before.
+        let mut old = Evidence::default();
+        let mut new = Evidence::default();
+        for (index, phase, extents, error) in CASES {
+            old.push_move(as_before(index, phase, extents, error))
+                .unwrap();
+            new.push_move_proof(index, phase, &resource(extents, error))
+                .unwrap();
+        }
+        assert_eq!(
+            (old.compact_bytes, old.saved_bytes, old.len()),
+            (new.compact_bytes, new.saved_bytes, new.len())
+        );
+        assert_eq!(old.moves, new.moves);
+    }
+
+    /// The JSON work of recording one move, before and after, for files in
+    /// growing numbers of pieces. Not run by default:
+    /// `cargo test --release -p n2r-win32 move_record_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn move_record_cost() {
+        use std::time::Instant;
+        for extents in [16, 256, 1024, 4096, 16_384] {
+            let rounds = (2_000_000 / extents).clamp(20, 20_000);
+            let mut sink = io::sink();
+            let start = Instant::now();
+            for _ in 0..rounds {
+                let sample = placement(extents, 9_000, 4_096, None);
+                let proof = serde_json::to_value(&sample).unwrap();
+                drop(sample);
+                let record = serde_json::json!({"object_index":7,"phase":"original-coordinate",
+                    "proof":resource::MoveProof::Legacy(proof)});
+                let size = compact_size(&record).unwrap();
+                let mut blocks = io::BufWriter::with_capacity(64 * 1024, &mut sink);
+                serde_json::to_writer(&mut blocks, &record).unwrap();
+                std::hint::black_box(size);
+            }
+            let before = start.elapsed().as_secs_f64() / rounds as f64;
+            let start = Instant::now();
+            for _ in 0..rounds {
+                let proof = resource::MoveProof::Resource(
+                    placement(extents, 9_000, 4_096, None)
+                        .into_resource_value()
+                        .unwrap(),
+                );
+                let json = move_record_json(7, "original-coordinate", &proof).unwrap();
+                io::Write::write_all(&mut sink, &json).unwrap();
+            }
+            let after = start.elapsed().as_secs_f64() / rounds as f64;
+            // Making the sample is in both; take it out of each.
+            let start = Instant::now();
+            for _ in 0..rounds {
+                std::hint::black_box(placement(extents, 9_000, 4_096, None));
+            }
+            let made = start.elapsed().as_secs_f64() / rounds as f64;
+            let proof = resource::MoveProof::Resource(
+                placement(extents, 9_000, 4_096, None)
+                    .into_resource_value()
+                    .unwrap(),
+            );
+            let bytes = move_record_json(7, "original-coordinate", &proof)
+                .unwrap()
+                .len();
+            println!(
+                "{extents:>6} extents, {bytes:>9} bytes of record: {:>9.1} us a move before, {:>9.1} us after ({:.1}x); {:.2} ns a byte saved",
+                (before - made) * 1e6,
+                (after - made) * 1e6,
+                (before - made) / (after - made),
+                (before - after) * 1e9 / bytes as f64
+            );
+        }
     }
 }

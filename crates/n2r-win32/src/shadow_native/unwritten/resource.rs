@@ -151,6 +151,9 @@ impl ResourcePlacement {
         // serialize into streaming writers, not a third whole-proof buffer.
         // Two Value slots per canonical byte therefore cover both stages;
         // every paging/window allowance below remains independently paid.
+        // (The mapping now stays raw bytes in the proof and the record is
+        // serialized once, so this is more than a move takes; it is left
+        // as it was until a change of its own narrows it.)
         let json = canonical
             .checked_mul(2 * mem::size_of::<serde_json::Value>() as u64)
             .and_then(|n| n.checked_add((retrieval.max_pages as u64).checked_mul(6144)?))

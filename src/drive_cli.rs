@@ -7,6 +7,9 @@ use std::path::PathBuf;
 #[path = "drive_boot.rs"]
 mod boot;
 #[cfg(windows)]
+#[path = "drive_left_behind.rs"]
+mod left_behind;
+#[cfg(windows)]
 #[path = "drive_listing.rs"]
 mod listing;
 #[cfg(windows)]
@@ -1060,11 +1063,24 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             }
             return crate::drive_recovery::run(&directory, &checksum, args.rollback);
         }
+        // Working volumes that runs ended before they recorded anything to
+        // recover from left attached (#201): detached where this process may
+        // (elevated, and not a check, which changes no disk's state), named
+        // otherwise. Before the inventory, which then lists what is left. An
+        // unelevated run is refused below, and looks for none.
+        let elevated = n2r_win32::run_environment::is_elevated().unwrap_or(false);
+        if args.list || (args.drive.is_some() && elevated) {
+            super::left_behind::settle(if elevated && !args.check {
+                super::left_behind::Settle::Detach
+            } else {
+                super::left_behind::Settle::Name
+            });
+        }
         let mut inventory = drive_inventory::inventory_drives_readonly()?;
         if args.list {
             // Windows reports a BitLocker volume as NTFS. What it is shows in
             // its first sector, which only an elevated process may read.
-            if n2r_win32::run_environment::is_elevated().unwrap_or(false) {
+            if elevated {
                 drive_inventory::annotate_bitlocker(&mut inventory);
             }
             list(&inventory);
@@ -1869,8 +1885,22 @@ The machine restarts, possibly more than once. Do not switch it off while the co
         let id = new_run_id()?;
         let parent = working_directory(scratch, &os_root, &work_root)?;
         let run = parent.join(&id);
+        // Held until this process ends, from before the run's folder exists:
+        // another run detaches the working volume of this one only once the
+        // token is gone and nothing was recorded to recover from (#201).
+        let token =
+            n2r_win32::run_liveness::hold_until_this_process_ends(&id).with_context(|| {
+                format!(
+                    "marking the run {} as running, before its folder is made. Nothing was changed",
+                    run.display()
+                )
+            })?;
         fs::create_dir(&run)
             .with_context(|| format!("creating this run's directory {}", run.display()))?;
+        save_new(
+            &run.join(super::left_behind::TOKEN_RECORD),
+            &super::left_behind::TokenRecord::of_this_process(token),
+        )?;
         let mut selection = serde_json::json!({"selected":selected,"source":before,"confirmation":"interactive affirmative","journal_budget_bytes":journal_bytes,"requested_target_format":target_format,"explicit_trust_or_filter_configuration_requested":false,"source_write_authority":false,"lab_hold_point":n2r_win32::lab_hold::armed()});
         if crate::review::chosen() {
             // Read back only to refuse resuming this run's preparation

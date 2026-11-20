@@ -251,9 +251,10 @@ impl ResourceSourceContext {
             *b"N2RREPL1",
             &scratch,
         )?;
-        let comparison = crate::ntfs_attestation::paged::compare_partition_domain(&raw, &binding.storage, budget, policy, &native, phase, events, |row| {
+        // The selector above counted this same held source for the admission.
+        let comparison = crate::ntfs_attestation::paged::compare_partition_domain(&raw, &binding.storage, budget, policy, Some(admission), &native, phase, events, |row| {
             let file = raw
-                .find_record(row.record_number, Some(row.sequence_number))?
+                .find_record_shared(row.record_number, Some(row.sequence_number))?
                 .context("compared source identity absent")?;
             no_dos &= file.names.iter().all(|name| name.namespace != 2);
             let role = ntfs_admission::paged::internal_role(&raw, &file)?;

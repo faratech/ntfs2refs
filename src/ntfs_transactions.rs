@@ -30,12 +30,12 @@ pub fn inspect_scope(raw: &NtfsInspection) -> Result<Scope> {
     )
 }
 
-fn scope_role_file<'a>(
+fn scope_role_file<F: std::ops::Deref<Target = ntfs::FileInventory>>(
     count: u64,
-    get: &mut impl FnMut(u64) -> Result<std::borrow::Cow<'a, ntfs::FileInventory>>,
+    get: &mut impl FnMut(u64) -> Result<F>,
     role: &mut impl FnMut(&ntfs::FileInventory) -> Result<Option<String>>,
     wanted: &str,
-) -> Result<std::borrow::Cow<'a, ntfs::FileInventory>> {
+) -> Result<F> {
     let mut found = None;
     for ordinal in 0..count {
         let file = get(ordinal)?;
@@ -49,9 +49,11 @@ fn scope_role_file<'a>(
     }
     found.with_context(|| format!("missing/duplicate default transaction namespace {wanted}"))
 }
-fn inspect_scope_with<'a>(
+fn inspect_scope_with<F: std::ops::Deref<Target = ntfs::FileInventory>>(
     count: u64,
-    mut get: impl FnMut(u64) -> Result<std::borrow::Cow<'a, ntfs::FileInventory>>,
+    // The row as its owner hands it out: borrowed, its own, or the one a
+    // paged source holds shared.
+    mut get: impl FnMut(u64) -> Result<F>,
     mut role: impl FnMut(&ntfs::FileInventory) -> Result<Option<String>>,
     mut windows_user: impl FnMut(&ntfs::FileInventory) -> Result<bool>,
 ) -> Result<Scope> {
@@ -188,7 +190,7 @@ pub fn inspect_scope_domain(source: &ntfs::PagedInspection) -> Result<Scope> {
     source.revalidate()?;
     let scope = inspect_scope_with(
         source.file_count(),
-        |i| source.file(i).map(std::borrow::Cow::Owned),
+        |i| source.file_shared(i),
         |file| ntfs_admission::paged::internal_role(source, file),
         |_| Ok(false),
     )?;
@@ -361,7 +363,7 @@ fn inspect_windows_scope_domain(
     );
     let scope = inspect_scope_with(
         source.file_count(),
-        |i| source.file(i).map(std::borrow::Cow::Owned),
+        |i| source.file_shared(i),
         |file| ntfs_admission::paged::internal_role(source, file),
         |file| {
             if file.record_number == 5 {

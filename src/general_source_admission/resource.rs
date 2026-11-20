@@ -1679,10 +1679,19 @@ impl ResourceSourceContext {
                 .transpose()?;
             let mut storage_hint_count = 0u64;
             n2r_win32::perf::step("compare raw and Windows views");
-            let comparison =
-                compare_domain(&raw, &binding, budget, policy, native.domain(), |row| {
+            // The selector above counted this same held source for the
+            // admission; the comparison builds its own selector and is
+            // handed that count, where it counted the source once more.
+            let comparison = compare_domain(
+                &raw,
+                &binding,
+                budget,
+                policy,
+                Some(admission),
+                native.domain(),
+                |row| {
                     let file = raw
-                        .find_record(row.record_number, Some(row.sequence_number))?
+                        .find_record_shared(row.record_number, Some(row.sequence_number))?
                         .context("compared source identity absent")?;
                     if let Some(proof) = &storage_hint_normalization {
                         if let Some(normalization) =
@@ -1847,7 +1856,8 @@ impl ResourceSourceContext {
                         .checked_add(1)
                         .context("comparison row count overflow")?;
                     Ok(())
-                })?;
+                },
+            )?;
             let rows_pin = rows_writer.finish()?;
             let replacements_pin = replacements_writer.finish()?;
             let case_marks_pin = case_marks_writer.finish()?;

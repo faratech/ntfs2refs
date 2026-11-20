@@ -14,6 +14,7 @@ use crate::{
     general_shadow::paged_capture::CaptureRevalidation,
     lab_reconstruct::{DurableIo, ReadSeek},
 };
+use n2r_win32::bulk_digest::Algorithm;
 
 mod qualification;
 pub(super) use qualification::FrozenPreparedWitness;
@@ -727,17 +728,67 @@ fn complete_rows<J: DurableIo>(
             );
             whole.update(&stored[..f.record_size])?;
             immutable.update(&stored[..f.record_size])?;
-            let mut left = row
-                .next_offset
-                .checked_sub(row.descriptor_offset)
-                .and_then(|n| n.checked_sub(f.record_size as u64))
-                .context("journal row layout underflow")?;
-            while left != 0 {
-                let count = usize::try_from(left.min(buffer.len() as u64))?;
-                file.read_exact(&mut buffer[..count])?;
-                whole.update(&buffer[..count])?;
-                immutable.update(&buffer[..count])?;
-                left -= count as u64;
+            ensure!(
+                row.descriptor_offset.checked_add(f.record_size as u64)
+                    == Some(row.old_storage_offset),
+                "journal row layout differs: its OLD payload does not follow its descriptor"
+            );
+            // Each payload stored in full is held to the digest of the bytes
+            // it was written from (the source's OLD bytes, the candidate's
+            // NEW bytes) as it is read back. Under the check-once policy this
+            // read-back is the only comparison of the journal's stored
+            // payloads before the first write to the source: the gate hashes
+            // the body as a whole, and an apply that verifies each thing once
+            // no longer reads the source against the stored OLD bytes before
+            // writing (#203). A zero row stores nothing and a COPY row's NEW
+            // bytes are an earlier row's OLD bytes, checked there.
+            let full = |stored: u64| stored != 0 && stored == row.capture.length;
+            let payloads = [
+                (
+                    "OLD",
+                    row.new_storage_offset
+                        .checked_sub(row.old_storage_offset)
+                        .context("journal row layout underflow")?,
+                    old,
+                ),
+                (
+                    "NEW",
+                    row.next_offset
+                        .checked_sub(row.new_storage_offset)
+                        .context("journal row layout underflow")?,
+                    new,
+                ),
+            ];
+            for (kind, stored, expected) in payloads {
+                let mut check = if full(stored) {
+                    Some(crate::selected_journal::pin_hash(old_records.algorithm)?)
+                } else {
+                    None
+                };
+                let mut left = stored;
+                while left != 0 {
+                    let count = usize::try_from(left.min(buffer.len() as u64))?;
+                    file.read_exact(&mut buffer[..count])?;
+                    whole.update(&buffer[..count])?;
+                    immutable.update(&buffer[..count])?;
+                    if let Some(check) = check.as_mut() {
+                        check.update(&buffer[..count])?;
+                    }
+                    left -= count as u64;
+                }
+                if let Some(check) = check {
+                    ensure!(
+                        crate::selected_journal::finish(check)? == expected,
+                        "journal preparation read-back: the {kind} payload stored at offset {} for the source range at {} ({} bytes) differs from the digest of the bytes it was written from; the journal is not used",
+                        if kind == "OLD" {
+                            row.old_storage_offset
+                        } else {
+                            row.new_storage_offset
+                        },
+                        row.capture.offset,
+                        row.capture.length
+                    );
+                }
             }
         }
     }
@@ -788,7 +839,13 @@ pub(crate) fn prepare_diagnostic<'domain, 'capture, R: ReadSeek, S: ReadSeek>(
     )?;
     let readonly = n2r_win32::file_storage::duplicate_readonly(&file)?;
     drop(file);
-    let lease = permit.verify_closed_handle(&readonly, &hex::encode(whole))?;
+    // The whole file's digest is of the ticket's algorithm, whatever the
+    // journal's bytes begin with.
+    let lease = permit.verify_closed_handle_by(
+        ticket.digest_algorithm(),
+        &readonly,
+        &hex::encode(whole),
+    )?;
     drop(memory);
     Ok(DiagnosticPreparedJournal {
         _domain: domain,
@@ -1023,9 +1080,13 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     // file's own bytes; the gate before the first write to the source hashes
     // the whole body again. A journal with source-free rows rewrites its
     // header at the end and keeps the read-back.
+    //
+    // Every digest of a journal this build writes, and its ticket's, is
+    // BLAKE3 (`n2r_win32::bulk_digest`); the ticket says so.
+    let algorithm = Algorithm::WRITTEN;
     let mut written = if n2r_win32::verify_policy::checks_once() && f.source_free_bytes == 0 {
-        let mut whole = burst_pin_hash(read_back_buffers)?;
-        let mut immutable = burst_pin_hash(read_back_buffers)?;
+        let mut whole = burst_pin_hash(algorithm, read_back_buffers)?;
+        let mut immutable = burst_pin_hash(algorithm, read_back_buffers)?;
         whole.update(&vec![0u8; usize::try_from(f.body_offset)?])?;
         whole.update(&header)?;
         immutable.update(&header)?;
@@ -1033,13 +1094,13 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     } else {
         None
     };
-    let mut old_selected = aggregate_pin_hash()?;
+    let mut old_selected = aggregate_pin_hash(algorithm)?;
     let mut old_restored = if f.source_free_bytes != 0 {
-        Some(aggregate_pin_hash()?)
+        Some(aggregate_pin_hash(algorithm)?)
     } else {
         None
     };
-    let mut new_selected = aggregate_pin_hash()?;
+    let mut new_selected = aggregate_pin_hash(algorithm)?;
     let mut buffer = vec![0u8; BUFFER];
     let mut compare = vec![0u8; BUFFER];
     let mut zeros = ZeroDigests::new();
@@ -1047,8 +1108,8 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     // computed on two workers, one for the old payloads and one for the new,
     // while this thread reads on: the payloads of a few rows are written
     // first, and then their descriptors, in the same places as before.
-    let mut old_records = RecordHashes::overlapped()?;
-    let mut new_records = RecordHashes::overlapped()?;
+    let mut old_records = RecordHashes::overlapped(algorithm)?;
+    let mut new_records = RecordHashes::overlapped(algorithm)?;
     let mut owed: Vec<OwedRow> = Vec::with_capacity(MOST_OWED_ROWS);
     let mut owed_bytes = 0u64;
     for ordinal in 0..u64::from(f.range_count) {
@@ -1194,6 +1255,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         old_restored_selected_sha256: restored_sha,
         new_selected_sha256: new_sha,
         whole_image_verified: false,
+        digest: Some(algorithm),
     };
     let (immutable, whole) = match written {
         Some((whole, immutable)) => (finish(immutable)?, finish(whole)?),
@@ -1202,7 +1264,8 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     ticket.immutable_sha256 = immutable;
     // The whole body was just read back and compared with its sources.
     if ticket.marker_profile.is_none() {
-        n2r_win32::sha256_native::note_journal_body_verified(
+        n2r_win32::bulk_digest::note_journal_body_verified(
+            algorithm,
             &immutable,
             BODY,
             ticket.journal_length - BODY,
@@ -1226,7 +1289,7 @@ fn read_stored<J: ReadSeek>(
     if let Some(selected) = selected.as_deref_mut() {
         frame(selected, range)?;
     }
-    let mut hash = pin_hash()?;
+    let mut hash = pin_hash(immutable.algorithm())?;
     let mut remaining = length;
     while remaining != 0 {
         let count = usize::try_from(remaining.min(buffer.len() as u64))?;
@@ -1322,8 +1385,9 @@ fn validate_readback<J: ReadSeek>(
             && file.byte_len()? == f.journal_length,
         "diagnostic ticket/layout differs"
     );
+    let algorithm = ticket.digest_algorithm();
     file.seek(SeekFrom::Start(0))?;
-    let mut whole = aggregate_pin_hash()?;
+    let mut whole = aggregate_pin_hash(algorithm)?;
     let mut marker_bytes = vec![0u8; usize::try_from(f.body_offset)?];
     file.read_exact(&mut marker_bytes)?;
     ensure!(
@@ -1331,7 +1395,7 @@ fn validate_readback<J: ReadSeek>(
         "diagnostic journal markers are not clear"
     );
     whole.update(&marker_bytes)?;
-    let mut immutable = aggregate_pin_hash()?;
+    let mut immutable = aggregate_pin_hash(algorithm)?;
     let mut hdr = [0u8; HEADER];
     file.read_exact(&mut hdr)?;
     whole.update(&hdr)?;
@@ -1350,9 +1414,9 @@ fn validate_readback<J: ReadSeek>(
             },
         "diagnostic journal header differs"
     );
-    let mut old = aggregate_pin_hash()?;
+    let mut old = aggregate_pin_hash(algorithm)?;
     let mut new = if f.copy_bytes == 0 {
-        Some(aggregate_pin_hash()?)
+        Some(aggregate_pin_hash(algorithm)?)
     } else {
         None
     };
@@ -1447,7 +1511,7 @@ fn validate_readback<J: ReadSeek>(
         );
     } else {
         n2r_win32::perf::step("read journal back: resolve copied ranges");
-        let mut aggregate = aggregate_pin_hash()?;
+        let mut aggregate = aggregate_pin_hash(algorithm)?;
         for ordinal in 0..u64::from(f.range_count) {
             let row = domain.row(ordinal)?;
             let range = SelectedRange {
@@ -1461,7 +1525,7 @@ fn validate_readback<J: ReadSeek>(
                 row.descriptor_offset,
                 &mut descriptor[..f.record_size],
             )?;
-            let mut hash = pin_hash()?;
+            let mut hash = pin_hash(algorithm)?;
             let mut done = 0u64;
             while done < range.length {
                 let count = usize::try_from((range.length - done).min(buffer.len() as u64))?;

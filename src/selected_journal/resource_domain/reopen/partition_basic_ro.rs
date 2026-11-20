@@ -70,6 +70,7 @@ impl PartitionBasicRoClosedTerminal {
         publication_file.file.seek(SeekFrom::Start(0))?;
         let publication: Publication = serde_json::from_reader(&mut publication_file.file)?;
         adopt_review(publication.review_before_handoff, false)?;
+        adopt_verify_first(publication.verify_before_handoff, false)?;
         let mut canonical = HashSink {
             bytes: 0,
             maximum: size,
@@ -286,6 +287,7 @@ impl PartitionBasicRoClosedTerminal {
             journal_identity: facts.identity,
             journal_path: facts.path,
             journal_profile: facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,
@@ -349,6 +351,7 @@ impl PartitionBasicRoClosedTerminal {
                 journal_identity: facts.identity,
                 journal_path: facts.path,
                 journal_profile: facts.profile,
+                digest: ticket.digest_algorithm(),
                 immutable_sha256: ticket.immutable_sha256,
                 old_selected_sha256: ticket.old_selected_sha256,
                 old_restored_selected_sha256: ticket.old_restored_selected_sha256,
@@ -387,6 +390,7 @@ impl PartitionBasicRoClosedTerminal {
             journal_identity: facts.identity,
             journal_path: facts.path,
             journal_profile: facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,

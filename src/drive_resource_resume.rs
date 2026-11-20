@@ -306,6 +306,18 @@ fn execute_resume(
             |prepared, events, observer| {
                 let path = prepared.publication_path().to_path_buf();
                 let sha = parse_sha(prepared.publication_sha256())?;
+                // A resumed preparation publishes without the handoff after
+                // the verification (#148) and hands off in its apply step,
+                // whatever its --verify: said before its first write, as a
+                // fast run says it commits after its verification. No
+                // recovery command on this line: the recovery environment
+                // of the running-Windows route takes one from any line.
+                println!(
+                    "This run resumes an interrupted preparation: it is committed as soon as its \
+                     new sectors are written and read back, before the converted volume is \
+                     verified, and from then on a rollback can no longer put NTFS back."
+                );
+                io::stdout().flush()?;
                 let fresh = prepared.into_fresh_apply(events, |batch| {
                     observer.native_events("source-activation", batch)
                 })?;

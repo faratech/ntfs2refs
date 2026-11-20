@@ -33,7 +33,10 @@ def short(name):
     return name.split("<")[0][-60:]
 
 
-SKIP = ("sha2::", "digest::", "core::", "alloc::", "std::io::", "serde", "block_buffer", "hex::")
+SKIP = (
+    "sha2::", "digest::", "blake3::", "rayon_core::", "rayon::", "core::", "alloc::", "std::io::",
+    "serde", "block_buffer", "hex::",
+)
 total = 0
 steps, callers, pairs = (collections.Counter() for _ in range(3))
 for label, count, frames in stacks:

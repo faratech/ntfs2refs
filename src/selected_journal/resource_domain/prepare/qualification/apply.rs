@@ -107,11 +107,34 @@ pub(super) fn check_selected<T: Read + Seek>(
     target: &mut T,
     domain: &ResourceJournalDomain<'_>,
     buffer: &mut [u8],
+    algorithm: n2r_win32::bulk_digest::Algorithm,
     expected: [u8; 32],
 ) -> Result<[u8; 32]> {
-    let mut aggregate = aggregate_pin_hash()?;
-    for ordinal in 0..u64::from(domain.facts.range_count) {
-        let row = domain.row(ordinal)?;
+    check_selected_reaching(target, domain, buffer, algorithm, expected, |_, _| ())
+}
+
+/// [`check_selected`] for a target that reads ahead: `reach(target, end)` is
+/// told, at the first of each group of ranges that lie close together, where
+/// the group ends, so a read-ahead window holds those ranges and not the
+/// megabyte that follows the first of them.
+fn check_selected_reaching<T: Read + Seek>(
+    target: &mut T,
+    domain: &ResourceJournalDomain<'_>,
+    buffer: &mut [u8],
+    algorithm: n2r_win32::bulk_digest::Algorithm,
+    expected: [u8; 32],
+    mut reach: impl FnMut(&mut T, u64),
+) -> Result<[u8; 32]> {
+    let mut aggregate = aggregate_pin_hash(algorithm)?;
+    let mut rows = n2r_win32::AscendingRanges::new(u64::from(domain.facts.range_count));
+    while let Some((row, group_end)) = rows.next(|ordinal| {
+        domain
+            .row(ordinal)
+            .map(|row| (row, row.capture.offset, row.capture.length))
+    })? {
+        if let Some(end) = group_end {
+            reach(target, end);
+        }
         frame(
             &mut aggregate,
             &SelectedRange {
@@ -199,12 +222,22 @@ fn write_span(
         "fresh apply span escapes its actual descriptor"
     );
     let original = record(row, domain, journal)?;
+    // Every selected range was read and held to its OLD digest while the
+    // source was offline and read-only, immediately before the apply marker
+    // (`begin_paged_fresh_apply`), and the handle that made it writable has
+    // refused every other writer since. Reading each range once more before
+    // it is written, to see that it is still OLD, repeated that pass: 13 GB
+    // of the 57 GB an apply of the full Windows volume read. A run that
+    // verifies each thing once (`--verify fast`, the default) writes the NEW
+    // bytes without it; the read-back of everything written, against the NEW
+    // digest, stays. `--verify thorough`, `--recheck-everything` and the
+    // fault-injection path read first, as before.
+    let read_first = first_write_fault.is_some() || !n2r_win32::verify_policy::verifies_once();
     let mut done = 0;
     while done < length {
         let count = usize::try_from((length - done).min(BUFFER as u64))?;
         let within = add(start, done)?;
         let offset = add(row.capture.offset, within)?;
-        at(target, offset, &mut buffers.current[..count])?;
         read_new(
             domain,
             journal,
@@ -213,6 +246,16 @@ fn write_span(
             within,
             &mut buffers.new[..count],
         )?;
+        if !read_first {
+            target.seek(SeekFrom::Start(offset))?;
+            ensure!(
+                target.write(&buffers.new[..count])? == count,
+                "short fresh selected target write"
+            );
+            done = add(done, count as u64)?;
+            continue;
+        }
+        at(target, offset, &mut buffers.current[..count])?;
         if row.capture.old_is_source_free {
             sj::check_free_granules(
                 journal,
@@ -353,8 +396,10 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
     /// The same apply for a run that stops for a review (#110): every new
     /// byte is written, flushed and read back, and every check before the
     /// handoff is made, but the handoff marker is not written. Rollback
-    /// stays open. Only a process that chose a review, and so published a
-    /// recovery envelope that records it, may stop here.
+    /// stays open. A run whose handoff follows the verification of the
+    /// converted volume (#148) ends its apply the same way: its finalizer
+    /// writes the handoff. Only a process that chose one of the two, and so
+    /// published a recovery envelope that records it, may stop here.
     pub(crate) fn apply_for_review(
         self,
         events: &mut Vec<n2r_win32::NativeEvent>,
@@ -363,8 +408,9 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
     ) -> Result<ResourceReviewedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>>
     {
         ensure!(
-            crate::review::chosen(),
-            "apply: a review stop requires a run that chose --review"
+            crate::review::chosen() || crate::verify_first::chosen(),
+            "apply: ending before the handoff requires a run that chose --review or the \
+             handoff after its verification"
         );
         match self.apply_until(
             events,
@@ -422,6 +468,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             journal_identity: facts.identity,
             journal_path: facts.path,
             journal_profile: facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,
@@ -449,9 +496,11 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         checkpoint_native_events(events, &mut checkpoint_events)?;
         n2r_win32::lab_hold::reached("apply-activated");
         n2r_win32::perf::step("write changed ranges");
-        // The ranges are written in ascending order, each read first. The
-        // fault-injection path reads its first write back at once and must
-        // get it from the device, so it keeps reading range by range.
+        // The ranges are written in ascending order, each read first unless
+        // the run verifies each thing once (`write_span`), in which case
+        // nothing is read here. The fault-injection path reads its first
+        // write back at once and must get it from the device, so it keeps
+        // reading range by range.
         target.set_read_ahead(first_write_fault.is_none());
         let domain = prepared.inner._domain;
         for ordinal in 0..u64::from(ticket.range_count) {
@@ -517,11 +566,13 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         target.sync_all()?;
         n2r_win32::perf::step("read back changed ranges");
         target.set_read_ahead(true);
-        let digest = check_selected(
+        let digest = check_selected_reaching(
             &mut target,
             domain,
             &mut buffers.current,
+            ticket.digest_algorithm(),
             ticket.new_selected_sha256,
+            |target, end| target.set_read_ahead_reach(end),
         );
         target.set_read_ahead(false);
         let digest = digest?;
@@ -553,6 +604,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                 &mut target,
                 domain,
                 &mut buffers.current,
+                ticket.digest_algorithm(),
                 ticket.new_selected_sha256,
             )?
         };
@@ -570,7 +622,8 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         );
         if end == ApplyEnd::Review {
             // Everything a handoff is written after has been checked; the
-            // handoff itself is what a review leaves to `--recover`.
+            // handoff itself is what a review leaves to `--recover`, and a
+            // run that verifies first to its finalizer.
             n2r_win32::lab_hold::reached("apply-before-handoff");
             drop(target);
             drop(buffers);
@@ -630,8 +683,9 @@ enum Applied<'journal, 'domain, 'capture, 'proof, 'scope, 'expected> {
 }
 
 /// Every new byte written, flushed and read back, under the apply intent
-/// alone: the review stop (#110). It keeps every preparation owner alive
-/// until its source is sealed read-only again.
+/// alone: the review stop (#110), and the end of the apply of a run whose
+/// handoff follows its verification (#148). It keeps every preparation
+/// owner alive until its source is sealed read-only again.
 pub(crate) struct ResourceReviewedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
 {
     owner: ResourceFreshApply<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>,
@@ -661,7 +715,7 @@ impl ResourceReviewedConversion<'_, '_, '_, '_, '_, '_> {
         let ticket = &prepared.inner.ticket;
         ensure!(
             sj::classify(prepared.inner._journal, ticket)? == sj::SelectedLifecycle::ApplyIntent,
-            "review stop: the journal no longer holds the apply intent alone"
+            "sealing before the handoff: the journal no longer holds the apply intent alone"
         );
         let index = self
             .owner
@@ -676,13 +730,14 @@ impl ResourceReviewedConversion<'_, '_, '_, '_, '_, '_> {
             journal_identity: facts.identity,
             journal_path: facts.path,
             journal_profile: facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,
             new_selected_sha256: ticket.new_selected_sha256,
         };
         let (source, _) = prepared.context.source_and_inspection()?;
-        n2r_win32::perf::step("seal review stop");
+        n2r_win32::perf::step("seal before handoff");
         prepared.inner._journal.seal_sealed_review_for_observation(
             source,
             &index.policy(),
@@ -691,13 +746,24 @@ impl ResourceReviewedConversion<'_, '_, '_, '_, '_, '_> {
         )?;
         ensure!(
             source.binding() == facts.source && source.state(events)?.disk_attributes == 3,
-            "review stop: the source did not keep its exact read-only exclusion"
+            "sealing before the handoff: the source did not keep its exact read-only exclusion"
         );
         checkpoint_native_events(events, &mut checkpoint_events)
     }
 
     pub(crate) fn source(&self) -> &n2r_win32::general_layout::GeneralDiskBinding {
         self.owner.prepared.prepared.inner._facts.source
+    }
+
+    /// The digest of the selected ranges as the journal leaves them, which
+    /// the sealed source was just authenticated against.
+    pub(crate) fn new_selected_sha256(&self) -> [u8; 32] {
+        self.owner
+            .prepared
+            .prepared
+            .inner
+            .ticket
+            .new_selected_sha256
     }
 }
 
@@ -737,6 +803,7 @@ impl ResourceAppliedConversion<'_, '_, '_, '_, '_, '_> {
             journal_identity: facts.identity,
             journal_path: facts.path,
             journal_profile: facts.profile,
+            digest: ticket.digest_algorithm(),
             immutable_sha256: ticket.immutable_sha256,
             old_selected_sha256: ticket.old_selected_sha256,
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,

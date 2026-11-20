@@ -492,6 +492,11 @@ leaves the boot order and the machine starts the converted Windows.
   logon afterwards.
 - **If the conversion fails:** the run recovers at once from its own records,
   forward or back to NTFS.
+- **If the converted volume does not pass its verification** (with `--verify
+  fast`, the default): nothing is committed. The recovery forward verifies
+  once more; if that does not pass either, the environment stops at its
+  command prompt, where the command it shows (with `--rollback`) puts NTFS
+  back. It does not roll back by itself.
 - **If the machine loses power:** the next start goes back into the
   environment, which recovers the same way.
 - **If the volume needs a person:** the environment keeps its entry first and
@@ -566,10 +571,14 @@ any.
 ```
 
 This finishes the conversion. With `--rollback` added it puts the NTFS volume
-back as it was, which is possible up to the handoff: the point at which every
-new sector is on the disk and the journal says so. After the handoff recovery
-only finishes. Once the converted volume has been used as ReFS, the journal's
-old content no longer matches it and must not be put back.
+back as it was, which is possible up to the handoff: the point at which the
+journal records the conversion as committed. When that is depends on the
+[verification](#verification): with `--verify fast`, the default, once the
+converted volume has passed its verification; with `--verify thorough`, as
+soon as every new sector is on the disk, before the verification. After the
+handoff recovery only finishes. Once the converted volume has been used as
+ReFS, the journal's old content no longer matches it and must not be put
+back.
 
 If the machine lost power and the printed command with it: the directory is
 the `conversion` folder of the run under the working directory you gave
@@ -616,6 +625,16 @@ volume so that the folder can be deleted. If the screen is gone: the directory i
 the `conversion` folder of the run under the working directory, and the
 checksum is the SHA-256 of the `preparation-intent.json` in it
 (`Get-FileHash -Algorithm SHA256`).
+
+A run that ends before it prints the line above has recorded nothing to
+recover from, and the volume is online as it was (a shrink is not undone);
+only the working volume it was building may still be attached. A run that
+stops with an error then detaches it itself. One that is cut off cannot: the
+next conversion run, or `ntfs2refs --list` from an elevated terminal,
+detaches it and names the run's folder, which can then be deleted. A run that
+is still going is never touched (each run marks itself as running for as long
+as its process lives); a folder made by an earlier version is only named,
+with the diskpart commands that detach its volume.
 
 The lab ends the converter in two phases of preparation and runs exactly that
 command; the [recovery matrix](recovery-matrix.md#stopped-during-preparation)
@@ -688,7 +707,7 @@ differences it accepts.
 | `--recover <dir> --recovery-sha256 <sum>` `[--rollback]` | Finishes, or undoes, an interrupted run |
 | `--review` | Stops before the conversion is committed, with the volume mounted read-only as ReFS; see below |
 | `--yes` `--volume-serial XXXX-XXXX` | Runs without asking; see below |
-| `--verify fast\|thorough` | What is verified: `fast` (the default) proves data that stays in place by its extents; `thorough` reads and hashes every stream in full |
+| `--verify fast\|thorough` | What is verified, and when the conversion is committed: `fast` (the default) proves data that stays in place by its extents and commits after the verification; `thorough` reads and hashes every stream in full and commits before it |
 | `--recheck-everything` | Repeats the full re-reads at every checkpoint |
 | `--minimize-scratch` | Experimental: less working storage; see below |
 
@@ -712,7 +731,11 @@ it to its run.
   identity of its extents; resident, compressed, sparse and partly initialized
   streams, tails and everything rewritten are read and checksummed. Working
   files and the volume are re-read in full once, at the gate before the first
-  write to the volume.
+  write to the volume. The conversion is committed only after the converted
+  volume has passed its verification: every new sector is written and read
+  back, the disk is sealed offline and read-only again, the converted volume
+  is mounted read-only and verified, and only then is the handoff written and
+  the volume put online. Until then `--recover ... --rollback` puts NTFS back.
 
   A fast run checks each thing once, and says so when it starts:
   - The volume is read raw, once, and what Windows shows of it is still
@@ -746,9 +769,49 @@ it to its run.
   raw volume, and the new volume is read back before the changes are
   captured. Not with `--minimize-scratch`. The earlier spelling
   `--verify-full-content` is still accepted and means the same.
+  It commits as soon as every new sector is written and read back, before
+  the verification: from then on a rollback is closed.
 - **`--recheck-everything`** changes *how often*: the full re-reads happen at
   every checkpoint instead of once at the gate. With `--verify fast` it also
   makes every check a fast run leaves out. Much slower.
+
+Where two checks prove the same thing, a fast run makes one of them;
+`--verify thorough` and `--recheck-everything` make both:
+
+- **Placing the new volume's extents.** After each move only the mapping of
+  the moved range is read, to see that it landed where it was sent. Each
+  file's complete mapping is compared with every piece placed for it once,
+  when placement ends, instead of after every move. Both views of the
+  destination's allocation are still read before every move.
+- **Writing the changes.** Each changed range is held to its old contents
+  once, before the apply marker, then written and read back against its new
+  contents. It is not read again immediately before it is written.
+
+A partition on the disk of the running Windows, a conversion with
+`--restart-media`, and a run whose interrupted preparation is resumed (a
+thorough run's: a fast run's is not resumed, see above) still commit before
+the verification, as `--verify thorough` does: from their handoff on a
+rollback is closed. A resumed preparation says so before it writes to the
+volume.
+
+**If the verification does not pass** (with `--verify fast`), nothing is
+committed and nothing is rolled back. The run ends with an error that says
+what stopped it and gives the two ways on:
+
+```text
+To verify again and finish: ntfs2refs --recover "<dir>" --recovery-sha256 <sum>
+To put NTFS back:           ntfs2refs --recover "<dir>" --recovery-sha256 <sum> --rollback
+```
+
+The volume is left sealed meanwhile, its disk offline and the converted
+volume not mounted. Verifying again makes the same checks; it helps where
+what stopped the first attempt was the machine (memory, a device that went
+away), not the volume. A rollback of a run that wrote to the volume checks
+the restored NTFS volume against the fingerprint of the volume taken before
+the conversion before it puts it online (not with `--minimize-scratch`, whose
+rollback does not restore what unused space held). The run records the seal
+in `verification-seal.json` beside the recovery envelope; keep it with the
+other records.
 
 ### Look before you commit: `--review`
 
@@ -766,9 +829,11 @@ working one until you commit). Look at it, then run one of the two commands
 the run printed:
 
 - `--recover <dir> --recovery-sha256 <sum>` commits: the volume is dismounted
-  and sealed again, checked against the fingerprint, the handoff is written
-  and the conversion is finished as any other (verification, label, letter,
-  online).
+  and sealed again, checked against the fingerprint, and the conversion is
+  finished as any other: with `--verify fast` the converted volume is
+  verified and then the handoff is written, with `--verify thorough` the
+  handoff is written and then the volume is verified; then label, letter,
+  online.
 - The same with `--rollback` puts NTFS back. The restored volume is then also
   checked against the fingerprint of the source taken before the conversion,
   before it is put online.
@@ -788,7 +853,9 @@ review run whose preparation is cut off is cancelled with `--rollback` and
 started again; it is not resumed without its review. The fingerprint costs a
 full read of the volume at the stop and another at the decision. The
 converted volume's files are verified when you commit, as without a review;
-what the review stop itself checks is every new sector.
+what the review stop itself checks is every new sector. With `--verify fast`
+a commit whose verification does not pass leaves the rollback open, as
+[without a review](#verification).
 
 ### Your own before-and-after comparison
 

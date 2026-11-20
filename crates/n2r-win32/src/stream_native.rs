@@ -228,6 +228,24 @@ pub(crate) fn retrieval_capture_resource(
         crate::retrieval_paging::Limits::for_resource_bytes(evidence_bytes)?,
     )
 }
+/// A file's mapping from VCN `start` to `limit` and no further, within the
+/// limits of a resource row of `evidence_bytes`: what a move of that range
+/// is held to by a run that verifies each thing once. The file's complete
+/// mapping takes a query for every thousand extents it is in; this takes
+/// one for a range that lies in a few.
+pub(crate) fn retrieval_range_capture_resource(
+    file: &File,
+    evidence_bytes: usize,
+    start: u64,
+    limit: u64,
+) -> io::Result<crate::retrieval_paging::Capture> {
+    crate::retrieval_paging::assemble_range_while_asking(
+        crate::retrieval_paging::Limits::for_resource_bytes(evidence_bytes)?,
+        start,
+        limit,
+        |vcn, capacity| ioctl(file, layout::GET_RETRIEVAL, &vcn.to_le_bytes(), capacity),
+    )
+}
 fn retrieval_capture_with_limits(
     file: &File,
     limits: crate::retrieval_paging::Limits,

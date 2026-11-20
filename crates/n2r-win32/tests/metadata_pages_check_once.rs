@@ -86,7 +86,9 @@ fn the_sha_a_writer_reports_is_the_sha_of_the_file() {
     let path = fixture(&directory, "pages.bin");
     let sha = write(&path);
     let bytes = std::fs::read(&path).unwrap();
-    let actual = <sha2::Sha256 as sha2::Digest>::digest(&bytes);
+    // A store this build writes is pinned by BLAKE3 (`bulk_digest`).
+    let actual =
+        n2r_win32::bulk_digest::digest(n2r_win32::bulk_digest::Algorithm::Blake3, &bytes).unwrap();
     assert_eq!(sha, hex::encode(actual));
 }
 
@@ -181,7 +183,7 @@ fn a_file_changed_after_it_was_written_is_refused() {
     if std::fs::metadata(&path).unwrap().modified().unwrap() != modified {
         let error = Reader::open(&path, &sha, PURPOSE, budget()).err().unwrap();
         assert!(
-            error.to_string().contains("complete-file SHA differs"),
+            error.to_string().contains("complete-file digest differs"),
             "{error}"
         );
     }
@@ -229,7 +231,10 @@ fn large_pages_hashed_on_two_threads_give_the_sha_of_the_file() {
     let bytes = std::fs::read(&path).unwrap();
     assert_eq!(
         summary.sha256,
-        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+        hex::encode(
+            n2r_win32::bulk_digest::digest(n2r_win32::bulk_digest::Algorithm::Blake3, &bytes)
+                .unwrap()
+        )
     );
     let mut reader = Reader::open(&path, &summary.sha256, PURPOSE, budget).unwrap();
     for ordinal in [59u64, 0, 30, 9, 8] {

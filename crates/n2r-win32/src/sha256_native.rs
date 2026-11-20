@@ -315,59 +315,6 @@ impl Drop for Overlapped {
 
 /// Hash every requested byte, with a fixed 4 MiB buffer and exact reads. No
 /// sampling, skipped zero ranges, alternate digest or source mutation.
-type VerifiedBody = ([u8; 32], u64, u64);
-static VERIFIED_JOURNAL_BODIES: std::sync::Mutex<Vec<VerifiedBody>> =
-    std::sync::Mutex::new(Vec::new());
-static JOURNAL_BODY_LAST_FULL: crate::verify_policy::LastFull =
-    crate::verify_policy::LastFull::new();
-
-/// Records that a recovery journal body with this digest was read in full and
-/// matched, in this process.
-pub fn note_journal_body_verified(expected: &[u8; 32], offset: u64, length: u64) {
-    let mut verified = VERIFIED_JOURNAL_BODIES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if !verified.contains(&(*expected, offset, length)) {
-        verified.push((*expected, offset, length));
-    }
-}
-
-/// Whether a full read of this journal body can be skipped: it already
-/// matched in this process, the route checks once, and the single full read
-/// due inside the gate before the first source write has been made (or no
-/// gate is open). The body never changes once written; only the marker area
-/// in front of it does.
-pub fn journal_body_already_verified(expected: &[u8; 32], offset: u64, length: u64) -> bool {
-    if !crate::verify_policy::checks_once() {
-        return false;
-    }
-    let known = VERIFIED_JOURNAL_BODIES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .contains(&(*expected, offset, length));
-    known && !crate::verify_policy::full(&JOURNAL_BODY_LAST_FULL)
-}
-
-/// SHA-256 of a held recovery journal's immutable body, to compare with
-/// `expected`. Gigabytes long and compared at every step of apply and
-/// finalization; see [`journal_body_already_verified`] for when the read is
-/// skipped and `expected` returned.
-pub fn journal_body(
-    reader: &mut (impl Read + Seek),
-    offset: u64,
-    length: u64,
-    expected: &[u8; 32],
-) -> io::Result<[u8; 32]> {
-    if journal_body_already_verified(expected, offset, length) {
-        return Ok(*expected);
-    }
-    let actual = hash_range(reader, offset, length)?;
-    if actual == *expected {
-        note_journal_body_verified(expected, offset, length);
-    }
-    Ok(actual)
-}
-
 pub fn hash_range(
     reader: &mut (impl Read + Seek),
     offset: u64,
@@ -380,70 +327,6 @@ pub fn hash_range(
     crate::perf::add_bytes(crate::perf::Point::FileHash, length);
     reader.seek(SeekFrom::Start(offset))?;
     hash_next(reader, length)
-}
-
-/// A complete digest computed inside the gate that is open: the gate, the
-/// file's identity (volume and file id), its length and its timestamp.
-type GateDigest = (u64, String, u64, std::time::SystemTime, [u8; 32]);
-static GATE_DIGESTS: std::sync::Mutex<Vec<GateDigest>> = std::sync::Mutex::new(Vec::new());
-
-/// SHA-256 of all `bytes` bytes of a held working file, for an owner to
-/// compare with the digest it pinned.
-///
-/// The gate before the first write to the source reads every working file
-/// again, once for each owner that holds it, and a record store has two: the
-/// arena's pin and the reader that looks records up in it. Each hashed the
-/// whole file, one after the other. Inside one gate under the check-once
-/// policy the digest computed for a file stands for the next owner of that
-/// same file (same volume and file id, length and timestamp, each read from
-/// the caller's own handle); every owner still compares it with its own pin
-/// and makes its own identity checks. Outside a gate, and always with
-/// `--recheck-everything`, the file is read every time. The file is left
-/// positioned at `bytes`, as after a read.
-pub fn held_file(file: &mut std::fs::File, bytes: u64) -> io::Result<[u8; 32]> {
-    let key = match crate::verify_policy::open_gate() {
-        Some(gate) => {
-            let metadata = file.metadata()?;
-            (metadata.len() == bytes)
-                .then(|| -> io::Result<_> {
-                    Ok((
-                        gate,
-                        crate::file_storage::file_id_info(file)?,
-                        metadata.modified()?,
-                    ))
-                })
-                .transpose()?
-        }
-        None => None,
-    };
-    if let Some((gate, id, modified)) = &key {
-        let known = GATE_DIGESTS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .iter()
-            .find(|(of, file_id, length, at, _)| {
-                of == gate && file_id == id && *length == bytes && at == modified
-            })
-            .map(|known| known.4);
-        if let Some(digest) = known {
-            file.seek(SeekFrom::Start(bytes))?;
-            return Ok(digest);
-        }
-    }
-    let digest = hash_range(file, 0, bytes)?;
-    if let Some((gate, id, modified)) = key {
-        // Only for a file that is, after the read, what it was before it.
-        let metadata = file.metadata()?;
-        if metadata.len() == bytes && metadata.modified()? == modified {
-            let mut known = GATE_DIGESTS
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            // Digests of gates that have closed are of no use to anyone.
-            known.retain(|(of, ..)| *of == gate);
-            known.push((gate, id, bytes, modified, digest));
-        }
-    }
-    Ok(digest)
 }
 
 /// SHA-256 of the next `length` bytes of `reader`, all of them read.
@@ -485,6 +368,7 @@ pub fn hash_next(reader: &mut impl Read, length: u64) -> io::Result<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bulk_digest::{Algorithm, journal_body, journal_body_already_verified};
     use sha2::Digest;
 
     struct CountingReader {
@@ -514,14 +398,19 @@ mod tests {
             reads: 0,
         };
         assert_eq!(
-            journal_body(&mut reader, 1024, 7168, &expected).unwrap(),
+            journal_body(Algorithm::Sha256, &mut reader, 1024, 7168, &expected).unwrap(),
             expected
         );
         let first = reader.reads;
         assert!(first > 0);
-        assert!(!journal_body_already_verified(&expected, 1024, 7168));
+        assert!(!journal_body_already_verified(
+            Algorithm::Sha256,
+            &expected,
+            1024,
+            7168
+        ));
         assert_eq!(
-            journal_body(&mut reader, 1024, 7168, &expected).unwrap(),
+            journal_body(Algorithm::Sha256, &mut reader, 1024, 7168, &expected).unwrap(),
             expected
         );
         assert!(
@@ -590,9 +479,14 @@ mod tests {
         data[100] ^= 1;
         let mut reader = io::Cursor::new(data);
         assert_ne!(
-            journal_body(&mut reader, 0, 4096, &expected).unwrap(),
+            journal_body(Algorithm::Sha256, &mut reader, 0, 4096, &expected).unwrap(),
             expected
         );
-        assert!(!journal_body_already_verified(&expected, 0, 4096));
+        assert!(!journal_body_already_verified(
+            Algorithm::Sha256,
+            &expected,
+            0,
+            4096
+        ));
     }
 }

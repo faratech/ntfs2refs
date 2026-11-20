@@ -320,6 +320,22 @@ pub(crate) fn convert_owned_with_provider_commitment(
         marker_use: MarkerStorageUse::QualifiedProduction,
     };
     request.validate()?;
+    // Verify once (#148): with the fast verification the handoff follows the
+    // one verification of the converted volume, and rollback stays open
+    // until it has passed. Decided here, once, before the recovery
+    // publication is written: the publication records it and the apply step
+    // below ends before the handoff because of the same choice. A thorough
+    // run keeps its flow: the handoff in the apply step.
+    if mode == crate::execution_mode::ExecutionMode::Convert && verification_policy.is_fast() {
+        crate::verify_first::choose();
+        // No recovery command on this line: the recovery environment of
+        // the running-Windows route takes one from any line that has it.
+        println!(
+            "The conversion is committed only after the converted volume has passed its \
+             verification; until then the recovery command this run prints can also put NTFS \
+             back, with --rollback."
+        );
+    }
     let prepared_output = run.join("conversion");
     // Working files are hashed when written and then held; the source is
     // offline, read-only and held. Re-read them in full once, at the gate
@@ -359,17 +375,30 @@ pub(crate) fn convert_owned_with_provider_commitment(
                 let fresh = prepared.into_fresh_apply(events, |batch| {
                     observer.native_events("source-activation", batch)
                 })?;
-                if crate::review::chosen() {
-                    // --review (#110): every new byte written, flushed and
-                    // read back; no handoff. The source is sealed read-only
-                    // again under the apply intent alone.
-                    n2r_win32::perf::phase("source-apply-for-review");
+                let review = crate::review::chosen();
+                let verify_first = crate::verify_first::chosen();
+                if review || verify_first {
+                    // --review (#110), and a run whose handoff follows its
+                    // verification (#148): every new byte written, flushed
+                    // and read back; no handoff. The source is sealed
+                    // read-only again under the apply intent alone.
+                    let phase = if review {
+                        "source-apply-for-review"
+                    } else {
+                        "source-apply-before-handoff"
+                    };
+                    n2r_win32::perf::phase(phase);
                     let mut reviewed = fresh.apply_for_review(
                         events,
-                        |batch| observer.native_events("source-apply-for-review", batch),
+                        |batch| observer.native_events(phase, batch),
                         |_| {
                             println!(
-                                "Source changes verified; stopping for review before the handoff."
+                                "{}",
+                                if review {
+                                    "Source changes verified; stopping for review before the handoff."
+                                } else {
+                                    "Source changes verified; sealing the volume for its verification before the handoff."
+                                }
                             );
                             io::stdout().flush()?;
                             Ok(())
@@ -377,16 +406,40 @@ pub(crate) fn convert_owned_with_provider_commitment(
                     )?;
                     drop(gate);
                     reviewed.seal_review_readonly(events, |batch| {
-                        observer.native_events("source-review-readonly", batch)
+                        observer.native_events(
+                            if review {
+                                "source-review-readonly"
+                            } else {
+                                "source-sealed-before-handoff"
+                            },
+                            batch,
+                        )
                     })?;
                     ensure!(
                         reviewed.source() == &pair.source,
-                        "applied review source identity differs"
+                        "applied source identity differs before the handoff"
                     );
+                    let new_selected_sha256 = reviewed.new_selected_sha256();
                     // As before the finalizer: nothing of the preparation may
-                    // outlive this point; the review stop reopens the records.
+                    // outlive this point; what follows reopens the records.
                     drop(reviewed);
-                    n2r_win32::lab_hold::reached("review-sealed");
+                    if verify_first {
+                        n2r_win32::lab_hold::reached("apply-sealed");
+                        // Sealed with every new byte and no writer. A
+                        // recovery environment, which starts every disk
+                        // offline and read-only, reads this instead of the
+                        // disk's attributes.
+                        crate::verify_first::record_seal(
+                            &crate::verify_first::record_path(&path)?,
+                            sha,
+                            &pair.source,
+                            new_selected_sha256,
+                        )?;
+                        n2r_win32::lab_hold::reached("apply-seal-recorded");
+                    }
+                    if review {
+                        n2r_win32::lab_hold::reached("review-sealed");
+                    }
                     return Ok((path, sha));
                 }
                 n2r_win32::perf::phase("source-apply-and-handoff");
@@ -421,6 +474,8 @@ pub(crate) fn convert_owned_with_provider_commitment(
         // Every original source/shadow/journal owner has dropped above. The
         // common finalizer reopens the independently pinned publication, proves
         // real HND/NEW bytes, and verifies native files before enabling normal use.
+        // For a run whose handoff follows its verification it proves the apply
+        // intent and the NEW bytes, verifies, and then writes the handoff.
         let current = n2r_win32::resource_native::observe_available_resources(run)?;
         let remaining = current
             .scratch_available_bytes
@@ -469,9 +524,21 @@ pub(crate) fn convert_owned_with_provider_commitment(
                 &mut observer,
                 None,
             )
-            .context(
-                "finalizing the applied conversion (the source already holds the ReFS image)",
-            )?;
+            .map_err(|error| {
+                // A verification that did not pass before the handoff has
+                // said, on the error stream, how to try again and how to go
+                // back; rollback is open and nothing was rolled back.
+                if error
+                    .downcast_ref::<crate::resource_finalize::UncommittedVerificationError>()
+                    .is_some()
+                {
+                    error
+                } else {
+                    error.context(
+                        "finalizing the applied conversion (the source already holds the ReFS image)",
+                    )
+                }
+            })?;
         if let Err(error) = observer.note(&finalized) {
             eprintln!("Conversion completed; the final evidence log could not be updated: {error}");
         }
@@ -546,7 +613,7 @@ pub(super) fn preparation_intent_matches(directory: &Path, sha: &str) -> Result<
         before.file_bytes,
         before.number_of_links
     );
-    let actual = n2r_win32::sha256_native::hash_range(&mut file, 0, before.file_bytes)?;
+    let actual = n2r_win32::metadata_pages::pinning_digest(&mut file, before.file_bytes)?;
     ensure!(
         n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, maximum)?
             == before,
@@ -871,7 +938,7 @@ fn route_inputs(
                 && metadata.len() <= maximum,
             "recovery route metadata exceeds observed read budget"
         );
-        let actual = n2r_win32::sha256_native::hash_range(&mut file, 0, metadata.len())?;
+        let actual = n2r_win32::metadata_pages::pinning_digest(&mut file, metadata.len())?;
         ensure!(
             actual == sha,
             "recovery route does not match independently supplied checksum"

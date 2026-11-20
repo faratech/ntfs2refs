@@ -19,6 +19,7 @@
 use crate::interrupted_marker::{Marker, MarkerWrite, SettledMarker};
 use crate::lab_reconstruct::{DurableIo, ReadSeek};
 use anyhow::{Context, Result, ensure};
+use n2r_win32::bulk_digest::Algorithm;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -119,11 +120,23 @@ pub struct SelectedTicket {
     pub old_restored_selected_sha256: Option<[u8; 32]>,
     pub new_selected_sha256: [u8; 32],
     pub whole_image_verified: bool,
+    /// The algorithm of every digest above and of the digests the journal
+    /// carries for its rows: BLAKE3 in a ticket this build writes. Absent in
+    /// a ticket of a build before it, whose digests are SHA-256; absent is
+    /// never written, so such a ticket reads and serializes as it always did.
+    /// The field names keep their historical `sha256`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<Algorithm>,
 }
 
 impl SelectedTicket {
     fn body_offset(&self) -> u64 {
         marker_body(self.marker_profile)
+    }
+
+    /// The algorithm of the ticket's digests and its journal's.
+    pub(crate) fn digest_algorithm(&self) -> Algorithm {
+        self.digest.unwrap_or(Algorithm::Sha256)
     }
 }
 
@@ -189,18 +202,22 @@ fn get_u32(bytes: &[u8], offset: usize) -> u32 {
 fn get_u64(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("fixed field"))
 }
-/// SHA-256 for the journal's pins: CNG on Windows (faster on CPUs without SHA
-/// instructions), the sha2 crate elsewhere. The digest is identical.
+/// The journal's pins, of the ticket's algorithm: BLAKE3 for a journal this
+/// build writes; SHA-256 for one of an older build, through CNG on Windows
+/// (faster on CPUs without SHA instructions) and the sha2 crate elsewhere.
 type PinHash = crate::retained_compare::stream_digest::StreamDigest;
-fn pin_hash() -> Result<PinHash> {
-    PinHash::new(cfg!(windows))
+fn backend(algorithm: Algorithm) -> crate::retained_compare::stream_digest::Backend {
+    crate::retained_compare::stream_digest::Backend::of(algorithm)
 }
-fn aggregate_pin_hash() -> Result<PinHash> {
-    PinHash::alongside_record_hash(BUFFER, cfg!(windows))
+fn pin_hash(algorithm: Algorithm) -> Result<PinHash> {
+    PinHash::new(backend(algorithm))
+}
+fn aggregate_pin_hash(algorithm: Algorithm) -> Result<PinHash> {
+    PinHash::alongside_record_hash(BUFFER, backend(algorithm))
 }
 /// A file-wide digest whose caller hands it `buffers` megabytes in a burst.
-fn burst_pin_hash(buffers: usize) -> Result<PinHash> {
-    PinHash::alongside_a_burst(BUFFER, cfg!(windows), buffers)
+fn burst_pin_hash(algorithm: Algorithm, buffers: usize) -> Result<PinHash> {
+    PinHash::alongside_a_burst(BUFFER, backend(algorithm), buffers)
 }
 fn finish(hash: PinHash) -> Result<[u8; 32]> {
     hash.finish()
@@ -221,34 +238,39 @@ enum RowDigest {
 
 /// Where the digests of the rows' payloads are computed: on this thread,
 /// between one read and the next, or on a worker while this thread reads on.
-/// Either way a payload's digest is the SHA-256 of exactly the bytes that
-/// were read for it, in order.
+/// Either way a payload's digest is the digest (of the journal's algorithm)
+/// of exactly the bytes that were read for it, in order.
 struct RecordHashes {
+    algorithm: Algorithm,
     worker: Option<crate::retained_compare::digest_pipeline::RecordDigests>,
 }
 
 impl RecordHashes {
     /// Every digest is computed on the calling thread and known at once.
-    fn here() -> Self {
-        Self { worker: None }
+    fn here(algorithm: Algorithm) -> Self {
+        Self {
+            algorithm,
+            worker: None,
+        }
     }
 
     /// A worker of its own where the machine has a core for it beside the
     /// reading thread and the workers of the file-wide digests.
-    fn overlapped() -> Result<Self> {
+    fn overlapped(algorithm: Algorithm) -> Result<Self> {
         if std::thread::available_parallelism().is_ok_and(|cores| cores.get() >= 4) {
-            Self::on_a_worker()
+            Self::on_a_worker(algorithm)
         } else {
-            Ok(Self::here())
+            Ok(Self::here(algorithm))
         }
     }
 
-    fn on_a_worker() -> Result<Self> {
+    fn on_a_worker(algorithm: Algorithm) -> Result<Self> {
         Ok(Self {
+            algorithm,
             worker: Some(
                 crate::retained_compare::digest_pipeline::RecordDigests::with_native_backend(
                     BUFFER,
-                    cfg!(windows),
+                    backend(algorithm),
                 )?,
             ),
         })
@@ -257,7 +279,7 @@ impl RecordHashes {
     fn begin(&mut self) -> Result<RecordHash<'_>> {
         Ok(match self.worker.as_mut() {
             Some(worker) => RecordHash::There(worker),
-            None => RecordHash::Here(pin_hash()?),
+            None => RecordHash::Here(pin_hash(self.algorithm)?),
         })
     }
 
@@ -880,9 +902,14 @@ pub(crate) fn finish_changed_plan(
     Ok(plan)
 }
 
-fn hash_range<R: Read + Seek>(io: &mut R, offset: u64, length: u64) -> Result<[u8; 32]> {
+fn hash_range<R: Read + Seek>(
+    io: &mut R,
+    algorithm: Algorithm,
+    offset: u64,
+    length: u64,
+) -> Result<[u8; 32]> {
     io.seek(SeekFrom::Start(offset))?;
-    let mut hash = pin_hash()?;
+    let mut hash = pin_hash(algorithm)?;
     let mut buffer = vec![0; BUFFER];
     let mut remaining = length;
     while remaining > 0 {
@@ -902,7 +929,7 @@ fn copy_selected<R: Read + Seek, J: Write>(
     buffer: &mut [u8],
     restored: Option<&mut PinHash>,
 ) -> Result<[u8; 32]> {
-    let mut here = RecordHashes::here();
+    let mut here = RecordHashes::here(selected.algorithm());
     let digest = copy_selected_with(input, range, journal, selected, buffer, restored, &mut here)?;
     here.settle(digest, &mut ZeroDigests::new())
 }
@@ -949,7 +976,7 @@ fn verify_zero_selected<R: Read + Seek>(
     mismatch: &'static str,
     restored: Option<&mut PinHash>,
 ) -> Result<[u8; 32]> {
-    let mut here = RecordHashes::here();
+    let mut here = RecordHashes::here(selected.algorithm());
     let digest = verify_zero_selected_with(
         input,
         range,
@@ -1022,7 +1049,7 @@ fn capture_free_selected<R: Read + Seek, J: Write>(
 ) -> Result<[u8; 32]> {
     source.seek(SeekFrom::Start(range.offset))?;
     frame(selected, range)?;
-    let mut table_hash = pin_hash()?;
+    let mut table_hash = pin_hash(selected.algorithm())?;
     // The binary table is streamed; it never expands the JSON plan or the
     // retained record vector by one entry per source-free cluster.
     let mut table = vec![0u8; buffer.len() / GRANULE as usize * FREE_DIGEST as usize];
@@ -1057,7 +1084,7 @@ fn verify_copy_selected<R: Read + Seek, S: Read + Seek>(
     same_native_source: bool,
 ) -> Result<[u8; 32]> {
     frame(selected, range)?;
-    let mut hash = pin_hash()?;
+    let mut hash = pin_hash(selected.algorithm())?;
     let mut done = 0u64;
     while done < range.length {
         let count = usize::try_from((range.length - done).min(BUFFER as u64))?;
@@ -1191,9 +1218,13 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     journal.seek(SeekFrom::Start(0))?;
     journal.write_all(&vec![0; body as usize])?;
     journal.write_all(&header)?;
-    let mut old_selected = aggregate_pin_hash()?;
-    let mut old_restored = source_free_encoded.then(aggregate_pin_hash).transpose()?;
-    let mut new_selected = aggregate_pin_hash()?;
+    // Every digest of a journal this build writes, and its ticket's, is BLAKE3.
+    let algorithm = Algorithm::WRITTEN;
+    let mut old_selected = aggregate_pin_hash(algorithm)?;
+    let mut old_restored = source_free_encoded
+        .then(|| aggregate_pin_hash(algorithm))
+        .transpose()?;
+    let mut new_selected = aggregate_pin_hash(algorithm)?;
     // Fixed memory for the whole preparation; small fragmented ranges do not
     // repeatedly allocate/zero MiB-sized vectors. Each slice used below is
     // completely filled by its current read before hashing or comparison.
@@ -1342,13 +1373,14 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         old_restored_selected_sha256,
         new_selected_sha256,
         whole_image_verified: false,
+        digest: Some(algorithm),
     };
     // Only this complete post-flush validation lets the ticket out.
     if exclusive_readback {
         let (_, immutable_sha256) = validate_body(journal, plan, &ticket, None, &mut zero_digests)?;
         ticket.immutable_sha256 = immutable_sha256;
     } else {
-        ticket.immutable_sha256 = hash_range(journal, body, journal_length - body)?;
+        ticket.immutable_sha256 = hash_range(journal, algorithm, body, journal_length - body)?;
         validate_body(
             journal,
             plan,
@@ -1409,7 +1441,8 @@ fn validate_body<J: ReadSeek>(
             && journal.byte_len()? == journal_length,
         "selected ticket, plan or journal length differs"
     );
-    let mut immutable = aggregate_pin_hash()?;
+    let algorithm = ticket.digest_algorithm();
+    let mut immutable = aggregate_pin_hash(algorithm)?;
     let mut header = [0u8; HEADER];
     at(journal, body, &mut header)?;
     immutable.update(&header)?;
@@ -1432,13 +1465,13 @@ fn validate_body<J: ReadSeek>(
         "selected journal header differs"
     );
     let mut records = Vec::with_capacity(plan.ranges.len());
-    let mut old_selected = aggregate_pin_hash()?;
+    let mut old_selected = aggregate_pin_hash(algorithm)?;
     // Copy-format new selected bytes are authenticated in the resolved pass
     // below. Do not start an unused worker for this first descriptor pass.
     let mut new_selected = if copy_encoded {
-        pin_hash()?
+        pin_hash(algorithm)?
     } else {
-        aggregate_pin_hash()?
+        aggregate_pin_hash(algorithm)?
     };
     let mut buffer = vec![0; BUFFER];
     for range in &plan.ranges {
@@ -1518,7 +1551,7 @@ fn validate_body<J: ReadSeek>(
                 // Authenticate the entire digest table and its independent
                 // immutable pin. Its truth is established from actual bytes
                 // during preparation and the complete fresh target gate.
-                let mut hash = pin_hash()?;
+                let mut hash = pin_hash(algorithm)?;
                 let mut remaining = range.length / GRANULE * FREE_DIGEST;
                 while remaining != 0 {
                     let count = usize::try_from(remaining.min(BUFFER as u64))?;
@@ -1582,7 +1615,7 @@ fn validate_body<J: ReadSeek>(
             let mut hash = if cached.is_some() {
                 None
             } else {
-                Some(pin_hash()?)
+                Some(pin_hash(algorithm)?)
             };
             let mut remaining = range.length;
             while remaining > 0 {
@@ -1665,7 +1698,7 @@ fn validate_body<J: ReadSeek>(
         // All old payloads and descriptors are authenticated before any
         // reference is followed. References resolve only to those old bytes,
         // so overlap, forward references and reference cycles are harmless.
-        let mut new_selected = aggregate_pin_hash()?;
+        let mut new_selected = aggregate_pin_hash(algorithm)?;
         for record in &records {
             frame(&mut new_selected, &record.range)?;
             let is_zero = matches!(record.after, NewBytes::Zero);
@@ -1677,7 +1710,7 @@ fn validate_body<J: ReadSeek>(
             let mut hash = if cached.is_some() {
                 None
             } else {
-                Some(pin_hash()?)
+                Some(pin_hash(algorithm)?)
             };
             let mut done = 0u64;
             while done < record.range.length {
@@ -2137,6 +2170,7 @@ fn check_target<T: ReadSeek, J: Read + Seek>(
     journal: &mut J,
     plan: &SelectedPlan,
     records: &[JournalRecord],
+    algorithm: Algorithm,
     expected: Option<&[u8; 32]>,
     fresh_old: bool,
 ) -> Result<[u8; 32]> {
@@ -2145,13 +2179,13 @@ fn check_target<T: ReadSeek, J: Read + Seek>(
         "selected target length differs"
     );
     if let Some(expected) = expected {
-        // Exact old/new states have an independently trusted framed SHA-256.
+        // Exact old/new states have an independently trusted framed digest.
         // Hash every actual selected target byte with the same framing. A
         // complete match proves the chosen side without rereading both journal
         // payloads merely to repeat their old-or-new membership comparison.
         // Mixed recovery states (None) keep every original byte check below.
         let mut current = vec![0; BUFFER];
-        let mut digest = pin_hash()?;
+        let mut digest = pin_hash(algorithm)?;
         for record in records {
             frame(&mut digest, &record.range)?;
             let mut done = 0u64;
@@ -2172,7 +2206,7 @@ fn check_target<T: ReadSeek, J: Read + Seek>(
     let mut current = vec![0; BUFFER];
     let mut before = vec![0; BUFFER];
     let mut after = vec![0; BUFFER];
-    let mut digest = pin_hash()?;
+    let mut digest = pin_hash(algorithm)?;
     for record in records {
         frame(&mut digest, &record.range)?;
         let mut done = 0u64;
@@ -2222,6 +2256,7 @@ fn check_restored_target<T: ReadSeek, J: Read + Seek>(
             journal,
             plan,
             records,
+            ticket.digest_algorithm(),
             Some(&ticket.old_selected_sha256),
             false,
         );
@@ -2232,7 +2267,7 @@ fn check_restored_target<T: ReadSeek, J: Read + Seek>(
     );
     let mut current = vec![0; BUFFER];
     let mut after = vec![0; BUFFER];
-    let mut restored = pin_hash()?;
+    let mut restored = pin_hash(ticket.digest_algorithm())?;
     for record in records {
         let free = matches!(record.before, OldBytes::SourceFree(_));
         if !free {
@@ -2399,6 +2434,7 @@ fn execute_loaded<T: DurableIo, J: DurableIo>(
         journal,
         plan,
         records,
+        ticket.digest_algorithm(),
         fresh.then_some(&ticket.old_selected_sha256),
         fresh,
     )?;
@@ -2462,7 +2498,15 @@ fn execute_loaded<T: DurableIo, J: DurableIo>(
         &ticket.old_selected_sha256
     };
     let selected_sha256 = if forward {
-        check_target(target, journal, plan, records, Some(expected), false)?
+        check_target(
+            target,
+            journal,
+            plan,
+            records,
+            ticket.digest_algorithm(),
+            Some(expected),
+            false,
+        )?
     } else {
         check_restored_target(target, journal, plan, records, ticket)?
     };
@@ -2470,6 +2514,7 @@ fn execute_loaded<T: DurableIo, J: DurableIo>(
         ensure!(
             hash_range(
                 journal,
+                ticket.digest_algorithm(),
                 ticket.body_offset(),
                 ticket.journal_length - ticket.body_offset()
             )? == ticket.immutable_sha256,
@@ -2834,6 +2879,7 @@ pub(crate) fn settle_interrupted_marker<J: DurableIo>(
         journal.byte_len()? == ticket.journal_length
             && hash_range(
                 journal,
+                ticket.digest_algorithm(),
                 ticket.body_offset(),
                 ticket.journal_length - ticket.body_offset()
             )? == ticket.immutable_sha256,
@@ -3263,6 +3309,7 @@ fn abandon_loaded<T: DurableIo, J: DurableIo>(
         journal,
         plan,
         records,
+        ticket.digest_algorithm(),
         Some(&ticket.old_selected_sha256),
         true,
     )?;
@@ -3311,7 +3358,15 @@ fn verify_closed_loaded<T: ReadSeek, J: ReadSeek>(
     let selected_sha256 = if state == SelectedLifecycle::Aborted {
         check_restored_target(target, journal, plan, records, ticket)?
     } else {
-        check_target(target, journal, plan, records, Some(expected), false)?
+        check_target(
+            target,
+            journal,
+            plan,
+            records,
+            ticket.digest_algorithm(),
+            Some(expected),
+            false,
+        )?
     };
     Ok((
         state,
@@ -3363,6 +3418,7 @@ fn handoff_loaded<T: DurableIo, J: DurableIo>(
         journal,
         plan,
         records,
+        ticket.digest_algorithm(),
         Some(&ticket.new_selected_sha256),
         false,
     )?;
@@ -3370,6 +3426,7 @@ fn handoff_loaded<T: DurableIo, J: DurableIo>(
         ensure!(
             hash_range(
                 journal,
+                ticket.digest_algorithm(),
                 ticket.body_offset(),
                 ticket.journal_length - ticket.body_offset()
             )? == ticket.immutable_sha256,
@@ -3471,7 +3528,7 @@ mod record_hash_tests {
         }
         let mut input = Cursor::new(source);
         let mut journal = Vec::new();
-        let mut selected = pin_hash().unwrap();
+        let mut selected = pin_hash(Algorithm::Sha256).unwrap();
         let mut buffer = vec![0u8; BUFFER];
         let mut zeros = ZeroDigests::new();
         let mut owed = std::collections::VecDeque::new();
@@ -3546,11 +3603,11 @@ mod record_hash_tests {
                 sha(&source[range.offset as usize..(range.offset + range.length) as usize])
             })
             .collect();
-        let here = run(RecordHashes::here(), 0);
+        let here = run(RecordHashes::here(Algorithm::Sha256), 0);
         assert_eq!(here.0, expected);
         // Settled at once, a row late, and only when every row was read.
         for late in [0usize, 1, 64] {
-            let there = run(RecordHashes::on_a_worker().unwrap(), late);
+            let there = run(RecordHashes::on_a_worker(Algorithm::Sha256).unwrap(), late);
             assert_eq!(there.0, expected, "settled {late} rows late");
             assert_eq!(
                 there.1, here.1,
@@ -3565,10 +3622,10 @@ mod record_hash_tests {
         let length = 3 * GRANULE;
         let range = SelectedRange { offset: 0, length };
         let mut input = Cursor::new(vec![0u8; length as usize]);
-        let mut records = RecordHashes::on_a_worker().unwrap();
+        let mut records = RecordHashes::on_a_worker(Algorithm::Sha256).unwrap();
         let mut zeros = ZeroDigests::new();
         let mut buffer = vec![0u8; BUFFER];
-        let mut selected = pin_hash().unwrap();
+        let mut selected = pin_hash(Algorithm::Sha256).unwrap();
         let mut zero = |zeros: &mut ZeroDigests, records: &mut RecordHashes| {
             verify_zero_selected_with(
                 &mut input,
@@ -3609,14 +3666,14 @@ mod record_hash_tests {
             let mut bytes = vec![0u8; 2 * GRANULE as usize];
             bytes[GRANULE as usize + 7] = 1;
             let mut records = if worker {
-                RecordHashes::on_a_worker().unwrap()
+                RecordHashes::on_a_worker(Algorithm::Sha256).unwrap()
             } else {
-                RecordHashes::here()
+                RecordHashes::here(Algorithm::Sha256)
             };
             let error = verify_zero_selected_with(
                 &mut Cursor::new(bytes),
                 &range,
-                &mut pin_hash().unwrap(),
+                &mut pin_hash(Algorithm::Sha256).unwrap(),
                 &mut vec![0u8; BUFFER],
                 &mut ZeroDigests::new(),
                 "row is not zero",

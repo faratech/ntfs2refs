@@ -135,7 +135,7 @@ impl HeldMetadata {
             "ordinary nonempty prepared metadata required"
         );
         ensure!(
-            n2r_win32::sha256_native::hash_range(&mut file, 0, snapshot.file_bytes)? == expected,
+            n2r_win32::metadata_pages::pinning_digest(&mut file, snapshot.file_bytes)? == expected,
             "actual prepared-artifact content differs"
         );
         let value = Self {

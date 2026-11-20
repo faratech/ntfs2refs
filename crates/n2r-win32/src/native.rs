@@ -1928,6 +1928,9 @@ struct ReadAhead {
     length: usize,
     // Where the furthest forward read so far ended.
     last_end: u64,
+    // Where the pass said the ranges it is about to read end
+    // (`set_read_ahead_reach`), while reads are still short of it.
+    reach: Option<u64>,
 }
 impl ReadAhead {
     /// A read that starts at most this far past the previous one reads ahead.
@@ -1935,6 +1938,7 @@ impl ReadAhead {
     fn clear(&mut self) {
         self.length = 0;
         self.last_end = 0;
+        self.reach = None;
     }
     /// Keeps the window equal to the device after `bytes` were written at
     /// partition offset `offset` through the object that owns this window.
@@ -4482,6 +4486,88 @@ impl GeneralFrozenPartition {
             self.ahead.clear();
         }
     }
+    /// Tells read-ahead where the ranges the pass reads next end (see
+    /// [`AscendingRanges`]): until reads pass `end`, a window stops there.
+    /// Without it a window is a megabyte whatever follows, and where the
+    /// changed ranges lie apart most of a window is bytes no pass asked for:
+    /// 17.5 GB of the 57 GB an apply of the full Windows volume read.
+    /// Outside a read-ahead scope this does nothing.
+    pub fn set_read_ahead_reach(&mut self, end: u64) {
+        if self.ahead.enabled {
+            self.ahead.reach = Some(end);
+        }
+    }
+}
+
+/// The ranges of a pass that reads them in ascending order, a few fetched
+/// ahead, so the pass can say how far its next reads reach
+/// ([`GeneralFrozenPartition::set_read_ahead_reach`]). Each row is fetched
+/// once, in order, as the pass would have fetched it.
+pub struct AscendingRanges<R> {
+    queue: std::collections::VecDeque<(R, u64, u64)>,
+    next: u64,
+    count: u64,
+    reach: u64,
+}
+impl<R> AscendingRanges<R> {
+    /// A gap between two ranges that one read bridges: reading it costs
+    /// about what a second call to the device does. Not measured.
+    const BRIDGE: u64 = 64 * 1024;
+
+    pub fn new(count: u64) -> Self {
+        Self {
+            queue: std::collections::VecDeque::new(),
+            next: 0,
+            count,
+            reach: 0,
+        }
+    }
+
+    /// The next row, with where the group of ranges it begins ends if it
+    /// begins one. `fetch(ordinal)` gives a row with its offset and length.
+    /// A group is the ranges that follow one another with gaps of no more
+    /// than [`Self::BRIDGE`] and fit one read-ahead window together.
+    pub fn next<E>(
+        &mut self,
+        mut fetch: impl FnMut(u64) -> Result<(R, u64, u64), E>,
+    ) -> Result<Option<(R, Option<u64>)>, E> {
+        if self.queue.is_empty() {
+            if self.next == self.count {
+                return Ok(None);
+            }
+            self.queue.push_back(fetch(self.next)?);
+            self.next += 1;
+        }
+        let Some((row, offset, length)) = self.queue.pop_front() else {
+            return Ok(None);
+        };
+        if offset < self.reach {
+            return Ok(Some((row, None)));
+        }
+        let mut reach = offset.saturating_add(length);
+        let mut index = 0;
+        loop {
+            if index == self.queue.len() {
+                if self.next == self.count {
+                    break;
+                }
+                self.queue.push_back(fetch(self.next)?);
+                self.next += 1;
+            }
+            let (_, following, following_length) = &self.queue[index];
+            let end = following.saturating_add(*following_length);
+            if *following < reach
+                || *following - reach > Self::BRIDGE
+                || end - offset > ReadAhead::BYTES as u64
+            {
+                break;
+            }
+            reach = end;
+            index += 1;
+        }
+        self.reach = reach;
+        Ok(Some((row, Some(reach))))
+    }
 }
 
 impl Read for GeneralFrozenPartition {
@@ -4523,14 +4609,22 @@ impl Read for GeneralFrozenPartition {
         }
         // Read ahead when this read continues, going forward, shortly after
         // the furthest one so far; a read elsewhere is made as it is asked.
+        // Where the pass said its coming ranges end, if this read is short
+        // of it: that is itself the statement that reads follow, and the
+        // window ends there, not a megabyte on.
+        let reach = self.ahead.reach.filter(|reach| self.position < *reach);
         let continues = self.ahead.enabled
             && self.position >= self.ahead.last_end
-            && self.position - self.ahead.last_end <= ReadAhead::BYTES as u64;
+            && (reach.is_some() || self.position - self.ahead.last_end <= ReadAhead::BYTES as u64);
         if self.ahead.enabled && self.position >= self.ahead.last_end {
             self.ahead.last_end = self.position + wanted as u64;
         }
-        if continues && count < ReadAhead::BYTES {
-            let count = (ReadAhead::BYTES as u64).min(self.byte_len() - aligned) as usize;
+        let window = (ReadAhead::BYTES as u64).min(self.byte_len() - aligned);
+        let window = reach.map_or(window, |reach| {
+            window.min(reach.div_ceil(GRANULE).saturating_mul(GRANULE) - aligned)
+        }) as usize;
+        if continues && count < ReadAhead::BYTES && count <= window {
+            let count = window;
             if self.ahead.window.is_none() {
                 self.ahead.window = Some(AlignedBuffer::new()?);
             }

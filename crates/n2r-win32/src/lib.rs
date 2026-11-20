@@ -21,6 +21,7 @@ pub mod bitmap_window;
 #[cfg(windows)]
 pub mod bitmap_window_native;
 pub mod bitmap_window_transport;
+pub mod bulk_digest;
 pub mod content_digest;
 #[cfg(windows)]
 pub mod directory_case;
@@ -84,6 +85,8 @@ pub mod retention_layout;
 pub mod retrieval_paging;
 #[cfg(windows)]
 pub mod run_environment;
+#[cfg(windows)]
+pub mod run_liveness;
 pub mod security_descriptor;
 #[cfg(windows)]
 pub mod sha256_native;
@@ -146,19 +149,19 @@ pub use native::partition_restoration;
 pub use native::restore_writer_state_in_recovery_environment;
 #[cfg(windows)]
 pub use native::{
-    BorrowedPagedWriter, DriveLetterRestore, GeneralAllocationPhase, GeneralAllocationSnapshot,
-    GeneralDiskState, GeneralExclusiveRecoveryTarget, GeneralFreezeObservation, GeneralFrozenLane,
-    GeneralFrozenPartition, GeneralFrozenSourceReadScope, GeneralJournalReadView,
-    GeneralJournaledPartition, GeneralLiveConvertedObservation, GeneralLiveNtfsObservation,
-    GeneralLivePagedNtfsObservation, GeneralLiveRefsLayoutObservation, GeneralLockedPartition,
-    GeneralPartitionReader, GeneralProbe, GeneralReadonlyAllocationWitness, HeldPagedWritePolicy,
-    LiveNtfsObservation, MountPathObservation, NativeEvent, NativeSourceObservationOrigin,
-    OfflinePartition, PagedPolicyIndexBuilder, PagedPolicyIndexFacts, PagedPolicyIndexRow,
-    PagedRecoveryDirection, PagedRecoveryPins, PartitionSnapshot, SourceCacheContinuity,
-    SourceCacheFingerprintDomain, SourceCacheFingerprintMismatch, SourceCacheRefreshDomain,
-    SourceCacheRefreshRow, WritePolicy, capture_mount_paths_for_journal,
-    capture_mount_paths_general, current_windows_directory, examine_shared_disk,
-    mounted_filesystem_general, note_selected_new_bytes_verified,
+    AscendingRanges, BorrowedPagedWriter, DriveLetterRestore, GeneralAllocationPhase,
+    GeneralAllocationSnapshot, GeneralDiskState, GeneralExclusiveRecoveryTarget,
+    GeneralFreezeObservation, GeneralFrozenLane, GeneralFrozenPartition,
+    GeneralFrozenSourceReadScope, GeneralJournalReadView, GeneralJournaledPartition,
+    GeneralLiveConvertedObservation, GeneralLiveNtfsObservation, GeneralLivePagedNtfsObservation,
+    GeneralLiveRefsLayoutObservation, GeneralLockedPartition, GeneralPartitionReader, GeneralProbe,
+    GeneralReadonlyAllocationWitness, HeldPagedWritePolicy, LiveNtfsObservation,
+    MountPathObservation, NativeEvent, NativeSourceObservationOrigin, OfflinePartition,
+    PagedPolicyIndexBuilder, PagedPolicyIndexFacts, PagedPolicyIndexRow, PagedRecoveryDirection,
+    PagedRecoveryPins, PartitionSnapshot, SourceCacheContinuity, SourceCacheFingerprintDomain,
+    SourceCacheFingerprintMismatch, SourceCacheRefreshDomain, SourceCacheRefreshRow, WritePolicy,
+    capture_mount_paths_for_journal, capture_mount_paths_general, current_windows_directory,
+    examine_shared_disk, mounted_filesystem_general, note_selected_new_bytes_verified,
     observe_general_disk_state_readonly, probe_general, rediscover_general_volume,
     rediscover_general_volume_wait, restore_drive_letter_general, restore_drive_letter_general_on,
     selected_new_bytes_verified, write_out_volume_cache,

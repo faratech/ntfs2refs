@@ -71,6 +71,16 @@ impl StageOwner {
         }
     }
 
+    /// A run that stopped before it recorded anything to recover from
+    /// (`recorded_nothing`) built its shadow for nothing, as a diagnose run
+    /// does: nothing was published from it and nothing can ask for it, so it
+    /// is retired the same way, frozen, detached and removed (#201).
+    pub(crate) fn retire_unrecorded(self) -> RetirementReceipt {
+        match self {
+            Self::Vhdx(owner) => RetirementReceipt::Vhdx(owner.retire_unpublished()),
+        }
+    }
+
     /// Called only after live V4 HND/native finalization has succeeded and its
     /// construction/raw owners are closed. Failure never grants replay rights.
     pub(crate) fn retire_after_successful_v4(self) -> RetirementReceipt {
@@ -78,6 +88,29 @@ impl StageOwner {
             Self::Vhdx(owner) => RetirementReceipt::Vhdx(owner.retire_after_successful_v4()),
         }
     }
+}
+
+/// The records under a run's `conversion` folder from which `--recover`
+/// gives a run back or finishes it: the preparation intent, written before
+/// the source is taken offline (the run prints its cancellation command
+/// once it is there), the intent of a resumed preparation, and the
+/// published recovery envelope.
+const RECOVERY_RECORDS: [&str; 3] = [
+    "preparation-intent.json",
+    "resume-intent.json",
+    "recovery-envelope.json",
+];
+
+/// Whether the run in `run` recorded nothing to recover from: none of its
+/// recovery records exists. Until the preparation intent is written the
+/// source is as the run found it (apart from a shrink, which is not undone),
+/// and the run's working volume serves nothing. A record whose presence
+/// cannot be established counts as recorded.
+pub(crate) fn recorded_nothing(run: &std::path::Path) -> bool {
+    let conversion = run.join("conversion");
+    RECOVERY_RECORDS
+        .iter()
+        .all(|name| matches!(conversion.join(name).try_exists(), Ok(false)))
 }
 
 /// Serialize each concrete SDK receipt directly, without a wrapper or variant

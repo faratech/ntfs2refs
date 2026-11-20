@@ -39,7 +39,7 @@ fn open_role(bundle: &HeldWindowsPreparedBundle, role: &str) -> Result<Held> {
     ensure!(
         snapshot.file_bytes == p.bytes
             && snapshot.volume_serial_number == c.journal_identity.volume_serial_number
-            && n2r_win32::sha256_native::hash_range(&mut file, 0, p.bytes)? == sha,
+            && n2r_win32::metadata_pages::pinning_digest(&mut file, p.bytes)? == sha,
         "prepared actual role length/hash/J identity differs"
     );
     Ok(Held {
@@ -105,7 +105,7 @@ fn open_binding(
                 .final_path
                 .get(..prefix.len())
                 .is_some_and(|p| p.eq_ignore_ascii_case(&prefix))
-            && n2r_win32::sha256_native::hash_range(&mut file, 0, pin.bytes)? == sha,
+            && n2r_win32::metadata_pages::pinning_digest(&mut file, pin.bytes)? == sha,
         "prepared expected binding identity/hash/actual J volume differs"
     );
     file.seek(SeekFrom::Start(0))?;

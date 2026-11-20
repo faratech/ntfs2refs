@@ -488,7 +488,7 @@ fn actual_checkpoint_sha(path: &Path, maximum: u64, group: &ArtifactGroupPermit)
         before.file_bytes > 0 && before.number_of_links == 1,
         "ordinary checkpoint file required"
     );
-    let sha = n2r_win32::sha256_native::hash_range(&mut file, 0, before.file_bytes)?;
+    let sha = n2r_win32::metadata_pages::pinning_digest(&mut file, before.file_bytes)?;
     ensure!(
         n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, maximum)?
             == before,
@@ -563,7 +563,7 @@ pub(crate) fn peek_resume_intent(
         "ordinary single-link resume intent required"
     );
     ensure!(
-        n2r_win32::sha256_native::hash_range(&mut file, 0, before.file_bytes)? == independent_sha,
+        n2r_win32::metadata_pages::pinning_digest(&mut file, before.file_bytes)? == independent_sha,
         "independent resume intent SHA differs"
     );
     file.seek(SeekFrom::Start(0))?;
@@ -650,7 +650,7 @@ pub(crate) fn peek_saved_resume_request(
         "resume-request bootstrap identity or independent working volume differs"
     );
     ensure!(
-        n2r_win32::sha256_native::hash_range(&mut file, 0, pin.bytes)? == digest(&pin.sha256)?,
+        n2r_win32::metadata_pages::pinning_digest(&mut file, pin.bytes)? == digest(&pin.sha256)?,
         "resume-request independent pin SHA differs"
     );
     file.seek(SeekFrom::Start(0))?;

@@ -28,12 +28,28 @@ pub fn checks_once() -> bool {
 
 static VERIFY_ONCE: AtomicBool = AtomicBool::new(false);
 
-/// Selects "verify once" for the rest of the process: the run was started
-/// with `--verify fast` (the default) and without `--recheck-everything`.
-/// A pass that only looks again at what another pass of the same run checks
-/// is then left out; a pass that produces something a later step needs
-/// never is. A route that never calls this (`--verify thorough`, a recovery,
-/// every test) keeps every pass.
+/// Selects "each thing is verified once" for the rest of the process: the
+/// run asked for `--verify fast` (the default) and not for
+/// `--recheck-everything`. A pass that only looks again at what another pass
+/// of the same run checks is then left out; a pass that produces something a
+/// later step needs, or is the only independent check of something, never
+/// is. Such a run makes one of:
+///
+/// - Windows reading the contents of a plain stream and the raw reading of
+///   it (Windows' map of the stream is still held to the raw run list);
+/// - the shadow's payloads and metadata read back before the capture and
+///   again by the walk of the frozen shadow, and its directories listed again
+///   after their metadata is restored;
+/// - a move of the shadow's extents held to the mapping of the range it
+///   moved, and each file's complete mapping compared once, when placement
+///   ends, instead of after every one of its moves;
+/// - the journal apply reading a range again immediately before writing it:
+///   the range was held to its OLD digest before the apply marker and is read
+///   back against its NEW digest after it is written;
+/// - the short-name links of a converted Windows volume probed once.
+///
+/// A run with `--verify thorough`, a diagnosis, a recovery and every route
+/// that never calls this (and every test) keep every check as it was.
 pub fn verify_once() {
     VERIFY_ONCE.store(true, SeqCst);
 }

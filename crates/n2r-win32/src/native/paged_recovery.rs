@@ -126,6 +126,9 @@ pub struct PagedRecoveryPins<'a> {
     pub journal_identity: &'a JournalFileIdentity,
     pub journal_path: &'a Path,
     pub journal_profile: JournalProfile,
+    /// The algorithm of the four digests below, as the ticket names it:
+    /// BLAKE3 for a journal this build wrote, SHA-256 for an older one's.
+    pub digest: crate::bulk_digest::Algorithm,
     pub immutable_sha256: [u8; 32],
     pub old_selected_sha256: [u8; 32],
     pub old_restored_selected_sha256: Option<[u8; 32]>,
@@ -271,27 +274,47 @@ fn verify_journal_owner(
 fn verify_selected_digest<R: Read + Seek>(
     source: &mut R,
     policy: &HeldPagedWritePolicy,
+    algorithm: crate::bulk_digest::Algorithm,
     expected: [u8; 32],
 ) -> io::Result<()> {
-    if selected_digest(source, policy)? != expected {
+    if selected_digest(source, policy, algorithm)? != expected {
         return Err(invalid("actual excluded source selected bytes differ"));
     }
     Ok(())
 }
 
 /// The digest of the source's selected ranges, framed as the journal frames
-/// its OLD and NEW digests.
+/// its OLD and NEW digests, by the journal's algorithm.
 fn selected_digest<R: Read + Seek>(
     source: &mut R,
     policy: &HeldPagedWritePolicy,
+    algorithm: crate::bulk_digest::Algorithm,
+) -> io::Result<[u8; 32]> {
+    selected_digest_reaching(source, policy, algorithm, |_, _| ())
+}
+
+/// [`selected_digest`] for a source that reads ahead: `reach(source, end)`
+/// is told, at the first of each group of ranges that lie close together,
+/// where the group ends, so a read-ahead window holds those ranges and not
+/// the megabyte that follows the first of them.
+fn selected_digest_reaching<R: Read + Seek>(
+    source: &mut R,
+    policy: &HeldPagedWritePolicy,
+    algorithm: crate::bulk_digest::Algorithm,
+    mut reach: impl FnMut(&mut R, u64),
 ) -> io::Result<[u8; 32]> {
     let previous = source.stream_position()?;
     let result = (|| {
         let facts = policy.facts()?;
-        let mut hash = crate::sha256_native::Sha256::new()?;
+        let mut hash = crate::bulk_digest::Hasher::new(algorithm)?;
         let mut buffer = vec![0; MAX_IO];
-        for ordinal in 0..u64::from(facts.range_count) {
-            let row = policy.row(ordinal)?;
+        let mut rows = super::AscendingRanges::new(u64::from(facts.range_count));
+        while let Some((row, group_end)) =
+            rows.next(|ordinal| policy.row(ordinal).map(|row| (row, row.offset, row.length)))?
+        {
+            if let Some(end) = group_end {
+                reach(source, end);
+            }
             hash.update(&row.offset.to_le_bytes())?;
             hash.update(&row.length.to_le_bytes())?;
             source.seek(SeekFrom::Start(row.offset))?;
@@ -315,12 +338,12 @@ fn verify_restored_digest<R: Read + Seek>(
     pins: &PagedRecoveryPins<'_>,
 ) -> io::Result<()> {
     let Some(expected) = pins.old_restored_selected_sha256 else {
-        return verify_selected_digest(source, policy, pins.old_selected_sha256);
+        return verify_selected_digest(source, policy, pins.digest, pins.old_selected_sha256);
     };
     let previous = source.stream_position()?;
     let result = (|| {
         let facts = policy.facts()?;
-        let mut hash = crate::sha256_native::Sha256::new()?;
+        let mut hash = crate::bulk_digest::Hasher::new(pins.digest)?;
         let mut buffer = vec![0; MAX_IO];
         for ordinal in 0..u64::from(facts.range_count) {
             let row = policy.row(ordinal)?;
@@ -373,6 +396,10 @@ impl BorrowedPagedWriter<'_> {
     /// writer is copied into the window, and dropping the writer turns it off.
     pub fn set_read_ahead(&mut self, enabled: bool) {
         self.source.set_read_ahead(enabled);
+    }
+    /// See `GeneralFrozenPartition::set_read_ahead_reach`.
+    pub fn set_read_ahead_reach(&mut self, end: u64) {
+        self.source.set_read_ahead_reach(end);
     }
     pub fn sync_all(&mut self) -> io::Result<()> {
         if self.poisoned {
@@ -648,7 +675,7 @@ impl NewBytesState {
         match self {
             Self::Handoff => check_handoff_lifecycle(journal, pins),
             Self::ReviewApply => check_lifecycle(journal, pins, PagedRecoveryDirection::Resume)
-                .map_err(|_| invalid("a review stop requires the apply intent alone")),
+                .map_err(|_| invalid("a stop before the handoff requires the apply intent alone")),
         }
     }
     /// The refusal: the handoff's words, which every run before the review
@@ -719,7 +746,7 @@ fn verify_paged_new_bytes<R: Read + Seek>(
     {
         return Err(state.say(
             "handoff journal must be on a different physical disk",
-            "review journal must be on a different physical disk",
+            "the journal of a stop before the handoff must be on a different physical disk",
         ));
     }
     let facts = policy.facts()?;
@@ -732,13 +759,14 @@ fn verify_paged_new_bytes<R: Read + Seek>(
     {
         return Err(state.say(
             "handoff policy, source geometry or journal capacity differs",
-            "review policy, source geometry or journal capacity differs",
+            "before the handoff: policy, source geometry or journal capacity differs",
         ));
     }
     let before = verify_journal_owner(journal, pins, facts.journal_length)?;
     let modified = journal.metadata()?.modified()?;
     state.check(journal, pins)?;
-    if crate::sha256_native::journal_body(
+    if crate::bulk_digest::journal_body(
+        pins.digest,
         journal,
         BODY,
         facts.journal_length - BODY,
@@ -747,16 +775,17 @@ fn verify_paged_new_bytes<R: Read + Seek>(
     {
         return Err(state.say(
             "handoff journal immutable body differs",
-            "review journal immutable body differs",
+            "before the handoff: the journal immutable body differs",
         ));
     }
     verify_index_against_journal(journal, policy, pins)?;
     if !selected_new_bytes_already_verified(pins) {
-        verify_selected_digest(source, policy, pins.new_selected_sha256)?;
+        verify_selected_digest(source, policy, pins.digest, pins.new_selected_sha256)?;
         note_selected_new_bytes_verified(&pins.immutable_sha256, &pins.new_selected_sha256);
     }
     state.check(journal, pins)?;
-    if crate::sha256_native::journal_body(
+    if crate::bulk_digest::journal_body(
+        pins.digest,
         journal,
         BODY,
         facts.journal_length - BODY,
@@ -765,7 +794,7 @@ fn verify_paged_new_bytes<R: Read + Seek>(
     {
         return Err(state.say(
             "handoff journal changed during selected-byte verification",
-            "review journal changed during selected-byte verification",
+            "before the handoff: the journal changed during selected-byte verification",
         ));
     }
     verify_index_against_journal(journal, policy, pins)?;
@@ -778,7 +807,7 @@ fn verify_paged_new_bytes<R: Read + Seek>(
     {
         return Err(state.say(
             "handoff held journal identity changed",
-            "review held journal identity changed",
+            "before the handoff: the held journal identity changed",
         ));
     }
     Ok(())
@@ -814,7 +843,8 @@ fn verify_paged_abort<R: Read + Seek>(
     let before = verify_journal_owner(journal, pins, facts.journal_length)?;
     let modified = journal.metadata()?.modified()?;
     let abandoned = check_aborted_lifecycle(journal, pins)?;
-    if crate::sha256_native::journal_body(
+    if crate::bulk_digest::journal_body(
+        pins.digest,
         journal,
         BODY,
         facts.journal_length - BODY,
@@ -825,7 +855,7 @@ fn verify_paged_abort<R: Read + Seek>(
     }
     verify_index_against_journal(journal, policy, pins)?;
     if abandoned {
-        verify_selected_digest(source, policy, pins.old_selected_sha256)?;
+        verify_selected_digest(source, policy, pins.digest, pins.old_selected_sha256)?;
     } else {
         verify_restored_digest(source, policy, pins)?;
     }
@@ -846,7 +876,8 @@ fn verify_paged_abort<R: Read + Seek>(
             "rollback intent changed during source verification",
         ));
     }
-    if crate::sha256_native::journal_body(
+    if crate::bulk_digest::journal_body(
+        pins.digest,
         journal,
         BODY,
         facts.journal_length - BODY,
@@ -952,7 +983,10 @@ impl GeneralFrozenPartition {
             .ok_or_else(|| invalid("protected converted observer requires V4 admission"))?;
         let (report, before, observed_readonly, after) = self
             .with_readonly_refs_binding_observation(events, |protected| {
-                crate::lab_hold::reached("finalize-source-readonly");
+                crate::lab_hold::reached_in_verification(
+                    "verify-source-readonly",
+                    "finalize-source-readonly",
+                );
                 let actual_label = protected_refs_label(protected.volume())?;
                 let enrollment_label = crate::volume_label::VolumeLabel::from_text("n2r-retained-shadow")?;
                 let effective_label = match expected_label {
@@ -1019,7 +1053,10 @@ impl GeneralFrozenPartition {
             aliases.plan_digest(),
         )?;
         let ((report,observed_aliases),before,observed_readonly,after)=self.with_readonly_refs_binding_observation(events,|protected|{
-            crate::lab_hold::reached("finalize-source-readonly");
+            crate::lab_hold::reached_in_verification(
+                    "verify-source-readonly",
+                    "finalize-source-readonly",
+                );
             let actual_label=protected_refs_label(protected.volume())?;
             let enrollment_label=crate::volume_label::VolumeLabel::from_text("n2r-retained-shadow")?;
             let effective_label=match expected_label{
@@ -1097,7 +1134,10 @@ impl GeneralFrozenPartition {
         let plan_digest = expectations.semantic_sha256()?;
         let ((report, observed_aliases), before, observed_readonly, after) = self
             .with_readonly_refs_binding_observation(events, |protected| {
-                crate::lab_hold::reached("finalize-source-readonly");
+                crate::lab_hold::reached_in_verification(
+                    "verify-source-readonly",
+                    "finalize-source-readonly",
+                );
                 let actual_label = protected_refs_label(protected.volume())?;
                 let enrollment_label =
                     crate::volume_label::VolumeLabel::from_text("n2r-retained-shadow")?;
@@ -1289,10 +1329,11 @@ impl GeneralFrozenPartition {
         Ok(())
     }
 
-    /// The review stop's reseal (#110): the same as the handoff's above, but
-    /// beside the apply intent alone, with every selected byte exactly NEW.
-    /// Only a run whose authenticated publication records that it stops for
-    /// a review calls this; the handoff is not written and rollback stays
+    /// The reseal before the handoff (the review stop, #110, and a run whose
+    /// handoff follows its verification, #148): the same as the handoff's
+    /// above, but beside the apply intent alone, with every selected byte
+    /// exactly NEW. Only a run whose authenticated publication records one
+    /// of the two calls this; the handoff is not written and rollback stays
     /// open. This never mounts the volume.
     pub fn seal_paged_review_for_observation(
         &mut self,
@@ -1304,7 +1345,7 @@ impl GeneralFrozenPartition {
         let before = self.state(events)?;
         if before.disk_attributes != OFFLINE {
             return Err(invalid(
-                "review reseal requires the same offline source owner",
+                "the reseal before the handoff requires the same offline source owner",
             ));
         }
         let binding = self.binding.clone();
@@ -1312,7 +1353,7 @@ impl GeneralFrozenPartition {
         verify_paged_review_stop(self, length, &binding, policy, journal, pins)?;
         if self.state(events)? != before {
             return Err(invalid(
-                "review source changed during selected NEW verification",
+                "before the handoff: the source changed during selected NEW verification",
             ));
         }
         let mut expected = before;
@@ -1320,13 +1361,15 @@ impl GeneralFrozenPartition {
         set_attributes(&self.file, OFFLINE | READ_ONLY, events)?;
         if general_disk_state(&self.file, &self.binding, events)? != expected {
             return Err(invalid(
-                "review read-only reseal identity or attributes differ",
+                "before the handoff: read-only reseal identity or attributes differ",
             ));
         }
         let path = format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number);
         let readonly = device_file(&path, false, true)?;
         if general_disk_state(&readonly, &self.binding, events)? != expected {
-            return Err(invalid("review readonly source handle route differs"));
+            return Err(invalid(
+                "before the handoff: readonly source handle route differs",
+            ));
         }
         self.file = readonly;
         self.frozen_state = expected;
@@ -1497,7 +1540,8 @@ impl GeneralFrozenPartition {
         let journal_before = verify_journal_owner(journal, pins, facts.journal_length)?;
         let modified = journal.metadata()?.modified()?;
         check_lifecycle(journal, pins, direction)?;
-        if crate::sha256_native::journal_body(
+        if crate::bulk_digest::journal_body(
+            pins.digest,
             journal,
             BODY,
             facts.journal_length - BODY,
@@ -1507,12 +1551,12 @@ impl GeneralFrozenPartition {
             return Err(invalid("protected recovery journal immutable body differs"));
         }
         verify_index_against_journal(journal, policy, pins)?;
-        let actual = selected_digest(&mut self, policy)?;
+        let actual = selected_digest(&mut self, policy, pins.digest)?;
         if !accepted.admits(actual, pins) {
             return Err(invalid(match accepted {
                 FrozenSelected::Old => "actual excluded source selected bytes differ",
                 FrozenSelected::OldOrNew => {
-                    "the frozen source of a review run holds neither exactly the old nor \
+                    "the frozen source of a run that seals before its handoff holds neither exactly the old nor \
                      exactly the new selected bytes"
                 }
             }));
@@ -1523,7 +1567,8 @@ impl GeneralFrozenPartition {
             ));
         }
         check_lifecycle(journal, pins, direction)?;
-        if crate::sha256_native::journal_body(
+        if crate::bulk_digest::journal_body(
+            pins.digest,
             journal,
             BODY,
             facts.journal_length - BODY,
@@ -1605,15 +1650,25 @@ impl GeneralFrozenPartition {
         // this one reads and hashes the other.
         let (body, old_bytes) = {
             let expected = pins.immutable_sha256;
+            let algorithm = pins.digest;
             let length = facts.journal_length - BODY;
             let journal = &mut *journal;
             std::thread::scope(|scope| {
                 let body = scope.spawn(move || {
                     let _sampled = crate::stack_sampler::helper();
-                    crate::sha256_native::journal_body(journal, BODY, length, &expected)
+                    crate::bulk_digest::journal_body(algorithm, journal, BODY, length, &expected)
                 });
                 let old_bytes = self.with_read_ahead(|source| {
-                    verify_selected_digest(source, &policy, pins.old_selected_sha256)
+                    let actual = selected_digest_reaching(
+                        source,
+                        &policy,
+                        algorithm,
+                        GeneralFrozenPartition::set_read_ahead_reach,
+                    )?;
+                    if actual != pins.old_selected_sha256 {
+                        return Err(invalid("actual excluded source selected bytes differ"));
+                    }
+                    Ok(())
                 });
                 (body.join(), old_bytes)
             })
@@ -1632,7 +1687,8 @@ impl GeneralFrozenPartition {
         check_clear_lifecycle(journal)?;
         // Ordinary sharing excludes new file writers, not privileged raw
         // aliases. Preserve a complete closing body hash before publishing AP.
-        if crate::sha256_native::journal_body(
+        if crate::bulk_digest::journal_body(
+            pins.digest,
             journal,
             BODY,
             facts.journal_length - BODY,
@@ -1774,6 +1830,29 @@ impl GeneralExclusiveRecoveryTarget {
             .bring_online_after_paged_abort(policy, journal, pins, events)
     }
 
+    /// The same beside the apply intent alone, for a run whose authenticated
+    /// publication records that its handoff follows its verification (#148):
+    /// a recovery replayed every new byte and seals the source again.
+    pub fn seal_paged_review_for_observation(
+        self,
+        policy: &HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &PagedRecoveryPins<'_>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralFrozenPartition> {
+        if self.inner.write_poisoned
+            || self.inner.policy.is_some()
+            || self.inner.paged_policy.is_some()
+        {
+            return Err(invalid(
+                "the reseal before the handoff requires an unarmed, unpoisoned recovery target",
+            ));
+        }
+        let mut source = self.inner.inner;
+        source.seal_paged_review_for_observation(policy, journal, pins, events)?;
+        Ok(source)
+    }
+
     /// Return the same actual HND source to OFFLINE|READ_ONLY for a protected
     /// ReFS observation. This does not mount the volume or authorize ordinary
     /// writable service.
@@ -1863,7 +1942,8 @@ impl GeneralExclusiveRecoveryTarget {
             Err(error) => return Err(error),
         }
         check_lifecycle(journal, pins, direction)?;
-        if crate::sha256_native::journal_body(
+        if crate::bulk_digest::journal_body(
+            pins.digest,
             journal,
             BODY,
             facts.journal_length - BODY,
@@ -1979,7 +2059,8 @@ pub(super) fn authenticate_partition_paged_source(
         Err(error) => return Err(error),
     }
     check_lifecycle(journal, pins, PagedRecoveryDirection::Resume)?;
-    if crate::sha256_native::journal_body(
+    if crate::bulk_digest::journal_body(
+        pins.digest,
         journal,
         BODY,
         facts.journal_length - BODY,
@@ -1992,6 +2073,7 @@ pub(super) fn authenticate_partition_paged_source(
     verify_selected_digest(
         source,
         policy,
+        pins.digest,
         if require_new {
             pins.new_selected_sha256
         } else {
@@ -1999,7 +2081,8 @@ pub(super) fn authenticate_partition_paged_source(
         },
     )?;
     check_lifecycle(journal, pins, PagedRecoveryDirection::Resume)?;
-    if crate::sha256_native::journal_body(
+    if crate::bulk_digest::journal_body(
+        pins.digest,
         journal,
         BODY,
         facts.journal_length - BODY,
@@ -2067,6 +2150,7 @@ mod review_gate_tests {
             journal_profile: JournalProfile::CapacityPinnedV3 {
                 max_journal_bytes: 1 << 30,
             },
+            digest: crate::bulk_digest::Algorithm::WRITTEN,
             immutable_sha256: [7; 32],
             old_selected_sha256: [8; 32],
             old_restored_selected_sha256: None,

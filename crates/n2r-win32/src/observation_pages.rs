@@ -178,6 +178,18 @@ impl NativePageWriter {
     /// A collection whose memory is accounted has a window made for rows of
     /// `window_row` bytes; a longer row pays `accountant` for the rest while
     /// it is written.
+    /// Who pays for this collection's memory, and the row its window was
+    /// made for: what the source observation's helper threads ask for
+    /// their workspaces. `None` where the collection's memory is not
+    /// accounted, and the observation then has no helpers.
+    pub(crate) fn payer(
+        &self,
+    ) -> Option<(
+        std::sync::Arc<dyn crate::shadow_native::report_memory::ReportMemoryAccountant>,
+        u64,
+    )> {
+        self.beyond_window.clone()
+    }
     pub(crate) fn pay_beyond_window(
         &mut self,
         accountant: std::sync::Arc<dyn crate::shadow_native::report_memory::ReportMemoryAccountant>,

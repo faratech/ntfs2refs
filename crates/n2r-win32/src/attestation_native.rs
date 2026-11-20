@@ -1,6 +1,7 @@
 //! Queries only. No device/file setters or payload writes are exposed here.
 use crate::attestation::*;
 use std::{
+    borrow::Cow,
     fs::File,
     io, mem,
     os::windows::{
@@ -659,6 +660,319 @@ fn collect_file_metadata_with_passes(
         &mut DedicatedAttestationRoute,
     )
 }
+/// What every source object is observed with.
+struct SourceObjects<'a> {
+    volume: &'a File,
+    request: &'a Request,
+    extent_context: Option<crate::stream_native::ExtentContext>,
+    single_content_pass: bool,
+    paged_security_limit: Option<usize>,
+    limits: ResourceLimits,
+}
+impl SourceObjects<'_> {
+    /// The stream evidence an object may hold, taken after objects that
+    /// hold `stream_bytes` between them.
+    fn row_stream_budget(&self, stream_bytes: usize) -> usize {
+        self.limits
+            .stream_evidence_bytes
+            .saturating_sub(stream_bytes)
+            .min(self.paged_security_limit.unwrap_or(usize::MAX))
+    }
+    /// One object as Windows shows it, with `row_stream_budget` bytes of
+    /// stream evidence and its content read against `read_budget`. Nothing
+    /// is counted against the run's totals here ([`account_source_object`]
+    /// does that), so the same object observed on any thread is the same.
+    fn observe(
+        &self,
+        selected: &NativeRequestRow,
+        row_stream_budget: usize,
+        read_budget: &mut crate::logical_hash::Budget,
+    ) -> (Observation, LogicalFile) {
+        let request = self.request;
+        let identity = &selected.identity;
+        let row_request;
+        let capture_request = if request.has_paged_selectors() {
+            row_request = Request {
+                files: vec![identity.clone()],
+                extent_identity_streams: selected.extent_identity_streams.clone(),
+                ..request.clone()
+            };
+            &row_request
+        } else {
+            request
+        };
+        let mut logical = LogicalFile {
+            identity: identity.clone(),
+            before: vec![],
+            after: vec![],
+        };
+        let descriptor = FILE_ID_DESCRIPTOR {
+            dwSize: mem::size_of::<FILE_ID_DESCRIPTOR>() as u32,
+            Type: FileIdType,
+            Anonymous: FILE_ID_DESCRIPTOR_0 {
+                FileId: identity.reference() as i64,
+            },
+        };
+        // SAFETY: descriptor is initialized, valid volume hint remains open.
+        // READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_READ_EA | ACCESS_SYSTEM_SECURITY;
+        // BACKUP_SEMANTICS | OPEN_REPARSE_POINT avoids following reparse targets.
+        let handle = unsafe {
+            OpenFileById(
+                raw(self.volume),
+                &descriptor,
+                0x01020088,
+                7,
+                ptr::null(),
+                0x02200000,
+            )
+        };
+        let mut obs = Observation {
+            identity: identity.clone(),
+            open_error: None,
+            before: None,
+            after: None,
+            streams_before: None,
+            streams_after: None,
+            case_only_fallback: None,
+        };
+        if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+            obs.open_error = Some(io::Error::last_os_error().raw_os_error().unwrap_or(31));
+            if request.requires_directory_case_sensitivity() {
+                obs.case_only_fallback = Some(case_only_fallback(self.volume, &descriptor));
+            }
+            return (obs, logical);
+        }
+        // SAFETY: transfer the newly acquired unique file-handle ownership.
+        let file = unsafe { File::from_raw_handle(handle) };
+        let snapshot = |file: &File| match self.paged_security_limit {
+            Some(maximum) => {
+                source_snapshot_paged(file, request.requires_directory_case_sensitivity(), maximum)
+            }
+            None => source_snapshot(file, request.requires_directory_case_sensitivity()),
+        };
+        obs.before = Some(snapshot(&file));
+        let (capture, hashes) = crate::stream_native::capture(
+            &file,
+            capture_request,
+            identity,
+            read_budget,
+            row_stream_budget,
+            self.extent_context,
+        );
+        obs.streams_before = Some(capture);
+        logical.before = hashes;
+        if self.single_content_pass {
+            obs.streams_after = obs.streams_before.clone();
+            logical.after = logical.before.clone();
+        } else {
+            let (capture, hashes) = crate::stream_native::capture(
+                &file,
+                capture_request,
+                identity,
+                read_budget,
+                row_stream_budget
+                    .saturating_sub(
+                        obs.streams_before
+                            .as_ref()
+                            .map_or(0, StreamCapture::retained_bytes),
+                    )
+                    .saturating_sub(hash_retained_bytes(&logical.before)),
+                self.extent_context,
+            );
+            obs.streams_after = Some(capture);
+            logical.after = hashes;
+        }
+        // The source is a frozen disk mounted read-only for this observation.
+        // A second snapshot through the same handle can only repeat the
+        // first; under the check-once policy it is not taken.
+        obs.after = if crate::verify_policy::checks_once() {
+            obs.before.clone()
+        } else {
+            Some(snapshot(&file))
+        };
+        (obs, logical)
+    }
+}
+
+/// Counts what one observed object holds against the run's totals, in the
+/// objects' order, and refuses the object that exceeds one.
+fn account_source_object(
+    obs: &Observation,
+    logical: &LogicalFile,
+    limits: &ResourceLimits,
+    stream_bytes: &mut usize,
+    security_bytes: &mut usize,
+) -> io::Result<()> {
+    if obs.open_error.is_some() {
+        if let Some(fallback) = &obs.case_only_fallback {
+            *stream_bytes = stream_bytes
+                .checked_add(fallback.retained_bytes()?)
+                .ok_or_else(|| invalid("native directory case fallback budget overflow"))?;
+            if *stream_bytes > limits.stream_evidence_bytes {
+                return Err(invalid(
+                    "native directory case fallback evidence budget exceeded",
+                ));
+            }
+        }
+        return Ok(());
+    }
+    for s in [&obs.before, &obs.after].into_iter().flatten() {
+        *security_bytes = security_bytes
+            .checked_add(s.security.len())
+            .and_then(|n| n.checked_add(s.kernel_security.as_ref().map_or(0, |q| q.bytes.len())))
+            .ok_or_else(|| invalid("native security evidence accounting overflow"))?;
+        *stream_bytes = stream_bytes
+            .checked_add(s.extended_attribute_bytes()?)
+            .ok_or_else(|| invalid("native EA evidence budget overflow"))?;
+        *stream_bytes = stream_bytes
+            .checked_add(s.reparse_bytes()?)
+            .ok_or_else(|| invalid("native reparse evidence budget overflow"))?;
+        *stream_bytes = stream_bytes
+            .checked_add(s.directory_case_sensitivity_bytes()?)
+            .ok_or_else(|| invalid("native directory case evidence budget overflow"))?;
+    }
+    if *security_bytes > limits.security_bytes {
+        return Err(invalid("native descriptor budget exhausted"));
+    }
+    for s in [&obs.streams_before, &obs.streams_after]
+        .into_iter()
+        .flatten()
+    {
+        *stream_bytes = stream_bytes.saturating_add(s.retained_bytes());
+    }
+    *stream_bytes = stream_bytes
+        .saturating_add(hash_retained_bytes(&logical.before) + hash_retained_bytes(&logical.after));
+    if *stream_bytes > limits.stream_evidence_bytes {
+        return Err(invalid("native stream evidence budget exhausted"));
+    }
+    Ok(())
+}
+
+/// The objects taken so far, and what they hold between them.
+struct Taken<'s> {
+    sink: Option<&'s mut crate::observation_pages::NativePageWriter>,
+    files: Vec<Observation>,
+    logical_files: Vec<LogicalFile>,
+    read_budget: crate::logical_hash::Budget,
+    stream_bytes: usize,
+    security_bytes: usize,
+    /// What the helper threads hold for themselves; none once given up.
+    helper_workspaces: Vec<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>,
+}
+/// An object ready to be observed: its selector, the stream evidence it may
+/// hold if taken after the objects gathered before it, whether a helper
+/// observes it ahead of its turn, and the memory its selector is paid with
+/// while it waits for its turn.
+struct Selected<'r> {
+    row: Cow<'r, NativeRequestRow>,
+    row_stream_budget: usize,
+    ahead: bool,
+    _paid: Option<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>,
+}
+/// What a helper thread saw of one object, what it read, and the memory it
+/// is held with until it is taken.
+struct Observed {
+    observation: Observation,
+    logical: LogicalFile,
+    read: crate::logical_hash::Budget,
+    _paid: Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>,
+}
+
+/// What a helper thread holds for itself while it observes: the stack the
+/// standard library gives a thread it starts, its query buffers (the kept
+/// one, a content read's chunk, the security descriptor and extended
+/// attribute responses) and the object it is observing, up to the row the
+/// collection's window was made for. A longer row is paid for when it is
+/// done ([`held_bytes`]).
+fn helper_workspace_bytes(window_row: u64) -> u64 {
+    const THREAD_STACK_BYTES: u64 = 2 * 1024 * 1024;
+    [
+        THREAD_STACK_BYTES,
+        crate::query_scratch::KEPT_BYTES as u64,
+        crate::logical_hash::CHUNK as u64,
+        MAX_SECURITY_BYTES as u64,
+        crate::extended_attributes::MAX_EA_BYTES as u64,
+        window_row,
+    ]
+    .into_iter()
+    .fold(0u64, u64::saturating_add)
+}
+
+/// A workspace for each helper the observation of `objects` objects can use:
+/// one per processor, as many as the ledger grants as spare memory. Fewer
+/// than two is none: one helper would only make the calling thread wait.
+fn helper_workspaces(
+    payer: &dyn crate::shadow_native::report_memory::ReportMemoryAccountant,
+    window_row: u64,
+    objects: usize,
+) -> Vec<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>> {
+    let wanted = std::thread::available_parallelism()
+        .map_or(1, |cores| cores.get())
+        .min(objects);
+    let bytes = helper_workspace_bytes(window_row);
+    let mut workspaces = Vec::new();
+    while workspaces.len() < wanted {
+        match payer.reserve_spare(bytes) {
+            Ok(workspace) => workspaces.push(workspace),
+            Err(_) => break,
+        }
+    }
+    if workspaces.len() < 2 {
+        workspaces.clear();
+    }
+    workspaces
+}
+
+/// The memory a selector holds that was decoded for it.
+fn request_row_bytes(row: &NativeRequestRow) -> u64 {
+    let mut bytes = mem::size_of::<NativeRequestRow>().saturating_add(
+        row.extent_identity_streams
+            .capacity()
+            .saturating_mul(mem::size_of::<ExtentIdentityStream>()),
+    );
+    for stream in &row.extent_identity_streams {
+        bytes = bytes
+            .saturating_add(stream.name_utf16.capacity().saturating_mul(2))
+            .saturating_add(
+                stream
+                    .extents
+                    .capacity()
+                    .saturating_mul(mem::size_of::<ExtentIdentityExtent>()),
+            );
+    }
+    bytes as u64
+}
+
+/// The memory an observed object holds until it is taken.
+fn held_bytes(obs: &Observation, logical: &LogicalFile) -> io::Result<u64> {
+    let mut bytes = mem::size_of::<Observation>() + mem::size_of::<LogicalFile>();
+    for s in [&obs.before, &obs.after].into_iter().flatten() {
+        bytes = bytes
+            .saturating_add(s.queries.capacity() * mem::size_of::<Query>())
+            .saturating_add(s.security.capacity())
+            .saturating_add(s.kernel_security.as_ref().map_or(0, |q| q.bytes.capacity()))
+            .saturating_add(s.extended_attribute_bytes()?)
+            .saturating_add(s.reparse_bytes()?)
+            .saturating_add(s.directory_case_sensitivity_bytes()?);
+        for q in &s.queries {
+            bytes = bytes.saturating_add(q.bytes.capacity());
+        }
+    }
+    for s in [&obs.streams_before, &obs.streams_after]
+        .into_iter()
+        .flatten()
+    {
+        bytes = bytes.saturating_add(s.retained_bytes());
+    }
+    bytes = bytes
+        .saturating_add(hash_retained_bytes(&logical.before))
+        .saturating_add(hash_retained_bytes(&logical.after));
+    if let Some(fallback) = &obs.case_only_fallback {
+        bytes = bytes.saturating_add(fallback.retained_bytes()?);
+    }
+    Ok(bytes as u64)
+}
+
 pub(crate) fn collect_file_metadata_with_routes(
     request: &Request,
     selectors: &impl NativeRequestDomain,
@@ -718,10 +1032,8 @@ pub(crate) fn collect_file_metadata_with_routes(
         )
     };
     let bitmap_before_bytes = bitmap_bytes(&bitmap_before, &bitmap_before_continuation);
-    let mut stream_bytes = base_before.bytes.capacity();
-    let mut files = vec![];
-    let mut logical_files = vec![];
-    let mut read_budget = if request.resource_profile.is_some() {
+    let stream_bytes = base_before.bytes.capacity();
+    let read_budget = if request.resource_profile.is_some() {
         crate::logical_hash::Budget::with_limits(
             limits.logical_read_bytes,
             limits.maximum_stream_bytes,
@@ -730,180 +1042,151 @@ pub(crate) fn collect_file_metadata_with_routes(
     } else {
         crate::logical_hash::Budget::new(crate::logical_hash::DEFAULT_LIMIT)
     };
-    let mut security_bytes = 0usize;
     let paged_security_limit = sink
         .as_deref()
         .map(|sink| usize::try_from(sink.maximum_row_bytes()).unwrap_or(usize::MAX));
-    for index in 0..selectors.len() {
-        let _timed = crate::perf::scope(crate::perf::Point::SourceObject);
-        let selected = selectors.row(index)?;
-        let identity = &selected.identity;
-        // Whatever fails for this object is reported with its file record.
-        (|| -> io::Result<()> {
-            let row_request;
-            let capture_request = if request.has_paged_selectors() {
-                row_request = Request {
-                    files: vec![identity.clone()],
-                    extent_identity_streams: selected.extent_identity_streams.clone(),
-                    ..request.clone()
-                };
-                &row_request
-            } else {
-                request
-            };
-            let mut logical = LogicalFile {
-                identity: identity.clone(),
-                before: vec![],
-                after: vec![],
-            };
-            let descriptor = FILE_ID_DESCRIPTOR {
-                dwSize: mem::size_of::<FILE_ID_DESCRIPTOR>() as u32,
-                Type: FileIdType,
-                Anonymous: FILE_ID_DESCRIPTOR_0 {
-                    FileId: identity.reference() as i64,
-                },
-            };
-            // SAFETY: descriptor is initialized, valid volume hint remains open.
-            // READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_READ_EA | ACCESS_SYSTEM_SECURITY;
-            // BACKUP_SEMANTICS | OPEN_REPARSE_POINT avoids following reparse targets.
-            let handle = unsafe {
-                OpenFileById(
-                    raw(&volume),
-                    &descriptor,
-                    0x01020088,
-                    7,
-                    ptr::null(),
-                    0x02200000,
-                )
-            };
-            let mut obs = Observation {
-                identity: identity.clone(),
-                open_error: None,
-                before: None,
-                after: None,
-                streams_before: None,
-                streams_after: None,
-                case_only_fallback: None,
-            };
-            if handle == INVALID_HANDLE_VALUE || handle.is_null() {
-                obs.open_error = Some(io::Error::last_os_error().raw_os_error().unwrap_or(31));
-                if request.requires_directory_case_sensitivity() {
-                    obs.case_only_fallback = Some(case_only_fallback(&volume, &descriptor));
-                    stream_bytes = stream_bytes
-                        .checked_add(obs.case_only_fallback.as_ref().unwrap().retained_bytes()?)
-                        .ok_or_else(|| invalid("native directory case fallback budget overflow"))?;
-                    if stream_bytes > limits.stream_evidence_bytes {
-                        return Err(invalid(
-                            "native directory case fallback evidence budget exceeded",
-                        ));
-                    }
+    let objects = SourceObjects {
+        volume: &volume,
+        request,
+        extent_context,
+        single_content_pass,
+        paged_security_limit,
+        limits,
+    };
+    // Objects ahead of the one being taken are observed on helper threads
+    // where the collection's memory is accounted (each helper's workspace and
+    // each result it holds are paid for as spare memory), and where no read
+    // of an object can be refused for what the objects ahead of it read. The
+    // objects are still counted and written one after another, in order.
+    let helper_payer = sink
+        .as_deref()
+        .and_then(crate::observation_pages::NativePageWriter::payer)
+        .filter(|_| read_budget.is_unbounded() && selectors.len() >= 2);
+    let helper_workspaces = helper_payer
+        .as_ref()
+        .map_or_else(Vec::new, |(payer, window_row)| {
+            helper_workspaces(&**payer, *window_row, selectors.len())
+        });
+    let helpers = helper_workspaces.len();
+    let row_payer = helper_payer
+        .as_ref()
+        .filter(|_| helpers >= 2)
+        .map(|(payer, _)| payer);
+    let template = read_budget.fresh();
+    let mut taken = Taken {
+        sink,
+        files: vec![],
+        logical_files: vec![],
+        read_budget,
+        stream_bytes,
+        security_bytes: 0,
+        helper_workspaces,
+    };
+    crate::ordered_observation::in_order(
+        selectors.len(),
+        helpers,
+        crate::perf::Point::SourceObject,
+        &mut taken,
+        |taken, index, first| {
+            let row = selectors.row(index)?;
+            // What the object may hold if it is taken after what the objects
+            // taken so far hold: right for every object of the batch while
+            // the row limit, not the run's total, is what bounds it.
+            let row_stream_budget = objects.row_stream_budget(taken.stream_bytes);
+            // Where the run's total bounds it instead, every object taken
+            // changes it, and an object observed ahead would be observed
+            // again: it waits for its turn.
+            let ahead = row_payer.filter(|_| {
+                !taken.helper_workspaces.is_empty()
+                    && Some(row_stream_budget) == paged_security_limit
+            });
+            let mut paid = None;
+            if let (Some(payer), Cow::Owned(owned)) = (ahead, &row) {
+                match payer.reserve_spare(request_row_bytes(owned)) {
+                    Ok(lease) => paid = Some(lease),
+                    // Held as one object at a time holds it.
+                    Err(_) if first => {}
+                    Err(_) => return Ok(None),
                 }
-            } else {
-                // SAFETY: transfer the newly acquired unique file-handle ownership.
-                let file = unsafe { File::from_raw_handle(handle) };
-                obs.before = Some(match paged_security_limit {
-                    Some(maximum) => source_snapshot_paged(
-                        &file,
-                        request.requires_directory_case_sensitivity(),
-                        maximum,
-                    ),
-                    None => source_snapshot(&file, request.requires_directory_case_sensitivity()),
+            }
+            Ok(Some(Selected {
+                row,
+                row_stream_budget,
+                ahead: ahead.is_some(),
+                _paid: paid,
+            }))
+        },
+        |selected| {
+            let payer = row_payer.filter(|_| selected.ahead)?;
+            let mut read = template.fresh();
+            let (observation, logical) =
+                objects.observe(&selected.row, selected.row_stream_budget, &mut read);
+            let paid = payer
+                .reserve_spare(held_bytes(&observation, &logical).ok()?)
+                .ok()?;
+            Some(Observed {
+                observation,
+                logical,
+                read,
+                _paid: paid,
+            })
+        },
+        |taken, _, selected, observed| {
+            let identity = &selected.row.identity;
+            // Whatever fails for this object is reported with its file record.
+            (|| -> io::Result<()> {
+                let row_stream_budget = objects.row_stream_budget(taken.stream_bytes);
+                let read_budget = &mut taken.read_budget;
+                // What a helper saw is what this thread would see now if the
+                // object was read with the same limits and its reads, added
+                // to those before it, fit the run's: otherwise it is read
+                // again here, as it would have been without helpers.
+                let observed = observed.filter(|observed| {
+                    selected.row_stream_budget == row_stream_budget
+                        && read_budget.absorb(&observed.read)
                 });
-                let row_stream_budget = limits
-                    .stream_evidence_bytes
-                    .saturating_sub(stream_bytes)
-                    .min(paged_security_limit.unwrap_or(usize::MAX));
-                let (capture, hashes) = crate::stream_native::capture(
-                    &file,
-                    capture_request,
-                    identity,
-                    &mut read_budget,
-                    row_stream_budget,
-                    extent_context,
-                );
-                obs.streams_before = Some(capture);
-                logical.before = hashes;
-                if single_content_pass {
-                    obs.streams_after = obs.streams_before.clone();
-                    logical.after = logical.before.clone();
-                } else {
-                    let (capture, hashes) = crate::stream_native::capture(
-                        &file,
-                        capture_request,
-                        identity,
-                        &mut read_budget,
-                        row_stream_budget
-                            .saturating_sub(
-                                obs.streams_before
-                                    .as_ref()
-                                    .map_or(0, StreamCapture::retained_bytes),
-                            )
-                            .saturating_sub(hash_retained_bytes(&logical.before)),
-                        extent_context,
-                    );
-                    obs.streams_after = Some(capture);
-                    logical.after = hashes;
-                }
-                // The source is a frozen disk mounted read-only for this observation.
-                // A second snapshot through the same handle can only repeat the
-                // first; under the check-once policy it is not taken.
-                obs.after = if crate::verify_policy::checks_once() {
-                    obs.before.clone()
-                } else {
-                    Some(match paged_security_limit {
-                        Some(maximum) => source_snapshot_paged(
-                            &file,
-                            request.requires_directory_case_sensitivity(),
-                            maximum,
-                        ),
-                        None => {
-                            source_snapshot(&file, request.requires_directory_case_sensitivity())
-                        }
-                    })
+                let (obs, logical, _paid) = match observed {
+                    Some(observed) => {
+                        (observed.observation, observed.logical, Some(observed._paid))
+                    }
+                    None => {
+                        let _in_turn =
+                            (helpers >= 2).then(|| crate::perf::scope(crate::perf::Point::InTurn));
+                        let (obs, logical) =
+                            objects.observe(&selected.row, row_stream_budget, read_budget);
+                        (obs, logical, None)
+                    }
                 };
-                for s in [&obs.before, &obs.after].into_iter().flatten() {
-                    security_bytes = security_bytes
-                        .checked_add(s.security.len())
-                        .and_then(|n| {
-                            n.checked_add(s.kernel_security.as_ref().map_or(0, |q| q.bytes.len()))
-                        })
-                        .ok_or_else(|| invalid("native security evidence accounting overflow"))?;
-                    stream_bytes = stream_bytes
-                        .checked_add(s.extended_attribute_bytes()?)
-                        .ok_or_else(|| invalid("native EA evidence budget overflow"))?;
-                    stream_bytes = stream_bytes
-                        .checked_add(s.reparse_bytes()?)
-                        .ok_or_else(|| invalid("native reparse evidence budget overflow"))?;
-                    stream_bytes = stream_bytes
-                        .checked_add(s.directory_case_sensitivity_bytes()?)
-                        .ok_or_else(|| invalid("native directory case evidence budget overflow"))?;
+                account_source_object(
+                    &obs,
+                    &logical,
+                    &limits,
+                    &mut taken.stream_bytes,
+                    &mut taken.security_bytes,
+                )?;
+                if let Some(sink) = taken.sink.as_deref_mut() {
+                    sink.file(&selected.row, &obs, &logical)?;
+                } else {
+                    taken.files.push(obs);
+                    taken.logical_files.push(logical);
                 }
-                if security_bytes > limits.security_bytes {
-                    return Err(invalid("native descriptor budget exhausted"));
-                }
-                for s in [&obs.streams_before, &obs.streams_after]
-                    .into_iter()
-                    .flatten()
-                {
-                    stream_bytes = stream_bytes.saturating_add(s.retained_bytes());
-                }
-                stream_bytes = stream_bytes.saturating_add(
-                    hash_retained_bytes(&logical.before) + hash_retained_bytes(&logical.after),
-                );
-                if stream_bytes > limits.stream_evidence_bytes {
-                    return Err(invalid("native stream evidence budget exhausted"));
-                }
-            }
-            if let Some(sink) = sink.as_deref_mut() {
-                sink.file(&selected, &obs, &logical)?;
-            } else {
-                files.push(obs);
-                logical_files.push(logical);
-            }
-            Ok(())
-        })()
-        .map_err(|error| at_source_record(identity, error))?;
-    }
+                Ok(())
+            })()
+            .map_err(|error| at_source_record(identity, error))
+        },
+        // An object that could not be gathered beside the helpers' memory is
+        // gathered without it, and the rest of the pass runs in turn.
+        |taken| taken.helper_workspaces.clear(),
+    )?;
+    let Taken {
+        sink: returned,
+        files,
+        logical_files,
+        read_budget,
+        mut stream_bytes,
+        ..
+    } = taken;
+    sink = returned;
     let base_after = crate::stream_native::base(&volume);
     let (bitmap_after, bitmap_after_continuation, streamed_after) =
         if request.resource_profile.is_some() {
@@ -1118,5 +1401,176 @@ mod source_record_tests {
             error.to_string(),
             "source observation of MFT record 4711 (sequence 3): native descriptor budget exhausted"
         );
+    }
+}
+
+#[cfg(test)]
+mod helper_observation_tests {
+    use super::*;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    /// A handle as the source observer holds one: attributes only, backup
+    /// semantics, a reparse point opened as itself.
+    fn held(path: &std::path::Path) -> File {
+        std::fs::OpenOptions::new()
+            .access_mode(0x80)
+            .share_mode(7)
+            .custom_flags(0x0220_0000)
+            .open(path)
+            .unwrap()
+    }
+
+    /// The volume serial number and file reference Windows gives an object.
+    fn identity_of(file: &File) -> (u64, FileIdentity) {
+        let answer = query(file, 18, 24);
+        assert_eq!(answer.native_error, None);
+        let serial = u64::from_le_bytes(answer.bytes[0..8].try_into().unwrap());
+        let reference = u64::from_le_bytes(answer.bytes[8..16].try_into().unwrap());
+        let identity = FileIdentity {
+            record_number: reference & 0xffff_ffff_ffff,
+            sequence_number: (reference >> 48) as u16,
+        };
+        (serial, identity)
+    }
+
+    /// Every object's evidence with the last access time of its basic
+    /// information (class 0) cleared. Reading a file sets it on a volume
+    /// that keeps access times, as the test's volume may and the frozen,
+    /// read-only source does not; it is the one thing two passes over the
+    /// same files may see differently.
+    fn without_access_times(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                if fields.get("class") == Some(&serde_json::Value::from(0))
+                    && let Some(serde_json::Value::Array(bytes)) = fields.get_mut("bytes")
+                    && bytes.len() == 40
+                {
+                    bytes[8..16].fill(serde_json::Value::from(0));
+                }
+                fields.values_mut().for_each(without_access_times);
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(without_access_times),
+            _ => {}
+        }
+    }
+
+    /// Objects observed on helper threads, each with a budget of its own that
+    /// is then added in order, are what one thread observes of them in turn:
+    /// the same evidence, byte for byte, and the same reads.
+    #[test]
+    fn an_object_observed_on_a_helper_is_the_object_observed_in_turn() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut paths = vec![directory.path().to_path_buf()];
+        for d in 0..4usize {
+            let sub = directory.path().join(format!("d{d}"));
+            std::fs::create_dir(&sub).unwrap();
+            paths.push(sub.clone());
+            for f in 0..40usize {
+                let path = sub.join(format!("f{f}.bin"));
+                std::fs::write(&path, vec![(d * 40 + f) as u8; (f * 977) % 70_000]).unwrap();
+                if f % 7 == 0 {
+                    // Named streams where the volume has them.
+                    let _ = std::fs::write(format!("{}:notes", path.display()), b"named");
+                }
+                paths.push(path);
+            }
+        }
+        let holders: Vec<File> = paths.iter().map(|path| held(path)).collect();
+        let (serial, _) = identity_of(&holders[0]);
+        let rows: Vec<NativeRequestRow> = holders
+            .iter()
+            .map(|holder| {
+                let (on, identity) = identity_of(holder);
+                assert_eq!(on, serial);
+                NativeRequestRow {
+                    identity,
+                    extent_identity_streams: vec![],
+                }
+            })
+            .collect();
+        let guid = crate::file_storage::final_path_guid(&holders[0]).unwrap();
+        let request = Request {
+            schema_version: 3,
+            resource_profile: None,
+            source_inspection_sha256: String::new(),
+            volume: guid[..guid.find('}').unwrap() + 2].to_string(),
+            disk_number: 0,
+            partition_offset: 0,
+            partition_length: 0,
+            ntfs_serial: serial,
+            files: rows.iter().map(|row| row.identity.clone()).collect(),
+            extent_identity_streams: vec![],
+        };
+        // The privileges the observation holds; without them (a test run
+        // that is not elevated) every open is refused, on any thread alike.
+        let privileges = Privileges::enable().ok();
+        let objects = SourceObjects {
+            volume: &holders[0],
+            request: &request,
+            extent_context: None,
+            single_content_pass: false,
+            paged_security_limit: Some(1 << 20),
+            limits: request.limits(),
+        };
+        let unbounded = || {
+            crate::logical_hash::Budget::with_limits(u64::MAX, i64::MAX as u64, u64::MAX).unwrap()
+        };
+        let pass = |helpers: usize| {
+            let mut state = (unbounded(), Vec::new());
+            let template = unbounded();
+            crate::ordered_observation::in_order(
+                rows.len(),
+                helpers,
+                crate::perf::Point::InTurn,
+                &mut state,
+                |_, index, _| Ok(Some(&rows[index])),
+                |row| {
+                    let mut read = template.fresh();
+                    let seen = objects.observe(row, 1 << 20, &mut read);
+                    Some((seen, read))
+                },
+                |(budget, seen), _, row, observed| {
+                    let one = match observed.filter(|(_, read)| budget.absorb(read)) {
+                        Some((one, _)) => one,
+                        None => objects.observe(row, 1 << 20, budget),
+                    };
+                    let mut one = serde_json::to_value(&one).unwrap();
+                    without_access_times(&mut one);
+                    seen.push(one.to_string());
+                    Ok(())
+                },
+                |_| {},
+            )
+            .unwrap();
+            let audit = state.0.audit();
+            let reads = (
+                audit.reserved_bytes,
+                audit.bytes_read,
+                audit.read_calls,
+                audit.eof_probes,
+            );
+            (state.1, reads)
+        };
+        let in_turn = pass(0);
+        if pass(0) != in_turn {
+            // Something else changes these files: nothing to compare.
+            return;
+        }
+        if privileges.is_some() {
+            // Elevated, every object is opened and its content read.
+            let opened = in_turn.0.iter();
+            assert!(
+                opened
+                    .clone()
+                    .all(|seen| seen.contains("\"open_error\":null"))
+            );
+            assert!(in_turn.1.1 > 0);
+        }
+        let at_once = pass(4);
+        assert_eq!(at_once.0.len(), in_turn.0.len());
+        for (index, (a, b)) in at_once.0.iter().zip(&in_turn.0).enumerate() {
+            assert_eq!(a, b, "object {index}");
+        }
+        assert_eq!(at_once.1, in_turn.1);
     }
 }

@@ -54,6 +54,9 @@ pub struct Budget {
     maximum_stream_bytes: u64,
     maximum_read_calls: u64,
     maximum_stream_read_calls: u64,
+    /// Whether a read was refused for a limit: a reservation or a call that
+    /// did not fit. See [`Budget::absorb`].
+    refused: bool,
 }
 impl Budget {
     pub fn new(limit_bytes: u64) -> Self {
@@ -68,6 +71,7 @@ impl Budget {
             maximum_stream_bytes: u64::MAX,
             maximum_read_calls: u64::MAX,
             maximum_stream_read_calls: MAX_CALLS,
+            refused: false,
         }
     }
     /// Explicit collection envelope. The byte reservation includes each EOF
@@ -97,7 +101,69 @@ impl Budget {
     pub fn audit(&self) -> Audit {
         self.audit.clone()
     }
+    /// Whether the run's totals are unbounded: no read can be refused for
+    /// what other objects read before it, only for its own stream's limits.
+    pub(crate) fn is_unbounded(&self) -> bool {
+        self.audit.limit_bytes == u64::MAX && self.maximum_read_calls == u64::MAX
+    }
+    /// A budget with the same limits and nothing read yet: what one object
+    /// is read with on a helper thread, before it is known what the objects
+    /// ahead of it read.
+    pub(crate) fn fresh(&self) -> Self {
+        Self {
+            audit: Audit {
+                limit_bytes: self.audit.limit_bytes,
+                reserved_bytes: 0,
+                bytes_read: 0,
+                read_calls: 0,
+                eof_probes: 0,
+            },
+            maximum_stream_bytes: self.maximum_stream_bytes,
+            maximum_read_calls: self.maximum_read_calls,
+            maximum_stream_read_calls: self.maximum_stream_read_calls,
+            refused: false,
+        }
+    }
+    /// Adds what `object` (a [`Self::fresh`] budget of this one) read, if
+    /// reading it after everything this budget has read would have read the
+    /// same: no read of it was refused, and the totals fit, so that every
+    /// reservation and call it made fits here as well. Otherwise nothing is
+    /// added, and the object is read again against this budget.
+    pub(crate) fn absorb(&mut self, object: &Self) -> bool {
+        if object.refused
+            || object.audit.limit_bytes != self.audit.limit_bytes
+            || object.maximum_stream_bytes != self.maximum_stream_bytes
+            || object.maximum_read_calls != self.maximum_read_calls
+            || object.maximum_stream_read_calls != self.maximum_stream_read_calls
+        {
+            return false;
+        }
+        let total = |a: u64, b: u64| a.checked_add(b);
+        let (Some(reserved), Some(bytes_read), Some(read_calls), Some(eof_probes)) = (
+            total(self.audit.reserved_bytes, object.audit.reserved_bytes),
+            total(self.audit.bytes_read, object.audit.bytes_read),
+            total(self.audit.read_calls, object.audit.read_calls),
+            total(self.audit.eof_probes, object.audit.eof_probes),
+        ) else {
+            return false;
+        };
+        if reserved > self.audit.limit_bytes || read_calls > self.maximum_read_calls {
+            return false;
+        }
+        self.audit.reserved_bytes = reserved;
+        self.audit.bytes_read = bytes_read;
+        self.audit.read_calls = read_calls;
+        self.audit.eof_probes = eof_probes;
+        true
+    }
     fn reserve(&mut self, expected: u64) -> bool {
+        let granted = self.try_reserve(expected);
+        if !granted {
+            self.refused = true;
+        }
+        granted
+    }
+    fn try_reserve(&mut self, expected: u64) -> bool {
         if expected > self.maximum_stream_bytes {
             return false;
         }
@@ -170,6 +236,7 @@ fn read_chunks<R: Read>(
         if calls == budget.maximum_stream_read_calls
             || budget.audit.read_calls == budget.maximum_read_calls
         {
+            budget.refused = true;
             out.status = Status::CallBudgetExceeded;
             return out;
         }
@@ -224,5 +291,80 @@ fn read_chunks<R: Read>(
         }
         digest.update(&buffer[..n]);
         out.bytes_read += n as u64;
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    fn stream(length: usize) -> io::Cursor<Vec<u8>> {
+        io::Cursor::new((0..length).map(|byte| byte as u8).collect())
+    }
+
+    /// Objects read with fresh budgets and added in order end with the
+    /// audit and outcomes of reading them one after another with one.
+    #[test]
+    fn objects_read_apart_and_absorbed_in_order_audit_as_one_budget() {
+        let lengths = [0usize, 1, 4096, CHUNK + 7, 3];
+        let mut one = Budget::with_limits(u64::MAX, i64::MAX as u64, u64::MAX).unwrap();
+        let alone: Vec<Outcome> = lengths
+            .iter()
+            .map(|&n| read(&mut stream(n), n as u64, &mut one))
+            .collect();
+        let mut run = Budget::with_limits(u64::MAX, i64::MAX as u64, u64::MAX).unwrap();
+        assert!(run.is_unbounded());
+        let mut apart = Vec::new();
+        for &n in &lengths {
+            let mut object = run.fresh();
+            apart.push(read(&mut stream(n), n as u64, &mut object));
+            assert!(run.absorb(&object));
+        }
+        assert_eq!(apart, alone);
+        let (a, b) = (one.audit(), run.audit());
+        assert_eq!(
+            (a.reserved_bytes, a.bytes_read, a.read_calls, a.eof_probes),
+            (b.reserved_bytes, b.bytes_read, b.read_calls, b.eof_probes)
+        );
+    }
+
+    /// An object that would not have fit after the ones before it, or whose
+    /// own read was refused, is not added: it is read again in its turn.
+    #[test]
+    fn an_object_that_would_not_have_fit_is_not_absorbed() {
+        let mut run = Budget::with_limits(100, 100, 1000).unwrap();
+        assert!(!run.is_unbounded());
+        let mut first = run.fresh();
+        assert_eq!(
+            read(&mut stream(60), 60, &mut first).status,
+            Status::Complete
+        );
+        assert!(run.absorb(&first));
+        // Alone it fits; after the first it does not.
+        let mut second = run.fresh();
+        assert_eq!(
+            read(&mut stream(50), 50, &mut second).status,
+            Status::Complete
+        );
+        let before = run.audit();
+        assert!(!run.absorb(&second));
+        assert_eq!(run.audit().reserved_bytes, before.reserved_bytes);
+        assert_eq!(run.audit().read_calls, before.read_calls);
+        // Read in its turn, it is what one budget says of it.
+        assert_eq!(
+            read(&mut stream(50), 50, &mut run).status,
+            Status::BudgetExceeded
+        );
+        // A refusal of its own is never absorbed, even with room to spare.
+        let mut room = Budget::with_limits(100, 10, 1000).unwrap();
+        let mut refused = room.fresh();
+        assert_eq!(
+            read(&mut stream(20), 20, &mut refused).status,
+            Status::BudgetExceeded
+        );
+        assert!(!room.absorb(&refused));
+        // Neither is a budget with other limits.
+        let other = Budget::with_limits(200, 100, 1000).unwrap().fresh();
+        assert!(!room.absorb(&other));
     }
 }

@@ -606,6 +606,10 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     // changed, on a shadow that is discarded. A recovery takes over what an
     // interrupted run left and changes one object at a time, as before.
     let change_payer = if recovering { None } else { enumeration_payer };
+    // Under "verify once" the final read-back pass is skipped on a non-recovering
+    // run, so Pass 0 does not need to query FSCTL_GET_RETRIEVAL_POINTERS or hash
+    // retrieval maps solely for `mappings`.
+    let read_back = recovering || !crate::verify_policy::verifies_once();
     let handle_shape = |(index, item): &(usize, Input<'_>)| {
         let handle = handles
             .get(index)
@@ -630,7 +634,8 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             {
                 return Err(invalid("owned metadata stream shape differs"));
             }
-            if item.logical_length() != 0
+            if read_back
+                && item.logical_length() != 0
                 && layout::u64_at(&standard, 0)? >= crate::target_cluster::bytes()
             {
                 let canonical = crate::stream_native::retrieval_capture(handle)?.canonical;
@@ -1512,7 +1517,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     // mapping) to the same expectations, before anything is written to the
     // source. A run that resumes metadata an earlier process restored still
     // reads all of it back here.
-    let read_back = recovering || !crate::verify_policy::verifies_once();
+    // `read_back` was computed before Pass 0 (`recovering || !verifies_once()`).
     let mut next = if read_back { 0usize } else { input.len() };
     while next < input.len() {
         metadata_progress(8, next as u64);

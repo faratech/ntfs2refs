@@ -2313,7 +2313,9 @@ fn run_domain_inner(
     let mut eligible = Vec::new();
     for index in &indexes {
         let file = tree.file_by_slot(*index)?;
-        file.check_placements()?;
+        if !(deferred_after_evacuation && crate::verify_policy::verifies_once()) {
+            file.check_placements()?;
+        }
         for &(v, l, n) in file.tracked_mappings() {
             owned.push(shadow_evacuation::Extent {
                 file_index: u32::try_from(*index)
@@ -2661,7 +2663,7 @@ fn run_domain_inner(
             &counters,
         );
     }
-    if deferred_after_evacuation {
+    if deferred_after_evacuation && !holes.is_empty() {
         // Initial blocker relocation leaves deferred VCN holes unchanged.
         // The freshly observed, post-flush views alone decide whether each
         // hole can now land directly at its own source coordinates. Scratch

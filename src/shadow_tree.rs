@@ -1156,15 +1156,21 @@ fn validate_stream_source(stream: StreamRef<'_>, physical: &mut Vec<(u64, u64)>)
         // data. The reverse holds only where the source's clusters are at
         // least the target's: an island on smaller clusters that does not
         // start on a target cluster boundary is copied, not kept.
-        ensure!(
-            actual.iter().all(|island| {
-                expected.iter().any(|allocated| {
-                    allocated.offset <= island.offset
-                        && island.offset + island.length <= allocated.offset + allocated.length
-                })
-            }),
-            "sparse initialized islands lie outside the allocated VDL prefix"
-        );
+        let mut expected_at = 0usize;
+        for island in &actual {
+            let island_end = island.offset + island.length;
+            while expected_at < expected.len()
+                && expected[expected_at].offset + expected[expected_at].length <= island.offset
+            {
+                expected_at += 1;
+            }
+            ensure!(
+                expected_at < expected.len()
+                    && expected[expected_at].offset <= island.offset
+                    && island_end <= expected[expected_at].offset + expected[expected_at].length,
+                "sparse initialized islands lie outside the allocated VDL prefix"
+            );
+        }
         return Ok(());
     }
     ensure!(

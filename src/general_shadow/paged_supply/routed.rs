@@ -756,7 +756,7 @@ fn scan_plan(
     policy: VerificationPolicy,
     at_once: bool,
     progress: &Reporter,
-) -> Result<RoutedPlan> {
+) -> Result<(RoutedPlan, std::collections::BTreeSet<(usize, usize)>)> {
     let mut hash = Sha256::new();
     hash.update(b"n2r-private-routed-prefix-plan-v1\0");
     let (mut logical, mut referenced, mut routed, mut materialized, mut holes) =
@@ -778,6 +778,7 @@ fn scan_plan(
             None,
         );
     };
+    let mut materialized_streams = std::collections::BTreeSet::new();
     (|| -> Result<()> {
         let mut first = 0usize;
         while first < expected.len() {
@@ -791,7 +792,7 @@ fn scan_plan(
                 if object.directory || system(object) {
                     continue;
                 }
-                for stream in object.data_streams() {
+                for (stream_ordinal, stream) in object.data_streams().enumerate() {
                     let mut seen = batch.next(template, row_window);
                     require_policy_evidence(policy, stream)?;
                     let id = identity(object, stream);
@@ -848,6 +849,7 @@ fn scan_plan(
                                         .context("routed total overflow")?;
                                 }
                                 Piece::Materialize => {
+                                    materialized_streams.insert((index, stream_ordinal));
                                     materialized = materialized
                                         .checked_add(length)
                                         .context("materialized total overflow")?
@@ -893,14 +895,17 @@ fn scan_plan(
         0,
         None,
     );
-    Ok(RoutedPlan {
-        sha256: hex::encode(hash.finalize()),
-        logical,
-        referenced,
-        routed,
-        materialized,
-        holes,
-    })
+    Ok((
+        RoutedPlan {
+            sha256: hex::encode(hash.finalize()),
+            logical,
+            referenced,
+            routed,
+            materialized,
+            holes,
+        },
+        materialized_streams,
+    ))
 }
 
 /// Holds the exact source adapter, expected pages and native private tree from
@@ -959,7 +964,7 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
     // what a helper would have seen before. The budget refusal still stands
     // between the plan and the first write.
     let at_once = policy.verifies_once();
-    let plan = scan_plan(
+    let (plan, materialized_streams) = scan_plan(
         bytes, expected, template, row_window, policy, at_once, progress,
     )?;
     ensure!(
@@ -998,7 +1003,10 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
             if object.directory || system(&object) {
                 continue;
             }
-            for stream in object.data_streams() {
+            for (stream_ordinal, stream) in object.data_streams().enumerate() {
+                if at_once && !materialized_streams.contains(&(index, stream_ordinal)) {
+                    continue;
+                }
                 let id = identity(&object, stream);
                 let mut observed =
                     leased_ranges(bytes, template, index, &object, stream, row_window, None)?;
@@ -1137,7 +1145,7 @@ pub(crate) fn prepare_recovered<'a, 'source, 'scope>(
             .context("recovered routed supply RAM overflow")?,
     )?;
     // A recovered supply takes one stream at a time, as before.
-    let plan = scan_plan(
+    let (plan, _) = scan_plan(
         bytes, expected, template, row_window, policy, false, progress,
     )?;
     ensure!(

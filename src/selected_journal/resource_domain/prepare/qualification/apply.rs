@@ -478,12 +478,22 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         };
         let (source, _) = prepared.context.source_and_inspection()?;
         n2r_win32::perf::step("verify journal and source, write apply marker");
+        // The OLD bytes are hashed on a worker while they are read, where
+        // the worker's second buffer can be paid for as spare memory.
+        let hashed_behind = self
+            .prepared
+            .closure
+            .arena()
+            .reserve_spare_ram(n2r_win32::SELECTED_DIGEST_BEHIND_BYTES)
+            .ok();
         let mut target = prepared.inner._journal.begin_sealed_fresh_apply(
             source,
             index.policy(),
             &pins,
+            hashed_behind.is_some(),
             events,
         )?;
+        drop(hashed_behind);
         ensure!(
             target.byte_len() == ticket.image_length,
             "fresh source transition changed partition geometry"

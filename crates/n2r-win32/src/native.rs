@@ -39,7 +39,8 @@ pub mod recovery_boot;
 pub mod recovery_image;
 pub use paged_recovery::{
     BorrowedPagedWriter, GeneralLiveConvertedObservation, PagedRecoveryDirection,
-    PagedRecoveryPins, note_selected_new_bytes_verified, selected_new_bytes_verified,
+    PagedRecoveryPins, SELECTED_DIGEST_BEHIND_BYTES, note_selected_new_bytes_verified,
+    selected_new_bytes_verified,
 };
 pub use paged_recovery::{
     PartitionClosedJournalObservation, PartitionHandoffWitness, PartitionTerminalKind,

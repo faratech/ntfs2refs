@@ -290,25 +290,60 @@ fn selected_digest<R: Read + Seek>(
     policy: &HeldPagedWritePolicy,
     algorithm: crate::bulk_digest::Algorithm,
 ) -> io::Result<[u8; 32]> {
-    selected_digest_reaching(source, policy, algorithm, |_, _| ())
+    selected_digest_reaching(source, policy, algorithm, false, |_, _| ())
 }
+
+/// The bytes a caller pays for, beside what [`selected_digest_reaching`]
+/// holds anyway, to have the selected digest computed on a worker thread
+/// (`hashed_behind`): the worker's second buffer.
+pub const SELECTED_DIGEST_BEHIND_BYTES: u64 = MAX_IO as u64;
 
 /// [`selected_digest`] for a source that reads ahead: `reach(source, end)`
 /// is told, at the first of each group of ranges that lie close together,
 /// where the group ends, so a read-ahead window holds those ranges and not
 /// the megabyte that follows the first of them.
+///
+/// With `hashed_behind` the bytes are hashed on a worker
+/// (`bulk_digest::HashedBehind`) while this thread reads on: hashed here,
+/// each range of a few tens of kilobytes was too short to be divided among
+/// the pool's threads and held up the next read. The caller pays for the
+/// worker's second buffer ([`SELECTED_DIGEST_BEHIND_BYTES`]). The bytes
+/// hashed, their order and so the digest are the same either way.
 fn selected_digest_reaching<R: Read + Seek>(
     source: &mut R,
     policy: &HeldPagedWritePolicy,
     algorithm: crate::bulk_digest::Algorithm,
+    hashed_behind: bool,
     mut reach: impl FnMut(&mut R, u64),
 ) -> io::Result<[u8; 32]> {
     let previous = source.stream_position()?;
     let result = (|| {
         let facts = policy.facts()?;
+        let mut rows = super::AscendingRanges::new(u64::from(facts.range_count));
+        if hashed_behind {
+            let mut hash = crate::bulk_digest::HashedBehind::new(algorithm, MAX_IO)?;
+            while let Some((row, group_end)) =
+                rows.next(|ordinal| policy.row(ordinal).map(|row| (row, row.offset, row.length)))?
+            {
+                if let Some(end) = group_end {
+                    reach(source, end);
+                }
+                hash.update(&row.offset.to_le_bytes())?;
+                hash.update(&row.length.to_le_bytes())?;
+                source.seek(SeekFrom::Start(row.offset))?;
+                let mut remaining = row.length;
+                while remaining != 0 {
+                    let space = hash.space()?;
+                    let count = remaining.min(space.len() as u64) as usize;
+                    source.read_exact(&mut space[..count])?;
+                    hash.filled(count);
+                    remaining -= count as u64;
+                }
+            }
+            return hash.finish();
+        }
         let mut hash = crate::bulk_digest::Hasher::new(algorithm)?;
         let mut buffer = vec![0; MAX_IO];
-        let mut rows = super::AscendingRanges::new(u64::from(facts.range_count));
         while let Some((row, group_end)) =
             rows.next(|ordinal| policy.row(ordinal).map(|row| (row, row.offset, row.length)))?
         {
@@ -347,7 +382,8 @@ fn verify_restored_digest_reaching<R: Read + Seek>(
     mut reach: impl FnMut(&mut R, u64),
 ) -> io::Result<()> {
     let Some(expected) = pins.old_restored_selected_sha256 else {
-        if selected_digest_reaching(source, policy, pins.digest, reach)? != pins.old_selected_sha256
+        if selected_digest_reaching(source, policy, pins.digest, false, reach)?
+            != pins.old_selected_sha256
         {
             return Err(invalid("actual excluded source selected bytes differ"));
         }
@@ -950,7 +986,8 @@ fn verify_paged_abort_reaching<R: Read + Seek>(
     }
     verify_index_against_journal(journal, policy, pins)?;
     if abandoned {
-        if selected_digest_reaching(source, policy, pins.digest, reach)? != pins.old_selected_sha256
+        if selected_digest_reaching(source, policy, pins.digest, false, reach)?
+            != pins.old_selected_sha256
         {
             return Err(invalid("actual excluded source selected bytes differ"));
         }
@@ -1668,6 +1705,7 @@ impl GeneralFrozenPartition {
                 source,
                 policy,
                 pins.digest,
+                false,
                 GeneralFrozenPartition::set_read_ahead_reach,
             )
         })?;
@@ -1727,11 +1765,16 @@ impl GeneralFrozenPartition {
     /// protected target, arena and journal owners for the complete borrow.
     /// The journal's AP is flushed and read back before the disk becomes
     /// writable; interruption between those steps leaves OFFLINE|READ_ONLY+AP.
+    ///
+    /// `hashed_behind`: the caller paid for [`SELECTED_DIGEST_BEHIND_BYTES`]
+    /// (spare memory), and the OLD bytes are hashed on a worker while this
+    /// thread reads on. The digest, and what it is held to, are the same.
     pub fn begin_paged_fresh_apply<'a>(
         &'a mut self,
         policy: HeldPagedWritePolicy,
         journal: &mut File,
         pins: &PagedRecoveryPins<'_>,
+        hashed_behind: bool,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<BorrowedPagedWriter<'a>> {
         pins.journal_binding.validate()?;
@@ -1782,6 +1825,7 @@ impl GeneralFrozenPartition {
                         source,
                         &policy,
                         algorithm,
+                        hashed_behind,
                         GeneralFrozenPartition::set_read_ahead_reach,
                     )?;
                     if actual != pins.old_selected_sha256 {

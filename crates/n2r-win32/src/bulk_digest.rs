@@ -152,6 +152,157 @@ impl Hasher {
     }
 }
 
+/// A streaming digest of exactly the bytes passed to it, in order, computed
+/// on a worker thread while the calling thread reads on.
+///
+/// For a pass that reads many short ranges (the selected ranges average a
+/// few tens of kilobytes on the full Windows volume): hashed as they are
+/// read, each is too short to be divided among the pool's threads and is
+/// hashed on the reading thread between one read and the next. Here the
+/// bytes are gathered, in order, into a buffer of `buffer` bytes, which the
+/// caller reads into directly ([`Self::space`], [`Self::filled`]) or copies
+/// into ([`Self::update`]); a full buffer goes to the worker, which hashes
+/// it as one input (on the pool's threads for BLAKE3), while the caller
+/// fills the other one. Two buffers are held: the caller pays for both.
+///
+/// The digest is the one [`Hasher`] gives for the same bytes: a streaming
+/// digest does not depend on how its input is divided.
+pub struct HashedBehind {
+    current: Vec<u8>,
+    filled: usize,
+    jobs: Option<std::sync::mpsc::SyncSender<(Vec<u8>, usize)>>,
+    free: Option<std::sync::mpsc::Receiver<Vec<u8>>>,
+    worker: Option<std::thread::JoinHandle<io::Result<[u8; 32]>>>,
+}
+
+impl HashedBehind {
+    pub fn new(algorithm: Algorithm, buffer: usize) -> io::Result<Self> {
+        if buffer == 0 {
+            return Err(io::Error::other("a digest worker needs a buffer"));
+        }
+        let (jobs, queue) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize)>(1);
+        let (recycle, free) = std::sync::mpsc::channel::<Vec<u8>>();
+        let mut second = Vec::new();
+        second
+            .try_reserve_exact(buffer)
+            .map_err(|_| io::Error::other("no memory for a digest worker's buffer"))?;
+        second.resize(buffer, 0);
+        recycle
+            .send(second)
+            .map_err(|_| io::Error::other("a digest worker's buffer could not be queued"))?;
+        let mut current = Vec::new();
+        current
+            .try_reserve_exact(buffer)
+            .map_err(|_| io::Error::other("no memory for a digest worker's buffer"))?;
+        current.resize(buffer, 0);
+        let worker = std::thread::Builder::new()
+            .name("n2r-hashed-behind".into())
+            .spawn(move || {
+                let _sampled = crate::stack_sampler::helper();
+                // A SHA-256 hash object belongs to the thread that made it.
+                let mut hash = Hasher::new(algorithm)?;
+                for (buffer, length) in queue {
+                    hash.update(&buffer[..length])?;
+                    // The caller may have stopped; the buffer then goes.
+                    let _ = recycle.send(buffer);
+                }
+                hash.finish()
+            })?;
+        Ok(Self {
+            current,
+            filled: 0,
+            jobs: Some(jobs),
+            free: Some(free),
+            worker: Some(worker),
+        })
+    }
+
+    /// Adds `bytes` after everything added so far.
+    pub fn update(&mut self, mut bytes: &[u8]) -> io::Result<()> {
+        while !bytes.is_empty() {
+            let space = self.space()?;
+            let count = space.len().min(bytes.len());
+            space[..count].copy_from_slice(&bytes[..count]);
+            self.filled(count);
+            bytes = &bytes[count..];
+        }
+        Ok(())
+    }
+
+    /// Room for the next bytes, never empty: the caller writes the bytes that
+    /// come next into its start and says how many with [`Self::filled`].
+    pub fn space(&mut self) -> io::Result<&mut [u8]> {
+        if self.filled == self.current.len() {
+            self.hand_over()?;
+        }
+        Ok(&mut self.current[self.filled..])
+    }
+
+    /// The first `count` bytes of the last [`Self::space`] come next.
+    pub fn filled(&mut self, count: usize) {
+        self.filled = (self.filled + count).min(self.current.len());
+    }
+
+    fn hand_over(&mut self) -> io::Result<()> {
+        let next = match self.free.as_ref().map(std::sync::mpsc::Receiver::recv) {
+            Some(Ok(next)) => next,
+            _ => return Err(self.stopped()),
+        };
+        let full = std::mem::replace(&mut self.current, next);
+        let sent = self
+            .jobs
+            .as_ref()
+            .is_some_and(|jobs| jobs.send((full, self.filled)).is_ok());
+        if !sent {
+            return Err(self.stopped());
+        }
+        self.filled = 0;
+        Ok(())
+    }
+
+    /// The worker's own error, where it stopped before the end of the input.
+    fn stopped(&mut self) -> io::Error {
+        self.jobs.take();
+        self.free.take();
+        match self.worker.take().map(std::thread::JoinHandle::join) {
+            Some(Ok(Err(error))) => error,
+            Some(Err(_)) => io::Error::other("digest worker panicked"),
+            _ => io::Error::other("digest worker stopped before the end of its input"),
+        }
+    }
+
+    /// The digest of everything added.
+    pub fn finish(mut self) -> io::Result<[u8; 32]> {
+        if self.filled != 0 {
+            let full = std::mem::take(&mut self.current);
+            let sent = self
+                .jobs
+                .as_ref()
+                .is_some_and(|jobs| jobs.send((full, self.filled)).is_ok());
+            if !sent {
+                return Err(self.stopped());
+            }
+        }
+        self.jobs.take();
+        match self.worker.take().map(std::thread::JoinHandle::join) {
+            Some(Ok(result)) => result,
+            Some(Err(_)) => Err(io::Error::other("digest worker panicked")),
+            None => Err(io::Error::other("digest worker already stopped")),
+        }
+    }
+}
+
+impl Drop for HashedBehind {
+    /// A pass that stops early ends the worker with it.
+    fn drop(&mut self) {
+        self.jobs.take();
+        self.free.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 /// The digest of `bytes`, held in memory.
 pub fn digest(algorithm: Algorithm, bytes: &[u8]) -> io::Result<[u8; 32]> {
     let mut hash = Hasher::new(algorithm)?;
@@ -517,4 +668,56 @@ pub fn journal_body_reading(
         note_journal_body_verified(algorithm, expected, offset, length);
     }
     Ok((actual, true))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Bytes that do not repeat at any short period.
+    fn bytes(length: usize) -> Vec<u8> {
+        (0..length)
+            .map(|index| (index.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect()
+    }
+
+    #[test]
+    fn a_digest_hashed_behind_is_the_digest_of_the_same_bytes() {
+        let input = bytes(3 * 64 * 1024 + 12_345);
+        for algorithm in [Algorithm::Blake3, Algorithm::Sha256] {
+            let expected = digest(algorithm, &input).unwrap();
+            // Pieces of every size, some crossing the buffer's end, some
+            // filling it exactly, some read in place.
+            let mut behind = HashedBehind::new(algorithm, 64 * 1024).unwrap();
+            let mut at = 0;
+            let mut step = 1;
+            while at < input.len() {
+                let count = step.min(input.len() - at);
+                if step % 2 == 0 {
+                    behind.update(&input[at..at + count]).unwrap();
+                    at += count;
+                } else {
+                    let space = behind.space().unwrap();
+                    let count = count.min(space.len());
+                    space[..count].copy_from_slice(&input[at..at + count]);
+                    behind.filled(count);
+                    at += count;
+                }
+                step = step * 3 + 1;
+                if step > 100_000 {
+                    step = 16;
+                }
+            }
+            assert_eq!(behind.finish().unwrap(), expected, "{}", algorithm.name());
+            let empty = HashedBehind::new(algorithm, 4096).unwrap();
+            assert_eq!(empty.finish().unwrap(), digest(algorithm, &[]).unwrap());
+        }
+    }
+
+    #[test]
+    fn a_pass_that_stops_early_ends_its_worker() {
+        let mut behind = HashedBehind::new(Algorithm::Blake3, 4096).unwrap();
+        behind.update(&bytes(10_000)).unwrap();
+        drop(behind);
+    }
 }

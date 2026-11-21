@@ -462,12 +462,13 @@ impl NativeSelectedJournal {
         source: &'a mut n2r_win32::GeneralFrozenPartition,
         policy: n2r_win32::HeldPagedWritePolicy,
         pins: &n2r_win32::PagedRecoveryPins<'_>,
+        hashed_behind: bool,
         events: &mut Vec<n2r_win32::NativeEvent>,
     ) -> Result<n2r_win32::BorrowedPagedWriter<'a>> {
         self.require_prepared_body_seal()?;
         match &mut self.storage {
             Storage::Buffered(file) => {
-                Ok(source.begin_paged_fresh_apply(policy, file, pins, events)?)
+                Ok(source.begin_paged_fresh_apply(policy, file, pins, hashed_behind, events)?)
             }
             _ => anyhow::bail!("sealed markerless journal owner absent"),
         }

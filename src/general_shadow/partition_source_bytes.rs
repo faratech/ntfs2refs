@@ -44,20 +44,28 @@ impl BorrowedPagedSource<'_, '_> {
     /// does a source held without a scope: its capture has an observer that
     /// reads through the owner.
     pub(crate) fn takes_read_lane(&self) -> bool {
+        self.read_lane_depth() >= 2
+    }
+    /// How many reads the device of a source that [`Self::takes_read_lane`]
+    /// takes at once (`IoProfile::queue_depth`); zero for one that does not.
+    pub(crate) fn read_lane_depth(&self) -> usize {
         match self {
-            Self::DedicatedScoped(scope) => scope.io_profile().queue_depth >= 2,
-            Self::Dedicated(_) | Self::Partition { .. } => false,
+            Self::DedicatedScoped(scope) => scope.io_profile().queue_depth,
+            Self::Dedicated(_) | Self::Partition { .. } => 0,
         }
     }
-    /// One read lane of the source, where [`Self::takes_read_lane`]. What it
-    /// reads lies between the checks that bracket the scope, so it is to be
-    /// dropped before the scope ends. A lane that cannot be opened is the
-    /// scope's failure (the scope remembers it) and is returned as one: it
-    /// is not a reason to read without a lane.
-    pub(crate) fn read_lane(&mut self) -> io::Result<Option<n2r_win32::GeneralFrozenLane>> {
+    /// `count` read lanes of the source, where [`Self::takes_read_lane`].
+    /// What they read lies between the checks that bracket the scope, so
+    /// they are to be dropped before the scope ends. A lane that cannot be
+    /// opened is the scope's failure (the scope remembers it) and is
+    /// returned as one: it is not a reason to read without a lane.
+    pub(crate) fn read_lanes(
+        &mut self,
+        count: usize,
+    ) -> io::Result<Vec<n2r_win32::GeneralFrozenLane>> {
         match self {
-            Self::DedicatedScoped(scope) => Ok(scope.read_lanes(1, &mut Vec::new())?.pop()),
-            Self::Dedicated(_) | Self::Partition { .. } => Ok(None),
+            Self::DedicatedScoped(scope) => scope.read_lanes(count, &mut Vec::new()),
+            Self::Dedicated(_) | Self::Partition { .. } => Ok(Vec::new()),
         }
     }
     pub(super) fn validate(&mut self, before: Option<&n2r_win32::GeneralDiskState>) -> Result<()> {

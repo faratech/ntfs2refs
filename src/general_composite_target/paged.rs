@@ -624,36 +624,40 @@ struct PagedShadowClosing<'a> {
     hash: Sha256,
     read: u64,
     reused: u64,
-    // The same reads, made ahead of this pass by a helper thread on a read
-    // lane of the shadow, each with its XXH3-128. The pass still takes them
+    // The same reads, made ahead of this pass by helper threads on read
+    // lanes of the shadow, each with its XXH3-128. The pass still takes them
     // in order and holds each to the place and length the intervals give
-    // it. The helper has ended, and its lane is closed, when the pass is
-    // finished or dropped.
+    // it. The helpers have ended, and their lanes are closed, when the pass
+    // is finished or dropped.
     ahead: Option<OriginalPrefetch>,
 }
 /// The most one read of the closing pass asks for.
 const CLOSING_CHUNK: usize = crate::ntfs_inspect::SESSION_READ_BYTES;
 impl<'a> PagedShadowClosing<'a> {
-    /// `spare` is the ledger that may pay for reading ahead: three chunks,
-    /// the lane, the list of the intervals and a stack, as spare memory. On
-    /// a device that takes one read at a time, without a ledger or when it
-    /// has no memory to spare, the pass reads through the target's owner as
-    /// it did, as it also does when the helper cannot be started.
+    /// `spare` is the ledger that may pay for reading ahead: for each of as
+    /// many lanes as the device's depth asks for and the ledger grants
+    /// (`OriginalPrefetch::lanes_for`), its chunks, the lane and a stack,
+    /// and the list of the intervals, as spare memory. On a device that
+    /// takes one read at a time, without a ledger or when it has no memory
+    /// to spare, the pass reads through the target's owner as it did, as
+    /// it also does when the helpers cannot be started.
     fn new(
         target: &n2r_win32::GeneralFrozenPartition,
         intervals: &'a Intervals,
         spare: Option<&crate::artifact_arena::ArtifactArena>,
     ) -> Result<Self> {
         let rows = intervals.store.len();
+        let wanted = OriginalPrefetch::lanes_for(target.io_profile().queue_depth);
         let mut listed = spare
-            .filter(|_| rows != 0 && target.io_profile().queue_depth >= 2)
+            .filter(|_| rows != 0 && wanted != 0)
             .and_then(|arena| {
-                let paid = arena
-                    .reserve_spare_ram(OriginalPrefetch::workspace_bytes(CLOSING_CHUNK, rows)?)
-                    .ok()?;
+                let (lanes, paid) =
+                    OriginalPrefetch::reserve_lanes(wanted, CLOSING_CHUNK, rows, |bytes| {
+                        arena.reserve_spare_ram(bytes).ok()
+                    })?;
                 let mut list = Vec::new();
                 list.try_reserve_exact(usize::try_from(rows).ok()?).ok()?;
-                Some((list, paid))
+                Some((list, lanes, paid))
             });
         let mut hash = Sha256::new();
         hash.update(b"n2r-paged-target-consumed-bytes-v2\0");
@@ -663,26 +667,26 @@ impl<'a> PagedShadowClosing<'a> {
             let row = intervals.row(ordinal)?;
             hash.update(row.offset.to_le_bytes());
             hash.update(row.length.to_le_bytes());
-            if let Some((list, _)) = &mut listed {
+            if let Some((list, _, _)) = &mut listed {
                 list.push(crate::refs_write_set::ByteRange {
                     offset: row.offset,
                     length: row.length,
                 });
             }
         }
-        // The lane only buys speed: one that cannot be opened (its handle,
-        // its aligned buffer, the state query that binds it) leaves the
-        // pass reading through the target, as it did, with every check of
-        // its own.
+        // The lanes only buy speed: lanes that cannot be opened (a handle,
+        // an aligned buffer, the state query that binds it) leave the pass
+        // reading through the target, as it did, with every check of its
+        // own.
         let ahead = match listed {
-            Some((list, paid)) => target
-                .read_lanes(1, &mut Vec::new())
+            Some((list, lanes, paid)) => target
+                .read_lanes(lanes, &mut Vec::new())
                 .ok()
-                .and_then(|mut lanes| lanes.pop())
-                .and_then(|lane| {
+                .filter(|lanes| !lanes.is_empty())
+                .and_then(|lanes| {
                     OriginalPrefetch::start(
                         "n2r-capture-shadow-ahead",
-                        lane,
+                        lanes,
                         list,
                         CLOSING_CHUNK,
                         true,

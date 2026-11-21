@@ -43,7 +43,8 @@ pub struct LaneFingerprint {
 impl LaneFingerprint {
     /// Reads it on a thread of its own; the result is joined with
     /// [`LaneFingerprintRead::finish`]. Dropped unjoined (its caller
-    /// failed), the read stops after the batch it is reading.
+    /// failed), the read stops before the next chunk. Fails only where the
+    /// thread cannot be started: the caller then reads it in place.
     pub fn start(self) -> Result<LaneFingerprintRead> {
         let cancel = std::sync::Arc::clone(&self.cancel);
         let handle = std::thread::Builder::new()
@@ -1426,7 +1427,11 @@ impl PagedSourceFingerprint {
             }
         }
         let mut events = Vec::new();
-        let lanes = source.read_lanes(lanes, &mut events)?;
+        // A lane that cannot be had leaves the re-read to the caller's
+        // handle; one whose route differs from the frozen state is an error.
+        let Some(lanes) = source.read_lanes_if_available(lanes, &mut events)? else {
+            return Ok(None);
+        };
         Ok(Some((
             LaneFingerprint {
                 lanes,

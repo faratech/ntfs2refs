@@ -4800,6 +4800,40 @@ impl GeneralFrozenPartition {
             })
             .collect()
     }
+
+    /// [`Self::read_lanes`] for a caller that can do without them: `None`
+    /// where a lane cannot be opened, its disk state asked or its buffer
+    /// had (the caller then reads through this handle). A lane whose route
+    /// differs from the frozen state is still an error.
+    pub fn read_lanes_if_available(
+        &self,
+        count: usize,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Option<Vec<GeneralFrozenLane>>> {
+        let path = format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number);
+        let mut lanes = Vec::with_capacity(count);
+        for _ in 0..count {
+            let Ok(file) = device_file(&path, false, true) else {
+                return Ok(None);
+            };
+            let Ok(state) = general_disk_state(&file, &self.binding, events) else {
+                return Ok(None);
+            };
+            if state != self.frozen_state {
+                return Err(invalid("frozen read lane route differs"));
+            }
+            let Ok(buffer) = AlignedBuffer::new() else {
+                return Ok(None);
+            };
+            lanes.push(GeneralFrozenLane {
+                file,
+                binding: self.binding.clone(),
+                position: 0,
+                buffer,
+            });
+        }
+        Ok(Some(lanes))
+    }
 }
 
 impl Read for GeneralFrozenLane {

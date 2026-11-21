@@ -1691,21 +1691,23 @@ impl ResourceSourceContext {
             let mut storage_hint_count = 0u64;
             let reread = if reread_beside_comparison {
                 n2r_win32::perf::step("re-read source fingerprint");
-                match fingerprint.lane_reread(source)? {
-                    Some((lanes, ram)) => Some((lanes.start()?, ram)),
-                    None => {
-                        let after_hash = fingerprint.hash(source)?;
-                        let after = native_batch(events, |batch| source.state(batch))?;
-                        ensure!(
-                            before == after
-                                && source_sha == after_hash
-                                && raw.canonical_sha256()? == inspection_sha,
-                            "frozen source changed across actual native observation"
-                        );
-                        reread_done = Some((after, after_hash));
-                        None
-                    }
+                // Without the memory, a lane or a thread for it, the
+                // fingerprint is read in place, as before.
+                let started = fingerprint
+                    .lane_reread(source)?
+                    .and_then(|(lanes, ram)| lanes.start().ok().map(|read| (read, ram)));
+                if started.is_none() {
+                    let after_hash = fingerprint.hash(source)?;
+                    let after = native_batch(events, |batch| source.state(batch))?;
+                    ensure!(
+                        before == after
+                            && source_sha == after_hash
+                            && raw.canonical_sha256()? == inspection_sha,
+                        "frozen source changed across actual native observation"
+                    );
+                    reread_done = Some((after, after_hash));
                 }
+                started
             } else {
                 None
             };

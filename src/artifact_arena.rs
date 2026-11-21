@@ -2222,10 +2222,15 @@ impl ArtifactArena {
         let pending = add(held, additional)?
             .checked_sub(actual)
             .context("artifact physical accounting underflow")?;
+        // Only the working volume's free space is asked for, and for the
+        // root as this ledger resolved it when it was made. That resolved
+        // path is what every call was given to resolve again before it
+        // asked, so Windows is asked the same question about the same path;
+        // a root that is no longer there is now refused by that question
+        // itself. The sample of the machine's memory that came with the
+        // complete observation was never part of this decision.
         ensure!(
-            n2r_win32::resource_native::observe_available_resources(&self.0.root)?
-                .scratch_available_bytes
-                >= pending,
+            n2r_win32::resource_native::scratch_free_bytes(&self.0.root)? >= pending,
             "actual scratch free space cannot cover live reservations"
         );
         Ok(())

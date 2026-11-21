@@ -14,6 +14,7 @@ mod routed_prefix;
 mod source_backed;
 pub(super) mod source_scope;
 mod supply;
+mod supply_batch;
 mod supply_snapshot;
 mod system_payloads;
 pub use enrollment::{
@@ -26,6 +27,7 @@ pub use source_backed::{
     MountedAllocation, PayloadRoute, SourceBackedRoutes, ValidatedSourceBackedRoutes,
 };
 pub use supply::{StreamSupplySummary, SupplyKind, SupplyPlan, SupplyRange};
+pub use supply_batch::{SUPPLY_BATCH_STREAMS, SupplyStreamRequest, SupplyStreamSeen};
 pub use supply_snapshot::NativeReadOnlySupplyStreamSnapshot;
 
 /// Tree-wide FSCTL_MOVE_FILE ceiling shared by deferred allocation, evacuation
@@ -585,7 +587,53 @@ impl PrivateTree {
         logical_length: u64,
         prefix: u64,
     ) -> io::Result<RoutedPrefixReady> {
-        routed_prefix::observe(self, index, name, components, logical_length, prefix)
+        routed_prefix::observe(self, index, name, components, logical_length, prefix, None)
+    }
+    /// [`Self::observe_routed_prefix_named`] for a stream a batch may have
+    /// taken ([`Self::observe_supply_streams_at_once`]): what the batch's
+    /// helper thread saw of the prefix then stands where this would ask
+    /// Windows, and every other check is made here as it is without a batch.
+    /// `seen` is the stream's own entry of the batch, or `None`.
+    pub fn observe_routed_prefix_named_seen(
+        &self,
+        index: usize,
+        name: &[u16],
+        components: &[String],
+        logical_length: u64,
+        prefix: u64,
+        seen: Option<&mut SupplyStreamSeen>,
+    ) -> io::Result<RoutedPrefixReady> {
+        let prepaid = match seen {
+            Some(seen) => seen.take_route(index, name)?,
+            None => None,
+        };
+        routed_prefix::observe(
+            self,
+            index,
+            name,
+            components,
+            logical_length,
+            prefix,
+            prepaid,
+        )
+    }
+    /// The read-only observations of a batch of streams, made on helper
+    /// threads; see [`supply_batch`]. What comes back covers the batch's
+    /// first streams, in order, and may cover none: every stream beyond is
+    /// taken by itself or handed over again.
+    pub fn observe_supply_streams_at_once(
+        &self,
+        streams: &[SupplyStreamRequest<'_>],
+        maximum_range_bytes: u64,
+        closing: bool,
+        wants_route: impl Fn(usize, &[(SupplyKind, SupplyRange)]) -> Option<u64>,
+    ) -> Vec<SupplyStreamSeen> {
+        supply_batch::observe(self, streams, maximum_range_bytes, closing, wants_route)
+    }
+    /// Whether [`Self::observe_supply_streams_at_once`] can take a batch of
+    /// this tree's streams at all.
+    pub fn observes_supply_streams_at_once(&self) -> bool {
+        supply_batch::payer(self).is_some()
     }
 
     pub fn validate_stream_shape(
@@ -603,11 +651,27 @@ impl PrivateTree {
         components: &[String],
         length: u64,
     ) -> io::Result<()> {
+        self.validate_stream_shape_observed(index, name, components, length, None)
+    }
+    /// [`Self::validate_stream_shape_named`]. `placements` is the comparison
+    /// of the file's complete mapping with its tracked pieces as a helper
+    /// thread of a batch made it; `None` makes it here.
+    fn validate_stream_shape_observed(
+        &self,
+        index: usize,
+        name: &[u16],
+        components: &[String],
+        length: u64,
+        placements: Option<io::Result<()>>,
+    ) -> io::Result<()> {
         self.require_source_excluded()?;
         let key = self.validate_stream_shape_metadata(index, name, components, length)?;
         self.files
             .get(&key)
-            .map_or(Ok(()), |file| file.check_placements())
+            .map_or(Ok(()), |file| match placements {
+                Some(seen) => seen,
+                None => file.check_placements(),
+            })
     }
     /// Metadata half of the existing stream check. Only the scoped read-only
     /// snapshot pairs it with its same-FileObject complete-map observation.
@@ -670,6 +734,39 @@ impl PrivateTree {
             components,
             logical,
             maximum_range_bytes,
+            None,
+            consume,
+        )
+    }
+    /// [`Self::with_readonly_supply_stream_snapshot`] for a stream a batch
+    /// may have taken ([`Self::observe_supply_streams_at_once`]): the
+    /// capture and the revalidation of the stream's files are then what the
+    /// batch's helper thread saw, and every other check, the derivation of
+    /// the ranges and the callback are made here as they are without a
+    /// batch. `seen` is the stream's own entry of the batch, or `None`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_readonly_supply_stream_snapshot_seen<T>(
+        &self,
+        index: usize,
+        name: &[u16],
+        components: &[String],
+        logical: u64,
+        maximum_range_bytes: u64,
+        seen: Option<&mut SupplyStreamSeen>,
+        consume: impl FnOnce(&NativeReadOnlySupplyStreamSnapshot<'_>) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let prepaid = match seen {
+            Some(seen) => seen.take_snapshot(index, name)?,
+            None => None,
+        };
+        supply_snapshot::with_snapshot(
+            self,
+            index,
+            name,
+            components,
+            logical,
+            maximum_range_bytes,
+            prepaid,
             consume,
         )
     }
@@ -770,14 +867,71 @@ impl PrivateTree {
         logical_length: u64,
         visitor: impl FnMut(SupplyKind, &SupplyRange) -> io::Result<()>,
     ) -> io::Result<StreamSupplySummary> {
-        self.validate_stream_shape_named(object_index, name, components, logical_length)?;
-        let summary = supply::stream(self, &StreamKey::named(object_index, name), visitor)?;
+        self.visit_supply_stream_observed(
+            object_index,
+            name,
+            components,
+            logical_length,
+            [None, None, None],
+            visitor,
+        )
+    }
+    /// [`Self::visit_supply_stream_named`] for a stream a batch may have
+    /// taken with its closing observation
+    /// ([`Self::observe_supply_streams_at_once`]): the three comparisons of
+    /// the file's complete mapping are then what the batch's helper thread
+    /// saw, and every other check and the derivation of the ranges are made
+    /// here as they are without a batch. `seen` is the stream's own entry of
+    /// the batch, or `None`.
+    pub fn visit_supply_stream_named_seen(
+        &self,
+        object_index: usize,
+        name: &[u16],
+        components: &[String],
+        logical_length: u64,
+        seen: Option<&mut SupplyStreamSeen>,
+        visitor: impl FnMut(SupplyKind, &SupplyRange) -> io::Result<()>,
+    ) -> io::Result<StreamSupplySummary> {
+        let placements = match seen {
+            Some(seen) => seen.take_closing(object_index, name)?,
+            None => [None, None, None],
+        };
+        self.visit_supply_stream_observed(
+            object_index,
+            name,
+            components,
+            logical_length,
+            placements,
+            visitor,
+        )
+    }
+    /// `placements` are the comparisons of the file's complete mapping this
+    /// makes, in its order (before the ranges, within them, after them), as
+    /// a helper thread of a batch made them; a `None` is made here.
+    fn visit_supply_stream_observed(
+        &self,
+        object_index: usize,
+        name: &[u16],
+        components: &[String],
+        logical_length: u64,
+        placements: [Option<io::Result<()>>; 3],
+        visitor: impl FnMut(SupplyKind, &SupplyRange) -> io::Result<()>,
+    ) -> io::Result<StreamSupplySummary> {
+        let [before, within, after] = placements;
+        self.validate_stream_shape_observed(
+            object_index,
+            name,
+            components,
+            logical_length,
+            before,
+        )?;
+        let summary = supply::stream(self, &StreamKey::named(object_index, name), within, visitor)?;
         if summary.logical_bytes != logical_length {
             return Err(invalid(
                 "live supply stream length differs from canonical input",
             ));
         }
-        self.validate_stream_shape_named(object_index, name, components, logical_length)?;
+        self.validate_stream_shape_observed(object_index, name, components, logical_length, after)?;
         Ok(summary)
     }
     /// This flag is set only after the owning system-supply operation's native

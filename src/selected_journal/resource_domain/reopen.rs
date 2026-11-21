@@ -11,13 +11,15 @@ pub(crate) use replay::{PreparedOfflineClosedRun, PreparedOfflineReplayRun, Prep
 
 use super::*;
 use crate::{
+    artifact_arena::ArenaRamLease,
     general_reconstruct::selected_native_journal::{
         BoundNativeJournalFacts, BoundNativeRecoveryJournal, NativeSelectedJournal,
     },
     lab_reconstruct::ReadSeek,
     selected_journal::{
-        self as sj, BUFFER, PinHash, SelectedLifecycle, SelectedRange, SelectedTicket,
-        aggregate_pin_hash, at, finish, frame, get_u32, get_u64, pin_hash,
+        self as sj, BUFFER, InOrder, PinHash, RecordHashes, RowDigest, SelectedLifecycle,
+        SelectedRange, SelectedTicket, ZeroDigests, aggregate_pin_hash, at, finish, frame, get_u32,
+        get_u64, pin_hash,
     },
 };
 
@@ -26,6 +28,32 @@ const ROW_BYTES: u64 = 32;
 const FOOTER_BYTES: u64 = 64;
 const INDEX_MAGIC: &[u8; 8] = b"N2RRIX01";
 const INDEX_END: &[u8; 8] = b"N2RRIEND";
+/// What a pass over every byte of the journal asks the file for at once:
+/// what a conversion hashes the same body with (`bulk_digest::hash_next`).
+const SCAN_WINDOW: usize = 4 * BUFFER;
+/// What a pass over the descriptors alone asks the file for at once where
+/// they follow each other closely (no more than 8 KiB between two, see
+/// [`InOrder`]): hundreds of the rows that store nothing. A fraction of the
+/// megabytes every observation of a journal leases for its buffers.
+const DESCRIPTOR_WINDOW: usize = 64 * 1024;
+
+/// The window a pass over every byte of the journal reads it through
+/// ([`InOrder`]), and the lease that pays for it. A window only buys speed,
+/// so it is spare memory: where the ledger has none to spare, or Windows no
+/// memory, the window is empty, and the pass reads each descriptor and each
+/// payload with a request of its own, as every pass did before there were
+/// windows. The lease is the caller's to drop when its pass is over.
+fn scan_window(group: &ArtifactGroupPermit) -> (Vec<u8>, Option<ArenaRamLease>) {
+    let Ok(lease) = group.arena().reserve_spare_ram(SCAN_WINDOW as u64) else {
+        return (Vec::new(), None);
+    };
+    let mut window = Vec::new();
+    if window.try_reserve_exact(SCAN_WINDOW).is_err() {
+        return (Vec::new(), None);
+    }
+    window.resize(SCAN_WINDOW, 0);
+    (window, Some(lease))
+}
 
 #[derive(Clone, Copy)]
 struct JournalFormat {
@@ -288,48 +316,154 @@ impl<'a> BoundJournalObservation<'a> {
     }
 }
 
+/// A worker's digests are compared when this many payloads have ended, or
+/// this many bytes of them. The first is what the worker gathers before it
+/// is handed them (`digest_pipeline::RecordDigests`), so that asking for
+/// the oldest does not hand it a row at a time; the second keeps a payload
+/// that differs from being reported long after it was read where rows are
+/// megabytes each.
+const MOST_OWED_DIGESTS: usize = 1024;
+const MOST_OWED_BYTES: u64 = 16 * BUFFER as u64;
+
+/// The digest of each payload a scan reads, held to the digest its row
+/// gives for it.
+///
+/// The scanning thread computed them between one read and the next: every
+/// stored byte of the journal hashed once more on the thread that reads
+/// it, beside the three digests over the whole file, which have workers.
+/// With a core to spare they are computed on a worker as well, the one the
+/// journal's preparation computes them on when it writes the rows
+/// (`RecordHashes::overlapped`), and the digests come back in the order
+/// the payloads ended.
+///
+/// A digest is then compared after the scan has read on. What the scan
+/// reports does not change with that: [`Self::settle`] compares every
+/// digest that is owed, oldest first, and the scan calls it before it
+/// reports anything else, so a payload that differs from its row's digest
+/// is still what is reported before whatever came after that payload.
+/// Without a worker each digest is compared as its payload ends, as before.
+struct RowDigests {
+    records: RecordHashes,
+    // The payloads that have ended and are not compared yet, in the order
+    // they were read, each with the digest its row gives for it.
+    owed: std::collections::VecDeque<(RowDigest, [u8; 32])>,
+    // How many bytes those payloads have between them.
+    owed_bytes: u64,
+    // Asked for by `RecordHashes::settle`; nothing is remembered here.
+    zeros: ZeroDigests,
+}
+
+impl RowDigests {
+    /// `beside` the scanning thread where the machine has a core for it;
+    /// otherwise, and where a worker cannot be started, on that thread.
+    fn new(algorithm: n2r_win32::bulk_digest::Algorithm, beside: bool) -> Self {
+        let records = beside
+            .then(|| RecordHashes::overlapped(algorithm).ok())
+            .flatten()
+            .unwrap_or_else(|| RecordHashes::here(algorithm));
+        Self {
+            records,
+            owed: std::collections::VecDeque::new(),
+            owed_bytes: 0,
+            zeros: ZeroDigests::new(),
+        }
+    }
+
+    /// A payload of `length` bytes has ended. `digest` is what
+    /// `self.records` gave for it.
+    fn ended(&mut self, digest: RowDigest, expected: &[u8; 32], length: u64) -> Result<()> {
+        let known = matches!(digest, RowDigest::Known(_));
+        self.owed.push_back((digest, *expected));
+        self.owed_bytes = self.owed_bytes.saturating_add(length);
+        if known || self.owed.len() >= MOST_OWED_DIGESTS || self.owed_bytes >= MOST_OWED_BYTES {
+            self.settle()
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Compares every digest that is owed, in the order the payloads were
+    /// read, and stops at the first that differs.
+    fn settle(&mut self) -> Result<()> {
+        self.owed_bytes = 0;
+        while let Some((digest, expected)) = self.owed.pop_front() {
+            if self.records.settle(digest, &mut self.zeros)? != expected {
+                return Err(PayloadDigestDiffers.into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Ends the worker: an error if a digest was left with it.
+    fn finish(mut self) -> Result<()> {
+        self.settle()?;
+        self.records.finish()
+    }
+}
+
+/// A payload of the journal whose bytes do not have the digest its row's
+/// descriptor gives for them: the refusal of a damaged journal, told apart
+/// from a digest that could not be computed.
+#[derive(Debug)]
+struct PayloadDigestDiffers;
+
+impl std::fmt::Display for PayloadDigestDiffers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("selected journal payload digest differs")
+    }
+}
+
+impl std::error::Error for PayloadDigestDiffers {}
+
+/// One side of a row, OLD or NEW: its `length` bytes, which follow in the
+/// journal where they are `stored` and are zero where they are not, hashed
+/// and held to the digest the row's descriptor gives for them (at once, or
+/// when `digests` is settled). `reader` is where the pass is in the journal.
 fn check_side(
     journal: &mut NativeSelectedJournal,
+    reader: &mut InOrder,
     length: u64,
     stored: bool,
     expected: &[u8; 32],
     range: &SelectedRange,
     mut aggregate: Option<&mut PinHash>,
     immutable: &mut PinHash,
+    digests: &mut RowDigests,
     buffer: &mut [u8],
     descriptors_only: bool,
 ) -> Result<()> {
     if descriptors_only {
         if stored {
-            let position = journal.stream_position()?;
-            journal.seek(SeekFrom::Start(add(position, length)?))?;
+            reader.seek_to(add(reader.position(), length)?);
         }
         return Ok(());
     }
     if let Some(aggregate) = aggregate.as_deref_mut() {
         frame(aggregate, range)?;
     }
-    let mut hash = pin_hash(immutable.algorithm())?;
+    let mut hash = digests.records.begin()?;
     let mut left = length;
     while left != 0 {
         let n = usize::try_from(left.min(buffer.len() as u64))?;
-        if stored {
-            journal.read_exact(&mut buffer[..n])?;
-            immutable.update(&buffer[..n])?;
+        // Stored bytes come out of the reader's window where it has one,
+        // and are read into `buffer` where it has none: the same bytes of
+        // the journal either way, each of them once and in order.
+        let piece: &[u8] = if stored {
+            let piece = reader.next(journal, &mut buffer[..n])?;
+            immutable.update(piece)?;
+            piece
         } else {
             buffer[..n].fill(0);
-        }
-        hash.update(&buffer[..n])?;
+            &buffer[..n]
+        };
+        hash.update(piece)?;
         if let Some(aggregate) = aggregate.as_deref_mut() {
-            aggregate.update(&buffer[..n])?;
+            aggregate.update(piece)?;
         }
-        left -= n as u64;
+        left -= piece.len() as u64;
     }
-    ensure!(
-        finish(hash)? == *expected,
-        "selected journal payload digest differs"
-    );
-    Ok(())
+    let digest = hash.finish(None)?;
+    digests.ended(digest, expected, length)
 }
 
 fn index_header(ticket: &SelectedTicket, format: JournalFormat) -> [u8; HEADER_BYTES as usize] {
@@ -491,89 +625,133 @@ impl<'a> JournalObservation<'a> {
         let mut new_zero_seen = false;
         let mut previous_end = 0u64;
         let mut position = add(body, HEADER as u64)?;
-        journal.seek(SeekFrom::Start(position))?;
-        for _ in 0..ticket.range_count {
-            let mut descriptor = [0u8; OLD_ZERO_RECORD];
-            journal.read_exact(&mut descriptor[..fmt.record_size])?;
-            immutable.update(&descriptor[..fmt.record_size])?;
-            let row = Record::decode(&descriptor, position, fmt, ticket.image_length)?;
-            ensure!(
-                row.offset >= previous_end && row.next <= ticket.journal_length - FOOTER as u64,
-                "recovery record overlaps or escapes journal"
-            );
-            selected = add(selected, row.length)?;
-            previous_end = add(row.offset, row.length)?;
-            let index_row = row.index_row();
-            output.write_all(&index_row)?;
-            index_hash.update(index_row);
-            let range = row.range();
-            if row.old_kind == 2 {
-                source_free = add(source_free, row.length)?;
-                check_side(
-                    journal,
-                    old_stored(CaptureIndexRange {
-                        offset: row.offset,
-                        length: row.length,
-                        packed_offset: 0,
-                        new_is_zero: false,
-                        old_is_zero: false,
-                        old_is_source_free: true,
-                        copy_source_offset: None,
-                    })?,
-                    true,
-                    &row.old_hash,
-                    &range,
-                    None,
-                    &mut immutable,
-                    &mut buffer,
-                    descriptors_only,
-                )?;
-            } else {
-                if row.old_kind == 1 {
-                    old_zero = add(old_zero, row.length)?;
+        // The rows follow each other in the file and are read in that
+        // order, each byte once. A pass that reads every payload asks the
+        // file for megabytes at a time and takes the rows out of them; a
+        // pass over the descriptors alone asks for each descriptor, and for
+        // those that follow it closely with it. Where the pass is in the
+        // file is counted by the reader, which is what the positions below
+        // are held to: the file is not asked after every payload.
+        let (window, spare_window) = if descriptors_only {
+            (vec![0u8; DESCRIPTOR_WINDOW], None)
+        } else {
+            scan_window(group)
+        };
+        let mut reader = InOrder::through(window, position, ticket.journal_length);
+        let mut row_digests = RowDigests::new(algorithm, !descriptors_only);
+        let rows = (|| -> Result<()> {
+            for _ in 0..ticket.range_count {
+                let mut descriptor = [0u8; OLD_ZERO_RECORD];
+                reader.read_exact(journal, &mut descriptor[..fmt.record_size])?;
+                immutable.update(&descriptor[..fmt.record_size])?;
+                let row = Record::decode(&descriptor, position, fmt, ticket.image_length)?;
+                ensure!(
+                    row.offset >= previous_end && row.next <= ticket.journal_length - FOOTER as u64,
+                    "recovery record overlaps or escapes journal"
+                );
+                selected = add(selected, row.length)?;
+                previous_end = add(row.offset, row.length)?;
+                let index_row = row.index_row();
+                output.write_all(&index_row)?;
+                index_hash.update(index_row);
+                let range = row.range();
+                if row.old_kind == 2 {
+                    source_free = add(source_free, row.length)?;
+                    check_side(
+                        journal,
+                        &mut reader,
+                        old_stored(CaptureIndexRange {
+                            offset: row.offset,
+                            length: row.length,
+                            packed_offset: 0,
+                            new_is_zero: false,
+                            old_is_zero: false,
+                            old_is_source_free: true,
+                            copy_source_offset: None,
+                        })?,
+                        true,
+                        &row.old_hash,
+                        &range,
+                        None,
+                        &mut immutable,
+                        &mut row_digests,
+                        &mut buffer,
+                        descriptors_only,
+                    )?;
+                } else {
+                    if row.old_kind == 1 {
+                        old_zero = add(old_zero, row.length)?;
+                    }
+                    check_side(
+                        journal,
+                        &mut reader,
+                        row.length,
+                        row.old_kind == 0,
+                        &row.old_hash,
+                        &range,
+                        Some(&mut old),
+                        &mut immutable,
+                        &mut row_digests,
+                        &mut buffer,
+                        descriptors_only,
+                    )?;
                 }
-                check_side(
-                    journal,
-                    row.length,
-                    row.old_kind == 0,
-                    &row.old_hash,
-                    &range,
-                    Some(&mut old),
-                    &mut immutable,
-                    &mut buffer,
-                    descriptors_only,
-                )?;
+                ensure!(
+                    reader.position() == row.new_payload,
+                    "recovery OLD payload position differs"
+                );
+                if row.new_kind == 2 {
+                    new = None;
+                    copy_seen = true;
+                } else {
+                    new_zero_seen |= row.new_kind == 1;
+                    check_side(
+                        journal,
+                        &mut reader,
+                        row.length,
+                        row.new_kind == 0,
+                        &row.new_hash,
+                        &range,
+                        new.as_mut(),
+                        &mut immutable,
+                        &mut row_digests,
+                        &mut buffer,
+                        descriptors_only,
+                    )?;
+                }
+                ensure!(
+                    reader.position() == row.next,
+                    "recovery NEW payload position differs"
+                );
+                position = row.next;
             }
-            ensure!(
-                journal.stream_position()? == row.new_payload,
-                "recovery OLD payload position differs"
-            );
-            if row.new_kind == 2 {
-                new = None;
-                copy_seen = true;
-            } else {
-                new_zero_seen |= row.new_kind == 1;
-                check_side(
-                    journal,
-                    row.length,
-                    row.new_kind == 0,
-                    &row.new_hash,
-                    &range,
-                    new.as_mut(),
-                    &mut immutable,
-                    &mut buffer,
-                    descriptors_only,
-                )?;
+            Ok(())
+        })();
+        // Whatever stopped the pass over the rows came after every payload
+        // whose digest is still owed, and each of those used to be held to
+        // its digest as soon as it was read: they are first now as well.
+        // Where the owed digests cannot be had at all (the worker that
+        // computed them stopped, and with it the digests it had sent), that
+        // says nothing of the payloads, and what stopped the pass is the
+        // error to report: a payload found to differ on this thread, or the
+        // worker's own failure.
+        if let Err(settled) = row_digests.settle() {
+            if settled.downcast_ref::<PayloadDigestDiffers>().is_none() {
+                rows?;
             }
-            ensure!(
-                journal.stream_position()? == row.next,
-                "recovery NEW payload position differs"
-            );
-            position = row.next;
+            return Err(settled);
         }
+        rows?;
+        row_digests.finish()?;
         let mut footer = [0u8; FOOTER];
-        journal.read_exact(&mut footer)?;
+        reader.read_exact(journal, &mut footer)?;
         immutable.update(&footer)?;
+        // The pass over the rows is over, and its window goes back. Where
+        // it ended is held to the journal's length below.
+        let scanned_to = reader.position();
+        n2r_win32::perf::add_bytes(n2r_win32::perf::Point::JournalScan, reader.bytes_read());
+        drop(reader);
+        drop(spare_window);
         let canonical = if ticket.marker_profile.is_some() {
             6
         } else if source_free != 0 {
@@ -596,7 +774,7 @@ impl<'a> JournalObservation<'a> {
                 && footer[8..40] == ticket.old_selected_sha256
                 && footer[40..72] == ticket.new_selected_sha256
                 && get_u64(&footer, 72) == ticket.journal_length
-                && journal.stream_position()? == ticket.journal_length
+                && scanned_to == ticket.journal_length
                 && (descriptors_only
                     || finish(old)?
                         == ticket
@@ -656,7 +834,7 @@ impl<'a> JournalObservation<'a> {
         };
         result.revalidate_index()?;
         if copy_seen && !descriptors_only {
-            result.validate_resolved_new()?;
+            result.validate_resolved_new(group)?;
         }
         // Enforce all ordinary lifecycle and torn-marker refusals, but do not
         // expose replay authority or mutate any marker.
@@ -674,13 +852,23 @@ impl<'a> JournalObservation<'a> {
     }
 
     fn record(&mut self, ordinal: u64) -> Result<Record> {
+        self.record_through(None, ordinal)
+    }
+
+    /// The row `ordinal` of the index, held to its descriptor in the
+    /// journal: read there by itself, or through the reader of a pass that
+    /// comes to the rows in the order of the file.
+    fn record_through(&mut self, reader: Option<&mut InOrder>, ordinal: u64) -> Result<Record> {
         let (offset, length, descriptor_at, flags) = self.index_entry(ordinal)?;
         let mut descriptor = [0u8; OLD_ZERO_RECORD];
-        at(
-            self.journal,
-            descriptor_at,
-            &mut descriptor[..self.format.record_size],
-        )?;
+        let bytes = &mut descriptor[..self.format.record_size];
+        match reader {
+            Some(reader) => {
+                reader.seek_to(descriptor_at);
+                reader.read_exact(self.journal, bytes)?;
+            }
+            None => at(self.journal, descriptor_at, bytes)?,
+        }
         let row = Record::decode(
             &descriptor,
             descriptor_at,
@@ -733,16 +921,21 @@ impl<'a> JournalObservation<'a> {
         }
         let mut previous_end = 0u64;
         let mut expected_descriptor = add(self.format.body, HEADER as u64)?;
+        // Each descriptor is read where the index says it lies, as before.
+        // Descriptors with little or nothing stored between them come with
+        // one request for many of them, and the others with one each.
+        let mut reader = InOrder::through(
+            vec![0u8; DESCRIPTOR_WINDOW],
+            expected_descriptor,
+            self.ticket.journal_length,
+        );
         for ordinal in 0..self.ticket.range_count {
             let item = self.index.row(u64::from(ordinal))?;
             let (offset, length, descriptor, flags) =
                 (item.offset, item.length, item.descriptor_offset, item.flags);
             let mut record = [0u8; OLD_ZERO_RECORD];
-            at(
-                self.journal,
-                descriptor,
-                &mut record[..self.format.record_size],
-            )?;
+            reader.seek_to(descriptor);
+            reader.read_exact(self.journal, &mut record[..self.format.record_size])?;
             let row = Record::decode(&record, descriptor, self.format, self.ticket.image_length)?;
             ensure!(
                 descriptor == expected_descriptor
@@ -810,40 +1003,66 @@ impl<'a> JournalObservation<'a> {
         Ok(())
     }
 
-    fn validate_resolved_new(&mut self) -> Result<()> {
+    /// The NEW bytes of every row, with those of a COPY row taken from the
+    /// OLD payloads it names: each row's held to its digest, all of them to
+    /// the ticket's.
+    ///
+    /// The rows are taken in the order of the file, so their descriptors
+    /// and stored NEW payloads are read through a window, megabytes to a
+    /// request, where each was a request of its own (two to a row over the
+    /// 284,000 rows of the Windows volume). The OLD payloads between them
+    /// are passed over. What a window holds of them is read with it, which
+    /// this pass did not read before: megabytes to a request, and never
+    /// more than one pass over the file. Behind more than an eighth of a
+    /// window of them the bytes that are wanted are read alone, as before.
+    /// A COPY row's sources lie anywhere before it and are read where they
+    /// lie, as before.
+    fn validate_resolved_new(&mut self, group: &ArtifactGroupPermit) -> Result<()> {
         let algorithm = self.ticket.digest_algorithm();
         let mut selected = aggregate_pin_hash(algorithm)?;
         let mut buffer = vec![0u8; BUFFER];
+        let (window, _spare_window) = scan_window(group);
+        let mut reader = InOrder::through(
+            window,
+            add(self.format.body, HEADER as u64)?,
+            self.ticket.journal_length,
+        );
         for ordinal in 0..u64::from(self.ticket.range_count) {
-            let row = self.record(ordinal)?;
+            let row = self.record_through(Some(&mut reader), ordinal)?;
             frame(&mut selected, &row.range())?;
             let mut hash = pin_hash(algorithm)?;
             let mut done = 0u64;
             while done < row.length {
                 let count = usize::try_from((row.length - done).min(BUFFER as u64))?;
-                match row.new_kind {
-                    0 => at(
-                        self.journal,
-                        add(row.new_payload, done)?,
-                        &mut buffer[..count],
-                    )?,
-                    1 => buffer[..count].fill(0),
-                    2 => self.read_prior_old(
-                        add(row.copy_source, done)?,
-                        ordinal,
-                        &mut buffer[..count],
-                    )?,
+                let piece: &[u8] = match row.new_kind {
+                    0 => {
+                        reader.seek_to(add(row.new_payload, done)?);
+                        reader.next(self.journal, &mut buffer[..count])?
+                    }
+                    1 => {
+                        buffer[..count].fill(0);
+                        &buffer[..count]
+                    }
+                    2 => {
+                        self.read_prior_old(
+                            add(row.copy_source, done)?,
+                            ordinal,
+                            &mut buffer[..count],
+                        )?;
+                        &buffer[..count]
+                    }
                     _ => unreachable!(),
-                }
-                hash.update(&buffer[..count])?;
-                selected.update(&buffer[..count])?;
-                done = add(done, count as u64)?;
+                };
+                hash.update(piece)?;
+                selected.update(piece)?;
+                done = add(done, piece.len() as u64)?;
             }
             ensure!(
                 finish(hash)? == row.new_hash,
                 "recovery resolved NEW row digest differs"
             );
         }
+        n2r_win32::perf::add_bytes(n2r_win32::perf::Point::JournalScan, reader.bytes_read());
         ensure!(
             finish(selected)? == self.ticket.new_selected_sha256,
             "recovery resolved NEW aggregate differs"

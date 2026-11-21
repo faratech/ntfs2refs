@@ -369,93 +369,11 @@ struct CaptureCapacity<'g> {
 
 const SELECTED_CHUNK_DIGEST: &str = "sha256-over-frames-and-xxh3-128-per-compared-chunk";
 
-/// Reads a capture's original (source) chunks through a second frozen-source
-/// handle, one chunk ahead of the comparison, when the device takes more than
-/// one outstanding read. The chunk sequence equals the comparison loop's.
-struct OriginalPrefetch {
-    filled: std::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
-    free: std::sync::mpsc::SyncSender<Vec<u8>>,
-    worker: Option<std::thread::JoinHandle<()>>,
-}
-
-impl OriginalPrefetch {
-    fn start(
-        source: &GeneralFrozenPartition,
-        selection: &[crate::refs_write_set::ByteRange],
-    ) -> Result<Option<Self>> {
-        if source.io_profile().queue_depth < 2 {
-            return Ok(None);
-        }
-        let Some(mut lane) = source.read_lanes(1, &mut Vec::new())?.pop() else {
-            return Ok(None);
-        };
-        // Retain the selection, not one descriptor for every 4 MiB on the
-        // volume. The worker expands each range in exactly the comparison's
-        // order, keeping schedule memory proportional to range count even for
-        // a complete-address-space capture on a very large volume.
-        let selection = selection.to_vec();
-        let (filled_tx, filled) = std::sync::mpsc::sync_channel(2);
-        let (free, free_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(3);
-        for _ in 0..3 {
-            let _ = free.send(vec![0u8; NATIVE_CAPTURE_BYTES]);
-        }
-        let worker = std::thread::Builder::new()
-            .name("n2r-original-prefetch".into())
-            .spawn(move || {
-                let _sampled = n2r_win32::stack_sampler::helper();
-                for range in selection {
-                    let mut done = 0;
-                    while done < range.length {
-                        let count = (range.length - done).min(NATIVE_CAPTURE_BYTES as u64);
-                        let Ok(mut buffer) = free_rx.recv() else {
-                            return;
-                        };
-                        buffer.resize(count as usize, 0);
-                        let result = lane
-                            .seek(SeekFrom::Start(range.offset + done))
-                            .and_then(|_| lane.read_exact(&mut buffer))
-                            .map(|_| buffer);
-                        let stop = result.is_err();
-                        if filled_tx.send(result).is_err() || stop {
-                            return;
-                        }
-                        done += count;
-                    }
-                }
-            })?;
-        Ok(Some(Self {
-            filled,
-            free,
-            worker: Some(worker),
-        }))
-    }
-
-    fn next(&mut self, count: usize) -> Result<Vec<u8>> {
-        let buffer = self
-            .filled
-            .recv()
-            .map_err(|_| anyhow::anyhow!("original prefetch stopped early"))??;
-        ensure!(buffer.len() == count, "original prefetch chunk differs");
-        Ok(buffer)
-    }
-
-    fn recycle(&self, buffer: Vec<u8>) {
-        let _ = self.free.send(buffer);
-    }
-
-    fn finish(mut self) -> Result<()> {
-        ensure!(
-            self.filled.try_recv().is_err(),
-            "original prefetch read beyond the comparison"
-        );
-        if let Some(worker) = self.worker.take() {
-            worker
-                .join()
-                .map_err(|_| anyhow::anyhow!("original prefetch panicked"))?;
-        }
-        Ok(())
-    }
-}
+/// A comparison's chunks read ahead of it through a second handle of the
+/// same frozen disk.
+#[path = "original_prefetch.rs"]
+pub(crate) mod original_prefetch;
+use original_prefetch::OriginalPrefetch;
 
 /// Framed digest of the bytes one side of a capture compared. `Stream` and
 /// `Overlapped` are a SHA-256 of the framed byte stream (recomputed by the
@@ -1825,7 +1743,8 @@ impl<'a> SourceBackedShadow<'a> {
         let mut ranges: Vec<ChangedRange> = Vec::new();
         let routes = self.routes;
         let mut classes = class_split.map(|split| ChangeClassifier::new(split, routes.entries()));
-        let mut prefetch = OriginalPrefetch::start(self.source, selection)?;
+        let mut prefetch =
+            OriginalPrefetch::for_partition(self.source, selection, NATIVE_CAPTURE_BYTES)?;
         for range in selection {
             let offset = range.offset.to_le_bytes();
             let length = range.length.to_le_bytes();
@@ -1844,7 +1763,7 @@ impl<'a> SourceBackedShadow<'a> {
                 )?;
                 let candidate = candidate_chunk.bytes();
                 let prefetched = match &mut prefetch {
-                    Some(prefetch) => Some(prefetch.next(count)?),
+                    Some(prefetch) => Some(prefetch.next(at, count)?.bytes),
                     None => {
                         self.source.seek(SeekFrom::Start(at))?;
                         self.source.read_exact(&mut original[..count])?;

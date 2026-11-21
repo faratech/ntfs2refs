@@ -43,6 +43,12 @@ use windows_sys::{
 const OFFSET: u64 = 32 << 20;
 const MARGIN: u64 = 64 << 20;
 const MAX_LAYOUT: usize = 48 + 128 * 144;
+/// How long the partition table of a new working disk is waited for, in
+/// pauses between the looks at it.
+const GPT_SETTLE_SECONDS: u64 = 30;
+/// How long the volume of a new working disk is waited for after it is
+/// partitioned, grown or formatted, from the first look at it.
+const STAGE_PUBLICATION_SECONDS: u64 = 15;
 
 mod recovery;
 pub use recovery::{ReattachedShadow, attached_image_paths, detach_left_behind, reattach_existing};
@@ -443,16 +449,24 @@ fn initialize_new_owned(
     // Wait for the real GPT usable bounds. Preserve an observed MSR;
     // CREATE_DISK may leave an empty table, in which case ready_layout
     // explicitly creates the MSR on this owned new disk only.
-    let mut settled = None;
-    for _ in 0..120 {
+    //
+    // The table is usually there within a few tens of milliseconds, and a
+    // quarter second after every look made this wait at least that long. The
+    // pauses now start at 10 ms and double up to the quarter second they
+    // were; the time allowed is what it was, 120 pauses of a quarter second.
+    // Only a table that is not there yet is waited for: a refused control and
+    // a table that differs end the wait at once, as before.
+    let mut wait = native::PublicationWait::begin_for(GPT_SETTLE_SECONDS);
+    let settled = loop {
         control(disk, IOCTL_DISK_UPDATE_PROPERTIES, &[], 0)?;
         let raw = control(disk, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, &[], 65536)?;
         if let Some(layout) = ready_layout(&raw, &disk_guid, partition_bytes)? {
-            settled = Some(layout);
-            break;
+            break Some(layout);
         }
-        std::thread::sleep(Duration::from_millis(250));
-    }
+        if !wait.pause() {
+            break None;
+        }
+    };
     let (mut header, msr) = settled.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::TimedOut,
@@ -514,6 +528,16 @@ fn sidecar(path: &Path, phase: &str) -> io::Result<File> {
 
 /// Each native attempt keeps its full per-call controls and identity checks.
 /// Diagnostic JSONL is bounded and never creates/replays an authority token.
+///
+/// The volume is usually there within a few tens of milliseconds of the
+/// partitioning or the format, and a quarter second after every attempt made
+/// each of these waits at least that long. The pauses now start at 10 ms and
+/// double up to the quarter second they were. The time allowed is what it
+/// was, [`STAGE_PUBLICATION_SECONDS`] from the first attempt, the attempts
+/// themselves counted; it bounds the attempts (five more than the sixty
+/// there were, at most) and with them the diagnostic. Only absence is
+/// retried, and when the time has passed the caller is told what the last
+/// attempt found, as before.
 fn rediscover_stage(
     binding: GeneralDiskBinding,
     path: &Path,
@@ -521,12 +545,16 @@ fn rediscover_stage(
 ) -> io::Result<GeneralDiskBinding> {
     let mut report = sidecar(path, &format!("{phase}.jsonl"))?;
     let started = Instant::now();
+    let allowed = Duration::from_secs(STAGE_PUBLICATION_SECONDS);
+    let mut wait = native::PublicationWait::begin_for(STAGE_PUBLICATION_SECONDS);
     let mut written = 0usize;
-    for attempt in 0..60 {
+    let mut attempt = 0u32;
+    let outcome = loop {
+        attempt += 1;
         let mut events = Vec::new();
         let observed = native::rediscover_general_volume(binding.clone(), &mut events);
         let record = serde_json::json!({"kind":"managed-shadow-volume-discovery-attempt",
-            "phase":phase,"attempt":attempt+1,"elapsed_milliseconds":started.elapsed().as_millis(),
+            "phase":phase,"attempt":attempt,"elapsed_milliseconds":started.elapsed().as_millis(),
             "requested_binding":binding,"observed_binding":observed.as_ref().ok(),
             "error":observed.as_ref().err().map(ToString::to_string),"events":events,
             "diagnostic_only":true,"serialized_observation_is_not_authority":true});
@@ -537,24 +565,23 @@ fn rediscover_stage(
             .ok_or_else(|| invalid("staging discovery diagnostic exceeds 16 MiB"))?;
         report.write_all(&bytes)?;
         report.write_all(b"\n")?;
-        report.sync_all()?;
         match observed {
-            Ok(actual) => return Ok(actual),
+            Ok(actual) => break Ok(actual),
             Err(error)
                 if error.kind() == io::ErrorKind::NotFound
-                    && attempt < 59
-                    && started.elapsed() < Duration::from_secs(15) =>
-            {
-                let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
-                std::thread::sleep(remaining.min(Duration::from_millis(250)));
-            }
-            Err(error) => return Err(error),
+                    && started.elapsed() < allowed
+                    && wait.pause() => {}
+            Err(error) => break Err(error),
         }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        "owned staging volume was not published; attachment retained",
-    ))
+    };
+    // The diagnostic is synchronized once, when the wait is over, whichever
+    // way it ended: the volume was found, the time passed, or the discovery
+    // refused. A sync after every attempt's line made each attempt wait for
+    // the disk, and no attempt reads the diagnostic; what the caller gets is
+    // what the last attempt found. As before, a diagnostic that cannot be
+    // synchronized is reported in place of that.
+    report.sync_all()?;
+    outcome
 }
 
 fn ready_layout(raw: &[u8], disk: &GUID, bytes: u64) -> io::Result<Option<(Vec<u8>, Vec<u8>)>> {

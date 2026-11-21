@@ -716,18 +716,45 @@ enum Recovered {
 /// recovery environment stays the default and its console stays open.
 pub const NEEDS_ATTENTION: u8 = 3;
 
+/// The memory limit among the options the converter was started with, as
+/// it was given there: `--memory-limit N` or `--memory-limit=N`. Only a
+/// number is taken. The converter refuses anything else before it opens a
+/// disk, so no conversion ran under it and no recovery is held to it.
+fn memory_limit_in(converter_args: &[String]) -> Option<&str> {
+    converter_args
+        .iter()
+        .enumerate()
+        .find_map(|(index, arg)| match arg.strip_prefix("--memory-limit")? {
+            "" => converter_args.get(index + 1).map(String::as_str),
+            value => value.strip_prefix('='),
+        })
+        .filter(|value| value.parse::<u64>().is_ok())
+}
+
 /// Runs the recovery command the converter printed: forward where the command
 /// allows it, and back to NTFS where that fails.
 fn recover_from(
     directory: &Path,
     command: &RecoverCommand,
+    session: &Session,
     note: &mut dyn FnMut(String),
 ) -> Recovered {
     let saved = directory.join(RECOVER_FILE);
     // The working volume may have another letter on this start than on the
     // one that printed the command: the directory is taken on this start's.
     let recovery_directory = rebased(&command.directory, directory);
-    let recover = |rollback: bool| -> bool {
+    // The ceiling the user gave the conversion is the recovery's as well:
+    // without it a recovery fits itself to the machine and takes up to two
+    // thirds of the memory that is free, whatever the run was told to keep
+    // to. Nothing else of the run's options is a recovery's: what it checks
+    // it reads from the run's records.
+    let memory_limit = memory_limit_in(&session.converter_args);
+    if let Some(mib) = memory_limit {
+        note(format!(
+            "The recovery keeps to the run's memory limit of {mib} MiB."
+        ));
+    }
+    let run = |rollback: bool, limit: Option<&str>| -> bool {
         let mut process = Command::new(directory.join("ntfs2refs.exe"));
         process.args([
             "--recover",
@@ -736,17 +763,44 @@ fn recover_from(
             &command.sha256,
             "--yes",
         ]);
+        if let Some(mib) = limit {
+            process.args(["--memory-limit", mib]);
+        }
         if rollback {
             process.arg("--rollback");
         }
         // What the recovery says is kept beside the run's records, as the
-        // converter's is (runc-cut-apply-10's first error was lost).
-        let kept = directory.join(if rollback {
-            "recover-rollback-output.txt"
-        } else {
-            "recover-forward-output.txt"
-        });
+        // converter's is (runc-cut-apply-10's first error was lost); a
+        // second attempt without the limit keeps its own.
+        let kept = directory.join(
+            match (rollback, limit.is_some() || memory_limit.is_none()) {
+                (true, true) => "recover-rollback-output.txt",
+                (false, true) => "recover-forward-output.txt",
+                (true, false) => "recover-rollback-unlimited-output.txt",
+                (false, false) => "recover-forward-unlimited-output.txt",
+            },
+        );
         tee(process, &kept)
+    };
+    // Held to the run's limit, a recovery that needs more than it may hold
+    // stops, where one that fits itself to the machine would have gone on
+    // with the page file; nobody is there to type the command again. So a
+    // recovery held to the limit that does not finish is made once more
+    // without it, which is the recovery this environment ran before it
+    // passed the limit on, and the same command a person would type. A
+    // recovery can be run again in either direction: it starts from what
+    // the run's records and the disk say.
+    let mut recover = |rollback: bool| -> bool {
+        if run(rollback, memory_limit) {
+            return true;
+        }
+        let Some(mib) = memory_limit else {
+            return false;
+        };
+        note(format!(
+            "The recovery held to the run's memory limit of {mib} MiB did not finish; it is made once more without the limit, fitted to this machine."
+        ));
+        run(rollback, None)
     };
     // Back to NTFS only where the command allows nothing else (a run cut off
     // while it prepared). A forward recovery that fails leaves the volume as
@@ -927,7 +981,7 @@ fn run_or_recover(
             if code != 0 {
                 note(format!("Recovering from {}", command.directory));
             }
-            match recover_from(directory, &command, note) {
+            match recover_from(directory, &command, session, note) {
                 // A recovery without --rollback finishes a run that had
                 // started writing, and cancels one cut off before that
                 // (runc-cut-apply-11: cut before apply, back to NTFS). What

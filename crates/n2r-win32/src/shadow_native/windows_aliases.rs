@@ -647,10 +647,17 @@ impl VerifiedWindowsAliases {
         // since: its point, its identity, its parent's and its target's, and
         // its security. Probing them again here could only repeat that, so
         // under "verify once" the first observation of the converted volume
-        // stands on it. A ledger from construction (the shadow), a second
-        // observation and every other run probe each link as before.
+        // stands on it, and so it does in the recovery of a run published
+        // with `--verify fast` (`repeats_once_as_verified`): a recovery's
+        // ledger is only ever issued that way, inside the lease this
+        // observation is made in. A ledger from construction (the shadow), a
+        // second observation and every other run, the recovery of a run
+        // published with `--verify thorough` among them, probe each link as
+        // before.
+        let probes_once = crate::verify_policy::verifies_once()
+            || crate::verify_policy::repeats_once_as_verified();
         let already_probed = converted
-            && crate::verify_policy::verifies_once()
+            && probes_once
             && self
                 .probed_converted
                 .swap(false, std::sync::atomic::Ordering::SeqCst);

@@ -130,6 +130,27 @@ static REPEAT_ONCE_AS_VERIFIED: AtomicBool = AtomicBool::new(false);
 /// under [`verify_once`] may then be left out of its recovery, on the same
 /// condition: another pass of this recovery checks the same thing.
 ///
+/// Left out under it:
+///
+/// - the read of a changed range immediately before the replay writes it.
+///   Every range was classified as old or new, complete, before the
+///   direction marker and the first write, and everything written is read
+///   back after the flush against the digest of the side written, as a
+///   conversion's apply does under [`verify_once`] (#218);
+/// - the second probe of the short-name links of a converted Windows volume.
+///   The finalizer of a recovery issues its ledger of the links by probing
+///   every one of them on the converted volume, inside the READ_ONLY lease
+///   its protected verification holds: the link's point, its identity, its
+///   parent's and its target's, its metadata, its streams and its security.
+///   That probe is made in every recovery, whatever the switch. The
+///   observation of the converted volume that follows in the same lease
+///   probed each link again and held it to what the first probe had just
+///   recorded; it stands on the first probe here, as it does in a
+///   conversion under [`verify_once`]. It still holds the volume to its
+///   extent, to its write protection and to an unchanged device state
+///   around it, and a second observation with the same ledger probes
+///   again.
+///
 /// The recovery of a run published with `--verify thorough` never selects
 /// this and keeps every such pass. A `--recover` process never selects
 /// [`verify_once`] itself: what it leaves out as a conversion would is

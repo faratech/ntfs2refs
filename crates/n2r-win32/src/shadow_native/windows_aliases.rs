@@ -171,7 +171,29 @@ fn probe_alias_unnamed(
             .collect::<Vec<_>>(),
     )?;
     let expected = probe.expected();
-    let snapshot = super::metadata_snapshot_with_limit(&alias, &expected, Some(maximum_row_bytes));
+    // The verification above has just read the link's point through this
+    // handle, on a volume that is read-only, and held it to the point its
+    // target's name makes. Under the check-once policy that reading stands
+    // for the snapshot's own: the snapshot does not ask for the point again
+    // and carries the one verified, which is then held to the point this
+    // probe expects, as before. Otherwise the snapshot reads it again.
+    let snapshot = if crate::verify_policy::checks_once() {
+        let mut snapshot = super::metadata_snapshot_with_limit(
+            &alias,
+            &Input {
+                reparse: None,
+                ..probe.expected()
+            },
+            Some(maximum_row_bytes),
+        );
+        snapshot.reparse = Some(crate::attestation::ReparseObservation {
+            point: Some(observed.point.clone()),
+            error: None,
+        });
+        snapshot
+    } else {
+        super::metadata_snapshot_with_limit(&alias, &expected, Some(maximum_row_bytes))
+    };
     let standard = super::query_bytes(&snapshot, 1, 24)?;
     if !super::basic_matches(&expected, super::query_bytes(&snapshot, 0, 40)?)
         || !super::reparse_matches(&expected, &snapshot)?
@@ -1534,15 +1556,27 @@ impl StagedWindowsAliases {
         root: &str,
     ) -> io::Result<usize> {
         use crate::refs_security_descriptor::ConstructorSecurityViews;
+        use crate::windows_alias_native::ExaminedParent;
+        /// A parent directory as the first of the batch's links in it
+        /// examined it, or why that failed (for each of its links).
+        type ParentOnce = std::sync::OnceLock<Result<ExaminedParent, (io::ErrorKind, String)>>;
         struct Link<'a> {
             staged: &'a StagedAlias,
             canonical: Input<'a>,
             temporary: Option<&'a ConstructorSecurityViews>,
+            parent: Option<&'a ParentOnce>,
         }
         const RESTORE_BATCH: usize = super::PARALLEL_BATCH;
         let maximum_row_bytes = self.maximum_row_bytes;
         let total = self.rows.len() as u64;
         let read_back = self.reads_back_restored_metadata();
+        // Under the check-once policy each parent directory of a batch is
+        // examined once, through the one handle held on it, by the first of
+        // its links to be installed, and the batch's other links in it are
+        // installed beneath that examination: installing a link's point
+        // changes the link, never its parent's identity, path, type or
+        // reparse point. Otherwise every installation examines its parent.
+        let parents_once = crate::verify_policy::checks_once();
         let restore_one = |link: &Link<'_>| -> io::Result<Option<Snapshot>> {
             let entry = &link.staged.entry;
             let file = &link.staged.file;
@@ -1572,13 +1606,35 @@ impl StagedWindowsAliases {
                 .ok_or_else(|| invalid("derived alias names no object"))?
                 .encode_utf16()
                 .collect();
-            crate::windows_alias_native::install_fresh_owned(
-                held(handles, entry.parent_object_index, "parent directory")?,
-                target,
-                file,
-                entry.directory,
-                &relative,
-            )?;
+            let parent = held(handles, entry.parent_object_index, "parent directory")?;
+            match link.parent {
+                Some(once) => {
+                    let examined = once
+                        .get_or_init(|| {
+                            crate::windows_alias_native::examine_parent(parent)
+                                .map_err(|error| (error.kind(), error.to_string()))
+                        })
+                        .as_ref()
+                        .map_err(|(kind, reason)| io::Error::new(*kind, reason.clone()))?;
+                    crate::windows_alias_native::install_fresh_owned_in(
+                        parent,
+                        examined,
+                        target,
+                        file,
+                        entry.directory,
+                        &relative,
+                    )?;
+                }
+                None => {
+                    crate::windows_alias_native::install_fresh_owned(
+                        parent,
+                        target,
+                        file,
+                        entry.directory,
+                        &relative,
+                    )?;
+                }
+            }
             let expected = restored_link(entry, &link.canonical, link.temporary);
             super::cache_refresh::restore_acl_protection_with_limit(
                 file,
@@ -1663,6 +1719,15 @@ impl StagedWindowsAliases {
                     }
                 }
             }
+            // The batch's parent directories, each examined at most once.
+            let parents: BTreeMap<usize, ParentOnce> = if parents_once {
+                batch
+                    .iter()
+                    .map(|staged| (staged.entry.parent_object_index, ParentOnce::new()))
+                    .collect()
+            } else {
+                BTreeMap::new()
+            };
             let links: Vec<Link<'_>> = batch
                 .iter()
                 .zip(&prepared)
@@ -1671,6 +1736,7 @@ impl StagedWindowsAliases {
                         staged: &**staged,
                         canonical: owner.input(),
                         temporary: temporary.as_ref(),
+                        parent: parents.get(&staged.entry.parent_object_index),
                     })
                 })
                 .collect();

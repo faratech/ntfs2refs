@@ -1299,19 +1299,41 @@ pub(crate) fn tail_place(
         .checked_add(offset - run.logical_offset)
 }
 
+/// Whether opening read lanes failed for want of a resource (memory,
+/// handles, a share another holder refuses), which leaves reading without
+/// lanes, rather than for something that may mean the source is no longer
+/// what it was frozen as (a lane's route that differs from the frozen state,
+/// a failed state query, a scope that failed, access refused), which is the
+/// run's failure.
+fn lane_open_wants_resource(error: &io::Error) -> bool {
+    // ERROR_TOO_MANY_OPEN_FILES, ERROR_NOT_ENOUGH_MEMORY, ERROR_OUTOFMEMORY,
+    // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION, ERROR_NO_SYSTEM_RESOURCES,
+    // ERROR_WORKING_SET_QUOTA, ERROR_COMMITMENT_LIMIT.
+    error.kind() == io::ErrorKind::OutOfMemory
+        || matches!(
+            error.raw_os_error(),
+            Some(4 | 8 | 14 | 32 | 33 | 1450 | 1453 | 1455)
+        )
+}
+
 /// Lanes of the source for reading tails ahead: as many as its device
 /// asks for and the ledger grants as spare memory (their buffers and
 /// stacks, and a batch's bytes and lists), down to one. None where the
 /// source is not read through lanes of its own, where there is no ledger,
-/// or nothing is granted; then every tail is read as before.
+/// where nothing is granted, or where the lanes cannot be opened or started
+/// for want of a resource; then every tail is read as before. A lane that
+/// cannot be opened for any other reason (its route differs from the frozen
+/// state, among them) is an error, as the source's other reads would be.
 pub(crate) fn tails_ahead(
     bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
     group: Option<crate::artifact_arena::ArtifactGroupPermit>,
     name: &'static str,
-) -> Option<LaneReads> {
+) -> Result<Option<LaneReads>> {
     let wanted = LaneReads::lanes_for(bytes.read_lane_depth());
-    let group = group?;
-    let (lanes, paid) = (1..=wanted).rev().find_map(|lanes| {
+    let Some(group) = group else {
+        return Ok(None);
+    };
+    let Some((lanes, paid)) = (1..=wanted).rev().find_map(|lanes| {
         let workspace = LaneReads::workspace_bytes(lanes)?
             .checked_add(TAIL_BATCH_BYTES)?
             .checked_add((TAIL_BATCH as u64).checked_mul(TAIL_ASK_BYTES)?)?;
@@ -1320,12 +1342,21 @@ pub(crate) fn tails_ahead(
             .reserve_spare_ram(workspace)
             .ok()
             .map(|paid| (lanes, paid))
-    })?;
-    let lanes = bytes
-        .read_lanes(lanes)
-        .ok()
-        .filter(|lanes| !lanes.is_empty())?;
-    LaneReads::start(name, lanes, Some(Box::new(paid))).ok()
+    }) else {
+        return Ok(None);
+    };
+    let lanes = match bytes.read_lanes(lanes) {
+        Ok(lanes) if !lanes.is_empty() => lanes,
+        Ok(_) => return Ok(None),
+        Err(error) if lane_open_wants_resource(&error) => return Ok(None),
+        Err(error) => {
+            return Err(anyhow::Error::new(error).context(format!(
+                "opening {lanes} read lanes of the source to read stream tails ahead"
+            )));
+        }
+    };
+    // Helpers that cannot be started read nothing; their lanes are closed.
+    Ok(LaneReads::start(name, lanes, Some(Box::new(paid))).ok())
 }
 
 /// One read of a stream's session, through `reader`.
@@ -2626,6 +2657,25 @@ impl Seek for SourceBackedShadow<'_> {
 #[cfg(test)]
 mod ahead_reader_tests {
     use super::*;
+
+    /// Only a lane that could not be had for want of a resource leaves the
+    /// tails read without lanes; a lane whose route differs from the frozen
+    /// state, or any other failure, is the run's.
+    #[test]
+    fn only_a_resource_failure_leaves_reading_without_lanes() {
+        let memory = io::Error::new(io::ErrorKind::OutOfMemory, "aligned allocation failed");
+        assert!(lane_open_wants_resource(&memory));
+        assert!(lane_open_wants_resource(&io::Error::from_raw_os_error(32)));
+        assert!(lane_open_wants_resource(&io::Error::from_raw_os_error(
+            1450
+        )));
+        let route = io::Error::new(io::ErrorKind::InvalidData, "frozen read lane route differs");
+        assert!(!lane_open_wants_resource(&route));
+        assert!(!lane_open_wants_resource(&io::Error::from_raw_os_error(5)));
+        assert!(!lane_open_wants_resource(&io::Error::other(
+            "failed frozen source read scope cannot open read lanes"
+        )));
+    }
 
     /// A read that lies wholly inside bytes read ahead takes them; any other
     /// is made by the source itself at the same place, and the source is

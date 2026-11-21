@@ -1826,8 +1826,9 @@ impl AlignedBuffer {
             .map_err(|_| invalid("alignment layout"))?;
         // SAFETY: layout is nonzero and valid. The allocation is owned here and
         // freed once in Drop with the identical layout; every byte is initialized.
-        let pointer = NonNull::new(unsafe { alloc_zeroed(layout) })
-            .ok_or_else(|| io::Error::other("aligned allocation failed"))?;
+        let pointer = NonNull::new(unsafe { alloc_zeroed(layout) }).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::OutOfMemory, "aligned allocation failed")
+        })?;
         Ok(Self { pointer, layout })
     }
     fn bytes_mut(&mut self) -> &mut [u8] {

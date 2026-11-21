@@ -273,7 +273,7 @@ impl SourceTailProvider {
         // A tail is shorter than one target cluster.
         let cluster = n2r_win32::target_cluster::bytes();
         let mut buffer = vec![0; usize::try_from(cluster)?];
-        let mut ahead = tails_ahead(bytes, scratch.artifact_group(), "n2r-source-tails-ahead");
+        let mut ahead = tails_ahead(bytes, scratch.artifact_group(), "n2r-source-tails-ahead")?;
         let mut first = 0usize;
         while first < expected.len() {
             let held = if ahead.is_some() {

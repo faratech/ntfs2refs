@@ -1008,7 +1008,7 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
             bytes,
             bytes.metadata_scratch().artifact_group(),
             "n2r-supply-tails-ahead",
-        )
+        )?
     } else {
         None
     };

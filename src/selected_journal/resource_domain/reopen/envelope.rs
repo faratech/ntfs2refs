@@ -3791,13 +3791,12 @@ impl ReopenedResourceRecovery {
             "putting the review online read-only stopped; the disk may already be online and \
              read-only, which `--recover` seals again",
         )?;
-        // The disk is online and read-only now: find the volume on it as
-        // such (#252); the rediscovery for a writable disk refuses it.
-        let mounted = n2r_win32::rediscover_general_volume_wait_read_only(
-            self.publication.source.clone(),
-            events,
-        )
-        .context("the review is online read-only but its volume could not be found")?;
+        // The disk is online and read-only now: the caller allows that
+        // (`n2r_win32::allow_read_only_disk`, #252); the probes it makes
+        // refuse it otherwise.
+        let mounted =
+            n2r_win32::rediscover_general_volume_wait(self.publication.source.clone(), events)
+                .context("the review is online read-only but its volume could not be found")?;
         n2r_win32::volume_label::validate_original_partition(&self.publication.source, &mounted)?;
         ensure!(
             n2r_win32::mounted_filesystem_general(mounted.clone(), events)? == "ReFS",

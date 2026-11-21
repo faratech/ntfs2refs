@@ -107,6 +107,11 @@ pub(crate) fn present_review_stop<O: PreparationObserver>(
     events.checkpoint()?;
     events.phase("resource-review-online-readonly");
     n2r_win32::perf::step("put review online read-only");
+    // From here the disk is online and read-only, which is what a review
+    // stop leaves: the probes, rediscoveries and mount-path reads below
+    // accept that state, and nothing else besides writable (#252). Every
+    // probe elsewhere still requires a writable disk.
+    let _read_only_disk = n2r_win32::allow_read_only_disk();
     let mounted = recovery
         .present_review_readonly(
             &group,

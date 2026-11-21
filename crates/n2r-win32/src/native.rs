@@ -1292,6 +1292,31 @@ pub fn write_out_volume_cache(binding: &GeneralDiskBinding) -> io::Result<()> {
     device_file(&binding.volume_path()?, true, false)?.sync_all()
 }
 
+thread_local! {
+    static READ_ONLY_DISK_ALLOWED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While this lives, the probes and rediscoveries this thread makes of a
+/// general data disk also accept a disk that is online and read-only (and
+/// nothing else besides writable): what a run stopped for review (#110,
+/// #252) leaves, and then has to look at. Every other probe still requires
+/// the disk online and writable.
+pub struct ReadOnlyDiskAllowed(bool);
+
+pub fn allow_read_only_disk() -> ReadOnlyDiskAllowed {
+    ReadOnlyDiskAllowed(READ_ONLY_DISK_ALLOWED.with(|allowed| allowed.replace(true)))
+}
+
+impl Drop for ReadOnlyDiskAllowed {
+    fn drop(&mut self) {
+        READ_ONLY_DISK_ALLOWED.with(|allowed| allowed.set(self.0));
+    }
+}
+
+fn read_only_disk_allowed() -> bool {
+    READ_ONLY_DISK_ALLOWED.with(std::cell::Cell::get)
+}
+
 /// Probe one dedicated non-system basic data disk without locking, dismounting,
 /// setting attributes or issuing raw writes. This is not a conversion lease.
 pub fn probe_general(
@@ -1309,8 +1334,17 @@ pub fn probe_general(
     )?;
     let state = general_disk_state(&disk, &binding, events)?;
     let disk_attributes_before = state.disk_attributes;
-    if disk_attributes_before != 0 {
-        return Err(invalid("general data disk is not online and writable"));
+    let allowed = if read_only_disk_allowed() {
+        READ_ONLY
+    } else {
+        0
+    };
+    if disk_attributes_before & !allowed != 0 {
+        return Err(invalid(if allowed != 0 {
+            "general data disk is not online (read-only or writable, for a review)"
+        } else {
+            "general data disk is not online and writable"
+        }));
     }
     let volume = device_file(&binding.volume_path()?, false, false)?;
     let volume_extents = control(
@@ -1665,25 +1699,6 @@ pub fn rediscover_general_volume(
     binding: GeneralDiskBinding,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<GeneralDiskBinding> {
-    rediscover_general_volume_on(binding, events, false)
-}
-
-/// What [`rediscover_general_volume`] does, for a disk that is online and
-/// may be read-only: a run stopped for review (`--review`) puts the
-/// converted volume online read-only and then has to find it. A disk that
-/// is offline, or has any attribute besides read-only, is still refused.
-pub fn rediscover_general_volume_read_only(
-    binding: GeneralDiskBinding,
-    events: &mut Vec<NativeEvent>,
-) -> io::Result<GeneralDiskBinding> {
-    rediscover_general_volume_on(binding, events, true)
-}
-
-fn rediscover_general_volume_on(
-    binding: GeneralDiskBinding,
-    events: &mut Vec<NativeEvent>,
-    read_only_allowed: bool,
-) -> io::Result<GeneralDiskBinding> {
     binding.validate()?;
     if current_windows_disk(events)? == binding.disk_number {
         return Err(invalid("current Windows disk is excluded"));
@@ -1693,6 +1708,9 @@ fn rediscover_general_volume_on(
         false,
         false,
     )?;
+    // Writable, or also read-only while the caller allows it
+    // ([`allow_read_only_disk`]); never offline.
+    let read_only_allowed = read_only_disk_allowed();
     let allowed = if read_only_allowed { READ_ONLY } else { 0 };
     if general_disk_state(&disk, &binding, events)?.disk_attributes & !allowed != 0 {
         return Err(invalid(if read_only_allowed {
@@ -1816,23 +1834,6 @@ pub fn rediscover_general_volume_wait(
     binding: GeneralDiskBinding,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<GeneralDiskBinding> {
-    rediscover_general_volume_wait_on(binding, events, false)
-}
-
-/// [`rediscover_general_volume_wait`] for a disk that is online read-only
-/// (see [`rediscover_general_volume_read_only`]).
-pub fn rediscover_general_volume_wait_read_only(
-    binding: GeneralDiskBinding,
-    events: &mut Vec<NativeEvent>,
-) -> io::Result<GeneralDiskBinding> {
-    rediscover_general_volume_wait_on(binding, events, true)
-}
-
-fn rediscover_general_volume_wait_on(
-    binding: GeneralDiskBinding,
-    events: &mut Vec<NativeEvent>,
-    read_only_allowed: bool,
-) -> io::Result<GeneralDiskBinding> {
     let _timed = crate::perf::scope(crate::perf::Point::VolumeWait);
     let mut wait = PublicationWait::begin();
     loop {
@@ -1842,7 +1843,7 @@ fn rediscover_general_volume_wait_on(
         // batch on a machine with many volumes, and a full batch refuses
         // every further query, so that no later try could find anything.
         let mut tried = Vec::new();
-        match rediscover_general_volume_on(binding.clone(), &mut tried, read_only_allowed) {
+        match rediscover_general_volume(binding.clone(), &mut tried) {
             Ok(found) => {
                 events.append(&mut tried);
                 return Ok(found);

@@ -223,9 +223,20 @@ fn conversion_walks_index_once_given(verifies_once: bool, checks_once: bool, gat
 /// Whether the pass that builds an observation's index, which reads every
 /// descriptor through the held journal, stands for the observation's walk
 /// (`revalidate_index`): for a conversion that walks once
-/// ([`walks_index_once`]). A recovery walks once after the build, as before.
+/// ([`walks_index_once`]) and is not recovering. A recovery
+/// (`verify_policy::repeat_once`), the cancellation a fast conversion makes
+/// of itself before its apply intent among them, walks once after the
+/// build, as before.
 fn walks_index_once_after_its_build() -> bool {
-    conversion_walks_index_once()
+    build_stands_for_the_walk(
+        conversion_walks_index_once(),
+        n2r_win32::verify_policy::repeats_once(),
+    )
+}
+
+/// The rule of [`walks_index_once_after_its_build`], apart from the switches.
+fn build_stands_for_the_walk(conversion_walks_once: bool, recovering: bool) -> bool {
+    conversion_walks_once && !recovering
 }
 
 /// Only read-only inspection and lifecycle classification are exposed. The
@@ -1216,5 +1227,16 @@ mod tests {
             !conversion_walks_index_once_given(false, false, false),
             "--recheck-everything walks at every reading"
         );
+    }
+
+    #[test]
+    fn only_a_conversion_that_is_not_recovering_counts_the_build_as_its_walk() {
+        assert!(build_stands_for_the_walk(true, false));
+        assert!(
+            !build_stands_for_the_walk(true, true),
+            "a fast conversion's own cancellation walks after the build, as a recovery does"
+        );
+        assert!(!build_stands_for_the_walk(false, true));
+        assert!(!build_stands_for_the_walk(false, false));
     }
 }

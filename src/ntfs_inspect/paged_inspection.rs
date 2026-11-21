@@ -751,8 +751,10 @@ pub(crate) fn inspect_paged_with_layout_scope<R: Read + Seek>(
 /// written to the store in record order, as the scan made them.
 ///
 /// The worker and every row it holds are paid as spare memory
-/// (`SourceScratch::lease_spare_ram`): memory that only buys speed, never
-/// what one of the scan's own reservations fails for. A row is paid for
+/// (`SourceScratch::lease_spare_ram`): memory that only buys speed, granted
+/// only where the arena keeps room for what the run needs, and outside the
+/// source ledger the scan's own reservations are held to (in the arena it
+/// is held like any lease while the scan runs). A row is paid for
 /// what it holds (its inventory) and a bounded estimate of its JSON, and the
 /// rows in flight together stay within a small pool. A row that cannot be
 /// paid for is written by the scan's thread after the rows before it, as

@@ -580,10 +580,12 @@ impl SourceScratch {
     }
     /// Memory that only buys speed (doing more at once), which the caller
     /// does without when it is refused: `ArtifactArena::reserve_spare_ram`,
-    /// granted only where it leaves room for what the run cannot do
-    /// without. It is not counted in this ledger, which the source's own
-    /// needed reservations are held to, so it is never what one of those
-    /// fails for. Without an arena there is none.
+    /// granted only where it leaves room, by the arena's reckoning, for the
+    /// largest reservation the run has needed. It is not counted in this
+    /// ledger, so the source's own needed reservations, held to this
+    /// ledger, are not refused for it here; in the arena it is held like any
+    /// lease until it is given back, and a long-held one narrows the room
+    /// the arena has for others. Without an arena there is none.
     #[track_caller]
     pub fn lease_spare_ram(&self, bytes: u64) -> Result<SourceRamLease> {
         let permit = {

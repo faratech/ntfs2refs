@@ -95,11 +95,12 @@ impl GeneralFrozenSourceReadScope<'_> {
                 "failed frozen source read scope cannot open read lanes",
             ));
         }
-        let result = native_step(events, |batch| self.source.read_lanes(count, batch));
-        if result.is_err() {
-            self.poisoned.set(true);
-        }
-        result
+        // Opening a lane reads nothing of the source: a lane that cannot be
+        // opened (its handle, its aligned buffer, the state query that
+        // binds it) leaves the scope as it was. Its own reads and the
+        // checks around it are what they were, and a caller that wanted the
+        // lane only to read ahead reads through the scope instead.
+        native_step(events, |batch| self.source.read_lanes(count, batch))
     }
 }
 impl Read for GeneralFrozenSourceReadScope<'_> {

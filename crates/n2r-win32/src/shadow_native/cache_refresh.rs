@@ -1648,6 +1648,12 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         report["metadata_readback_verified"] = false.into();
         report["metadata_readback_left_to_frozen_shadow_observation"] = true.into();
     }
+    if let Some(aliases) = aliases.as_deref()
+        && !aliases.reads_back_restored_metadata()
+    {
+        report["alias_metadata_readback_verified"] = false.into();
+        report["alias_metadata_readback_left_to_frozen_shadow_observation"] = true.into();
+    }
     if !check_listings_again {
         report["directory_listings_checked_after_restore"] = false.into();
         report["directory_listings_left_to_frozen_shadow_observation"] = true.into();

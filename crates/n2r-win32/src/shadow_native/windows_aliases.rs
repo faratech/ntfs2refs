@@ -1327,6 +1327,21 @@ impl StagedWindowsAliases {
     pub(super) fn paths(&self) -> impl Iterator<Item = &[String]> {
         self.rows.keys().map(Vec::as_slice)
     }
+    /// Whether each link's metadata is read back as soon as it is restored.
+    ///
+    /// Under "verify once" it is not, in a run that restored the links
+    /// itself, as the canonical objects' read-back is not (owner decision
+    /// D2, #251): once this volume is frozen, the one observation of it that
+    /// the capture is made from probes every link
+    /// (`VerifiedWindowsAliases::observe_readonly_volume`), held to the same
+    /// facets (its identity, its parent's and its target's, its times and
+    /// attributes, its reparse point, both security views, one link and no
+    /// data), before anything is written to the source. A run that resumes
+    /// links an earlier process left, and every `--verify thorough` run,
+    /// still reads each one back here.
+    pub(super) fn reads_back_restored_metadata(&self) -> bool {
+        self.recovering || !crate::verify_policy::verifies_once()
+    }
     pub(super) fn entry(&self, path: &[String]) -> Option<&VerifiedAlias> {
         self.rows.get(path).map(|row| &row.entry)
     }
@@ -1508,6 +1523,8 @@ impl StagedWindowsAliases {
     /// was read back with what was restored. A link whose restoration fails
     /// is reported as it was, with its name; the other links of its batch
     /// have then been restored already, on a shadow that is discarded.
+    /// Under "verify once" nothing is read back here
+    /// ([`Self::reads_back_restored_metadata`]).
     fn restore_fresh(
         &mut self,
         input: &impl InputDomain,
@@ -1525,7 +1542,8 @@ impl StagedWindowsAliases {
         const RESTORE_BATCH: usize = super::PARALLEL_BATCH;
         let maximum_row_bytes = self.maximum_row_bytes;
         let total = self.rows.len() as u64;
-        let restore_one = |link: &Link<'_>| -> io::Result<Snapshot> {
+        let read_back = self.reads_back_restored_metadata();
+        let restore_one = |link: &Link<'_>| -> io::Result<Option<Snapshot>> {
             let entry = &link.staged.entry;
             let file = &link.staged.file;
             let canonical_held = held(handles, entry.canonical_object_index, "canonical object")?;
@@ -1572,11 +1590,9 @@ impl StagedWindowsAliases {
             if !entry.directory {
                 crate::verify_policy::flush_working_file(file)?;
             }
-            Ok(super::metadata_snapshot_with_limit(
-                file,
-                &expected,
-                Some(maximum_row_bytes),
-            ))
+            Ok(read_back.then(|| {
+                super::metadata_snapshot_with_limit(file, &expected, Some(maximum_row_bytes))
+            }))
         };
         // A link's snapshot, and the workspace of installing its point.
         let workspace_of_one = report_memory::alias_peak(maximum_row_bytes)?
@@ -1664,7 +1680,7 @@ impl StagedWindowsAliases {
             // are installed through the one handle held on it. The rest are
             // restored one after another, under this owner's own workspace.
             // The workspaces are spare memory, which leaves the ledger room.
-            let restored: Vec<io::Result<Snapshot>> = super::each_at_once(
+            let restored: Vec<io::Result<Option<Snapshot>>> = super::each_at_once(
                 Some(&*payer),
                 &links,
                 |_| Some(workspace_of_one),
@@ -1674,6 +1690,9 @@ impl StagedWindowsAliases {
                 let entry = &link.staged.entry;
                 restored
                     .and_then(|actual| {
+                        let Some(actual) = actual else {
+                            return Ok(());
+                        };
                         let expected = restored_link(entry, &link.canonical, link.temporary);
                         verify_restored_link(&expected, &actual, entry, same)
                     })

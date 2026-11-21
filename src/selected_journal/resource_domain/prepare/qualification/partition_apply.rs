@@ -435,13 +435,18 @@ impl<'j, 'd, 'c, 'p, 's, 'e> PartitionFreshApply<'j, 'd, 'c, 'p, 's, 'e> {
         for ordinal in 0..u64::from(ticket.range_count) {
             let row = p.domain.row(ordinal)?;
             let skip = if row.capture.offset == 0 { GRANULE } else { 0 };
+            let length = row
+                .capture
+                .length
+                .checked_sub(skip)
+                .context("selected range at offset 0 is shorter than one granule")?;
             write_partition_span(
                 &mut writer,
                 p.domain,
                 ordinal,
                 row,
                 skip,
-                row.capture.length - skip,
+                length,
                 &mut buffers,
             )?;
         }

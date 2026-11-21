@@ -297,6 +297,7 @@ pub(crate) fn prepare_native_partition_from_protected_capture<
             true,
             None,
             read_back_buffers,
+            |_, _| (),
         );
         let closing = admission.revalidate_publication_handoff(source, facts.guard_pin, events);
         match (result, closing) {
@@ -836,6 +837,7 @@ pub(crate) fn prepare_diagnostic<'domain, 'capture, R: ReadSeek, S: ReadSeek>(
         false,
         None,
         read_back_buffers,
+        |_, _| (),
     )?;
     let readonly = n2r_win32::file_storage::duplicate_readonly(&file)?;
     drop(file);
@@ -998,7 +1000,11 @@ fn prepare_native_inner<'journal, 'domain, 'capture, S: ReadSeek>(
         space.available_bytes_to_caller >= f.journal_length,
         "native journal volume lacks the calculated available space"
     );
-    // The journal takes the source's changed ranges in ascending order.
+    // The journal takes the source's changed ranges in ascending order, read
+    // ahead to the end of each group of ranges that lie close together, as
+    // the apply's passes read them (`AscendingRanges`): a window that ran a
+    // megabyte past the first range of a group read 5.8 GB on the full
+    // Windows volume that no range used.
     let (ticket, _whole) = source.with_read_ahead(|source| {
         prepare_inner(
             domain,
@@ -1008,6 +1014,7 @@ fn prepare_native_inner<'journal, 'domain, 'capture, S: ReadSeek>(
             same_captured_source,
             capture_witness,
             read_back_buffers,
+            n2r_win32::GeneralFrozenPartition::set_read_ahead_reach,
         )
     })?;
     if ticket.marker_profile.is_some() {
@@ -1050,6 +1057,13 @@ fn prepare_native_inner<'journal, 'domain, 'capture, S: ReadSeek>(
 
 /// Write and independently read back to the actual exclusively held journal.
 /// The returned ticket remains private to this module until a live issuer exists.
+///
+/// `reach(source, end)` is told, at the first of each group of ranges that
+/// lie close together, where the group ends (`AscendingRanges`), so that a
+/// source that reads ahead reads the group and not the megabyte after its
+/// first range. The rows are taken in the same order and each read as
+/// before; only the index is looked at a few rows ahead.
+#[allow(clippy::too_many_arguments)]
 fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     domain: &ResourceJournalDomain<'_>,
     source: &mut R,
@@ -1058,6 +1072,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     same_captured_source: bool,
     capture_witness: Option<&CaptureRevalidation<'_>>,
     read_back_buffers: usize,
+    mut reach: impl FnMut(&mut R, u64),
 ) -> Result<(SelectedTicket, [u8; 32])> {
     let f = domain.facts;
     ensure!(file.byte_len()? == 0, "new native journal is not empty");
@@ -1112,8 +1127,15 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     let mut new_records = RecordHashes::overlapped(algorithm)?;
     let mut owed: Vec<OwedRow> = Vec::with_capacity(MOST_OWED_ROWS);
     let mut owed_bytes = 0u64;
-    for ordinal in 0..u64::from(f.range_count) {
-        let row = domain.row(ordinal)?;
+    let mut rows = n2r_win32::AscendingRanges::new(u64::from(f.range_count));
+    while let Some((row, group_end)) = rows.next(|ordinal| {
+        domain
+            .row(ordinal)
+            .map(|row| (row, row.capture.offset, row.capture.length))
+    })? {
+        if let Some(end) = group_end {
+            reach(source, end);
+        }
         ensure!(
             file.stream_position()? == row.descriptor_offset,
             "diagnostic journal descriptor offset differs"

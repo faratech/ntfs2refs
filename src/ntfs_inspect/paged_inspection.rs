@@ -786,7 +786,7 @@ enum Serialized {
     /// Its JSON, within the estimate it was paid for.
     Json(Vec<u8>),
     /// Its JSON is longer than that estimate: the row, for the scan's thread.
-    Longer(FileInventory),
+    Longer(Box<FileInventory>),
     /// What serializing it failed with.
     Failed(String),
 }
@@ -839,7 +839,7 @@ impl RowsAhead {
                         };
                         let made = match serde_json::to_writer(&mut json, &inventory) {
                             Ok(()) => Serialized::Json(json.bytes),
-                            Err(_) if json.over => Serialized::Longer(inventory),
+                            Err(_) if json.over => Serialized::Longer(Box::new(inventory)),
                             Err(error) => Serialized::Failed(error.to_string()),
                         };
                         if finished.send(made).is_err() {

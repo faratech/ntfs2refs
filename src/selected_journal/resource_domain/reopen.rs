@@ -800,16 +800,21 @@ impl<'a> JournalObservation<'a> {
         }
         let mut previous_end = 0u64;
         let mut expected_descriptor = add(self.format.body, HEADER as u64)?;
+        // Each descriptor is read where the index says it lies, as before.
+        // Descriptors with little or nothing stored between them come with
+        // one request for many of them, and the others with one each.
+        let mut reader = InOrder::through(
+            vec![0u8; DESCRIPTOR_WINDOW],
+            expected_descriptor,
+            self.ticket.journal_length,
+        );
         for ordinal in 0..self.ticket.range_count {
             let item = self.index.row(u64::from(ordinal))?;
             let (offset, length, descriptor, flags) =
                 (item.offset, item.length, item.descriptor_offset, item.flags);
             let mut record = [0u8; OLD_ZERO_RECORD];
-            at(
-                self.journal,
-                descriptor,
-                &mut record[..self.format.record_size],
-            )?;
+            reader.seek_to(descriptor);
+            reader.read_exact(self.journal, &mut record[..self.format.record_size])?;
             let row = Record::decode(&record, descriptor, self.format, self.ticket.image_length)?;
             ensure!(
                 descriptor == expected_descriptor

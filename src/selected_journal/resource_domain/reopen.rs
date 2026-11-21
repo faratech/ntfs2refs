@@ -11,12 +11,13 @@ pub(crate) use replay::{PreparedOfflineClosedRun, PreparedOfflineReplayRun, Prep
 
 use super::*;
 use crate::{
+    artifact_arena::ArenaRamLease,
     general_reconstruct::selected_native_journal::{
         BoundNativeJournalFacts, BoundNativeRecoveryJournal, NativeSelectedJournal,
     },
     lab_reconstruct::ReadSeek,
     selected_journal::{
-        self as sj, BUFFER, PinHash, SelectedLifecycle, SelectedRange, SelectedTicket,
+        self as sj, BUFFER, InOrder, PinHash, SelectedLifecycle, SelectedRange, SelectedTicket,
         aggregate_pin_hash, at, finish, frame, get_u32, get_u64, pin_hash,
     },
 };
@@ -26,6 +27,32 @@ const ROW_BYTES: u64 = 32;
 const FOOTER_BYTES: u64 = 64;
 const INDEX_MAGIC: &[u8; 8] = b"N2RRIX01";
 const INDEX_END: &[u8; 8] = b"N2RRIEND";
+/// What a pass over every byte of the journal asks the file for at once:
+/// what a conversion hashes the same body with (`bulk_digest::hash_next`).
+const SCAN_WINDOW: usize = 4 * BUFFER;
+/// What a pass over the descriptors alone asks the file for at once where
+/// they follow each other closely (no more than 8 KiB between two, see
+/// [`InOrder`]): hundreds of the rows that store nothing. A fraction of the
+/// megabytes every observation of a journal leases for its buffers.
+const DESCRIPTOR_WINDOW: usize = 64 * 1024;
+
+/// The window a pass over every byte of the journal reads it through
+/// ([`InOrder`]), and the lease that pays for it. A window only buys speed,
+/// so it is spare memory: where the ledger has none to spare, or Windows no
+/// memory, the window is empty, and the pass reads each descriptor and each
+/// payload with a request of its own, as every pass did before there were
+/// windows. The lease is the caller's to drop when its pass is over.
+fn scan_window(group: &ArtifactGroupPermit) -> (Vec<u8>, Option<ArenaRamLease>) {
+    let Ok(lease) = group.arena().reserve_spare_ram(SCAN_WINDOW as u64) else {
+        return (Vec::new(), None);
+    };
+    let mut window = Vec::new();
+    if window.try_reserve_exact(SCAN_WINDOW).is_err() {
+        return (Vec::new(), None);
+    }
+    window.resize(SCAN_WINDOW, 0);
+    (window, Some(lease))
+}
 
 #[derive(Clone, Copy)]
 struct JournalFormat {
@@ -288,8 +315,13 @@ impl<'a> BoundJournalObservation<'a> {
     }
 }
 
+/// One side of a row, OLD or NEW: its `length` bytes, which follow in the
+/// journal where they are `stored` and are zero where they are not, hashed
+/// and held to the digest the row's descriptor gives for them. `reader` is
+/// where the pass is in the journal.
 fn check_side(
     journal: &mut NativeSelectedJournal,
+    reader: &mut InOrder,
     length: u64,
     stored: bool,
     expected: &[u8; 32],
@@ -301,8 +333,7 @@ fn check_side(
 ) -> Result<()> {
     if descriptors_only {
         if stored {
-            let position = journal.stream_position()?;
-            journal.seek(SeekFrom::Start(add(position, length)?))?;
+            reader.seek_to(add(reader.position(), length)?);
         }
         return Ok(());
     }
@@ -313,17 +344,22 @@ fn check_side(
     let mut left = length;
     while left != 0 {
         let n = usize::try_from(left.min(buffer.len() as u64))?;
-        if stored {
-            journal.read_exact(&mut buffer[..n])?;
-            immutable.update(&buffer[..n])?;
+        // Stored bytes come out of the reader's window where it has one,
+        // and are read into `buffer` where it has none: the same bytes of
+        // the journal either way, each of them once and in order.
+        let piece: &[u8] = if stored {
+            let piece = reader.next(journal, &mut buffer[..n])?;
+            immutable.update(piece)?;
+            piece
         } else {
             buffer[..n].fill(0);
-        }
-        hash.update(&buffer[..n])?;
+            &buffer[..n]
+        };
+        hash.update(piece)?;
         if let Some(aggregate) = aggregate.as_deref_mut() {
-            aggregate.update(&buffer[..n])?;
+            aggregate.update(piece)?;
         }
-        left -= n as u64;
+        left -= piece.len() as u64;
     }
     ensure!(
         finish(hash)? == *expected,
@@ -491,10 +527,22 @@ impl<'a> JournalObservation<'a> {
         let mut new_zero_seen = false;
         let mut previous_end = 0u64;
         let mut position = add(body, HEADER as u64)?;
-        journal.seek(SeekFrom::Start(position))?;
+        // The rows follow each other in the file and are read in that
+        // order, each byte once. A pass that reads every payload asks the
+        // file for megabytes at a time and takes the rows out of them; a
+        // pass over the descriptors alone asks for each descriptor, and for
+        // those that follow it closely with it. Where the pass is in the
+        // file is counted by the reader, which is what the positions below
+        // are held to: the file is not asked after every payload.
+        let (window, spare_window) = if descriptors_only {
+            (vec![0u8; DESCRIPTOR_WINDOW], None)
+        } else {
+            scan_window(group)
+        };
+        let mut reader = InOrder::through(window, position, ticket.journal_length);
         for _ in 0..ticket.range_count {
             let mut descriptor = [0u8; OLD_ZERO_RECORD];
-            journal.read_exact(&mut descriptor[..fmt.record_size])?;
+            reader.read_exact(journal, &mut descriptor[..fmt.record_size])?;
             immutable.update(&descriptor[..fmt.record_size])?;
             let row = Record::decode(&descriptor, position, fmt, ticket.image_length)?;
             ensure!(
@@ -511,6 +559,7 @@ impl<'a> JournalObservation<'a> {
                 source_free = add(source_free, row.length)?;
                 check_side(
                     journal,
+                    &mut reader,
                     old_stored(CaptureIndexRange {
                         offset: row.offset,
                         length: row.length,
@@ -534,6 +583,7 @@ impl<'a> JournalObservation<'a> {
                 }
                 check_side(
                     journal,
+                    &mut reader,
                     row.length,
                     row.old_kind == 0,
                     &row.old_hash,
@@ -545,7 +595,7 @@ impl<'a> JournalObservation<'a> {
                 )?;
             }
             ensure!(
-                journal.stream_position()? == row.new_payload,
+                reader.position() == row.new_payload,
                 "recovery OLD payload position differs"
             );
             if row.new_kind == 2 {
@@ -555,6 +605,7 @@ impl<'a> JournalObservation<'a> {
                 new_zero_seen |= row.new_kind == 1;
                 check_side(
                     journal,
+                    &mut reader,
                     row.length,
                     row.new_kind == 0,
                     &row.new_hash,
@@ -566,14 +617,20 @@ impl<'a> JournalObservation<'a> {
                 )?;
             }
             ensure!(
-                journal.stream_position()? == row.next,
+                reader.position() == row.next,
                 "recovery NEW payload position differs"
             );
             position = row.next;
         }
         let mut footer = [0u8; FOOTER];
-        journal.read_exact(&mut footer)?;
+        reader.read_exact(journal, &mut footer)?;
         immutable.update(&footer)?;
+        // The pass over the rows is over, and its window goes back. Where
+        // it ended is held to the journal's length below.
+        let scanned_to = reader.position();
+        n2r_win32::perf::add_bytes(n2r_win32::perf::Point::JournalScan, reader.bytes_read());
+        drop(reader);
+        drop(spare_window);
         let canonical = if ticket.marker_profile.is_some() {
             6
         } else if source_free != 0 {
@@ -596,7 +653,7 @@ impl<'a> JournalObservation<'a> {
                 && footer[8..40] == ticket.old_selected_sha256
                 && footer[40..72] == ticket.new_selected_sha256
                 && get_u64(&footer, 72) == ticket.journal_length
-                && journal.stream_position()? == ticket.journal_length
+                && scanned_to == ticket.journal_length
                 && (descriptors_only
                     || finish(old)?
                         == ticket

@@ -782,7 +782,7 @@ fn validate_prepared_state(
     ensure!(
         registry == state.index_bytes
             && registry <= arena.0.budget.retained_index_bytes
-            && add(registry, state.leased_ram_bytes)? <= arena.0.budget.ram_bytes
+            && add(registry, state.leased_ram_bytes)? <= arena.needed_ceiling(&state)
             && promised <= arena.0.budget.scratch_bytes,
         "prepared aggregate artifact/RAM accounting differs"
     );
@@ -878,6 +878,7 @@ impl PreparedArenaClosure {
             self.native_reservation,
             true,
         )?;
+        drop(state);
         revalidate_pins(&pins, lanes)
     }
 
@@ -1330,7 +1331,7 @@ impl ArtifactArena {
         let index = add(state.index_bytes, registry)?;
         ensure!(
             index <= self.0.budget.retained_index_bytes
-                && add(index, state.leased_ram_bytes)? <= self.0.budget.ram_bytes,
+                && add(index, state.leased_ram_bytes)? <= self.needed_ceiling(&state),
             "external root registry exceeds actual shared RAM"
         );
         state.index_bytes = index;
@@ -1624,7 +1625,7 @@ impl ArtifactArena {
         let caller = std::panic::Location::caller();
         let site = (caller.file(), caller.line());
         self.follow_the_machine();
-        let mut refused = match self.reserve_ram_at(bytes, site) {
+        let mut refused = match self.reserve_ram_at(bytes, site, true) {
             Ok(granted) => return Ok(granted),
             Err(refused) => refused,
         };
@@ -1635,7 +1636,7 @@ impl ArtifactArena {
         // in working storage instead (the rows of a walk) is asked to go
         // there.
         while n2r_win32::evict::give_up_last_resort() {
-            match self.reserve_ram_at(bytes, site) {
+            match self.reserve_ram_at(bytes, site, true) {
                 Ok(granted) => return Ok(granted),
                 Err(again) => refused = again,
             }
@@ -1643,10 +1644,21 @@ impl ArtifactArena {
         if let Some(granted) = self.give_up_caches_for(bytes, site, &mut refused) {
             return Ok(granted);
         }
+        // Before spilling into the page file, give up any remaining caches on
+        // this thread even if dropping them alone could not cover `bytes`: a
+        // cache held in the page file makes nothing faster.
+        if n2r_win32::resource_native::memory_fits_the_machine() {
+            while n2r_win32::evict::evict_oldest() {
+                match self.reserve_ram_at(bytes, site, true) {
+                    Ok(granted) => return Ok(granted),
+                    Err(again) => refused = again,
+                }
+            }
+        }
         // Nothing is left to give up. A run that fits itself to the machine
         // goes on beyond its budget where Windows still has the memory.
         if self.go_beyond_budget(bytes) {
-            return self.reserve_ram_at(bytes, site);
+            return self.reserve_ram_at(bytes, site, true);
         }
         Err(refused)
     }
@@ -1682,18 +1694,12 @@ impl ArtifactArena {
         if state.ram_poisoned {
             return false;
         }
+        let ceiling = self.needed_ceiling(&state);
         let Some(short) = state
             .leased_ram_bytes
             .checked_add(state.index_bytes)
             .and_then(|held| held.checked_add(bytes))
-            .map(|wanted| {
-                wanted.saturating_sub(
-                    self.0
-                        .budget
-                        .ram_bytes
-                        .saturating_add(state.beyond_budget_bytes),
-                )
-            })
+            .map(|wanted| wanted.saturating_sub(ceiling))
         else {
             return false;
         };
@@ -1707,7 +1713,8 @@ impl ArtifactArena {
                 self.0.budget.ram_bytes >> 20
             );
         }
-        state.beyond_budget_bytes = state.beyond_budget_bytes.saturating_add(more);
+        let target_ceiling = ceiling.saturating_add(more);
+        state.beyond_budget_bytes = target_ceiling.saturating_sub(self.0.budget.ram_bytes);
         n2r_win32::perf::note_beyond_budget(state.beyond_budget_bytes);
         true
     }
@@ -1725,7 +1732,7 @@ impl ArtifactArena {
             return None;
         }
         while n2r_win32::evict::evict_oldest() {
-            match self.reserve_ram_at(bytes, site) {
+            match self.reserve_ram_at(bytes, site, true) {
                 Ok(granted) => return Some(granted),
                 Err(again) => *refused = again,
             }
@@ -1767,16 +1774,23 @@ impl ArtifactArena {
     #[track_caller]
     pub fn reserve_ram_if_room(&self, bytes: u64) -> Result<ArenaRamLease> {
         let caller = std::panic::Location::caller();
-        self.reserve_ram_at(bytes, (caller.file(), caller.line()))
+        self.reserve_ram_at(bytes, (caller.file(), caller.line()), false)
     }
-    fn reserve_ram_at(&self, bytes: u64, site: RamSite) -> Result<ArenaRamLease> {
+    fn reserve_ram_at(
+        &self,
+        bytes: u64,
+        site: RamSite,
+        track_needed: bool,
+    ) -> Result<ArenaRamLease> {
         let mut state = self
             .0
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
         let leased = add(state.leased_ram_bytes, bytes)?;
-        state.spare.needed(bytes);
+        if track_needed {
+            state.spare.needed(bytes);
+        }
         // What the run cannot do without is held to its budget and what was
         // granted beyond it, or, for a run that fits itself to the machine,
         // to what the machine has now where that is more. (Without this,
@@ -2188,7 +2202,7 @@ impl ArtifactArena {
         let registry = add(state.index_bytes, memory)?;
         ensure!(
             registry <= self.0.budget.retained_index_bytes
-                && add(registry, state.leased_ram_bytes)? <= self.0.budget.ram_bytes,
+                && add(registry, state.leased_ram_bytes)? <= self.needed_ceiling(&state),
             "native journal witness RAM exceeds aggregate admission"
         );
         state.index_bytes = registry;
@@ -2497,7 +2511,7 @@ impl ArtifactGroupPermit {
             !state.ram_poisoned
                 && add(state.index_bytes, memory)? <= self.arena.0.budget.retained_index_bytes
                 && add(add(state.index_bytes, memory)?, state.leased_ram_bytes)?
-                    <= self.arena.0.budget.ram_bytes,
+                    <= self.arena.needed_ceiling(&state),
             "artifact registry RAM exhausted"
         );
         // Adoption allocates no disk bytes. Its actual allocation is credited
@@ -3517,17 +3531,17 @@ mod cache_tests {
         assert!(!arena.go_beyond_budget(8 * MIB));
         // Windows has too little left to commit: refused, nothing allowed.
         assert!(!arena.go_beyond_budget_with(8 * MIB, 500 * MIB));
-        assert!(arena.reserve_ram_at(8 * MIB, site).is_err());
+        assert!(arena.reserve_ram_at(8 * MIB, site, true).is_err());
         // It has enough: the allowance grows by whole steps, and what was
         // refused is granted.
         assert!(arena.go_beyond_budget_with(8 * MIB, 4096 * MIB));
-        let beyond = arena.reserve_ram_at(8 * MIB, site).unwrap();
+        let beyond = arena.reserve_ram_at(8 * MIB, site, true).unwrap();
         assert_eq!(held(&arena), (LIMIT + 7 * MIB, 0));
         assert_eq!(arena.0.state.lock().unwrap().beyond_budget_bytes, 16 * MIB);
         // What fits the allowance asks for nothing more; what does not is
         // refused again until Windows is asked again.
-        let within = arena.reserve_ram_at(8 * MIB, site).unwrap();
-        assert!(arena.reserve_ram_at(8 * MIB, site).is_err());
+        let within = arena.reserve_ram_at(8 * MIB, site, true).unwrap();
+        assert!(arena.reserve_ram_at(8 * MIB, site, true).is_err());
         // A cache gets none of it: it is held only while the budget has room.
         assert!(arena.reserve_cache_ram(MIB).is_err());
         drop((held_already, beyond, within));
@@ -3721,5 +3735,34 @@ mod cache_tests {
         drop(_needed);
         drop(arena);
         assert!(matches!(pay_for_cache(4096), CachePayment::NoLedger));
+    }
+
+    #[test]
+    fn beyond_budget_accounts_for_fitted_ceiling_and_allows_registry_entries() {
+        let (_directory, arena) = ledger();
+        // Simulate a run whose fitted ceiling grew to 2x the starting budget.
+        arena
+            .0
+            .fitted_ceiling
+            .store(LIMIT * 2, std::sync::atomic::Ordering::Relaxed);
+        let _held = arena.reserve_ram(LIMIT * 2 - (4 << 20)).unwrap();
+        // Asking for 16 MiB more only needs 16 MiB beyond the fitted ceiling,
+        // not LIMIT + 16 MiB. 600 MiB committable (> 16 MiB + 512 MiB kept free)
+        // must suffice and raise needed_ceiling so the reservation succeeds.
+        assert!(arena.go_beyond_budget_with(16 << 20, 600 << 20));
+        let _more = arena.reserve_ram(16 << 20).unwrap();
+        // Registry entries must also be judged against needed_ceiling, not bare budget.
+        let permit = arena.reserve_group(ArtifactGroup::Source, 4096).unwrap();
+        let path = _directory.path().join("beyond-budget-entry.bin");
+        let _entry = permit.reserve_file(&path, 4096).unwrap();
+    }
+
+    #[test]
+    fn reserve_ram_if_room_does_not_inflate_spare_headroom() {
+        let (_directory, arena) = ledger();
+        assert!(arena.reserve_ram_if_room(LIMIT * 2).is_err());
+        let state = arena.0.state.lock().unwrap();
+        assert_eq!(state.spare.largest_beside, 0);
+        assert_eq!(state.spare.largest_since, 0);
     }
 }

@@ -267,7 +267,15 @@ fn install_fresh_owned_under(
         &alias_before,
         relative_target_component,
     )?;
-    let canonical_point = reparse_native::capture(canonical)?;
+    // The target's point is compared only by the second look below, and read
+    // here only where this call does not reuse what it read: the run that
+    // reuses never takes that look, and the verification that follows reads
+    // nothing of it either.
+    let canonical_point = if reuse {
+        None
+    } else {
+        Some(reparse_native::capture(canonical)?)
+    };
     // The examination of the parent found it without a reparse point; the
     // installation below finds the fresh link without one before it sets it.
     if (!(reuse && examined.is_some()) && reparse_native::capture(parent)?.is_some())
@@ -321,7 +329,7 @@ fn install_fresh_owned_under(
     // left out under the check-once policy.
     if !crate::verify_policy::checks_once()
         && (snapshot(canonical, directory)? != canonical_before
-            || reparse_native::capture(canonical)? != canonical_point
+            || Some(reparse_native::capture(canonical)?) != canonical_point
             || !same_parent(parent_before, &snapshot(parent, true)?))
     {
         return Err(invalid(

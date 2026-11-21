@@ -30,15 +30,22 @@ const DOMAIN: &[u8] = b"ntfs2refs/source/resource-metadata-and-extents/v1\0";
 /// the same chunks digested in the same order into the same envelope.
 pub struct LaneFingerprint {
     lanes: Vec<n2r_win32::GeneralFrozenLane>,
+    /// How many of them read a batch with a large chunk: the storage
+    /// profile's queue depth, as `hash` reads it. A batch of small reads
+    /// only is read on all of them.
+    profile_depth: usize,
     pieces: Vec<crate::parallel_digest::Chunk>,
     frames: Vec<Option<Range>>,
     envelope: Sha256,
     batch: usize,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 impl LaneFingerprint {
     /// Reads it on a thread of its own; the result is joined with
-    /// [`LaneFingerprintRead::finish`] (or waited for when dropped).
+    /// [`LaneFingerprintRead::finish`]. Dropped unjoined (its caller
+    /// failed), the read stops after the batch it is reading.
     pub fn start(self) -> Result<LaneFingerprintRead> {
+        let cancel = std::sync::Arc::clone(&self.cancel);
         let handle = std::thread::Builder::new()
             .name("fingerprint-reread".into())
             .spawn(move || {
@@ -46,7 +53,10 @@ impl LaneFingerprint {
                 let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::SourceFingerprint);
                 self.read()
             })?;
-        Ok(LaneFingerprintRead(Some(handle)))
+        Ok(LaneFingerprintRead {
+            handle: Some(handle),
+            cancel,
+        })
     }
     fn read(mut self) -> Result<String> {
         let (first, others) = self
@@ -59,7 +69,20 @@ impl LaneFingerprint {
             .chunks(self.batch.max(1))
             .zip(self.frames.chunks(self.batch.max(1)))
         {
-            let digests = crate::parallel_digest::digest_chunks_lanes(first, others, pieces)?;
+            ensure!(
+                !self.cancel.load(std::sync::atomic::Ordering::Acquire),
+                "the source fingerprint re-read was given up"
+            );
+            let depth = if crate::parallel_digest::small_reads(pieces) {
+                others.len() + 1
+            } else {
+                self.profile_depth.clamp(1, others.len() + 1)
+            };
+            let digests = crate::parallel_digest::digest_chunks_lanes(
+                first,
+                &mut others[..depth - 1],
+                pieces,
+            )?;
             ensure!(
                 digests.len() == frames.len(),
                 "fingerprint piece digest coverage differs"
@@ -77,10 +100,13 @@ impl LaneFingerprint {
     }
 }
 /// A [`LaneFingerprint`] being read.
-pub struct LaneFingerprintRead(Option<std::thread::JoinHandle<Result<String>>>);
+pub struct LaneFingerprintRead {
+    handle: Option<std::thread::JoinHandle<Result<String>>>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
 impl LaneFingerprintRead {
     pub fn finish(mut self) -> Result<String> {
-        self.0
+        self.handle
             .take()
             .context("fingerprint re-read already joined")?
             .join()
@@ -89,8 +115,11 @@ impl LaneFingerprintRead {
 }
 impl Drop for LaneFingerprintRead {
     fn drop(&mut self) {
-        // Not left reading the source behind a caller that failed.
-        if let Some(handle) = self.0.take() {
+        // Not left reading the source behind a caller that failed: the read
+        // stops after the batch it is reading, and is waited for.
+        if let Some(handle) = self.handle.take() {
+            self.cancel
+                .store(true, std::sync::atomic::Ordering::Release);
             let _ = handle.join();
         }
     }
@@ -1287,8 +1316,11 @@ impl PagedSourceFingerprint {
     /// for a caller that goes on meanwhile with work that does not read the
     /// source. The ranges are copied out of their stores here, on this
     /// thread; the lanes are opened here (each checks the disk is still in
-    /// its frozen state). `None` where the memory for the copy and the lanes
-    /// is not there to spare: the caller then reads it with `hash`.
+    /// its frozen state): as many as the storage profile's queue depth, as
+    /// `hash` reads large chunks, and up to `SMALL_READ_DEPTH` where a batch
+    /// is of small reads only. The copy and the lanes are paid as spare
+    /// memory, held while the caller works; `None` where it is refused: the
+    /// caller then reads it with `hash`.
     pub fn lane_reread(
         &self,
         source: &n2r_win32::GeneralFrozenPartition,
@@ -1304,34 +1336,59 @@ impl PagedSourceFingerprint {
             "fingerprint source length differs"
         );
         self.revalidate()?;
-        let lanes = crate::parallel_digest::SMALL_READ_DEPTH
-            .max(source.io_profile().queue_depth.clamp(1, 8))
-            .clamp(1, 8);
-        let mut chunks = 0u64;
+        use crate::parallel_digest::{SMALL_READ_BYTES, SMALL_READ_DEPTH};
+        let batch = usize::try_from((u64::from(self.scratch.budget().page_bytes) / 128).max(1))?;
+        let profile_depth = source.io_profile().queue_depth.clamp(1, 8).min(batch);
+        // The chunks, in `hash`'s batches, and whether any batch is of small
+        // reads only.
+        let (mut chunks, mut all_small, mut any_small) = (0u64, true, false);
         for ordinal in 0..self.covered.len() {
             let row: Range = self.covered.get(ordinal)?;
-            chunks = chunks
-                .checked_add(row.length.div_ceil(MAX_CHUNK_BYTES as u64).max(1))
-                .context("fingerprint chunk count overflow")?;
+            let mut done = 0;
+            while done < row.length {
+                let length = (row.length - done).min(MAX_CHUNK_BYTES as u64);
+                all_small &= length <= SMALL_READ_BYTES as u64;
+                chunks = chunks
+                    .checked_add(1)
+                    .context("fingerprint chunk count overflow")?;
+                if chunks.is_multiple_of(batch as u64) {
+                    any_small |= all_small;
+                    all_small = true;
+                }
+                done += length;
+            }
         }
+        any_small |= !chunks.is_multiple_of(batch as u64) && all_small;
+        let lanes = if any_small {
+            SMALL_READ_DEPTH.max(profile_depth).min(batch)
+        } else {
+            profile_depth
+        }
+        .max(1);
+        let lane = |buffer: usize| {
+            n2r_win32::GeneralFrozenPartition::read_buffer_memory_bytes()
+                + 65536
+                + buffer as u64
+                + 2 * 1024 * 1024
+        };
         let Some(bytes) = chunks
             .checked_mul(
                 (std::mem::size_of::<Chunk>() + std::mem::size_of::<Option<Range>>()) as u64,
             )
             .and_then(|n| {
-                (lanes as u64)
-                    .checked_mul(
-                        n2r_win32::GeneralFrozenPartition::read_buffer_memory_bytes()
-                            + 65536
-                            + MAX_CHUNK_BYTES as u64
-                            + 2 * 1024 * 1024,
-                    )
-                    .and_then(|lanes| n.checked_add(lanes))
+                (profile_depth.min(lanes) as u64)
+                    .checked_mul(lane(MAX_CHUNK_BYTES))
+                    .and_then(|large| n.checked_add(large))
+            })
+            .and_then(|n| {
+                (lanes.saturating_sub(profile_depth) as u64)
+                    .checked_mul(lane(SMALL_READ_BYTES))
+                    .and_then(|small| n.checked_add(small))
             })
         else {
             return Ok(None);
         };
-        let Ok(ram) = self.scratch.lease_ram_if_room(bytes) else {
+        let Ok(ram) = self.scratch.lease_spare_ram(bytes) else {
             return Ok(None);
         };
         let mut pieces = Vec::new();
@@ -1367,14 +1424,15 @@ impl PagedSourceFingerprint {
         }
         let mut events = Vec::new();
         let lanes = source.read_lanes(lanes, &mut events)?;
-        let batch = usize::try_from((u64::from(self.scratch.budget().page_bytes) / 128).max(1))?;
         Ok(Some((
             LaneFingerprint {
                 lanes,
+                profile_depth,
                 pieces,
                 frames,
                 envelope,
                 batch,
+                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
             ram,
         )))

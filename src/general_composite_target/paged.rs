@@ -6,6 +6,7 @@ use crate::{
         PagedInputs,
         source_backed::{
             PagedSourceByteAdapter, PagedSourceByteAdapterWithScope, PagedStreamIdentity,
+            original_prefetch::OriginalPrefetch,
         },
     },
     ntfs_inspect::{
@@ -623,18 +624,70 @@ struct PagedShadowClosing<'a> {
     hash: Sha256,
     read: u64,
     reused: u64,
+    // The same reads, made ahead of this pass by a helper thread on a read
+    // lane of the shadow, each with its XXH3-128. The pass still takes them
+    // in order and holds each to the place and length the intervals give
+    // it. The helper has ended, and its lane is closed, when the pass is
+    // finished or dropped.
+    ahead: Option<OriginalPrefetch>,
 }
+/// The most one read of the closing pass asks for.
+const CLOSING_CHUNK: usize = crate::ntfs_inspect::SESSION_READ_BYTES;
 impl<'a> PagedShadowClosing<'a> {
-    fn new(target: &n2r_win32::GeneralFrozenPartition, intervals: &'a Intervals) -> Result<Self> {
+    /// `spare` is the ledger that may pay for reading ahead: three chunks,
+    /// the lane, the list of the intervals and a stack, as spare memory. On
+    /// a device that takes one read at a time, without a ledger or when it
+    /// has no memory to spare, the pass reads through the target's owner as
+    /// it did, as it also does when the helper cannot be started.
+    fn new(
+        target: &n2r_win32::GeneralFrozenPartition,
+        intervals: &'a Intervals,
+        spare: Option<&crate::artifact_arena::ArtifactArena>,
+    ) -> Result<Self> {
+        let rows = intervals.store.len();
+        let mut listed = spare
+            .filter(|_| rows != 0 && target.io_profile().queue_depth >= 2)
+            .and_then(|arena| {
+                let paid = arena
+                    .reserve_spare_ram(OriginalPrefetch::workspace_bytes(CLOSING_CHUNK, rows)?)
+                    .ok()?;
+                let mut list = Vec::new();
+                list.try_reserve_exact(usize::try_from(rows).ok()?).ok()?;
+                Some((list, paid))
+            });
         let mut hash = Sha256::new();
         hash.update(b"n2r-paged-target-consumed-bytes-v2\0");
         hash.update(intervals.image.to_le_bytes());
-        hash.update(intervals.store.len().to_le_bytes());
-        for ordinal in 0..intervals.store.len() {
+        hash.update(rows.to_le_bytes());
+        for ordinal in 0..rows {
             let row = intervals.row(ordinal)?;
             hash.update(row.offset.to_le_bytes());
             hash.update(row.length.to_le_bytes());
+            if let Some((list, _)) = &mut listed {
+                list.push(crate::refs_write_set::ByteRange {
+                    offset: row.offset,
+                    length: row.length,
+                });
+            }
         }
+        let ahead = match listed {
+            Some((list, paid)) => target
+                .read_lanes(1, &mut Vec::new())
+                .context("open a read lane of the frozen shadow")?
+                .pop()
+                .and_then(|lane| {
+                    OriginalPrefetch::start(
+                        "n2r-capture-shadow-ahead",
+                        lane,
+                        list,
+                        CLOSING_CHUNK,
+                        true,
+                        Some(Box::new(paid)),
+                    )
+                    .ok()
+                }),
+            None => None,
+        };
         Ok(Self {
             target_owner: std::ptr::from_ref(target) as usize,
             binding: target.binding().clone(),
@@ -643,10 +696,11 @@ impl<'a> PagedShadowClosing<'a> {
             done: 0,
             loaded_offset: 0,
             loaded_bytes: 0,
-            buffer: vec![0; crate::ntfs_inspect::SESSION_READ_BYTES],
+            buffer: vec![0; CLOSING_CHUNK],
             hash,
             read: 0,
             reused: 0,
+            ahead,
         })
     }
     fn validate_owner(&self, target: &n2r_win32::GeneralFrozenPartition) -> Result<()> {
@@ -666,13 +720,27 @@ impl<'a> PagedShadowClosing<'a> {
         }
         let row = self.intervals.row(self.range)?;
         let at = row.offset + self.done;
-        let n = (row.length - self.done).min(self.buffer.len() as u64) as usize;
-        target.seek(SeekFrom::Start(at))?;
-        target.read_exact(&mut self.buffer[..n])?;
+        let n = (row.length - self.done).min(CLOSING_CHUNK as u64) as usize;
+        let xxh3 = if let Some(ahead) = &mut self.ahead {
+            // The helper read this chunk and hashed it; its buffer takes
+            // the place of this pass's, which goes back to the helper.
+            let chunk = ahead.next(at, n)?;
+            let xxh3 = chunk
+                .xxh3_128
+                .context("shadow chunk read ahead was not hashed")?;
+            ahead.recycle(std::mem::replace(&mut self.buffer, chunk.bytes));
+            xxh3
+        } else {
+            if self.buffer.len() < n {
+                self.buffer.resize(n, 0);
+            }
+            target.seek(SeekFrom::Start(at))?;
+            target.read_exact(&mut self.buffer[..n])?;
+            crate::parallel_digest::xxh3_128(&self.buffer[..n])
+        };
         self.hash.update(at.to_le_bytes());
         self.hash.update((n as u64).to_le_bytes());
-        self.hash
-            .update(crate::parallel_digest::xxh3_128(&self.buffer[..n]));
+        self.hash.update(xxh3);
         self.loaded_offset = at;
         self.loaded_bytes = n;
         self.read = self
@@ -691,6 +759,11 @@ impl<'a> PagedShadowClosing<'a> {
         target: &mut n2r_win32::GeneralFrozenPartition,
     ) -> Result<(String, u64, u64)> {
         while self.next(target)? {}
+        // The helper has read exactly these chunks and ends here, its lane
+        // with it, before the target's state is looked at again.
+        if let Some(ahead) = self.ahead.take() {
+            ahead.finish()?;
+        }
         ensure!(
             self.read == self.intervals.bytes,
             "closing raw coverage differs"
@@ -1033,8 +1106,13 @@ impl ProtectedPagedTargetSelection {
             return Ok(());
         }
         let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::ShadowMetadataRead);
-        let (digest, bytes, _) =
-            PagedShadowClosing::new(target, &self.scope.consumed)?.finish(target)?;
+        let group = self._scratch.artifact_group();
+        let (digest, bytes, _) = PagedShadowClosing::new(
+            target,
+            &self.scope.consumed,
+            group.as_ref().map(|group| group.arena()),
+        )?
+        .finish(target)?;
         ensure!(
             digest == self.closing_sha256
                 && bytes == self.raw_consumed_bytes
@@ -1521,7 +1599,8 @@ fn observe_and_select_scoped(
             *b"N2RTCON1",
         )?;
         n2r_win32::perf::step("read shadow metadata (opening)");
-        let digest = PagedShadowClosing::new(target, &consumed)?.finish(target)?;
+        let digest = PagedShadowClosing::new(target, &consumed, Some(capture_group.arena()))?
+            .finish(target)?;
         // The opening report's complete rows are no longer consumed below. Keep
         // its closed artifact owner and the exact serialized allocation digest,
         // then release the decoded rows before collecting the closing report.
@@ -1769,7 +1848,8 @@ fn observe_and_select_scoped(
     let _closing_read_ram = scratch.lease_ram(CLOSING_READ_WORKSPACE)?;
     drop(_stage_ram);
     n2r_win32::perf::step("compare shadow with source");
-    let mut closing = PagedShadowClosing::new(target, &scope.consumed)?;
+    let mut closing =
+        PagedShadowClosing::new(target, &scope.consumed, Some(capture_group.arena()))?;
     let captured = consume(
         context,
         target,

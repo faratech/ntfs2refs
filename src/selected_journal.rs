@@ -2115,10 +2115,9 @@ fn write_marker<J: DurableIo>(
     value: &[u8; GRANULE as usize],
 ) -> Result<()> {
     journal.seek(SeekFrom::Start(offset))?;
-    ensure!(
-        journal.write(value)? == value.len(),
-        "short selected marker write"
-    );
+    journal
+        .write_all(value)
+        .context("short selected marker write")?;
     journal.sync_all()?;
     let mut observed = [0u8; GRANULE as usize];
     at(journal, offset, &mut observed)?;
@@ -2922,10 +2921,20 @@ pub(crate) fn classify<J: Read + Seek>(
     at(journal, 0, &mut completed)?;
     at(journal, GRANULE, &mut intent)?;
     let zero = [0u8; GRANULE as usize];
+    let apply = marker(b"N2RSAP01", ticket, &ticket.new_selected_sha256);
+    let rollback = marker(b"N2RSRB01", ticket, &ticket.old_selected_sha256);
     if completed == marker(b"N2RSHN01", ticket, &ticket.new_selected_sha256) {
+        ensure!(
+            intent == apply,
+            "selected handoff marker conflicts with intent marker"
+        );
         return Ok(SelectedLifecycle::Handoff);
     }
     if completed == marker(b"N2RSAB01", ticket, &ticket.old_selected_sha256) {
+        ensure!(
+            intent == zero || intent == rollback,
+            "selected abort marker conflicts with intent marker"
+        );
         return Ok(SelectedLifecycle::Aborted);
     }
     ensure!(
@@ -2934,9 +2943,9 @@ pub(crate) fn classify<J: Read + Seek>(
     );
     if intent == zero {
         Ok(SelectedLifecycle::PreparedClear)
-    } else if intent == marker(b"N2RSAP01", ticket, &ticket.new_selected_sha256) {
+    } else if intent == apply {
         Ok(SelectedLifecycle::ApplyIntent)
-    } else if intent == marker(b"N2RSRB01", ticket, &ticket.old_selected_sha256) {
+    } else if intent == rollback {
         Ok(SelectedLifecycle::RollbackIntent)
     } else {
         anyhow::bail!("selected intent marker is foreign or torn")
@@ -3857,5 +3866,54 @@ mod record_hash_tests {
             .expect("a nonzero byte is refused");
             assert!(format!("{error:#}").contains("row is not zero"));
         }
+    }
+
+    #[test]
+    fn classify_rejects_conflicting_intent_beside_terminal_markers() {
+        let ticket = SelectedTicket {
+            image_length: 8192,
+            selected_bytes: 4096,
+            range_count: 1,
+            journal_length: 16384,
+            immutable_sha256: [1u8; 32],
+            marker_profile: None,
+            old_selected_sha256: [2u8; 32],
+            old_restored_selected_sha256: None,
+            new_selected_sha256: [3u8; 32],
+            whole_image_verified: true,
+            digest: None,
+        };
+        let zero = [0u8; GRANULE as usize];
+        let apply = marker(b"N2RSAP01", &ticket, &ticket.new_selected_sha256);
+        let rollback = marker(b"N2RSRB01", &ticket, &ticket.old_selected_sha256);
+        let handoff = marker(b"N2RSHN01", &ticket, &ticket.new_selected_sha256);
+        let aborted = marker(b"N2RSAB01", &ticket, &ticket.old_selected_sha256);
+        let pair = |a: &[u8], b: &[u8]| {
+            let mut v = Vec::with_capacity(2 * GRANULE as usize);
+            v.extend_from_slice(a);
+            v.extend_from_slice(b);
+            Cursor::new(v)
+        };
+        // Valid terminal states.
+        assert_eq!(
+            classify(&mut pair(&handoff, &apply), &ticket).unwrap(),
+            SelectedLifecycle::Handoff
+        );
+        assert_eq!(
+            classify(&mut pair(&aborted, &zero), &ticket).unwrap(),
+            SelectedLifecycle::Aborted
+        );
+        assert_eq!(
+            classify(&mut pair(&aborted, &rollback), &ticket).unwrap(),
+            SelectedLifecycle::Aborted
+        );
+        // Conflicting or torn intent alongside Handoff/Aborted must be rejected.
+        assert!(classify(&mut pair(&handoff, &zero), &ticket).is_err());
+        assert!(classify(&mut pair(&handoff, &rollback), &ticket).is_err());
+        assert!(classify(&mut pair(&aborted, &apply), &ticket).is_err());
+        let mut torn = apply;
+        torn[0] ^= 0xff;
+        assert!(classify(&mut pair(&handoff, &torn), &ticket).is_err());
+        assert!(classify(&mut pair(&aborted, &torn), &ticket).is_err());
     }
 }

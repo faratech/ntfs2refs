@@ -202,25 +202,31 @@ impl Snapshot {
             m.is_file() && m.file_attributes() & (0x10 | 0x40 | 0x400 | 0x1000) == 0,
             "metadata handle is not an ordinary file",
         )?;
-        let mut path = vec![0u16; 32768];
-        // SAFETY: the borrowed held file handle and initialized WCHAR buffer
-        // remain valid throughout this synchronous metadata-only query.
-        let count = unsafe {
-            windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW(
-                file.as_raw_handle(),
-                path.as_mut_ptr(),
-                path.len() as u32,
-                windows_sys::Win32::Storage::FileSystem::VOLUME_NAME_GUID,
-            )
-        } as usize;
-        if count == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        require(
-            count < path.len() && path[count] == 0,
-            "metadata final path exceeds Windows bound",
-        )?;
-        let final_path = String::from_utf16(&path[..count]).map_err(io::Error::other)?;
+        let final_path = crate::query_scratch::with(65536, |scratch| {
+            // SAFETY: `scratch` is an initialized Vec<u8> of 65536 bytes (32768 u16s)
+            // aligned to at least 2 bytes on Windows heap; use an aligned u16 slice via
+            // `align_to_mut` so there is never an unaligned pointer cast.
+            let (_, wide, _) = unsafe { scratch.align_to_mut::<u16>() };
+            let cap = wide.len().min(32768);
+            // SAFETY: the borrowed held file handle and initialized WCHAR buffer
+            // remain valid throughout this synchronous metadata-only query.
+            let count = unsafe {
+                windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW(
+                    file.as_raw_handle(),
+                    wide.as_mut_ptr(),
+                    cap as u32,
+                    windows_sys::Win32::Storage::FileSystem::VOLUME_NAME_GUID,
+                )
+            } as usize;
+            if count == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            require(
+                count < cap && wide[count] == 0,
+                "metadata final path exceeds Windows bound",
+            )?;
+            String::from_utf16(&wide[..count]).map_err(io::Error::other)
+        })?;
         let (volume, name) = final_path
             .strip_prefix("\\\\?\\Volume{")
             .and_then(|p| p.split_once("}\\"))
@@ -643,8 +649,14 @@ impl Writer {
         let mut at = HEADER;
         let mut first = 0;
         let mut index_hash = Sha256::new();
-        // Build the index in the same file without retaining page descriptors.
-        for page in 0..self.pages {
+        // Build the index in the same file without retaining page descriptors,
+        // buffering 64-byte index rows into 64 KiB batches instead of issuing
+        // one unbuffered seek+write syscall per page.
+        const INDEX_BATCH: usize = 1024;
+        let mut index_batch =
+            Vec::with_capacity((self.pages as usize).min(INDEX_BATCH) * INDEX as usize);
+        let mut batch_start = self.data_end;
+        for _ in 0..self.pages {
             let mut frame = [0; 64];
             read_at(&mut self.file, at, &mut frame)?;
             require(
@@ -655,12 +667,21 @@ impl Writer {
             first = add(first, u32_at(&frame, 12) as u64)?;
             frame[..8].copy_from_slice(&at.to_le_bytes());
             frame[8..12].copy_from_slice(&(encoded as u32).to_le_bytes());
-            self.file
-                .seek(SeekFrom::Start(add(self.data_end, page * INDEX)?))?;
-            self.file.write_all(&frame)?;
+            index_batch.extend_from_slice(&frame);
             index_hash.update(frame);
             running.update(&frame)?;
             at = add(at, encoded)?;
+            if index_batch.len() >= INDEX_BATCH * INDEX as usize {
+                self.file.seek(SeekFrom::Start(batch_start))?;
+                self.file.write_all(&index_batch)?;
+                batch_start = add(batch_start, index_batch.len() as u64)?;
+                index_batch.clear();
+            }
+        }
+        if !index_batch.is_empty() {
+            self.file.seek(SeekFrom::Start(batch_start))?;
+            self.file.write_all(&index_batch)?;
+            index_batch.clear();
         }
         require(
             at == self.data_end && first == self.records,
@@ -928,7 +949,7 @@ struct ResidentPage {
 /// freed before the payment is returned.
 struct ResidentPages {
     pages: Vec<ResidentPage>,
-    _paid: Option<Box<dyn std::any::Any>>,
+    _paid: Option<Box<dyn std::any::Any + Send>>,
 }
 
 thread_local! {
@@ -1050,10 +1071,22 @@ impl Reader {
             "metadata footer/index/counts incomplete",
         )?;
         let mut index_hash = Sha256::new();
-        let mut raw = [0; 64];
-        for page in 0..pages {
-            read_at(&mut file, add(index, page * INDEX)?, &mut raw)?;
-            index_hash.update(raw);
+        let index_bytes = usize::try_from(
+            pages
+                .checked_mul(INDEX)
+                .ok_or_else(|| io::Error::other("metadata index byte length overflow"))?,
+        )
+        .map_err(|_| io::Error::other("metadata index exceeds address space"))?;
+        let mut index_buf = vec![0u8; index_bytes.min(64 * 1024)];
+        if index_bytes != 0 {
+            file.seek(SeekFrom::Start(index))?;
+            let mut remaining = index_bytes;
+            while remaining != 0 {
+                let n = remaining.min(index_buf.len());
+                file.read_exact(&mut index_buf[..n])?;
+                index_hash.update(&index_buf[..n]);
+                remaining -= n;
+            }
         }
         require(
             &footer[48..80] == index_hash.finalize().as_slice(),
@@ -1209,10 +1242,13 @@ impl Reader {
     /// for the pages. They are a cache: when the run's memory is short they
     /// are given up, `paid` with them ([`crate::evict`]), and the reader
     /// reads from its file again.
-    pub fn install_resident_pages_paid(&mut self, paid: Box<dyn std::any::Any>) -> io::Result<()> {
+    pub fn install_resident_pages_paid(
+        &mut self,
+        paid: Box<dyn std::any::Any + Send>,
+    ) -> io::Result<()> {
         self.install_resident(Some(paid))
     }
-    fn install_resident(&mut self, paid: Option<Box<dyn std::any::Any>>) -> io::Result<()> {
+    fn install_resident(&mut self, paid: Option<Box<dyn std::any::Any + Send>>) -> io::Result<()> {
         require(
             !self.pages_resident(),
             "metadata pages are already resident",
@@ -1378,20 +1414,34 @@ impl Reader {
     ) -> io::Result<T> {
         require(ordinal < self.records, "metadata ordinal is out of bounds")?;
         // Borrowed for the callback: the pages cannot be given up under it.
-        if let Some(resident) = self.resident.as_ref().and_then(|resident| resident.get()) {
-            let pages = &resident.pages;
-            self.statistics.hits = self.statistics.hits.saturating_add(1);
-            let page = pages
-                .partition_point(|page| page.first <= ordinal)
-                .checked_sub(1)
-                .map(|index| &pages[index])
-                .ok_or_else(|| io::Error::other("metadata indexed ordinal absent"))?;
-            let start = usize::try_from(ordinal - page.first)
-                .ok()
-                .and_then(|record| page.starts.get(record))
-                .ok_or_else(|| io::Error::other("metadata indexed ordinal has a gap"))?;
-            let (_, key, payload) = record_at(&page.body, *start as usize)?;
-            return callback(key, payload);
+        if let Some(slot) = self.resident.as_ref() {
+            if let Some(resident) = slot.get() {
+                let pages = &resident.pages;
+                self.statistics.hits = self.statistics.hits.saturating_add(1);
+                let page = pages
+                    .partition_point(|page| page.first <= ordinal)
+                    .checked_sub(1)
+                    .map(|index| &pages[index])
+                    .ok_or_else(|| io::Error::other("metadata indexed ordinal absent"))?;
+                let start = usize::try_from(ordinal - page.first)
+                    .ok()
+                    .and_then(|record| page.starts.get(record))
+                    .ok_or_else(|| io::Error::other("metadata indexed ordinal has a gap"))?;
+                let (_, key, payload) = record_at(&page.body, *start as usize)?;
+                return callback(key, payload);
+            }
+            // The resident cache was evicted by another reservation. Back off
+            // before re-promoting so two competing readers cannot ping-pong
+            // evict and re-read each other's entire files on every lookup.
+            self.resident = None;
+            let next_ask = self
+                .statistics
+                .misses
+                .saturating_add(self.pages.saturating_mul(2).max(8));
+            self.resident_asked_again_after = self
+                .resident_asked_again_after
+                .saturating_mul(2)
+                .max(next_ask);
         }
         if self
             .cached

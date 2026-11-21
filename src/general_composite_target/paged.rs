@@ -6,7 +6,8 @@ use crate::{
         PagedInputs,
         source_backed::{
             PagedSourceByteAdapter, PagedSourceByteAdapterWithScope, PagedStreamIdentity,
-            original_prefetch::OriginalPrefetch,
+            TAIL_BATCH, TAIL_BATCH_BYTES, original_prefetch::OriginalPrefetch, tail_place,
+            tails_ahead,
         },
     },
     ntfs_inspect::{
@@ -234,7 +235,28 @@ struct SourceTailProvider {
     pin_sha256: String,
     admission: n2r_win32::tree_resources::SourceResourceAdmission,
 }
+
 impl SourceTailProvider {
+    /// Every stream's tail is read from the source again here and its digest
+    /// is the expectation the shadow's tail is held to: for a stream whose
+    /// contents were not hashed at inspection, that second reading is the
+    /// only independent check of its tail (#225).
+    ///
+    /// One small read of the source after another, each waited for in turn,
+    /// was the whole of this pass (18 s on the full Windows volume). Where
+    /// the source may be read through lanes of its own ([`tails_ahead`]),
+    /// the objects are taken in batches (`objects_leased_at_once`), the
+    /// tails of a batch are asked of the lanes at once, in their order on
+    /// the disk, from where the expected run list places them
+    /// ([`tail_place`]), and each tail's bytes, once read, are offered to
+    /// the adapter's read of that tail (`offer_read_ahead`). That read is
+    /// otherwise what it was: the stream's session is opened from the
+    /// source's record, the tail's range is mapped by it and the bytes are
+    /// taken from the read ahead only where they lie wholly inside what was
+    /// read there, a fresh read of the same frozen device; anything else,
+    /// a read ahead that failed among it, is read by the adapter as before.
+    /// The tails are taken, hashed and written in the same order as before,
+    /// so the store and its pin are the same.
     fn capture(
         bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
         expected: &PagedExpectedTree,
@@ -251,89 +273,157 @@ impl SourceTailProvider {
         // A tail is shorter than one target cluster.
         let cluster = n2r_win32::target_cluster::bytes();
         let mut buffer = vec![0; usize::try_from(cluster)?];
-        for index in 0..expected.len() {
-            let object = expected.object_leased(index)?;
-            if object.directory {
-                continue;
+        let mut ahead = tails_ahead(bytes, scratch.artifact_group(), "n2r-source-tails-ahead")?;
+        let mut first = 0usize;
+        while first < expected.len() {
+            let held = if ahead.is_some() {
+                let (mut objects, mut tails) = (0usize, 0usize);
+                expected.objects_leased_at_once(first, |object| {
+                    objects += 1;
+                    tails += object
+                        .data_streams()
+                        .filter(|s| s.tail_requires_materialization())
+                        .count();
+                    objects < TAIL_BATCH && tails < TAIL_BATCH
+                })?
+            } else {
+                vec![expected.object_leased(first)?]
+            };
+            // For each tail of the batch, in the order it is taken below:
+            // its ticket and place, where it was asked for.
+            let mut tickets: std::collections::VecDeque<Option<(u64, u64)>> =
+                std::collections::VecDeque::new();
+            if let Some(reads) = ahead.as_mut() {
+                let mut asks = Vec::new();
+                let mut asked_bytes = 0u64;
+                for object in held.iter().filter(|object| !object.directory) {
+                    // The tails in the order they are taken below.
+                    let mut tails: Vec<_> = object
+                        .data_streams()
+                        .filter(|s| s.tail_requires_materialization())
+                        .collect();
+                    tails.sort_unstable_by(|a, b| a.name_utf16.cmp(b.name_utf16));
+                    for stream in tails {
+                        let offset = stream.length / cluster * cluster;
+                        let count = stream.length - offset;
+                        let slot = tickets.len();
+                        tickets.push_back(None);
+                        if asks.len() < TAIL_BATCH
+                            && asked_bytes + count <= TAIL_BATCH_BYTES
+                            && let Some(place) = tail_place(&stream, offset, count)
+                        {
+                            asked_bytes += count;
+                            asks.push((place, count as usize, slot));
+                        }
+                    }
+                }
+                asks.sort_unstable();
+                for (place, count, slot) in asks {
+                    tickets[slot] = Some((reads.ask(place, count), place));
+                }
             }
-            // Pay for this actual object's reference vector before allocating
-            // it; the expected-object lease separately owns the names/data.
-            // The reserve also covers the one tail, of less than a target
-            // cluster, and bounded current source proof/expectation name
-            // copies, not an entire maximum row.
-            let count = object
-                .data_streams()
-                .filter(|s| s.tail_requires_materialization())
-                .count();
-            let max_name_units = object
-                .data_streams()
-                .filter(|s| s.tail_requires_materialization())
-                .map(|s| s.name_utf16.len())
-                .max()
-                .unwrap_or(0);
-            let reference_bytes = (count as u64)
-                .checked_mul(std::mem::size_of::<crate::shadow_tree::StreamRef<'_>>() as u64)
-                .context("source tail reference RAM overflow")?;
-            let admitted = reference_bytes
-                .checked_mul(2)
-                .and_then(|n| n.checked_add((max_name_units as u64).checked_mul(16)?))
-                .and_then(|n| n.checked_add(65536 - 4096 + cluster))
-                .context("source tail RAM overflow")?;
-            ensure!(
-                reference_bytes
-                    <= admission
-                        .budget
-                        .max_row_bytes
-                        .checked_mul(8)
-                        .context("source tail row bound overflow")?,
-                "source tail references exceed admitted row workspace"
-            );
-            let _tail_ram = bytes.lease_working_ram(admitted)?;
-            let mut tails = Vec::new();
-            tails.try_reserve_exact(count)?;
-            tails.extend(
-                object
+            for (index, object) in (first..).zip(&held) {
+                if object.directory {
+                    continue;
+                }
+                // Pay for this actual object's reference vector before allocating
+                // it; the expected-object lease separately owns the names/data.
+                // The reserve also covers the one tail, of less than a target
+                // cluster, and bounded current source proof/expectation name
+                // copies, not an entire maximum row.
+                let count = object
                     .data_streams()
-                    .filter(|s| s.tail_requires_materialization()),
-            );
-            ensure!(tails.len() == count && (tails.capacity() as u64)
-                .checked_mul(std::mem::size_of::<crate::shadow_tree::StreamRef<'_>>() as u64)
-                .is_some_and(|n| n <= admitted), "source tail reference allocation differs");
-            tails.sort_unstable_by(|a, b| a.name_utf16.cmp(b.name_utf16));
-            for (ordinal, stream) in tails.into_iter().enumerate() {
-                let offset = stream.length / cluster * cluster;
-                let count = usize::try_from(stream.length - offset)?;
+                    .filter(|s| s.tail_requires_materialization())
+                    .count();
+                let max_name_units = object
+                    .data_streams()
+                    .filter(|s| s.tail_requires_materialization())
+                    .map(|s| s.name_utf16.len())
+                    .max()
+                    .unwrap_or(0);
+                let reference_bytes = (count as u64)
+                    .checked_mul(std::mem::size_of::<crate::shadow_tree::StreamRef<'_>>() as u64)
+                    .context("source tail reference RAM overflow")?;
+                let admitted = reference_bytes
+                    .checked_mul(2)
+                    .and_then(|n| n.checked_add((max_name_units as u64).checked_mul(16)?))
+                    .and_then(|n| n.checked_add(65536 - 4096 + cluster))
+                    .context("source tail RAM overflow")?;
                 ensure!(
-                    (1..buffer.len()).contains(&count),
-                    "source tail width differs"
+                    reference_bytes
+                        <= admission
+                            .budget
+                            .max_row_bytes
+                            .checked_mul(8)
+                            .context("source tail row bound overflow")?,
+                    "source tail references exceed admitted row workspace"
                 );
-                let identity = PagedStreamIdentity {
-                    record_number: object.record_number,
-                    sequence_number: object.sequence_number,
-                    name_utf16: stream.name_utf16,
-                    length: stream.length,
-                    sha256: stream.sha256,
-                    allow_sparse: stream.sparse.is_some(),
-                };
-                let proof = bytes.read_range_proof(&identity, offset, &mut buffer[..count])?;
+                let _tail_ram = bytes.lease_working_ram(admitted)?;
+                let mut tails = Vec::new();
+                tails.try_reserve_exact(count)?;
+                tails.extend(
+                    object
+                        .data_streams()
+                        .filter(|s| s.tail_requires_materialization()),
+                );
                 ensure!(
-                    proof.stream_logical_bytes == stream.length
-                        && proof.expected_stream_sha256.as_deref() == stream.sha256
-                        && proof.stream_name_utf16 == stream.name_utf16,
-                    "source residual identity changed"
+                    tails.len() == count
+                        && (tails.capacity() as u64)
+                            .checked_mul(
+                                std::mem::size_of::<crate::shadow_tree::StreamRef<'_>>() as u64
+                            )
+                            .is_some_and(|n| n <= admitted),
+                    "source tail reference allocation differs"
                 );
-                writer.push(
-                    key(index as u64, ordinal as u64),
-                    &LayoutResidualExpectation {
-                        object_index: index,
-                        stream_name_utf16: stream.name_utf16.to_vec(),
-                        logical_offset: offset,
-                        length: count as u64,
-                        sha256: proof.sha256,
-                    },
-                )?;
+                tails.sort_unstable_by(|a, b| a.name_utf16.cmp(b.name_utf16));
+                for (ordinal, stream) in tails.into_iter().enumerate() {
+                    let offset = stream.length / cluster * cluster;
+                    let count = usize::try_from(stream.length - offset)?;
+                    ensure!(
+                        (1..buffer.len()).contains(&count),
+                        "source tail width differs"
+                    );
+                    let identity = PagedStreamIdentity {
+                        record_number: object.record_number,
+                        sequence_number: object.sequence_number,
+                        name_utf16: stream.name_utf16,
+                        length: stream.length,
+                        sha256: stream.sha256,
+                        allow_sparse: stream.sparse.is_some(),
+                    };
+                    // A read ahead that failed is left to the adapter to make
+                    // again, and to report if it fails there too.
+                    if let (Some(reads), Some((ticket, place))) =
+                        (ahead.as_mut(), tickets.pop_front().flatten())
+                        && let Ok(read) = reads.take(ticket)
+                    {
+                        bytes.offer_read_ahead(place, read);
+                    }
+                    let proof = bytes.read_range_proof(&identity, offset, &mut buffer[..count]);
+                    bytes.withdraw_read_ahead(drop);
+                    let proof = proof?;
+                    ensure!(
+                        proof.stream_logical_bytes == stream.length
+                            && proof.expected_stream_sha256.as_deref() == stream.sha256
+                            && proof.stream_name_utf16 == stream.name_utf16,
+                        "source residual identity changed"
+                    );
+                    writer.push(
+                        key(index as u64, ordinal as u64),
+                        &LayoutResidualExpectation {
+                            object_index: index,
+                            stream_name_utf16: stream.name_utf16.to_vec(),
+                            logical_offset: offset,
+                            length: count as u64,
+                            sha256: proof.sha256,
+                        },
+                    )?;
+                }
             }
+            first += held.len();
         }
+        // The lanes are closed before the adapter's scope ends.
+        drop(ahead);
         let pin = writer.finish()?;
         let store = SortedRecordStore::open(&pin, scratch)?;
         // The provider's data-file pin is an actual complete-file SHA. Its
@@ -624,36 +714,40 @@ struct PagedShadowClosing<'a> {
     hash: Sha256,
     read: u64,
     reused: u64,
-    // The same reads, made ahead of this pass by a helper thread on a read
-    // lane of the shadow, each with its XXH3-128. The pass still takes them
+    // The same reads, made ahead of this pass by helper threads on read
+    // lanes of the shadow, each with its XXH3-128. The pass still takes them
     // in order and holds each to the place and length the intervals give
-    // it. The helper has ended, and its lane is closed, when the pass is
-    // finished or dropped.
+    // it. The helpers have ended, and their lanes are closed, when the pass
+    // is finished or dropped.
     ahead: Option<OriginalPrefetch>,
 }
 /// The most one read of the closing pass asks for.
 const CLOSING_CHUNK: usize = crate::ntfs_inspect::SESSION_READ_BYTES;
 impl<'a> PagedShadowClosing<'a> {
-    /// `spare` is the ledger that may pay for reading ahead: three chunks,
-    /// the lane, the list of the intervals and a stack, as spare memory. On
-    /// a device that takes one read at a time, without a ledger or when it
-    /// has no memory to spare, the pass reads through the target's owner as
-    /// it did, as it also does when the helper cannot be started.
+    /// `spare` is the ledger that may pay for reading ahead: for each of as
+    /// many lanes as the device's depth asks for and the ledger grants
+    /// (`OriginalPrefetch::lanes_for`), its chunks, the lane and a stack,
+    /// and the list of the intervals, as spare memory. On a device that
+    /// takes one read at a time, without a ledger or when it has no memory
+    /// to spare, the pass reads through the target's owner as it did, as
+    /// it also does when the helpers cannot be started.
     fn new(
         target: &n2r_win32::GeneralFrozenPartition,
         intervals: &'a Intervals,
         spare: Option<&crate::artifact_arena::ArtifactArena>,
     ) -> Result<Self> {
         let rows = intervals.store.len();
+        let wanted = OriginalPrefetch::lanes_for(target.io_profile().queue_depth);
         let mut listed = spare
-            .filter(|_| rows != 0 && target.io_profile().queue_depth >= 2)
+            .filter(|_| rows != 0 && wanted != 0)
             .and_then(|arena| {
-                let paid = arena
-                    .reserve_spare_ram(OriginalPrefetch::workspace_bytes(CLOSING_CHUNK, rows)?)
-                    .ok()?;
+                let (lanes, paid) =
+                    OriginalPrefetch::reserve_lanes(wanted, CLOSING_CHUNK, rows, |bytes| {
+                        arena.reserve_spare_ram(bytes).ok()
+                    })?;
                 let mut list = Vec::new();
                 list.try_reserve_exact(usize::try_from(rows).ok()?).ok()?;
-                Some((list, paid))
+                Some((list, lanes, paid))
             });
         let mut hash = Sha256::new();
         hash.update(b"n2r-paged-target-consumed-bytes-v2\0");
@@ -663,26 +757,26 @@ impl<'a> PagedShadowClosing<'a> {
             let row = intervals.row(ordinal)?;
             hash.update(row.offset.to_le_bytes());
             hash.update(row.length.to_le_bytes());
-            if let Some((list, _)) = &mut listed {
+            if let Some((list, _, _)) = &mut listed {
                 list.push(crate::refs_write_set::ByteRange {
                     offset: row.offset,
                     length: row.length,
                 });
             }
         }
-        // The lane only buys speed: one that cannot be opened (its handle,
-        // its aligned buffer, the state query that binds it) leaves the
-        // pass reading through the target, as it did, with every check of
-        // its own.
+        // The lanes only buy speed: lanes that cannot be opened (a handle,
+        // an aligned buffer, the state query that binds it) leave the pass
+        // reading through the target, as it did, with every check of its
+        // own.
         let ahead = match listed {
-            Some((list, paid)) => target
-                .read_lanes(1, &mut Vec::new())
+            Some((list, lanes, paid)) => target
+                .read_lanes(lanes, &mut Vec::new())
                 .ok()
-                .and_then(|mut lanes| lanes.pop())
-                .and_then(|lane| {
+                .filter(|lanes| !lanes.is_empty())
+                .and_then(|lanes| {
                     OriginalPrefetch::start(
                         "n2r-capture-shadow-ahead",
-                        lane,
+                        lanes,
                         list,
                         CLOSING_CHUNK,
                         true,
@@ -1432,7 +1526,6 @@ fn observe_and_select_scoped(
         context.inspection().budget(),
         capture_group.clone(),
     )?;
-    n2r_win32::perf::step("derive source projection");
     // The expected tree was derived from the held source evidence when it was
     // built, and both have been held since. Deriving it all over again here
     // only to compare the two (a minute at 26,000 objects) repeats a
@@ -1441,6 +1534,7 @@ fn observe_and_select_scoped(
     let source_projection = if n2r_win32::verify_policy::checks_once() {
         None
     } else {
+        n2r_win32::perf::step("derive source projection");
         let source_projection =
             context.derive_projection(admission, &projection_dir, &projection_scratch)?;
         ensure!(
@@ -1453,6 +1547,7 @@ fn observe_and_select_scoped(
         // now-unused object decoding workspace.
         Some(source_projection.into_revalidation_owner()?)
     };
+    n2r_win32::perf::step("capture source tails");
     let source_tails = context.with_bytes(
         admission,
         expected.logical_bytes().max(1),

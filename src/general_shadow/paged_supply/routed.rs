@@ -2,6 +2,7 @@
 //! clusters are routed from the frozen source later; their bytes are not copied
 //! into the private shadow. This stage issues no conversion authority.
 use super::*;
+use crate::general_shadow::source_backed::{TAIL_BATCH, TAIL_BATCH_BYTES, tail_place};
 use crate::shadow_tree::{SourceStreamEvidence, pages::LeasedExpectedObject};
 use n2r_win32::progress::{Counters, Phase, Reporter, Unit, Update};
 use n2r_win32::shadow_native::private_tree::{
@@ -756,7 +757,7 @@ fn scan_plan(
     policy: VerificationPolicy,
     at_once: bool,
     progress: &Reporter,
-) -> Result<RoutedPlan> {
+) -> Result<(RoutedPlan, std::collections::BTreeSet<(usize, usize)>)> {
     let mut hash = Sha256::new();
     hash.update(b"n2r-private-routed-prefix-plan-v1\0");
     let (mut logical, mut referenced, mut routed, mut materialized, mut holes) =
@@ -778,6 +779,7 @@ fn scan_plan(
             None,
         );
     };
+    let mut materialized_streams = std::collections::BTreeSet::new();
     (|| -> Result<()> {
         let mut first = 0usize;
         while first < expected.len() {
@@ -791,7 +793,7 @@ fn scan_plan(
                 if object.directory || system(object) {
                     continue;
                 }
-                for stream in object.data_streams() {
+                for (stream_ordinal, stream) in object.data_streams().enumerate() {
                     let mut seen = batch.next(template, row_window);
                     require_policy_evidence(policy, stream)?;
                     let id = identity(object, stream);
@@ -848,6 +850,7 @@ fn scan_plan(
                                         .context("routed total overflow")?;
                                 }
                                 Piece::Materialize => {
+                                    materialized_streams.insert((index, stream_ordinal));
                                     materialized = materialized
                                         .checked_add(length)
                                         .context("materialized total overflow")?
@@ -893,14 +896,17 @@ fn scan_plan(
         0,
         None,
     );
-    Ok(RoutedPlan {
-        sha256: hex::encode(hash.finalize()),
-        logical,
-        referenced,
-        routed,
-        materialized,
-        holes,
-    })
+    Ok((
+        RoutedPlan {
+            sha256: hex::encode(hash.finalize()),
+            logical,
+            referenced,
+            routed,
+            materialized,
+            holes,
+        },
+        materialized_streams,
+    ))
 }
 
 /// Holds the exact source adapter, expected pages and native private tree from
@@ -959,7 +965,7 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
     // what a helper would have seen before. The budget refusal still stands
     // between the plan and the first write.
     let at_once = policy.verifies_once();
-    let plan = scan_plan(
+    let (plan, materialized_streams) = scan_plan(
         bytes, expected, template, row_window, policy, at_once, progress,
     )?;
     ensure!(
@@ -982,89 +988,198 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
     let mut written = 0u64;
     let before_reads = bytes.logical_bytes_read();
     let failing_object = std::cell::Cell::new(0usize);
+    // What a run that verifies once materializes is, but for the streams
+    // whose routing is not supported, the tail of each stream beyond its
+    // routed prefix: some 97,000 reads of a few KiB of the source on the
+    // full Windows volume, one after another, each waited for in turn
+    // (17 s). Where the source is read through lanes of its own, the objects
+    // are taken in batches, and the tail of each stream of a batch that the
+    // plan materializes is asked of the lanes at once, in its order on the
+    // disk, from where the expected run list places it, and offered to the
+    // adapter's reads of that stream (`offer_read_ahead`). Those reads are
+    // otherwise what they were: the session maps every window from the
+    // source's own record and takes the bytes read ahead only for a read
+    // wholly inside them, a fresh read of the same frozen device at that
+    // place; every other read, a read ahead that failed among them, is made
+    // by the adapter as before. Without lanes, or memory to spare, an
+    // object is taken at a time as before.
+    let mut ahead = if at_once {
+        super::super::source_backed::tails_ahead(
+            bytes,
+            bytes.metadata_scratch().artifact_group(),
+            "n2r-supply-tails-ahead",
+        )?
+    } else {
+        None
+    };
+    let cluster = n2r_win32::target_cluster::bytes();
     (|| -> Result<()> {
-        for index in 0..expected.len() {
-            failing_object.set(index);
-            supply_progress(
-                progress,
-                Phase::PayloadSupply,
-                2,
-                index,
-                expected.len(),
-                bytes.logical_bytes_read() - before_reads,
-                Some(written),
-            );
-            let object = expected.object_leased(index)?;
-            if object.directory || system(&object) {
-                continue;
-            }
-            for stream in object.data_streams() {
-                let id = identity(&object, stream);
-                let mut observed =
-                    leased_ranges(bytes, template, index, &object, stream, row_window, None)?;
-                let decision =
-                    route_decision(template, index, &object, stream, &observed.ranges, None)?;
-                drop(observed.native_ram.take());
-                let summary = &observed.summary;
-                let ranges = &observed.ranges;
-                let prefix = decision.as_ref().map(|(prefix, _)| *prefix);
-                for (kind, range) in ranges {
-                    pieces(stream, *kind, range, prefix, |piece, offset, length| {
-                        if !matches!(piece, Piece::Materialize) {
-                            return Ok(());
+        let mut first = 0usize;
+        while first < expected.len() {
+            // An object that does not decode is reported as itself: a batch
+            // ends before it, and it is the first of the next.
+            failing_object.set(first);
+            let held = if ahead.is_some() {
+                let (mut objects, mut streams) = (0usize, 0usize);
+                expected.objects_leased_at_once(first, |object| {
+                    objects += 1;
+                    streams += object.data_streams().count();
+                    objects < TAIL_BATCH && streams < TAIL_BATCH
+                })?
+            } else {
+                vec![expected.object_leased(first)?]
+            };
+            // For each stream of the batch whose tail was asked for: its
+            // ticket and the tail's place.
+            let mut tickets = std::collections::BTreeMap::new();
+            if let Some(reads) = ahead.as_mut() {
+                let mut asks = Vec::new();
+                let mut asked_bytes = 0u64;
+                for (index, object) in (first..).zip(&held) {
+                    if object.directory || system(object) {
+                        continue;
+                    }
+                    for (stream_ordinal, stream) in object.data_streams().enumerate() {
+                        let offset = stream.length / cluster * cluster;
+                        let count = stream.length - offset;
+                        if count == 0
+                            || !materialized_streams.contains(&(index, stream_ordinal))
+                            || asks.len() >= TAIL_BATCH
+                            || asked_bytes + count > TAIL_BATCH_BYTES
+                        {
+                            continue;
                         }
-                        let mut done = 0u64;
-                        while done < length {
-                            let n = usize::try_from((length - done).min(WINDOW as u64))?;
-                            let next_written = written
-                                .checked_add(n as u64)
-                                .context("routed materialization total overflow")?;
-                            ensure!(
-                                next_written <= plan.materialized
-                                    && next_written <= maximum_materialized_bytes,
-                                "routed materialization changed or exceeds its preflight budget"
-                            );
-                            let at = offset
-                                .checked_add(done)
-                                .context("routed materialization offset overflow")?;
-                            let read = bytes.read_range_proof(&id, at, &mut buffer[..n])?;
-                            // Sparse materialization can return an island/parts
-                            // receipt; retain the original complete-row allowance
-                            // only while that native proof is built and consumed.
-                            let _sparse_proof_ram = if stream.sparse.is_some() {
-                                Some(bytes.lease_working_ram(admission.budget.max_row_bytes)?)
-                            } else {
-                                None
-                            };
-                            let write = template.materialize_range_named(
-                                index,
-                                stream.name_utf16,
-                                &object.path,
-                                stream.length,
-                                at,
-                                &buffer[..n],
-                            )?;
-                            ensure!(
-                                write["sha256"] == read.sha256
-                                    && write["readback_verified"] == true,
-                                "routed remaining materialization readback differs"
-                            );
-                            bytes.validate_protection()?;
-                            written = next_written;
-                            done += n as u64;
+                        if let Some(place) = tail_place(&stream, offset, count) {
+                            asked_bytes += count;
+                            asks.push((place, count as usize, index, stream_ordinal));
                         }
-                        Ok(())
-                    })?;
+                    }
                 }
-                bytes.finish_stream()?;
-                let _closing_native_ram = bytes.lease_working_ram(
-                    template.supply_stream_workspace_bytes(index, stream.name_utf16)?,
-                )?;
-                ensure!(
-                    *summary == observe_stream(template, index, &object, stream)?,
-                    "native stream mapping changed during routed preparation"
-                );
+                asks.sort_unstable();
+                for (place, count, index, stream_ordinal) in asks {
+                    tickets.insert((index, stream_ordinal), (reads.ask(place, count), place));
+                }
             }
+            for (index, object) in (first..).zip(&held) {
+                failing_object.set(index);
+                supply_progress(
+                    progress,
+                    Phase::PayloadSupply,
+                    2,
+                    index,
+                    expected.len(),
+                    bytes.logical_bytes_read() - before_reads,
+                    Some(written),
+                );
+                if object.directory || system(object) {
+                    continue;
+                }
+                for (stream_ordinal, stream) in object.data_streams().enumerate() {
+                    if at_once && !materialized_streams.contains(&(index, stream_ordinal)) {
+                        continue;
+                    }
+                    // A read ahead that failed is left to the adapter to make
+                    // again, and to report if it fails there too.
+                    if let (Some(reads), Some((ticket, place))) =
+                        (ahead.as_mut(), tickets.remove(&(index, stream_ordinal)))
+                        && let Ok(read) = reads.take(ticket)
+                    {
+                        bytes.offer_read_ahead(place, read);
+                    }
+                    // What was offered is withdrawn once the stream's windows
+                    // are done, whether or not they were materialized.
+                    let materialized = (|| -> Result<LeasedRanges> {
+                        let id = identity(object, stream);
+                        let mut observed = leased_ranges(
+                            bytes, template, index, object, stream, row_window, None,
+                        )?;
+                        let decision = route_decision(
+                            template,
+                            index,
+                            object,
+                            stream,
+                            &observed.ranges,
+                            None,
+                        )?;
+                        drop(observed.native_ram.take());
+                        let prefix = decision.as_ref().map(|(prefix, _)| *prefix);
+                        for (kind, range) in &observed.ranges {
+                            pieces(stream, *kind, range, prefix, |piece, offset, length| {
+                                if !matches!(piece, Piece::Materialize) {
+                                    return Ok(());
+                                }
+                                let mut done = 0u64;
+                                while done < length {
+                                    let n = usize::try_from((length - done).min(WINDOW as u64))?;
+                                    let next_written = written
+                                        .checked_add(n as u64)
+                                        .context("routed materialization total overflow")?;
+                                    ensure!(
+                                        next_written <= plan.materialized
+                                            && next_written <= maximum_materialized_bytes,
+                                        "routed materialization changed or exceeds its preflight budget"
+                                    );
+                                    let at = offset
+                                        .checked_add(done)
+                                        .context("routed materialization offset overflow")?;
+                                    // The window is written from this very buffer and
+                                    // read back and compared with it byte for byte.
+                                    // Neither side keeps a record of the window: the
+                                    // SHA-256 of the source read and that of the
+                                    // bytes written were both taken of this buffer
+                                    // and compared with each other, which could not
+                                    // differ. They are no longer computed.
+                                    bytes.read_range_checked(&id, at, &mut buffer[..n])?;
+                                    // Sparse materialization can return an island/parts
+                                    // receipt; retain the original complete-row allowance
+                                    // only while that native proof is built and consumed.
+                                    let _sparse_proof_ram = if stream.sparse.is_some() {
+                                        Some(bytes.lease_working_ram(admission.budget.max_row_bytes)?)
+                                    } else {
+                                        None
+                                    };
+                                    let write = template.materialize_range_named_unhashed(
+                                        index,
+                                        stream.name_utf16,
+                                        &object.path,
+                                        stream.length,
+                                        at,
+                                        &buffer[..n],
+                                    )?;
+                                    ensure!(
+                                        write["readback_verified"] == true,
+                                        "routed remaining materialization readback differs"
+                                    );
+                                    bytes.validate_protection()?;
+                                    written = next_written;
+                                    done += n as u64;
+                                }
+                                Ok(())
+                            })?;
+                        }
+                        Ok(observed)
+                    })();
+                    bytes.withdraw_read_ahead(drop);
+                    let observed = materialized?;
+                    let summary = &observed.summary;
+                    bytes.finish_stream()?;
+                    let _closing_native_ram = bytes.lease_working_ram(
+                        template.supply_stream_workspace_bytes(index, stream.name_utf16)?,
+                    )?;
+                    ensure!(
+                        *summary == observe_stream(template, index, object, stream)?,
+                        "native stream mapping changed during routed preparation"
+                    );
+                }
+            }
+            // Every tail asked for was taken by its stream; should one not
+            // have been, its bytes are not kept past its batch.
+            if let Some(reads) = ahead.as_mut() {
+                for (ticket, _) in std::mem::take(&mut tickets).into_values() {
+                    let _ = reads.take(ticket);
+                }
+            }
+            first += held.len();
         }
         Ok(())
     })()
@@ -1076,6 +1191,8 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
             error,
         )
     })?;
+    // The lanes are closed before the adapter's scope ends.
+    drop(ahead);
     ensure!(
         written == plan.materialized,
         "routed materialization byte count differs from preflight"
@@ -1137,7 +1254,7 @@ pub(crate) fn prepare_recovered<'a, 'source, 'scope>(
             .context("recovered routed supply RAM overflow")?,
     )?;
     // A recovered supply takes one stream at a time, as before.
-    let plan = scan_plan(
+    let (plan, _) = scan_plan(
         bytes, expected, template, row_window, policy, false, progress,
     )?;
     ensure!(
@@ -1187,6 +1304,24 @@ impl RoutedSupplyOwner<'_, '_, '_> {
         // walks every stream's mapping on both sides, which is what the plan
         // digest in its receipt is made from.
         let reread = self.reread;
+        // Nor, under "verify once" (owner decision D2, #251), does it walk
+        // the source's side of each stream again: opening the stream's
+        // session (its file record read from the source and decoded), each
+        // reference and hole held to the source's run list, and closing the
+        // session (the record read again and the mapping checked). The
+        // planning pass (`scan_plan`) of this same process made exactly
+        // those checks of every stream, on a source that has been offline,
+        // read-only and held since; the source's read-only state and
+        // protection are still checked here as this pass begins and ends
+        // (`phase`); and the gate in front of the first write to the source
+        // reads every metadata range and extent the inspection read again and
+        // holds them to the source fingerprint pinned at inspection
+        // (`recheck_source`), so a changed file record or run list stops the
+        // run before it writes. Every observation of the shadow's side, and
+        // the plan digest and counts they make, are still taken and compared
+        // with the plan. A run that reads the payloads again (thorough,
+        // `--recheck-everything`, a recovered supply) walks both sides.
+        let walk_source = reread;
         let (mut logical, mut referenced, mut routed, mut materialized, mut holes) =
             (0u64, 0u64, 0u64, 0u64, 0u64);
         let mut source_buffer = vec![0u8; WINDOW];
@@ -1225,7 +1360,9 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                         "routed verification lacks source content or extent evidence"
                     );
                     let id = identity(object, stream);
-                    self.bytes.check_stream(&id)?;
+                    if walk_source {
+                        self.bytes.check_stream(&id)?;
+                    }
                     let mut observed = leased_ranges(
                         self.bytes,
                         self.template,
@@ -1261,8 +1398,10 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                         pieces(stream, *kind, range, prefix, |piece, offset, length| {
                             match piece {
                                 Piece::Reference(physical) => {
-                                    self.bytes
-                                        .require_reference(&id, offset, physical, length)?;
+                                    if walk_source {
+                                        self.bytes
+                                            .require_reference(&id, offset, physical, length)?;
+                                    }
                                     referenced = referenced
                                         .checked_add(length)
                                         .context("reference total overflow")?;
@@ -1272,8 +1411,10 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                                         stream.sha256.is_none() && stream.source_evidence.is_some(),
                                         "routed prefix cannot claim an unmeasured content digest"
                                     );
-                                    self.bytes
-                                        .require_reference(&id, offset, physical, length)?;
+                                    if walk_source {
+                                        self.bytes
+                                            .require_reference(&id, offset, physical, length)?;
+                                    }
                                     routed = routed
                                         .checked_add(length)
                                         .context("routed total overflow")?;
@@ -1284,7 +1425,9 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                                         .context("materialized total overflow")?;
                                 }
                                 Piece::Hole => {
-                                    self.bytes.require_hole(&id, offset, length)?;
+                                    if walk_source {
+                                        self.bytes.require_hole(&id, offset, length)?;
+                                    }
                                     holes = holes.checked_add(length).context("hole total overflow")?;
                                 }
                             }
@@ -1347,7 +1490,9 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                     } else {
                         None
                     };
-                    self.bytes.finish_stream()?;
+                    if walk_source {
+                        self.bytes.finish_stream()?;
+                    }
                     // The workspace of the closing observation's mapping
                     // queries. Where a batch's helper made them, they ran under
                     // what the batch reserved for the stream, which `seen`
@@ -1428,6 +1573,12 @@ impl RoutedSupplyOwner<'_, '_, '_> {
             receipt["payload_bytes_reread"] = false.into();
             receipt["payload_contents_held_by"] =
                 "read-back at materialization; complete digests on the converted volume".into();
+        }
+        if !walk_source {
+            receipt["source_mappings_rewalked"] = false.into();
+            receipt["source_mappings_held_by"] =
+                "the planning pass; the source fingerprint at the gate before the first source write"
+                    .into();
         }
         Ok(receipt)
     }

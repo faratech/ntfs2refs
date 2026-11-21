@@ -196,6 +196,49 @@ impl Record {
     }
 }
 
+/// Whether an observation walks its index against the journal's descriptors
+/// once (`JournalObservation::revalidate_index`) and not again at every
+/// reading of the lifecycle: a recovery (`verify_policy::repeat_once`), as
+/// before, and a conversion that verifies each thing once
+/// (`verify_policy::verifies_once`, which also checks once) outside the gate
+/// in front of its first write to the source. Inside that gate, and under
+/// `--verify thorough` and `--recheck-everything`, every reading walks.
+fn walks_index_once() -> bool {
+    n2r_win32::verify_policy::repeats_once() || conversion_walks_index_once()
+}
+
+fn conversion_walks_index_once() -> bool {
+    conversion_walks_index_once_given(
+        n2r_win32::verify_policy::verifies_once(),
+        n2r_win32::verify_policy::checks_once(),
+        n2r_win32::verify_policy::open_gate().is_some(),
+    )
+}
+
+/// The rule of [`conversion_walks_index_once`], apart from the switches.
+fn conversion_walks_index_once_given(verifies_once: bool, checks_once: bool, gate: bool) -> bool {
+    verifies_once && checks_once && !gate
+}
+
+/// Whether the pass that builds an observation's index, which reads every
+/// descriptor through the held journal, stands for the observation's walk
+/// (`revalidate_index`): for a conversion that walks once
+/// ([`walks_index_once`]) and is not recovering. A recovery
+/// (`verify_policy::repeat_once`), the cancellation a fast conversion makes
+/// of itself before its apply intent among them, walks once after the
+/// build, as before.
+fn walks_index_once_after_its_build() -> bool {
+    build_stands_for_the_walk(
+        conversion_walks_index_once(),
+        n2r_win32::verify_policy::repeats_once(),
+    )
+}
+
+/// The rule of [`walks_index_once_after_its_build`], apart from the switches.
+fn build_stands_for_the_walk(conversion_walks_once: bool, recovering: bool) -> bool {
+    conversion_walks_once && !recovering
+}
+
 /// Only read-only inspection and lifecycle classification are exposed. The
 /// actual journal owner is retained; no raw handle or ticket getter exists.
 pub(crate) struct JournalObservation<'a> {
@@ -427,7 +470,7 @@ fn check_side(
     expected: &[u8; 32],
     range: &SelectedRange,
     mut aggregate: Option<&mut PinHash>,
-    immutable: &mut PinHash,
+    mut immutable: Option<&mut PinHash>,
     digests: &mut RowDigests,
     buffer: &mut [u8],
     descriptors_only: bool,
@@ -438,6 +481,9 @@ fn check_side(
         }
         return Ok(());
     }
+    let immutable = immutable
+        .as_deref_mut()
+        .context("immutable pin hash absent for full journal scan")?;
     if let Some(aggregate) = aggregate.as_deref_mut() {
         frame(aggregate, range)?;
     }
@@ -613,10 +659,23 @@ impl<'a> JournalObservation<'a> {
         let mut index_hash = Sha256::new();
         output.write_all(&index_head)?;
         index_hash.update(index_head);
-        let mut immutable = aggregate_pin_hash(algorithm)?;
-        immutable.update(&header)?;
-        let mut old = aggregate_pin_hash(algorithm)?;
-        let mut new = Some(aggregate_pin_hash(algorithm)?);
+        let mut immutable = if descriptors_only {
+            None
+        } else {
+            let mut h = aggregate_pin_hash(algorithm)?;
+            h.update(&header)?;
+            Some(h)
+        };
+        let mut old = if descriptors_only {
+            None
+        } else {
+            Some(aggregate_pin_hash(algorithm)?)
+        };
+        let mut new = if descriptors_only {
+            None
+        } else {
+            Some(aggregate_pin_hash(algorithm)?)
+        };
         let mut buffer = vec![0u8; BUFFER];
         let mut selected = 0u64;
         let mut source_free = 0u64;
@@ -643,7 +702,9 @@ impl<'a> JournalObservation<'a> {
             for _ in 0..ticket.range_count {
                 let mut descriptor = [0u8; OLD_ZERO_RECORD];
                 reader.read_exact(journal, &mut descriptor[..fmt.record_size])?;
-                immutable.update(&descriptor[..fmt.record_size])?;
+                if let Some(immutable) = immutable.as_mut() {
+                    immutable.update(&descriptor[..fmt.record_size])?;
+                }
                 let row = Record::decode(&descriptor, position, fmt, ticket.image_length)?;
                 ensure!(
                     row.offset >= previous_end && row.next <= ticket.journal_length - FOOTER as u64,
@@ -673,7 +734,7 @@ impl<'a> JournalObservation<'a> {
                         &row.old_hash,
                         &range,
                         None,
-                        &mut immutable,
+                        immutable.as_mut(),
                         &mut row_digests,
                         &mut buffer,
                         descriptors_only,
@@ -689,8 +750,8 @@ impl<'a> JournalObservation<'a> {
                         row.old_kind == 0,
                         &row.old_hash,
                         &range,
-                        Some(&mut old),
-                        &mut immutable,
+                        old.as_mut(),
+                        immutable.as_mut(),
                         &mut row_digests,
                         &mut buffer,
                         descriptors_only,
@@ -713,7 +774,7 @@ impl<'a> JournalObservation<'a> {
                         &row.new_hash,
                         &range,
                         new.as_mut(),
-                        &mut immutable,
+                        immutable.as_mut(),
                         &mut row_digests,
                         &mut buffer,
                         descriptors_only,
@@ -745,7 +806,9 @@ impl<'a> JournalObservation<'a> {
         row_digests.finish()?;
         let mut footer = [0u8; FOOTER];
         reader.read_exact(journal, &mut footer)?;
-        immutable.update(&footer)?;
+        if let Some(immutable) = immutable.as_mut() {
+            immutable.update(&footer)?;
+        }
         // The pass over the rows is over, and its window goes back. Where
         // it ended is held to the journal's length below.
         let scanned_to = reader.position();
@@ -776,11 +839,13 @@ impl<'a> JournalObservation<'a> {
                 && get_u64(&footer, 72) == ticket.journal_length
                 && scanned_to == ticket.journal_length
                 && (descriptors_only
-                    || finish(old)?
+                    || finish(old.context("OLD aggregate hash absent")?)?
                         == ticket
                             .old_restored_selected_sha256
                             .unwrap_or(ticket.old_selected_sha256))
-                && (descriptors_only || finish(immutable)? == ticket.immutable_sha256),
+                && (descriptors_only
+                    || finish(immutable.context("immutable aggregate hash absent")?)?
+                        == ticket.immutable_sha256),
             "recovery immutable body, footer or OLD aggregate differs"
         );
         if let Some(new) = new {
@@ -829,7 +894,13 @@ impl<'a> JournalObservation<'a> {
             index_lease,
             format: fmt,
             index_length: bytes,
-            index_walked: false,
+            // The pass above read every descriptor, in order, through the
+            // held journal and wrote the index from them, which its owner
+            // now holds to their digest. A conversion that checks each thing
+            // once does not walk them against the index again here, nor at
+            // each reading of the lifecycle (`walks_index_once`); the index's
+            // owner is still revalidated below.
+            index_walked: walks_index_once_after_its_build(),
             _memory: memory,
         };
         result.revalidate_index()?;
@@ -912,11 +983,10 @@ impl<'a> JournalObservation<'a> {
         // lifecycle; `record` still holds each row a step uses to its
         // descriptor. Only for the markerless journal, as the journal's
         // body (`envelope::hold_journal_body`); anything else walks every
-        // time, as before.
-        if self.index_walked
-            && self.ticket.marker_profile.is_none()
-            && n2r_win32::verify_policy::repeats_once()
-        {
+        // time, as before. A conversion that verifies each thing once makes
+        // it once for each observation as well, outside the gate in front
+        // of its first write to the source (`walks_index_once`).
+        if self.index_walked && self.ticket.marker_profile.is_none() && walks_index_once() {
             return Ok(());
         }
         let mut previous_end = 0u64;
@@ -1135,5 +1205,38 @@ impl<'a> BoundJournalObservation<'a> {
                 marker_native_qualified: None,
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_conversion_walks_its_index_once_only_outside_the_gate_and_when_it_verifies_once() {
+        assert!(conversion_walks_index_once_given(true, true, false));
+        assert!(
+            !conversion_walks_index_once_given(true, true, true),
+            "inside the gate every reading walks"
+        );
+        assert!(
+            !conversion_walks_index_once_given(false, true, false),
+            "--verify thorough walks at every reading"
+        );
+        assert!(
+            !conversion_walks_index_once_given(false, false, false),
+            "--recheck-everything walks at every reading"
+        );
+    }
+
+    #[test]
+    fn only_a_conversion_that_is_not_recovering_counts_the_build_as_its_walk() {
+        assert!(build_stands_for_the_walk(true, false));
+        assert!(
+            !build_stands_for_the_walk(true, true),
+            "a fast conversion's own cancellation walks after the build, as a recovery does"
+        );
+        assert!(!build_stands_for_the_walk(false, true));
+        assert!(!build_stands_for_the_walk(false, false));
     }
 }

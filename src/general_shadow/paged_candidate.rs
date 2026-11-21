@@ -792,15 +792,18 @@ impl<'source, 'observation, 'scope>
     ///
     /// The comparison read the shadow, then the source, then compared: the
     /// source had no read outstanding while the shadow was read or a chunk
-    /// was compared. A helper thread now reads the source through a lane of
-    /// its own, and hashes each chunk, while this thread does the rest.
+    /// was compared. Helper threads now read the source through lanes of
+    /// their own, the chunks dealt to them in turn so that several reads are
+    /// outstanding at once (`OriginalPrefetch::lanes_for`), and hash each
+    /// chunk, while this thread takes them in order and does the rest.
     ///
     /// It is done only for a dedicated source inside its read scope, on a
     /// device that takes more than one read at once, without an observer of
-    /// the original reads, and where the ledger has the memory to spare
-    /// (three chunks, the lane, the list of ranges and a stack). Otherwise
-    /// nothing changes: the capture reads the source as it did. A lane that
-    /// cannot be opened changes nothing either: opening it reads nothing.
+    /// the original reads, and where the ledger has the memory to spare (for
+    /// each lane its chunks, the lane and a stack, and the list of ranges;
+    /// as many lanes as are granted). Otherwise nothing changes: the capture
+    /// reads the source as it did. Lanes that cannot be opened change
+    /// nothing either: opening them reads nothing.
     pub(crate) fn read_originals_ahead(
         &mut self,
         ranges: u64,
@@ -816,9 +819,10 @@ impl<'source, 'observation, 'scope>
         let Some(group) = self.routes.scratch.artifact_group() else {
             return Ok(());
         };
-        let Some(paid) = OriginalPrefetch::workspace_bytes(CHUNK, ranges)
-            .and_then(|bytes| group.arena().reserve_spare_ram(bytes).ok())
-        else {
+        let wanted = OriginalPrefetch::lanes_for(self.bytes.original_owner().read_lane_depth());
+        let Some((lanes, paid)) = OriginalPrefetch::reserve_lanes(wanted, CHUNK, ranges, |bytes| {
+            group.arena().reserve_spare_ram(bytes).ok()
+        }) else {
             return Ok(());
         };
         let mut list = Vec::new();
@@ -831,16 +835,17 @@ impl<'source, 'observation, 'scope>
         for ordinal in 0..ranges {
             list.push(range(ordinal)?);
         }
-        // The lane only buys speed: one that cannot be opened leaves the
-        // capture reading through the owner, as it did, and fails nothing.
-        let Ok(Some(lane)) = self.bytes.original_owner().read_lane() else {
-            return Ok(());
+        // The lanes only buy speed: lanes that cannot be opened leave the
+        // capture reading through the owner, as it did, and fail nothing.
+        let lanes = match self.bytes.original_owner().read_lanes(lanes) {
+            Ok(lanes) if !lanes.is_empty() => lanes,
+            _ => return Ok(()),
         };
-        // A helper that cannot be started read nothing: no lane is left
-        // open, and the capture reads as it did.
+        // Helpers that cannot be started hand nothing over: their lanes are
+        // closed, and the capture reads as it did.
         self.originals_ahead = OriginalPrefetch::start(
             "n2r-capture-source-ahead",
-            lane,
+            lanes,
             list,
             CHUNK,
             true,

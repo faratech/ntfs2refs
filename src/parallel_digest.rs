@@ -39,23 +39,50 @@ pub(crate) fn digest_frozen_chunks(
     image: &mut n2r_win32::GeneralFrozenPartition,
     chunks: &[Chunk],
 ) -> Result<Vec<[u8; 16]>> {
-    let depth = image
-        .io_profile()
-        .queue_depth
-        .clamp(1, 8)
-        .min(chunks.len().max(1));
+    let depth = image.io_profile().queue_depth.clamp(1, 8);
+    digest_frozen_chunks_at_depth(image, chunks, depth)
+}
+
+/// A chunk at most this long is a small read: a lane reading such chunks
+/// waits on each read's latency more than on the device's bandwidth.
+pub(crate) const SMALL_READ_BYTES: usize = 256 * 1024;
+
+/// How many reads are kept outstanding for chunks that are all small reads,
+/// whatever queue depth the storage profile names for large ones: 20,000
+/// reads of about 23 KiB at the profile's depth of two took 7.4 s (#250).
+pub(crate) const SMALL_READ_DEPTH: usize = 8;
+
+/// Whether every chunk is a small read ([`SMALL_READ_BYTES`]).
+pub(crate) fn small_reads(chunks: &[Chunk]) -> bool {
+    chunks.iter().all(|chunk| chunk.length <= SMALL_READ_BYTES)
+}
+
+/// [`digest_frozen_chunks`] with up to `depth` reads outstanding (this
+/// thread and `depth - 1` read lanes), for a caller that has paid for that
+/// many lanes. The digests do not depend on the depth.
+pub(crate) fn digest_frozen_chunks_at_depth(
+    image: &mut n2r_win32::GeneralFrozenPartition,
+    chunks: &[Chunk],
+    depth: usize,
+) -> Result<Vec<[u8; 16]>> {
+    let depth = depth.clamp(1, 8).min(chunks.len().max(1));
     if depth <= 1 {
         return digest_chunks(image, chunks);
     }
     let mut events = Vec::new();
     let mut lanes = image.read_lanes(depth - 1, &mut events)?;
-    digest_chunks_lanes(image, &mut lanes, chunks)
+    digest_chunks_lanes(image, &mut lanes, chunks, None)
 }
 
-fn digest_chunks_lanes<R: Read + Seek, L: Read + Seek + Send>(
+/// The digests of `chunks`, read by `image` on this thread and by each of
+/// `lanes` on a thread of its own, in chunk order. Where `cancel` is set,
+/// no lane claims another chunk and the call fails: a cancelled read never
+/// returns digests.
+pub(crate) fn digest_chunks_lanes<R: Read + Seek, L: Read + Seek + Send>(
     image: &mut R,
     lanes: &mut [L],
     chunks: &[Chunk],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Vec<[u8; 16]>> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     ensure!(
@@ -73,10 +100,15 @@ fn digest_chunks_lanes<R: Read + Seek, L: Read + Seek + Send>(
         largest: usize,
         next: &AtomicUsize,
         failed: &AtomicBool,
+        cancel: Option<&AtomicBool>,
     ) -> Result<Vec<(usize, [u8; 16])>> {
         let mut buffer = vec![0u8; largest];
         let mut digests = Vec::new();
         while !failed.load(Ordering::Acquire) {
+            if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+                failed.store(true, Ordering::Release);
+                return Err(anyhow!("the read was given up"));
+            }
             let position = next.fetch_add(1, Ordering::AcqRel);
             let Some(chunk) = chunks.get(position) else {
                 break;
@@ -99,11 +131,11 @@ fn digest_chunks_lanes<R: Read + Seek, L: Read + Seek + Send>(
             .map(|reader| {
                 scope.spawn(|| {
                     let _sampled = n2r_win32::stack_sampler::helper();
-                    lane(reader, chunks, largest, &next, &failed)
+                    lane(reader, chunks, largest, &next, &failed, cancel)
                 })
             })
             .collect();
-        let mut found = lane(image, chunks, largest, &next, &failed)?;
+        let mut found = lane(image, chunks, largest, &next, &failed, cancel)?;
         for other in others {
             found.extend(
                 other
@@ -206,4 +238,39 @@ pub(crate) fn digest_chunks<R: Read + Seek>(
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| anyhow!("parallel digest did not hash every chunk"))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn lanes_digest_as_one_reader_does_and_a_cancelled_read_returns_no_digests() {
+        let bytes: Vec<u8> = (0..200_000u32).map(|n| (n % 251) as u8).collect();
+        let chunks: Vec<Chunk> = (0..40)
+            .map(|n| Chunk {
+                offset: n * 4_000,
+                length: 3_000 + n as usize,
+            })
+            .collect();
+        let alone = digest_chunks(&mut Cursor::new(bytes.clone()), &chunks).unwrap();
+        let mut lanes: Vec<Cursor<Vec<u8>>> = (0..3).map(|_| Cursor::new(bytes.clone())).collect();
+        let together = digest_chunks_lanes(
+            &mut Cursor::new(bytes.clone()),
+            &mut lanes,
+            &chunks,
+            Some(&AtomicBool::new(false)),
+        )
+        .unwrap();
+        assert_eq!(together, alone);
+        let cancelled = digest_chunks_lanes(
+            &mut Cursor::new(bytes.clone()),
+            &mut lanes,
+            &chunks,
+            Some(&AtomicBool::new(true)),
+        );
+        assert!(cancelled.is_err());
+    }
 }

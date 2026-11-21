@@ -93,11 +93,24 @@ pub(crate) fn reconcile_online_terminal<O: PreparationObserver>(
             attempted.push(missing.clone());
         }
     }
-    let paths = n2r_win32::capture_mount_paths_general(mounted.clone(), events)?;
+    let paths = if attempted.is_empty() {
+        first
+    } else {
+        n2r_win32::capture_mount_paths_general(mounted.clone(), events)?
+    };
     let actual: BTreeSet<_> = paths.paths.iter().map(|s| s.to_lowercase()).collect();
     let missing: Vec<_> = expected.difference(&actual).cloned().collect();
-    let current = n2r_win32::volume_label::observe_label(mounted.clone(), filesystem)?;
-    recovery.revalidate_online_terminal(events)?;
+    let current = if label_action == "restored-enrollment-label" {
+        n2r_win32::volume_label::observe_label(mounted.clone(), filesystem)?
+    } else {
+        initial
+    };
+    if !attempted.is_empty()
+        || label_action == "restored-enrollment-label"
+        || !n2r_win32::verify_policy::checks_once()
+    {
+        recovery.revalidate_online_terminal(events)?;
+    }
     events.checkpoint()?;
     Ok(serde_json::json!({
         "kind":"resource-online-terminal-reconciliation-v1",
@@ -549,7 +562,8 @@ fn finalize_reopened<O: PreparationObserver>(
             n2r_win32::restore_drive_letter_general(converted.clone(), missing, &mut events)
             .context("HND is closed; original drive letter could not be restored without reassigning another volume")?;
         }
-        if !expected_paths.is_subset(&initial_paths) {
+        let paths_changed = !expected_paths.is_subset(&initial_paths);
+        if paths_changed {
             paths = n2r_win32::capture_mount_paths_general(converted.clone(), &mut events)?;
         }
         let actual_paths: BTreeSet<_> = paths.paths.iter().map(|s| s.to_lowercase()).collect();
@@ -557,8 +571,13 @@ fn finalize_reopened<O: PreparationObserver>(
             expected_paths == actual_paths,
             "original volume mount paths were not preserved"
         );
-        n2r_win32::perf::step("revalidate after mount, again");
-        mounted.revalidate_handoff_artifacts_after_mount(&mut events)?;
+        if paths_changed
+            || current_label.label != *mounted.expected_source_label()
+            || !n2r_win32::verify_policy::verifies_once()
+        {
+            n2r_win32::perf::step("revalidate after mount, again");
+            mounted.revalidate_handoff_artifacts_after_mount(&mut events)?;
+        }
         events.checkpoint()?;
         let known = native
             .report()

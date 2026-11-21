@@ -581,7 +581,7 @@ pub(crate) fn repair_shadow(
         };
         let native_bytes_written = {
             let mut native = native_step(events, |batch| {
-                journal.begin_sealed_fresh_apply(&mut shadow, index.policy(), &pins, batch)
+                journal.begin_sealed_fresh_apply(&mut shadow, index.policy(), &pins, false, batch)
             })?;
             let mut target = JournalTarget(&mut native);
             // The native gate has already durably issued AP. Existing resume

@@ -1298,14 +1298,13 @@ impl JournalObservation<'_> {
             sj::write_lifecycle_marker(self.journal, self.ticket, MarkerKind::Aborted)?;
         }
         let restored_bytes = if !forward && self.ticket.old_restored_selected_sha256.is_some() {
-            let mut total = 0u64;
-            for ordinal in 0..u64::from(self.ticket.range_count) {
-                let row = self.record(ordinal)?;
-                if row.old_kind != 2 {
-                    total = add(total, row.length)?;
-                }
-            }
-            Some(total)
+            let facts = self.index.facts()?;
+            Some(
+                facts
+                    .selected_bytes
+                    .checked_sub(facts.source_free_bytes)
+                    .context("restored selected bytes underflow")?,
+            )
         } else {
             None
         };
@@ -1399,14 +1398,13 @@ impl JournalObservation<'_> {
         if self.ticket.old_restored_selected_sha256.is_none() {
             return Ok(None);
         }
-        let mut total = 0u64;
-        for ordinal in 0..u64::from(self.ticket.range_count) {
-            let row = self.record(ordinal)?;
-            if row.old_kind != 2 {
-                total = add(total, row.length)?;
-            }
-        }
-        Ok(Some(total))
+        let facts = self.index.facts()?;
+        Ok(Some(
+            facts
+                .selected_bytes
+                .checked_sub(facts.source_free_bytes)
+                .context("restored selected bytes underflow")?,
+        ))
     }
 
     fn abandon_guarded(

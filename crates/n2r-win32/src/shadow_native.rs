@@ -333,6 +333,84 @@ fn each_at_once<T: Sync, U: Send>(
     results
 }
 
+/// What a helper of [`close_at_once`] holds: a small stack, and the run of
+/// handles it has taken.
+const CLOSING_THREAD_BYTES: u64 = 256 * 1024;
+/// How many handles a helper of [`close_at_once`] takes at a time.
+const CLOSING_RUN: usize = 256;
+
+/// Closes every handle `handles` yields and returns once all are closed.
+///
+/// The metadata step ends holding a handle on every object of the shadow
+/// and on every short-name link: some 255,000 on the full Windows volume,
+/// which one thread closed one after another. Each handle is to an object
+/// of its own and closing it is not a check: nothing is read between one
+/// close and the next, and all of them are closed before this returns, as
+/// before. So helper threads take runs of them from `handles` (which is
+/// advanced under a lock, in its order, so that whatever it does as it
+/// yields is done in that order) and close them beside one another. A
+/// helper's stack is spare memory: as many helpers as the ledger grants one,
+/// up to one for each processor; fewer than two is none, and the calling
+/// thread closes them all, as before.
+fn close_at_once<I: Iterator<Item = File> + Send>(
+    payer: Option<&dyn report_memory::ReportMemoryAccountant>,
+    handles: I,
+) {
+    let mut helpers = Vec::new();
+    if let Some(payer) = payer {
+        let wanted = std::thread::available_parallelism().map_or(1, |cores| cores.get());
+        while wanted >= 2 && helpers.len() < wanted {
+            match payer.reserve_spare(CLOSING_THREAD_BYTES) {
+                Ok(lease) => helpers.push(lease),
+                Err(_) => break,
+            }
+        }
+    }
+    if helpers.len() < 2 {
+        handles.for_each(drop);
+        return;
+    }
+    let handles = std::sync::Mutex::new(handles);
+    let take = || -> Vec<File> {
+        let mut handles = handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        handles.by_ref().take(CLOSING_RUN).collect()
+    };
+    std::thread::scope(|scope| {
+        let mut started = 0usize;
+        for _ in 0..helpers.len() {
+            let spawned = std::thread::Builder::new()
+                .stack_size(CLOSING_THREAD_BYTES as usize)
+                .spawn_scoped(scope, || {
+                    loop {
+                        let run = take();
+                        if run.is_empty() {
+                            break;
+                        }
+                        let _timed = crate::perf::scope(crate::perf::Point::AtOnce);
+                        drop(run);
+                    }
+                });
+            if spawned.is_err() {
+                break;
+            }
+            started += 1;
+        }
+        // Whatever no helper could be started for is closed here.
+        if started == 0 {
+            loop {
+                let run = take();
+                if run.is_empty() {
+                    break;
+                }
+                drop(run);
+            }
+        }
+    });
+    drop(helpers);
+}
+
 /// One pass that changes objects of `input`, each through its own handles.
 ///
 /// `objects` gives, in the pass's order, an object's ordinal for the
@@ -1557,11 +1635,11 @@ fn security_stream_with_limit(sd: &[u8], maximum: u64) -> io::Result<Vec<u8>> {
 fn backup_security(file: &File, sd: &[u8]) -> io::Result<SecurityBackup> {
     backup_security_with_limit(file, sd, None)
 }
-fn backup_security_with_limit(
+fn backup_security_write_with_limit(
     file: &File,
     sd: &[u8],
     maximum: Option<u64>,
-) -> io::Result<SecurityBackup> {
+) -> io::Result<Vec<u8>> {
     let stream = if let Some(maximum) = maximum {
         descriptor_with_limit(sd, maximum)?;
         security_stream_with_limit(sd, maximum)?
@@ -1602,10 +1680,18 @@ fn backup_security_with_limit(
     if accepted as usize != stream.len() {
         return Err(invalid("partial root backup-security restoration"));
     }
+    Ok(stream)
+}
+fn backup_security_with_limit(
+    file: &File,
+    sd: &[u8],
+    maximum: Option<u64>,
+) -> io::Result<SecurityBackup> {
+    let stream = backup_security_write_with_limit(file, sd, maximum)?;
     Ok(SecurityBackup {
         stream_sha256: hex::encode(Sha256::digest(&stream)),
         submitted_bytes: stream.len() as u32,
-        accepted_bytes: accepted,
+        accepted_bytes: stream.len() as u32,
         context_released: true,
     })
 }
@@ -1743,28 +1829,32 @@ fn metadata_snapshot(file: &File, input: &Input<'_>) -> Snapshot {
 }
 fn metadata_snapshot_with_limit(file: &File, input: &Input<'_>, maximum: Option<u64>) -> Snapshot {
     if let Some(maximum) = maximum {
-        let mut observed = crate::attestation_native::source_snapshot_paged(
+        // The extended attributes are asked for only where the object has
+        // some to compare, and the reparse point where it has one or has
+        // extended attributes (as `metadata_snapshot` does): what was asked
+        // for and then set aside is no longer asked for at all.
+        let observed = crate::attestation_native::source_snapshot_paged_scoped(
             file,
             false,
             usize::try_from(maximum).unwrap_or(usize::MAX),
+            input.extended_attributes.is_some(),
+            input.extended_attributes.is_some() || input.reparse.is_some(),
         );
-        if input.extended_attributes.is_none() {
-            observed.extended_attributes = None;
-            observed.extended_attributes_error = None;
-        }
-        if input.extended_attributes.is_none() && input.reparse.is_none() {
-            observed.reparse = None;
-        }
         with_directory_case(file, input, observed)
     } else {
         metadata_snapshot(file, input)
     }
 }
+/// An object's metadata as its security is checked. Every caller reads only
+/// the two security views from it (`security_matches`, the protection
+/// restore, the auto-inheritance reset), so with a row bound only those two
+/// are asked for: not its identity, times, size or attributes, its extended
+/// attributes or its reparse point. A check of the identity asks for it
+/// itself.
 fn security_snapshot_with_limit(file: &File, maximum: Option<u64>) -> Snapshot {
     if let Some(maximum) = maximum {
-        crate::attestation_native::source_snapshot_paged(
+        crate::attestation_native::security_snapshot_paged(
             file,
-            false,
             usize::try_from(maximum).unwrap_or(usize::MAX),
         )
     } else {
@@ -1779,7 +1869,13 @@ fn repeat_snapshot(file: &File, previous: &Snapshot) -> Snapshot {
             .map_or(0, |q| q.bytes.len()),
     );
     let mut observation = if maximum > crate::attestation::MAX_SECURITY_BYTES {
-        crate::attestation_native::source_snapshot_paged(file, false, maximum)
+        crate::attestation_native::source_snapshot_paged_scoped(
+            file,
+            false,
+            maximum,
+            previous.extended_attributes.is_some() || previous.extended_attributes_error.is_some(),
+            previous.reparse.is_some(),
+        )
     } else if previous.extended_attributes.is_some()
         || previous.extended_attributes_error.is_some()
         || previous.reparse.is_some()
@@ -6346,6 +6442,78 @@ fn run_role_content_domain_accounted(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A payer that grants what it is asked for and counts what is held.
+    struct Granting(std::sync::Arc<std::sync::atomic::AtomicU64>);
+    struct Held(std::sync::Arc<std::sync::atomic::AtomicU64>, u64);
+    impl report_memory::ReportMemoryLease for Held {
+        fn shrink_to(&mut self, bytes: u64) -> io::Result<()> {
+            self.0
+                .fetch_sub(self.1 - bytes, std::sync::atomic::Ordering::SeqCst);
+            self.1 = bytes;
+            Ok(())
+        }
+    }
+    impl Drop for Held {
+        fn drop(&mut self) {
+            self.0
+                .fetch_sub(self.1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    impl report_memory::ReportMemoryAccountant for Granting {
+        fn reserve(&self, bytes: u64) -> io::Result<Box<dyn report_memory::ReportMemoryLease>> {
+            self.0.fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
+            Ok(Box::new(Held(std::sync::Arc::clone(&self.0), bytes)))
+        }
+        fn lease_heap_bytes(&self) -> u64 {
+            16
+        }
+    }
+
+    /// The held handles of the metadata step are closed by helpers: every
+    /// one is closed when `close_at_once` returns (each file, held without
+    /// sharing, can be opened again), whatever the iterator does as it
+    /// yields is done in its order, and the helpers' stacks are given back.
+    /// Without a payer the calling thread closes them, as before.
+    #[test]
+    fn close_at_once_closes_every_handle_in_order_before_it_returns() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let open_alone = |index: usize| {
+            File::options()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .share_mode(0)
+                .open(directory.path().join(format!("{index}.bin")))
+        };
+        let held = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let payer = Granting(std::sync::Arc::clone(&held));
+        for payer in [
+            Some(&payer as &dyn report_memory::ReportMemoryAccountant),
+            None,
+        ] {
+            let count = 3 * CLOSING_RUN + 7;
+            let handles: Vec<(usize, File)> = (0..count)
+                .map(|index| (index, open_alone(index).unwrap()))
+                .collect();
+            assert!(open_alone(0).is_err(), "a held file cannot be opened again");
+            let mut yielded = Vec::with_capacity(count);
+            close_at_once(
+                payer,
+                handles.into_iter().map(|(index, file)| {
+                    yielded.push(index);
+                    file
+                }),
+            );
+            assert_eq!(yielded, (0..count).collect::<Vec<_>>());
+            for index in 0..count {
+                drop(open_alone(index).unwrap());
+            }
+            assert_eq!(held.load(std::sync::atomic::Ordering::SeqCst), 0);
+        }
+    }
 
     /// A ledger of ten units for the three tests below: decoding an object
     /// needs four of them free while it runs, and a workspace holds two.

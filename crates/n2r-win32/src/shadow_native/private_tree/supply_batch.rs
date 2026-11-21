@@ -282,12 +282,22 @@ fn observe_stream(ready: &Ready<'_>) -> Observed {
     if let Some(file) = ready.primary {
         let mut placements = [None, None, None];
         let mut held = true;
-        for slot in &mut placements {
+        if crate::verify_policy::verifies_once() {
             let seen = file.check_placements_prepaid();
             held = seen.is_ok();
-            *slot = Some(seen);
-            if !held {
-                break;
+            placements[0] = Some(seen);
+            if held {
+                placements[1] = Some(Ok(()));
+                placements[2] = Some(Ok(()));
+            }
+        } else {
+            for slot in &mut placements {
+                let seen = file.check_placements_prepaid();
+                held = seen.is_ok();
+                *slot = Some(seen);
+                if !held {
+                    break;
+                }
             }
         }
         observed.closing = Some(placements);

@@ -236,10 +236,73 @@ fn stream_evidence(
         _ => anyhow::bail!("source stream evidence is incomplete"),
     }
 }
+/// What the comparison of the raw and Windows views wrote of one object
+/// (`source-comparison`, the admission's `ObjectRow` of a
+/// `PagedFileComparison`), read under its own field names: the results a
+/// run that verifies once takes from there instead of evaluating them again.
+#[derive(Deserialize)]
+struct ComparedObject {
+    native: ComparedViews,
+    user_issues: Vec<String>,
+}
+#[derive(Deserialize)]
+struct ComparedViews {
+    record_number: u64,
+    sequence_number: u16,
+    internal_replacement_role: Option<String>,
+    metadata: ComparedCheck,
+    directory_case: Option<ComparedCheck>,
+    case_sensitive_mark: bool,
+    timestamps: Option<ComparedTimestamps>,
+    security: Option<SecurityFacts>,
+}
+#[derive(Deserialize)]
+struct ComparedCheck {
+    matched: bool,
+    detail: String,
+}
+#[derive(Deserialize)]
+struct ComparedTimestamps {
+    stored: [u64; 4],
+}
+/// The parts of a [`crate::ntfs_source_view::SecurityView`] the projection
+/// uses, evaluated here or taken from the comparison.
+#[derive(Deserialize)]
+struct SecurityFacts {
+    stored_sha256: String,
+    api_descriptor_hex: String,
+    api_matches_stored: bool,
+    api_stable: bool,
+    target_must_reproduce_both_views: bool,
+}
+impl From<crate::ntfs_source_view::SecurityView> for SecurityFacts {
+    fn from(view: crate::ntfs_source_view::SecurityView) -> Self {
+        Self {
+            stored_sha256: view.stored_sha256,
+            api_descriptor_hex: view.api_descriptor_hex,
+            api_matches_stored: view.api_matches_stored,
+            api_stable: view.api_stable,
+            target_must_reproduce_both_views: view.target_must_reproduce_both_views,
+        }
+    }
+}
+fn compared_key(record_number: u64) -> [u8; 16] {
+    let mut key = [0; 16];
+    key[..8].copy_from_slice(&record_number.to_be_bytes());
+    key
+}
+
+/// `compared` is the comparison's store of rows where the run verifies once
+/// (`--verify fast`, owner's decision D2, #250): the object's user issues, its metadata and
+/// security views and its directory's case mark are then those the
+/// comparison evaluated for it from the same held source and Windows rows,
+/// and the Windows row is not decoded again. Without it they are evaluated
+/// here, as every thorough run does.
 #[allow(clippy::too_many_arguments)]
 fn build_object(
     source: &PagedInspection,
     native: &impl NativeObservationDomain,
+    compared: Option<&SortedRecordStore>,
     ordinal: u64,
     file: &ntfs::FileInventory,
     admission: SourceResourceAdmission,
@@ -250,6 +313,26 @@ fn build_object(
     Object,
     Option<crate::ntfs_extended_attributes::WindowsKernelPurgeEaNormalization>,
 )> {
+    let compared = compared
+        .map(|rows| -> Result<ComparedObject> {
+            let row: ComparedObject = rows
+                .find(compared_key(file.record_number))?
+                .with_context(|| {
+                    format!(
+                        "the comparison of FILE {} with its Windows view is absent from source-comparison",
+                        file.record_number
+                    )
+                })?;
+            ensure!(
+                row.native.record_number == file.record_number
+                    && row.native.sequence_number == file.sequence_number
+                    && row.native.internal_replacement_role.is_none(),
+                "the comparison row of FILE {} differs from the canonical source object",
+                file.record_number
+            );
+            Ok(row)
+        })
+        .transpose()?;
     let resources = ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission));
     let mut names = if let Some(aliases) = aliases {
         aliases.user_paths(source, file)?
@@ -305,10 +388,20 @@ fn build_object(
             "unknown root attributes"
         );
     } else {
-        let issues = if let Some(aliases) = aliases {
-            ntfs_admission::paged::ordinary_user_issues_windows(source, file, admission, aliases)?
+        let evaluated;
+        let issues: &[String] = if let Some(row) = &compared {
+            &row.user_issues
         } else {
-            ntfs_admission::paged::ordinary_user_issues_data(source, file, admission, object_ids)?
+            evaluated = if let Some(aliases) = aliases {
+                ntfs_admission::paged::ordinary_user_issues_windows(
+                    source, file, admission, aliases,
+                )?
+            } else {
+                ntfs_admission::paged::ordinary_user_issues_data(
+                    source, file, admission, object_ids,
+                )?
+            };
+            &evaluated
         };
         ensure!(
             issues.is_empty(),
@@ -319,68 +412,104 @@ fn build_object(
     let sd = descriptor(source, file)?;
     let stored = hex::decode(&sd.relative_hex)?;
     n2r_win32::security_descriptor::validate_with_limit(&stored, admission.budget.max_row_bytes)?;
-    let native_row = native.row_view(usize::try_from(ordinal)?)?;
-    let observed = native_row.observation();
-    ensure!(
-        observed.identity.record_number == file.record_number
-            && observed.identity.sequence_number == file.sequence_number
-            && observed.open_error.is_none(),
-        "actual native row identity/open differs from canonical source"
-    );
-    let before = observed
-        .before
-        .as_ref()
-        .context("source native before snapshot absent")?;
-    let after = observed
-        .after
-        .as_ref()
-        .context("source native after snapshot absent")?;
-    // Where the mark is carried over, every directory states the source's:
-    // the new directory is made with it, set or not, and held to it. The
-    // flags are those the admission read, asked of Windows twice.
-    let case_sensitive = if carry_case_marks && file.is_directory {
-        Some(
-            crate::ntfs_attestation::check_directory_case_observation(
-                file,
-                source.header().geometry.serial_number,
-                observed,
-            )
-            .with_context(|| {
-                format!(
-                    "the case-sensitive mark of the directory at FILE {} ({})",
-                    file.record_number,
-                    ntfs_admission::paged::refused_object_path(source, file)
-                        .map(|path| format!("\\{}", path.join("\\")))
-                        .unwrap_or_else(|| "its path was not read".to_owned())
-                )
-            })?,
+    let case_mark_context = || {
+        format!(
+            "the case-sensitive mark of the directory at FILE {} ({})",
+            file.record_number,
+            ntfs_admission::paged::refused_object_path(source, file)
+                .map(|path| format!("\\{}", path.join("\\")))
+                .unwrap_or_else(|| "its path was not read".to_owned())
         )
-    } else {
-        None
     };
-    let check_metadata = if aliases.is_some() {
+    if aliases.is_some() {
         ensure!(
             source.is_windows_conversion(),
             "Windows projection requires its actual inspection purpose"
         );
-        crate::ntfs_source_view::check_metadata_windows_with_limit
+    }
+    let (case_sensitive, timestamps, views) = if let Some(row) = compared {
+        // The comparison opened the object (its metadata check refuses an
+        // object Windows did not open) and evaluated these on the same
+        // decoding of its Windows row; an evaluation that failed there is
+        // this projection's failure, with what the comparison found.
+        let row = row.native;
+        let case_sensitive = if carry_case_marks && file.is_directory {
+            let check = row
+                .directory_case
+                .context("the comparison of a directory holds no case-sensitivity check")?;
+            if !check.matched {
+                return Err(anyhow::anyhow!("{}", check.detail)).with_context(case_mark_context);
+            }
+            Some(row.case_sensitive_mark)
+        } else {
+            None
+        };
+        ensure!(row.metadata.matched, "{}", row.metadata.detail);
+        (
+            case_sensitive,
+            row.timestamps
+                .context("the comparison holds no timestamp view")?
+                .stored,
+            row.security
+                .context("the comparison holds no security view")?,
+        )
     } else {
-        crate::ntfs_source_view::check_metadata_with_limit
+        let native_row = native.row_view(usize::try_from(ordinal)?)?;
+        let observed = native_row.observation();
+        ensure!(
+            observed.identity.record_number == file.record_number
+                && observed.identity.sequence_number == file.sequence_number
+                && observed.open_error.is_none(),
+            "actual native row identity/open differs from canonical source"
+        );
+        let before = observed
+            .before
+            .as_ref()
+            .context("source native before snapshot absent")?;
+        let after = observed
+            .after
+            .as_ref()
+            .context("source native after snapshot absent")?;
+        // Where the mark is carried over, every directory states the source's:
+        // the new directory is made with it, set or not, and held to it. The
+        // flags are those the admission read, asked of Windows twice.
+        let case_sensitive = if carry_case_marks && file.is_directory {
+            Some(
+                crate::ntfs_attestation::check_directory_case_observation(
+                    file,
+                    source.header().geometry.serial_number,
+                    observed,
+                )
+                .with_context(case_mark_context)?,
+            )
+        } else {
+            None
+        };
+        let check_metadata = if aliases.is_some() {
+            crate::ntfs_source_view::check_metadata_windows_with_limit
+        } else {
+            crate::ntfs_source_view::check_metadata_with_limit
+        };
+        let timestamps = check_metadata(
+            file,
+            source.header().geometry.serial_number,
+            &stored,
+            before,
+            after,
+            admission.budget.max_row_bytes,
+        )?;
+        let views = crate::ntfs_source_view::check_security_views_with_limit(
+            &stored,
+            before,
+            after,
+            admission.budget.max_row_bytes,
+        )?;
+        (
+            case_sensitive,
+            timestamps.stored,
+            SecurityFacts::from(views),
+        )
     };
-    let timestamps = check_metadata(
-        file,
-        source.header().geometry.serial_number,
-        &stored,
-        before,
-        after,
-        admission.budget.max_row_bytes,
-    )?;
-    let views = crate::ntfs_source_view::check_security_views_with_limit(
-        &stored,
-        before,
-        after,
-        admission.budget.max_row_bytes,
-    )?;
     ensure!(
         views.api_stable
             && views.target_must_reproduce_both_views
@@ -398,7 +527,7 @@ fn build_object(
         si.mft_change_time,
     ];
     ensure!(
-        timestamps.stored == times,
+        timestamps == times,
         "source persisted timestamp projection differs"
     );
     let eas = crate::ntfs_attestation::has_verified_nonempty_eas(file);
@@ -571,6 +700,7 @@ impl SourceExpectedDomain {
             let (object, _) = build_object(
                 source,
                 native,
+                None,
                 ordinal,
                 &file,
                 admission,
@@ -618,7 +748,7 @@ impl SourceExpectedDomain {
         scratch: &SourceScratch,
     ) -> Result<Self> {
         Self::derive_scoped(
-            source, native, admission, output, scratch, None, None, false,
+            source, native, None, admission, output, scratch, None, None, false,
         )
     }
     /// The tree of a data volume whose object IDs, if it has any, have been
@@ -627,9 +757,12 @@ impl SourceExpectedDomain {
     /// case-sensitive mark, set or not: the run's decision, taken where the
     /// source has a marked directory and the running Windows is one the
     /// mark is carried on (`n2r_win32::directory_case::CaseMarkCarry`).
+    /// `compared` as in [`build_object`].
+    #[allow(clippy::too_many_arguments)]
     pub fn derive_data(
         source: &PagedInspection,
         native: &impl NativeObservationDomain,
+        compared: Option<&SortedRecordStore>,
         admission: SourceResourceAdmission,
         output: &Path,
         scratch: &SourceScratch,
@@ -639,6 +772,7 @@ impl SourceExpectedDomain {
         Self::derive_scoped(
             source,
             native,
+            compared,
             admission,
             output,
             scratch,
@@ -647,9 +781,11 @@ impl SourceExpectedDomain {
             carry_case_marks,
         )
     }
+    /// `compared` as in [`build_object`].
     pub fn derive_windows(
         source: &PagedInspection,
         native: &impl NativeObservationDomain,
+        compared: Option<&SortedRecordStore>,
         admission: SourceResourceAdmission,
         output: &Path,
         scratch: &SourceScratch,
@@ -659,6 +795,7 @@ impl SourceExpectedDomain {
         Self::derive_scoped(
             source,
             native,
+            compared,
             admission,
             output,
             scratch,
@@ -671,6 +808,7 @@ impl SourceExpectedDomain {
     fn derive_scoped(
         source: &PagedInspection,
         native: &impl NativeObservationDomain,
+        compared: Option<&SortedRecordStore>,
         admission: SourceResourceAdmission,
         output: &Path,
         scratch: &SourceScratch,
@@ -788,6 +926,7 @@ impl SourceExpectedDomain {
             let (object, ea_normalization) = build_object(
                 source,
                 native,
+                compared,
                 ordinal,
                 &file,
                 admission,

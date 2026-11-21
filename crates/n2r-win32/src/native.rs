@@ -39,7 +39,8 @@ pub mod recovery_boot;
 pub mod recovery_image;
 pub use paged_recovery::{
     BorrowedPagedWriter, GeneralLiveConvertedObservation, PagedRecoveryDirection,
-    PagedRecoveryPins, note_selected_new_bytes_verified, selected_new_bytes_verified,
+    PagedRecoveryPins, SELECTED_DIGEST_BEHIND_BYTES, note_selected_new_bytes_verified,
+    selected_new_bytes_verified,
 };
 pub use paged_recovery::{
     PartitionClosedJournalObservation, PartitionHandoffWitness, PartitionTerminalKind,
@@ -884,6 +885,20 @@ fn control_admitted(
     Ok(output)
 }
 
+/// `FILE_FLAG_NO_BUFFERING` alone, for the handles a selected journal's
+/// changed ranges are written through: a fresh apply's gate
+/// (`begin_paged_fresh_apply`, which the shadow's trust-label repair also
+/// writes through) and a recovery's exclusive target
+/// (`activate_for_journal_exclusive`, `GeneralExclusiveRecoveryTarget::reopen`).
+/// Reads through them come from the device, as through every unbuffered
+/// handle, but a write does not wait for the disk: each pass that writes
+/// (the apply, the replay, `selected_journal::execute_loaded`) flushes
+/// (`sync_all`) after every changed range but the boot granule, writes the
+/// boot granule after that barrier, and flushes again before it reads
+/// anything back or writes the next marker. Every other raw handle keeps
+/// `FILE_FLAG_WRITE_THROUGH` as well (`device_file`).
+pub(crate) const UNBUFFERED_WRITER_FLAGS: u32 = 0x2000_0000;
+
 pub(crate) fn device_file(path: &str, writable: bool, unbuffered: bool) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(writable).share_mode(3);
@@ -1277,6 +1292,31 @@ pub fn write_out_volume_cache(binding: &GeneralDiskBinding) -> io::Result<()> {
     device_file(&binding.volume_path()?, true, false)?.sync_all()
 }
 
+thread_local! {
+    static READ_ONLY_DISK_ALLOWED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While this lives, the probes and rediscoveries this thread makes of a
+/// general data disk also accept a disk that is online and read-only (and
+/// nothing else besides writable): what a run stopped for review (#110,
+/// #252) leaves, and then has to look at. Every other probe still requires
+/// the disk online and writable.
+pub struct ReadOnlyDiskAllowed(bool);
+
+pub fn allow_read_only_disk() -> ReadOnlyDiskAllowed {
+    ReadOnlyDiskAllowed(READ_ONLY_DISK_ALLOWED.with(|allowed| allowed.replace(true)))
+}
+
+impl Drop for ReadOnlyDiskAllowed {
+    fn drop(&mut self) {
+        READ_ONLY_DISK_ALLOWED.with(|allowed| allowed.set(self.0));
+    }
+}
+
+fn read_only_disk_allowed() -> bool {
+    READ_ONLY_DISK_ALLOWED.with(std::cell::Cell::get)
+}
+
 /// Probe one dedicated non-system basic data disk without locking, dismounting,
 /// setting attributes or issuing raw writes. This is not a conversion lease.
 pub fn probe_general(
@@ -1294,8 +1334,17 @@ pub fn probe_general(
     )?;
     let state = general_disk_state(&disk, &binding, events)?;
     let disk_attributes_before = state.disk_attributes;
-    if disk_attributes_before != 0 {
-        return Err(invalid("general data disk is not online and writable"));
+    let allowed = if read_only_disk_allowed() {
+        READ_ONLY
+    } else {
+        0
+    };
+    if disk_attributes_before & !allowed != 0 {
+        return Err(invalid(if allowed != 0 {
+            "general data disk is not online (read-only or writable, for a review)"
+        } else {
+            "general data disk is not online and writable"
+        }));
     }
     let volume = device_file(&binding.volume_path()?, false, false)?;
     let volume_extents = control(
@@ -1659,10 +1708,16 @@ pub fn rediscover_general_volume(
         false,
         false,
     )?;
-    if general_disk_state(&disk, &binding, events)?.disk_attributes != 0 {
-        return Err(invalid(
-            "general volume rediscovery requires online writable disk",
-        ));
+    // Writable, or also read-only while the caller allows it
+    // ([`allow_read_only_disk`]); never offline.
+    let read_only_allowed = read_only_disk_allowed();
+    let allowed = if read_only_allowed { READ_ONLY } else { 0 };
+    if general_disk_state(&disk, &binding, events)?.disk_attributes & !allowed != 0 {
+        return Err(invalid(if read_only_allowed {
+            "general volume rediscovery for review requires an online disk (read-only or writable)"
+        } else {
+            "general volume rediscovery requires online writable disk"
+        }));
     }
     let mut buffer = [0u16; 1024];
     // SAFETY: initialized writable UTF-16 buffer of the declared length.
@@ -1811,8 +1866,9 @@ impl AlignedBuffer {
             .map_err(|_| invalid("alignment layout"))?;
         // SAFETY: layout is nonzero and valid. The allocation is owned here and
         // freed once in Drop with the identical layout; every byte is initialized.
-        let pointer = NonNull::new(unsafe { alloc_zeroed(layout) })
-            .ok_or_else(|| io::Error::other("aligned allocation failed"))?;
+        let pointer = NonNull::new(unsafe { alloc_zeroed(layout) }).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::OutOfMemory, "aligned allocation failed")
+        })?;
         Ok(Self { pointer, layout })
     }
     fn bytes_mut(&mut self) -> &mut [u8] {
@@ -1828,6 +1884,12 @@ impl Drop for AlignedBuffer {
         }
     }
 }
+// SAFETY: the buffer uniquely owns its allocation, as a `Box<[u8]>` does, and
+// hands it out only through `&mut self`; moving it to another thread moves
+// that exclusive ownership. It is what keeps a frozen partition, and the
+// fresh-apply writer that borrows one, from being handed to the thread that
+// writes the changed ranges while this one reads the journal.
+unsafe impl Send for AlignedBuffer {}
 
 /// Partition-relative stream whose raw file never escapes. Drop does not clear
 /// persistent offline/read-only attributes and therefore cannot mount partial data.
@@ -2429,11 +2491,13 @@ impl GeneralExclusiveRecoveryTarget {
                 "exclusive recovery target is not persistently offline",
             ));
         }
+        // A recovery's replay writes through this handle; see
+        // `UNBUFFERED_WRITER_FLAGS` for its barriers.
         let opened = OpenOptions::new()
             .read(true)
             .write(true)
             .share_mode(1)
-            .custom_flags(0xa000_0000)
+            .custom_flags(UNBUFFERED_WRITER_FLAGS)
             .open(&path);
         events.push(NativeEvent {
             operation: "open-exclusive-recovery-primary-route".into(),
@@ -3850,7 +3914,9 @@ impl GeneralFrozenPartition {
             .read(true)
             .write(true)
             .share_mode(1) // FILE_SHARE_READ; existing/new write aliases must refuse.
-            .custom_flags(0xa000_0000) // NO_BUFFERING | WRITE_THROUGH, as the writer uses.
+            // NO_BUFFERING: a recovery's replay writes through this handle
+            // and flushes at its barriers (`UNBUFFERED_WRITER_FLAGS`).
+            .custom_flags(UNBUFFERED_WRITER_FLAGS)
             .open(&path);
         events.push(NativeEvent {
             operation: "open-exclusive-primary-raw-route-gate".into(),
@@ -4375,15 +4441,14 @@ impl Write for GeneralJournaledPartition {
                 "general native write violates bounded journal policy",
             ));
         }
-        self.inner.file.seek(SeekFrom::Start(
-            self.inner.binding.identity.partition_offset + self.inner.position,
-        ))?;
         self.inner.buffer.bytes_mut()[..input.len()].copy_from_slice(input);
         self.native_write_bytes_requested = attempted;
-        let result = self
-            .inner
-            .file
-            .write(&self.inner.buffer.bytes_mut()[..input.len()]);
+        let write_offset = self.inner.binding.identity.partition_offset + self.inner.position;
+        let result = std::os::windows::fs::FileExt::seek_write(
+            &self.inner.file,
+            &self.inner.buffer.bytes_mut()[..input.len()],
+            write_offset,
+        );
         match result {
             Ok(count) => {
                 self.native_bytes_written += count as u64;
@@ -4774,6 +4839,40 @@ impl GeneralFrozenPartition {
                 })
             })
             .collect()
+    }
+
+    /// [`Self::read_lanes`] for a caller that can do without them: `None`
+    /// where a lane cannot be opened, its disk state asked or its buffer
+    /// had (the caller then reads through this handle). A lane whose route
+    /// differs from the frozen state is still an error.
+    pub fn read_lanes_if_available(
+        &self,
+        count: usize,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Option<Vec<GeneralFrozenLane>>> {
+        let path = format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number);
+        let mut lanes = Vec::with_capacity(count);
+        for _ in 0..count {
+            let Ok(file) = device_file(&path, false, true) else {
+                return Ok(None);
+            };
+            let Ok(state) = general_disk_state(&file, &self.binding, events) else {
+                return Ok(None);
+            };
+            if state != self.frozen_state {
+                return Err(invalid("frozen read lane route differs"));
+            }
+            let Ok(buffer) = AlignedBuffer::new() else {
+                return Ok(None);
+            };
+            lanes.push(GeneralFrozenLane {
+                file,
+                binding: self.binding.clone(),
+                position: 0,
+                buffer,
+            });
+        }
+        Ok(Some(lanes))
     }
 }
 

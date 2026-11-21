@@ -480,11 +480,47 @@ pub struct PagedFileComparison {
     pub unread_plain_streams: u64,
     #[serde(skip_serializing_if = "is_zero")]
     pub unread_plain_logical_bytes: u64,
+    /// The source object compared, as the comparison read it: not written
+    /// with the row.
+    #[serde(skip)]
+    source_file: std::sync::Arc<crate::ntfs_inspect::FileInventory>,
 }
 fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 impl PagedFileComparison {
+    /// The source object this row compared and its internal role, for the
+    /// caller that takes the row. In a run that verifies once (`--verify
+    /// fast`, outside a gate) they are the ones the comparison read and
+    /// derived from the held source, where it was looked up and its role
+    /// derived once more, the same way, for each row. Every other run
+    /// (thorough, a diagnosis, `--recheck-everything`, inside a gate) still
+    /// looks it up and derives its role again, held to the row's.
+    pub(crate) fn source_file_and_role(
+        &self,
+        source: &PagedInspection,
+    ) -> Result<(
+        std::sync::Arc<crate::ntfs_inspect::FileInventory>,
+        Option<String>,
+    )> {
+        if n2r_win32::verify_policy::verifies_once()
+            && !n2r_win32::verify_policy::full_unremembered()
+        {
+            return Ok((
+                std::sync::Arc::clone(&self.source_file),
+                self.internal_replacement_role.clone(),
+            ));
+        }
+        let file = source
+            .find_record_shared(self.record_number, Some(self.sequence_number))?
+            .context("compared source identity absent")?;
+        let role = crate::ntfs_admission::paged::internal_role(source, &file)?;
+        ensure!(
+            role == self.internal_replacement_role,
+            "source replacement role changed"
+        );
+        Ok((file, role))
+    }
     /// The views of this object that Windows does not show as the raw volume
     /// holds them, each with what was found: empty when all of them match.
     pub(crate) fn differences(&self) -> Vec<String> {
@@ -678,6 +714,9 @@ fn compare_domain_with_header(
         all_supported_user_views_compatible: false,
         conversion_qualified: false,
     };
+    const MAX_SECURITY_CACHE: usize = 4096;
+    let mut security_cache: std::collections::HashMap<u32, (String, std::sync::Arc<[u8]>)> =
+        std::collections::HashMap::new();
     for ordinal in 0..expected.len() {
         // The row is read here and by the selector's row below, and changed
         // by neither: both are handed the one the source holds, where it
@@ -712,17 +751,43 @@ fn compare_domain_with_header(
                 binding.sequence_number == file.sequence_number,
                 "source security binding sequence differs"
             );
-            let descriptor = if let Some(id) = binding.security_id {
-                source.security().find_id(id)?
+            let descriptor: std::sync::Arc<[u8]> = if let Some(id) = binding.security_id {
+                if let Some((sha, bytes)) = security_cache.get(&id) {
+                    ensure!(
+                        *sha == binding.descriptor_sha256,
+                        "source security descriptor binding differs"
+                    );
+                    std::sync::Arc::clone(bytes)
+                } else {
+                    let record = source
+                        .security()
+                        .find_id(id)?
+                        .context("source security descriptor absent")?;
+                    ensure!(
+                        record.descriptor.sha256 == binding.descriptor_sha256,
+                        "source security descriptor binding differs"
+                    );
+                    let bytes: std::sync::Arc<[u8]> =
+                        hex::decode(&record.descriptor.relative_hex)?.into();
+                    if security_cache.len() < MAX_SECURITY_CACHE {
+                        security_cache.insert(
+                            id,
+                            (record.descriptor.sha256, std::sync::Arc::clone(&bytes)),
+                        );
+                    }
+                    bytes
+                }
             } else {
-                source.security().find_legacy(file.record_number)?
-            }
-            .context("source security descriptor absent")?;
-            ensure!(
-                descriptor.descriptor.sha256 == binding.descriptor_sha256,
-                "source security descriptor binding differs"
-            );
-            let descriptor = hex::decode(&descriptor.descriptor.relative_hex)?;
+                let record = source
+                    .security()
+                    .find_legacy(file.record_number)?
+                    .context("source security descriptor absent")?;
+                ensure!(
+                    record.descriptor.sha256 == binding.descriptor_sha256,
+                    "source security descriptor binding differs"
+                );
+                hex::decode(&record.descriptor.relative_hex)?.into()
+            };
             let before = observation
                 .before
                 .as_ref()
@@ -768,7 +833,19 @@ fn compare_domain_with_header(
                 observation.open_error.is_none(),
                 "native stream metadata open refused"
             );
-            for capture in [&observation.streams_before, &observation.streams_after] {
+            // Both captures are held to the raw model, and to each other.
+            // In a run that verifies once, where they are equal (a single
+            // content pass mirrors the first into the second) the check of
+            // the second is the check of the first on the same input: it is
+            // not made twice. Every other run checks both.
+            let same = observation.streams_before == observation.streams_after;
+            let once = same && policy.verifies_once();
+            let captures: &[&Option<n2r_win32::attestation::StreamCapture>] = if once {
+                &[&observation.streams_before]
+            } else {
+                &[&observation.streams_before, &observation.streams_after]
+            };
+            for capture in captures {
                 crate::ntfs_stream_attestation::check_file_with_resources(
                     &file,
                     capture
@@ -780,7 +857,7 @@ fn compare_domain_with_header(
                 )?;
             }
             ensure!(
-                observation.streams_before == observation.streams_after,
+                same,
                 "native complete stream observations changed between passes"
             );
             Ok(())
@@ -892,6 +969,7 @@ fn compare_domain_with_header(
             extent_identity_logical_bytes: evidence.extent_identity_bytes,
             unread_plain_streams: u64::try_from(evidence.unread_plain_streams.len())?,
             unread_plain_logical_bytes: evidence.unread_plain_bytes,
+            source_file: file,
         })?;
     }
     expected.revalidate()?;

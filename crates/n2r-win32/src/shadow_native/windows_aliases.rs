@@ -171,7 +171,33 @@ fn probe_alias_unnamed(
             .collect::<Vec<_>>(),
     )?;
     let expected = probe.expected();
-    let snapshot = super::metadata_snapshot_with_limit(&alias, &expected, Some(maximum_row_bytes));
+    // The verification above has just read the link's point through this
+    // handle, on a volume that is read-only, and held it to the point its
+    // target's name makes. In a run that verifies once, and in the recovery
+    // of one (`repeats_once_as_verified`), that reading stands for the
+    // snapshot's own: the snapshot does not ask for the point again and
+    // carries the one verified, which is then held to the point this probe
+    // expects, as before. A thorough run, the recovery of one and a run with
+    // `--recheck-everything` read it again, as before.
+    let snapshot = if crate::verify_policy::verifies_once()
+        || crate::verify_policy::repeats_once_as_verified()
+    {
+        let mut snapshot = super::metadata_snapshot_with_limit(
+            &alias,
+            &Input {
+                reparse: None,
+                ..probe.expected()
+            },
+            Some(maximum_row_bytes),
+        );
+        snapshot.reparse = Some(crate::attestation::ReparseObservation {
+            point: Some(observed.point.clone()),
+            error: None,
+        });
+        snapshot
+    } else {
+        super::metadata_snapshot_with_limit(&alias, &expected, Some(maximum_row_bytes))
+    };
     let standard = super::query_bytes(&snapshot, 1, 24)?;
     if !super::basic_matches(&expected, super::query_bytes(&snapshot, 0, 40)?)
         || !super::reparse_matches(&expected, &snapshot)?
@@ -1327,6 +1353,21 @@ impl StagedWindowsAliases {
     pub(super) fn paths(&self) -> impl Iterator<Item = &[String]> {
         self.rows.keys().map(Vec::as_slice)
     }
+    /// Whether each link's metadata is read back as soon as it is restored.
+    ///
+    /// Under "verify once" it is not, in a run that restored the links
+    /// itself, as the canonical objects' read-back is not (owner decision
+    /// D2, #251): once this volume is frozen, the one observation of it that
+    /// the capture is made from probes every link
+    /// (`VerifiedWindowsAliases::observe_readonly_volume`), held to the same
+    /// facets (its identity, its parent's and its target's, its times and
+    /// attributes, its reparse point, both security views, one link and no
+    /// data), before anything is written to the source. A run that resumes
+    /// links an earlier process left, and every `--verify thorough` run,
+    /// still reads each one back here.
+    pub(super) fn reads_back_restored_metadata(&self) -> bool {
+        self.recovering || !crate::verify_policy::verifies_once()
+    }
     pub(super) fn entry(&self, path: &[String]) -> Option<&VerifiedAlias> {
         self.rows.get(path).map(|row| &row.entry)
     }
@@ -1508,6 +1549,8 @@ impl StagedWindowsAliases {
     /// was read back with what was restored. A link whose restoration fails
     /// is reported as it was, with its name; the other links of its batch
     /// have then been restored already, on a shadow that is discarded.
+    /// Under "verify once" nothing is read back here
+    /// ([`Self::reads_back_restored_metadata`]).
     fn restore_fresh(
         &mut self,
         input: &impl InputDomain,
@@ -1517,46 +1560,88 @@ impl StagedWindowsAliases {
         root: &str,
     ) -> io::Result<usize> {
         use crate::refs_security_descriptor::ConstructorSecurityViews;
+        use crate::windows_alias_native::ExaminedParent;
+        /// A parent directory as the first of the batch's links in it
+        /// examined it, or why that failed (for each of its links).
+        type ParentOnce = std::sync::OnceLock<Result<ExaminedParent, (io::ErrorKind, String)>>;
         struct Link<'a> {
             staged: &'a StagedAlias,
             canonical: Input<'a>,
             temporary: Option<&'a ConstructorSecurityViews>,
+            parent: Option<&'a ParentOnce>,
         }
         const RESTORE_BATCH: usize = super::PARALLEL_BATCH;
         let maximum_row_bytes = self.maximum_row_bytes;
         let total = self.rows.len() as u64;
-        let restore_one = |link: &Link<'_>| -> io::Result<Snapshot> {
+        let read_back = self.reads_back_restored_metadata();
+        // In a run that verifies once (`--verify fast` under the check-once
+        // policy) each parent directory of a batch is examined once, through
+        // the one handle held on it, by the first of its links to be
+        // installed, and the batch's other links in it are installed beneath
+        // that examination: installing a link's point changes the link,
+        // never its parent's identity, path, type or reparse point.
+        // Otherwise (thorough, `--recheck-everything`) every installation
+        // examines its parent, as before.
+        let parents_once =
+            crate::verify_policy::checks_once() && crate::verify_policy::verifies_once();
+        let restore_one = |link: &Link<'_>| -> io::Result<Option<Snapshot>> {
             let entry = &link.staged.entry;
             let file = &link.staged.file;
-            let target = File::options()
-                .access_mode(0x01020189)
-                .share_mode(3)
-                .custom_flags(0x02200000)
-                .open(format!("{root}{}", entry.canonical_components.join("\\")))?;
-            super::suppress_access(&target)?;
-            super::validate_bound_type(&target, &link.canonical)?;
-            if super::info(&target, 18, 24)?
-                != super::info(
-                    held(handles, entry.canonical_object_index, "canonical object")?,
-                    18,
-                    24,
-                )?
+            let canonical_held = held(handles, entry.canonical_object_index, "canonical object")?;
+            let reopened_target = if crate::verify_policy::verifies_once()
+                && entry.canonical_components.as_slice() == link.canonical.components
             {
-                return Err(invalid("derived alias canonical link identity changed"));
-            }
+                super::validate_bound_type(canonical_held, &link.canonical)?;
+                None
+            } else {
+                let target = File::options()
+                    .access_mode(0x01020189)
+                    .share_mode(3)
+                    .custom_flags(0x02200000)
+                    .open(format!("{root}{}", entry.canonical_components.join("\\")))?;
+                super::suppress_access(&target)?;
+                super::validate_bound_type(&target, &link.canonical)?;
+                if super::info(&target, 18, 24)? != super::info(canonical_held, 18, 24)? {
+                    return Err(invalid("derived alias canonical link identity changed"));
+                }
+                Some(target)
+            };
+            let target = reopened_target.as_ref().unwrap_or(canonical_held);
             let relative: Vec<u16> = entry
                 .canonical_components
                 .last()
                 .ok_or_else(|| invalid("derived alias names no object"))?
                 .encode_utf16()
                 .collect();
-            crate::windows_alias_native::install_fresh_owned(
-                held(handles, entry.parent_object_index, "parent directory")?,
-                &target,
-                file,
-                entry.directory,
-                &relative,
-            )?;
+            let parent = held(handles, entry.parent_object_index, "parent directory")?;
+            match link.parent {
+                Some(once) => {
+                    let examined = once
+                        .get_or_init(|| {
+                            crate::windows_alias_native::examine_parent(parent)
+                                .map_err(|error| (error.kind(), error.to_string()))
+                        })
+                        .as_ref()
+                        .map_err(|(kind, reason)| io::Error::new(*kind, reason.clone()))?;
+                    crate::windows_alias_native::install_fresh_owned_in(
+                        parent,
+                        examined,
+                        target,
+                        file,
+                        entry.directory,
+                        &relative,
+                    )?;
+                }
+                None => {
+                    crate::windows_alias_native::install_fresh_owned(
+                        parent,
+                        target,
+                        file,
+                        entry.directory,
+                        &relative,
+                    )?;
+                }
+            }
             let expected = restored_link(entry, &link.canonical, link.temporary);
             super::cache_refresh::restore_acl_protection_with_limit(
                 file,
@@ -1568,11 +1653,9 @@ impl StagedWindowsAliases {
             if !entry.directory {
                 crate::verify_policy::flush_working_file(file)?;
             }
-            Ok(super::metadata_snapshot_with_limit(
-                file,
-                &expected,
-                Some(maximum_row_bytes),
-            ))
+            Ok(read_back.then(|| {
+                super::metadata_snapshot_with_limit(file, &expected, Some(maximum_row_bytes))
+            }))
         };
         // A link's snapshot, and the workspace of installing its point.
         let workspace_of_one = report_memory::alias_peak(maximum_row_bytes)?
@@ -1643,6 +1726,15 @@ impl StagedWindowsAliases {
                     }
                 }
             }
+            // The batch's parent directories, each examined at most once.
+            let parents: BTreeMap<usize, ParentOnce> = if parents_once {
+                batch
+                    .iter()
+                    .map(|staged| (staged.entry.parent_object_index, ParentOnce::new()))
+                    .collect()
+            } else {
+                BTreeMap::new()
+            };
             let links: Vec<Link<'_>> = batch
                 .iter()
                 .zip(&prepared)
@@ -1651,6 +1743,7 @@ impl StagedWindowsAliases {
                         staged: &**staged,
                         canonical: owner.input(),
                         temporary: temporary.as_ref(),
+                        parent: parents.get(&staged.entry.parent_object_index),
                     })
                 })
                 .collect();
@@ -1660,7 +1753,7 @@ impl StagedWindowsAliases {
             // are installed through the one handle held on it. The rest are
             // restored one after another, under this owner's own workspace.
             // The workspaces are spare memory, which leaves the ledger room.
-            let restored: Vec<io::Result<Snapshot>> = super::each_at_once(
+            let restored: Vec<io::Result<Option<Snapshot>>> = super::each_at_once(
                 Some(&*payer),
                 &links,
                 |_| Some(workspace_of_one),
@@ -1670,6 +1763,9 @@ impl StagedWindowsAliases {
                 let entry = &link.staged.entry;
                 restored
                     .and_then(|actual| {
+                        let Some(actual) = actual else {
+                            return Ok(());
+                        };
                         let expected = restored_link(entry, &link.canonical, link.temporary);
                         verify_restored_link(&expected, &actual, entry, same)
                     })
@@ -1692,7 +1788,18 @@ impl StagedWindowsAliases {
         Ok(provisional_aliases)
     }
     pub(super) fn finish(mut self) -> io::Result<VerifiedWindowsAliases> {
-        let entries: Vec<_> = self.rows.into_values().map(|row| row.entry).collect();
+        // Each link's entry is kept, in the links' order, and the handle held
+        // on it is closed: on helper threads (`close_at_once`), which take
+        // the rows in order under a lock, so the entries are in the order
+        // they were in.
+        let mut entries = Vec::with_capacity(self.rows.len());
+        super::close_at_once(
+            Some(&*self.payer),
+            self.rows.into_values().map(|row| {
+                entries.push(row.entry);
+                row.file
+            }),
+        );
         let path_bytes = |path: &Vec<String>| -> io::Result<u64> {
             path.iter().try_fold(
                 (path.capacity() as u64)

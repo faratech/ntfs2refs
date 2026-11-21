@@ -1562,15 +1562,26 @@ impl ResourceSourceContext {
                 &mut reservations,
             )?;
             *phase = "source-admission";
-            n2r_win32::perf::step("re-read source fingerprint");
-            let after_hash = fingerprint.hash(&mut source)?;
-            let after = native_batch(events, |batch| source.state(batch))?;
-            ensure!(
-                before == after
-                    && source_sha == after_hash
-                    && raw.canonical_sha256()? == inspection_sha,
-                "frozen source changed across actual native observation"
-            );
+            // That the read-only mount changed nothing is proved by reading
+            // the fingerprint again. A run that verifies once reads it on
+            // read lanes beside the comparison below (which does not read
+            // the source) and holds the source to it before anything that
+            // depends on it; every other run, and one without the memory for
+            // the lanes, reads it here, as before.
+            let reread_beside_comparison = n2r_win32::verify_policy::verifies_once();
+            let mut reread_done = None;
+            if !reread_beside_comparison {
+                n2r_win32::perf::step("re-read source fingerprint");
+                let after_hash = fingerprint.hash(source)?;
+                let after = native_batch(events, |batch| source.state(batch))?;
+                ensure!(
+                    before == after
+                        && source_sha == after_hash
+                        && raw.canonical_sha256()? == inspection_sha,
+                    "frozen source changed across actual native observation"
+                );
+                reread_done = Some((after, after_hash));
+            }
             n2r_win32::perf::step("object ids and transactions");
             let mut indexes = if let Some(proof) = native.windows_object_ids_owned() {
                 ensure!(
@@ -1678,6 +1689,28 @@ impl ResourceSourceContext {
                 })
                 .transpose()?;
             let mut storage_hint_count = 0u64;
+            let reread = if reread_beside_comparison {
+                n2r_win32::perf::step("re-read source fingerprint");
+                // Without the memory, a lane or a thread for it, the
+                // fingerprint is read in place, as before.
+                let started = fingerprint
+                    .lane_reread(source)?
+                    .and_then(|(lanes, ram)| lanes.start().ok().map(|read| (read, ram)));
+                if started.is_none() {
+                    let after_hash = fingerprint.hash(source)?;
+                    let after = native_batch(events, |batch| source.state(batch))?;
+                    ensure!(
+                        before == after
+                            && source_sha == after_hash
+                            && raw.canonical_sha256()? == inspection_sha,
+                        "frozen source changed across actual native observation"
+                    );
+                    reread_done = Some((after, after_hash));
+                }
+                started
+            } else {
+                None
+            };
             n2r_win32::perf::step("compare raw and Windows views");
             // The selector above counted this same held source for the
             // admission; the comparison builds its own selector and is
@@ -1690,9 +1723,7 @@ impl ResourceSourceContext {
                 Some(admission),
                 native.domain(),
                 |row| {
-                    let file = raw
-                        .find_record_shared(row.record_number, Some(row.sequence_number))?
-                        .context("compared source identity absent")?;
+                    let (file, role) = row.source_file_and_role(&raw)?;
                     if let Some(proof) = &storage_hint_normalization {
                         if let Some(normalization) =
                             crate::ntfs_storage_class::normalize(&file, proof)?
@@ -1727,11 +1758,6 @@ impl ResourceSourceContext {
                             .checked_add(1)
                             .context("short-name count overflow")?;
                     }
-                    let role = ntfs_admission::paged::internal_role(&raw, &file)?;
-                    ensure!(
-                        role == row.internal_replacement_role,
-                        "source replacement role changed"
-                    );
                     let issues = if let Some(role) = &role {
                         let action = match role.as_str() {
                             "$Volume" if indexes.covers_volume_object_id_domain(&raw, 3) => {
@@ -1858,6 +1884,22 @@ impl ResourceSourceContext {
                     Ok(())
                 },
             )?;
+            if let Some((read, _ram)) = reread {
+                n2r_win32::perf::step("join source fingerprint re-read");
+                let after_hash = read.finish()?;
+                // As `hash` ends: its range stores are still as written.
+                fingerprint.revalidate()?;
+                let after = native_batch(events, |batch| source.state(batch))?;
+                ensure!(
+                    before == after
+                        && source_sha == after_hash
+                        && raw.canonical_sha256()? == inspection_sha,
+                    "frozen source changed across actual native observation"
+                );
+                reread_done = Some((after, after_hash));
+            }
+            let (after, after_hash) =
+                reread_done.context("the source fingerprint was not read again")?;
             let rows_pin = rows_writer.finish()?;
             let replacements_pin = replacements_writer.finish()?;
             let case_marks_pin = case_marks_writer.finish()?;
@@ -2922,10 +2964,20 @@ impl ResourceSourceContext {
         // whole-inventory cache before paying for projection rows/sorters.
         // Authenticated readers, compact indexes and all proof owners remain.
         self.raw.release_inventory_resident_cache();
+        // A run that verifies once (`--verify fast`) takes what the
+        // comparison evaluated of each object (its user issues, metadata and
+        // security views and case mark) from the comparison's rows (owner's
+        // decision D2, #250); a thorough run, a diagnosis and
+        // `--recheck-everything` evaluate them again. The comparison held the
+        // metadata to the Windows rules exactly where this projection does.
+        let compared = (n2r_win32::verify_policy::verifies_once()
+            && self.windows_aliases.is_some() == self.raw.is_windows_conversion())
+        .then_some(&self.rows);
         if let Some(aliases) = &self.windows_aliases {
             crate::shadow_tree::source_pages::SourceExpectedDomain::derive_windows(
                 &self.raw,
                 self.native.domain(),
+                compared,
                 admission,
                 output,
                 scratch,
@@ -2935,6 +2987,7 @@ impl ResourceSourceContext {
             crate::shadow_tree::source_pages::SourceExpectedDomain::derive_data(
                 &self.raw,
                 self.native.domain(),
+                compared,
                 admission,
                 output,
                 scratch,

@@ -78,7 +78,7 @@ pub fn check_security_views_with_limit(
             snapshot.security_error.is_none(),
             "API security query failed"
         );
-        crate::ntfs_security::parse_descriptor_with_limit(&snapshot.security, maximum)?;
+        ntfs_attestation::check_descriptor_with_limit(&snapshot.security, maximum)?;
     }
     ensure!(
         ntfs_attestation::same_security_with_limit(&before.security, &after.security, maximum)?,

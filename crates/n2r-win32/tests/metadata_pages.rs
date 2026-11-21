@@ -95,11 +95,14 @@ fn resident_pages_answer_scattered_lookups_without_further_page_loads() {
 /// they are given up with what paid for them, and the reader reads its file.
 #[test]
 fn resident_pages_are_given_up_with_their_payment_and_the_file_is_read_again() {
-    use std::{cell::Cell, rc::Rc};
-    struct Payment(Rc<Cell<bool>>);
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering::Relaxed},
+    };
+    struct Payment(Arc<AtomicBool>);
     impl Drop for Payment {
         fn drop(&mut self) {
-            self.0.set(true);
+            self.0.store(true, Relaxed);
         }
     }
     let directory = tempfile::tempdir().unwrap();
@@ -107,11 +110,11 @@ fn resident_pages_are_given_up_with_their_payment_and_the_file_is_read_again() {
     let path = std::path::PathBuf::from(path.to_str().unwrap().trim_start_matches(r"\\?\"));
     let sha = write(&path);
     let mut reader = Reader::open(&path, &sha, PURPOSE, budget()).unwrap();
-    let returned = Rc::new(Cell::new(false));
+    let returned = Arc::new(AtomicBool::new(false));
     reader
-        .install_resident_pages_paid(Box::new(Payment(Rc::clone(&returned))))
+        .install_resident_pages_paid(Box::new(Payment(Arc::clone(&returned))))
         .unwrap();
-    assert!(reader.pages_resident() && !returned.get());
+    assert!(reader.pages_resident() && !returned.load(Relaxed));
     let installed = reader.page_cache_statistics().page_loads;
     for ordinal in scattered().take(50) {
         assert_eq!(reader.get(ordinal).unwrap().payload, payload(ordinal));
@@ -119,7 +122,7 @@ fn resident_pages_are_given_up_with_their_payment_and_the_file_is_read_again() {
     assert_eq!(reader.page_cache_statistics().page_loads, installed);
 
     assert!(n2r_win32::evict::evict_all());
-    assert!(!reader.pages_resident() && returned.get());
+    assert!(!reader.pages_resident() && returned.load(Relaxed));
     // Every record is read as before, from the file.
     for ordinal in scattered() {
         let record = reader.get(ordinal).unwrap();

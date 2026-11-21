@@ -3,6 +3,29 @@
 use super::*;
 use serde::Deserialize;
 
+struct BoundedHashSink {
+    hash: Sha256,
+    bytes: u64,
+    limit: u64,
+}
+impl std::io::Write for BoundedHashSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let next = self
+            .bytes
+            .checked_add(buf.len() as u64)
+            .ok_or_else(|| std::io::Error::other("V4 converted row length overflow"))?;
+        if next > self.limit {
+            return Err(std::io::Error::other("V4 converted row exceeds budget"));
+        }
+        self.hash.update(buf);
+        self.bytes = next;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Header {
@@ -169,17 +192,15 @@ pub(super) fn compare_records(
                     name_utf16,
                     map: PagedStreamMapRef::with_resources(map, Some(admission))?,
                 };
-                let size = row_size(&entry, admission.budget.max_row_bytes)?;
-                validate_borrowed_row_memory(&entry, size, admission.budget.max_row_bytes)?;
-                let mut expected_hash = HashSink {
+                let mut expected_hash = BoundedHashSink {
                     hash: Sha256::new(),
                     bytes: 0,
+                    limit: admission.budget.max_row_bytes,
                 };
                 serde_json::to_writer(&mut expected_hash, &entry)?;
-                ensure!(
-                    expected_hash.bytes == size && size != 0,
-                    "V4 converted row length differs"
-                );
+                let size = expected_hash.bytes;
+                ensure!(size != 0, "V4 converted row length differs");
+                validate_borrowed_row_memory(&entry, size, admission.budget.max_row_bytes)?;
                 let expected_digest = expected_hash.hash.finalize();
                 let key = key(index, ordinal)?;
                 let max_chunk = chunk_capacity(budget, key.len())?;

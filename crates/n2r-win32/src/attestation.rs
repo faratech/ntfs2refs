@@ -652,8 +652,126 @@ mod request_tests {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Query {
     pub class: i32,
+    #[serde(with = "byte_text")]
     pub bytes: Vec<u8>,
     pub native_error: Option<i32>,
+}
+
+/// How the byte fields of an observation (`Query::bytes`,
+/// `Snapshot::security`, `SecurityQuery::bytes`) are written: as JSON
+/// arrays of numbers, except while a [`byte_text::hex_rows`] scope is open
+/// on the writing thread, where they are lowercase hex strings. The native
+/// source observation's rows are written in such a scope (owner's decision
+/// D3, #250): parsing number arrays was most of what decoding a row cost,
+/// and every row is decoded several times. Every other record that holds
+/// these types (shadow rows, finalization and completion records) is
+/// written as before.
+///
+/// Either form is read, wherever the field is read: a store written by an
+/// earlier build (a run it left interrupted, which a recovery reopens) reads
+/// as it did.
+pub(crate) mod byte_text {
+    use serde::{Deserializer, Serializer, de};
+    use std::cell::Cell;
+
+    thread_local! {
+        static HEX: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// While held, this thread writes byte fields as hex strings.
+    pub(crate) struct HexRows(bool);
+    pub(crate) fn hex_rows() -> HexRows {
+        HexRows(HEX.with(|hex| hex.replace(true)))
+    }
+    impl Drop for HexRows {
+        fn drop(&mut self) {
+            HEX.with(|hex| hex.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        if HEX.with(Cell::get) {
+            serializer.serialize_str(&hex::encode(bytes))
+        } else {
+            // What `Vec<u8>` writes by itself.
+            serializer.collect_seq(bytes)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        struct Bytes;
+        impl<'de> de::Visitor<'de> for Bytes {
+            type Value = Vec<u8>;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("bytes as a hex string or as an array of numbers")
+            }
+            fn visit_str<E: de::Error>(self, text: &str) -> Result<Vec<u8>, E> {
+                hex::decode(text).map_err(E::custom)
+            }
+            fn visit_seq<A: de::SeqAccess<'de>>(self, mut items: A) -> Result<Vec<u8>, A::Error> {
+                let mut bytes = Vec::with_capacity(items.size_hint().unwrap_or(0).min(64 * 1024));
+                while let Some(byte) = items.next_element::<u8>()? {
+                    bytes.push(byte);
+                }
+                Ok(bytes)
+            }
+        }
+        deserializer.deserialize_any(Bytes)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::super::{Query, SecurityQuery};
+
+        #[test]
+        fn byte_fields_are_hex_only_inside_a_scope_and_read_in_either_form() {
+            let query = Query {
+                class: 18,
+                bytes: vec![0, 1, 0xab, 0xff],
+                native_error: None,
+            };
+            let numbers = serde_json::to_string(&query).unwrap();
+            assert_eq!(
+                numbers,
+                r#"{"class":18,"bytes":[0,1,171,255],"native_error":null}"#
+            );
+            let hex = {
+                let _scope = super::hex_rows();
+                let nested = {
+                    let _again = super::hex_rows();
+                    serde_json::to_string(&query).unwrap()
+                };
+                // A nested scope ends without ending the one around it.
+                assert_eq!(serde_json::to_string(&query).unwrap(), nested);
+                nested
+            };
+            assert_eq!(
+                hex,
+                r#"{"class":18,"bytes":"0001abff","native_error":null}"#
+            );
+            // Outside every scope, as before.
+            assert_eq!(serde_json::to_string(&query).unwrap(), numbers);
+            for text in [&numbers, &hex] {
+                assert_eq!(serde_json::from_str::<Query>(text).unwrap(), query);
+            }
+            let empty = SecurityQuery {
+                bytes: Vec::new(),
+                native_error: Some(5),
+            };
+            let _scope = super::hex_rows();
+            let text = serde_json::to_string(&empty).unwrap();
+            assert_eq!(text, r#"{"bytes":"","native_error":5}"#);
+            assert_eq!(serde_json::from_str::<SecurityQuery>(&text).unwrap(), empty);
+            assert!(
+                serde_json::from_str::<Query>(r#"{"class":1,"bytes":"0g","native_error":null}"#)
+                    .is_err()
+            );
+            assert!(
+                serde_json::from_str::<Query>(r#"{"class":1,"bytes":[256],"native_error":null}"#)
+                    .is_err()
+            );
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReparseObservation {
@@ -665,6 +783,7 @@ pub struct ReparseObservation {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Snapshot {
     pub queries: Vec<Query>,
+    #[serde(with = "byte_text")]
     pub security: Vec<u8>,
     pub security_error: Option<i32>,
     #[serde(default)]
@@ -824,6 +943,7 @@ impl Snapshot {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SecurityQuery {
+    #[serde(with = "byte_text")]
     pub bytes: Vec<u8>,
     pub native_error: Option<i32>,
 }
@@ -1508,14 +1628,47 @@ pub fn validate_domain_resources(domain: &impl NativeObservationDomain) -> io::R
     if remembered.is_some_and(std::cell::Cell::get) {
         return Ok(());
     }
-    validate_domain_resources_now(domain)?;
+    validate_domain_resources_now(domain, &mut |_, _| Ok(()))?;
     if let Some(passed) = remembered {
         passed.set(true);
     }
     Ok(())
 }
 
-fn validate_domain_resources_now(domain: &impl NativeObservationDomain) -> io::Result<()> {
+/// What a check of each row hands the caller: the row's ordinal and the row
+/// as it was decoded for the check.
+pub(crate) type EachValidatedRow<'f> =
+    dyn FnMut(usize, &NativeObservationRow<'_>) -> io::Result<()> + 'f;
+
+/// [`validate_domain_resources`] that also hands every row it decodes to
+/// `each_row`, for a caller that checks something more of every row and
+/// decoded each of them once more to do it. Every row is handed over even
+/// where the domain remembers passing (each is then decoded for `each_row`
+/// alone); where the rows are checked here, each is decoded once for both.
+pub(crate) fn validate_domain_resources_with_rows(
+    domain: &impl NativeObservationDomain,
+    each_row: &mut EachValidatedRow<'_>,
+) -> io::Result<()> {
+    let remembered = domain
+        .resources_validated()
+        .filter(|_| !crate::verify_policy::full_unremembered());
+    if remembered.is_some_and(std::cell::Cell::get) {
+        for index in 0..domain.len() {
+            each_row(index, &domain.row_view(index)?)?;
+        }
+        return Ok(());
+    }
+    validate_domain_resources_now(domain, each_row)?;
+    if let Some(passed) = remembered {
+        passed.set(true);
+    }
+    Ok(())
+}
+
+fn validate_domain_resources_now(
+    domain: &impl NativeObservationDomain,
+    each_row: &mut EachValidatedRow<'_>,
+) -> io::Result<()> {
     let h = domain.header();
     if domain.is_paged()
         && h.schema_version == 16
@@ -1527,7 +1680,12 @@ fn validate_domain_resources_now(domain: &impl NativeObservationDomain) -> io::R
         && domain.len() == domain.namespace_len()
         && domain.request_len().is_ok_and(|n| n == domain.len())
     {
-        return validate_regular_paged_resources(domain, domain.len());
+        return validate_regular_paged_resources(domain, domain.len(), each_row);
+    }
+    // The irregular forms keep their own validator; the caller's rows are
+    // read for it first, as they were before it.
+    for index in 0..domain.len() {
+        each_row(index, &domain.row_view(index)?)?;
     }
     validate_domain_resources_irregular(domain)
 }
@@ -1562,6 +1720,7 @@ fn mark_native_identity(
 fn validate_regular_paged_resources(
     domain: &impl NativeObservationDomain,
     count: usize,
+    each_row: &mut EachValidatedRow<'_>,
 ) -> io::Result<()> {
     let header = domain.header();
     let invalid = || {
@@ -1676,6 +1835,7 @@ fn validate_regular_paged_resources(
     };
     for index in 0..count {
         let owner = domain.row_view(index)?;
+        each_row(index, &owner)?;
         let row = owner.request();
         validate_request_row(&header.request, &row)?;
         let flags = mark_native_identity(&mut identities, row.identity.reference(), 1, count)?;

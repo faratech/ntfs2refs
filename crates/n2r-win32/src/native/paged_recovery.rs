@@ -290,25 +290,68 @@ fn selected_digest<R: Read + Seek>(
     policy: &HeldPagedWritePolicy,
     algorithm: crate::bulk_digest::Algorithm,
 ) -> io::Result<[u8; 32]> {
-    selected_digest_reaching(source, policy, algorithm, |_, _| ())
+    selected_digest_reaching(source, policy, algorithm, false, |_, _| ())
 }
+
+/// The bytes a caller pays for, beside what [`selected_digest_reaching`]
+/// holds anyway, to have the selected digest computed on a worker thread
+/// (`hashed_behind`): the worker's second buffer.
+pub const SELECTED_DIGEST_BEHIND_BYTES: u64 = MAX_IO as u64;
 
 /// [`selected_digest`] for a source that reads ahead: `reach(source, end)`
 /// is told, at the first of each group of ranges that lie close together,
 /// where the group ends, so a read-ahead window holds those ranges and not
 /// the megabyte that follows the first of them.
+///
+/// With `hashed_behind` the bytes are hashed on a worker
+/// (`bulk_digest::HashedBehind`) while this thread reads on: hashed here,
+/// each range of a few tens of kilobytes was too short to be divided among
+/// the pool's threads and held up the next read. The caller pays for the
+/// worker's second buffer ([`SELECTED_DIGEST_BEHIND_BYTES`]); where the
+/// worker cannot be started or its buffers allocated, this thread hashes
+/// them. The bytes hashed, their order and so the digest are the same
+/// either way.
 fn selected_digest_reaching<R: Read + Seek>(
     source: &mut R,
     policy: &HeldPagedWritePolicy,
     algorithm: crate::bulk_digest::Algorithm,
+    hashed_behind: bool,
     mut reach: impl FnMut(&mut R, u64),
 ) -> io::Result<[u8; 32]> {
     let previous = source.stream_position()?;
     let result = (|| {
         let facts = policy.facts()?;
+        let mut rows = super::AscendingRanges::new(u64::from(facts.range_count));
+        // The worker and its buffers only buy speed: where they cannot be
+        // had (no memory, no thread), the bytes are hashed here, as before.
+        let behind = if hashed_behind {
+            crate::bulk_digest::HashedBehind::new(algorithm, MAX_IO).ok()
+        } else {
+            None
+        };
+        if let Some(mut hash) = behind {
+            while let Some((row, group_end)) =
+                rows.next(|ordinal| policy.row(ordinal).map(|row| (row, row.offset, row.length)))?
+            {
+                if let Some(end) = group_end {
+                    reach(source, end);
+                }
+                hash.update(&row.offset.to_le_bytes())?;
+                hash.update(&row.length.to_le_bytes())?;
+                source.seek(SeekFrom::Start(row.offset))?;
+                let mut remaining = row.length;
+                while remaining != 0 {
+                    let space = hash.space()?;
+                    let count = remaining.min(space.len() as u64) as usize;
+                    source.read_exact(&mut space[..count])?;
+                    hash.filled(count);
+                    remaining -= count as u64;
+                }
+            }
+            return hash.finish();
+        }
         let mut hash = crate::bulk_digest::Hasher::new(algorithm)?;
         let mut buffer = vec![0; MAX_IO];
-        let mut rows = super::AscendingRanges::new(u64::from(facts.range_count));
         while let Some((row, group_end)) =
             rows.next(|ordinal| policy.row(ordinal).map(|row| (row, row.offset, row.length)))?
         {
@@ -337,18 +380,37 @@ fn verify_restored_digest<R: Read + Seek>(
     policy: &HeldPagedWritePolicy,
     pins: &PagedRecoveryPins<'_>,
 ) -> io::Result<()> {
+    verify_restored_digest_reaching(source, policy, pins, |_, _| ())
+}
+
+fn verify_restored_digest_reaching<R: Read + Seek>(
+    source: &mut R,
+    policy: &HeldPagedWritePolicy,
+    pins: &PagedRecoveryPins<'_>,
+    mut reach: impl FnMut(&mut R, u64),
+) -> io::Result<()> {
     let Some(expected) = pins.old_restored_selected_sha256 else {
-        return verify_selected_digest(source, policy, pins.digest, pins.old_selected_sha256);
+        if selected_digest_reaching(source, policy, pins.digest, false, reach)?
+            != pins.old_selected_sha256
+        {
+            return Err(invalid("actual excluded source selected bytes differ"));
+        }
+        return Ok(());
     };
     let previous = source.stream_position()?;
     let result = (|| {
         let facts = policy.facts()?;
         let mut hash = crate::bulk_digest::Hasher::new(pins.digest)?;
         let mut buffer = vec![0; MAX_IO];
-        for ordinal in 0..u64::from(facts.range_count) {
-            let row = policy.row(ordinal)?;
+        let mut rows = super::AscendingRanges::new(u64::from(facts.range_count));
+        while let Some((row, group_end)) =
+            rows.next(|ordinal| policy.row(ordinal).map(|row| (row, row.offset, row.length)))?
+        {
             if row.flags & 3 == 2 {
                 continue;
+            }
+            if let Some(end) = group_end {
+                reach(source, end);
             }
             hash.update(&row.offset.to_le_bytes())?;
             hash.update(&row.length.to_le_bytes())?;
@@ -381,6 +443,8 @@ pub struct BorrowedPagedWriter<'a> {
     written: u64,
 }
 impl BorrowedPagedWriter<'_> {
+    /// The longest write the writer accepts: one native request.
+    pub const MAX_WRITE: usize = MAX_IO;
     pub fn byte_len(&self) -> u64 {
         self.source.byte_len()
     }
@@ -400,6 +464,23 @@ impl BorrowedPagedWriter<'_> {
     /// See `GeneralFrozenPartition::set_read_ahead_reach`.
     pub fn set_read_ahead_reach(&mut self, end: u64) {
         self.source.set_read_ahead_reach(end);
+    }
+    /// The storage transfer profile Windows reports for the source's disk.
+    pub fn io_profile(&self) -> crate::io_profile::IoProfile {
+        self.source.io_profile()
+    }
+    /// `count` more read-only, unbuffered handles on the source, each
+    /// proven to reach the same disk in the same state as this writer's own
+    /// (`GeneralFrozenPartition::read_lanes`). The writer's handle shares
+    /// reading and refuses every other writer; these read only, so the
+    /// source has still one writer, this one. For a pass that reads what
+    /// was written, after its flush, with more than one read outstanding.
+    pub fn read_lanes(
+        &self,
+        count: usize,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Vec<super::GeneralFrozenLane>> {
+        self.source.read_lanes(count, events)
     }
     pub fn sync_all(&mut self) -> io::Result<()> {
         if self.poisoned {
@@ -470,14 +551,13 @@ impl Write for BorrowedPagedWriter<'_> {
         // The device write itself, apart from the policy check above.
         let _timed = crate::perf::scope(crate::perf::Point::DeviceWrite);
         crate::perf::add_bytes(crate::perf::Point::DeviceWrite, input.len() as u64);
-        self.source.file.seek(SeekFrom::Start(offset))?;
         self.source.buffer.bytes_mut()[..input.len()].copy_from_slice(input);
         self.requested = attempted;
-        match self
-            .source
-            .file
-            .write(&self.source.buffer.bytes_mut()[..input.len()])
-        {
+        match std::os::windows::fs::FileExt::seek_write(
+            &self.source.file,
+            &self.source.buffer.bytes_mut()[..input.len()],
+            offset,
+        ) {
             Ok(count) if count == input.len() => {
                 self.written += count as u64;
                 let at = self.source.position;
@@ -548,10 +628,29 @@ fn verify_index_against_journal(
             "held recovery journal header differs from the paged policy",
         ));
     }
+    const DESCRIPTOR_WINDOW: usize = 64 * 1024;
+    let mut window = vec![0u8; DESCRIPTOR_WINDOW];
+    let mut window_start = 0u64;
+    let mut window_len = 0usize;
+    let journal_end = facts.journal_length;
     for ordinal in 0..u64::from(facts.range_count) {
         let row = policy.row(ordinal)?;
         let mut descriptor = [0; 104];
-        read_at(file, row.descriptor_offset, &mut descriptor[..record_size])?;
+        let at = row.descriptor_offset;
+        let end = at
+            .checked_add(record_size as u64)
+            .ok_or_else(|| invalid("journal descriptor offset overflow"))?;
+        if end > journal_end {
+            return Err(invalid("journal descriptor escapes journal length"));
+        }
+        if !(at >= window_start && end <= window_start + window_len as u64) {
+            let to_read = (journal_end - at).min(DESCRIPTOR_WINDOW as u64) as usize;
+            read_at(file, at, &mut window[..to_read])?;
+            window_start = at;
+            window_len = to_read;
+        }
+        let rel = (at - window_start) as usize;
+        descriptor[..record_size].copy_from_slice(&window[rel..rel + record_size]);
         let new_kind = if facts.format_version >= 2 {
             u64_at(&descriptor, 16)
         } else {
@@ -596,6 +695,37 @@ fn verify_index_against_journal(
         ));
     }
     policy.revalidate()
+}
+
+/// The walk of the held index against the journal's descriptors, made again
+/// right after the journal's body was hashed again (`body_read` says whether
+/// that hash read the body or left it out, `bulk_digest::journal_body_reading`).
+///
+/// The descriptors lie in the body. Where the body's read was left out,
+/// because it matched in this process and the route checks once
+/// (`bulk_digest::journal_body_already_verified`), a run that verifies each
+/// thing once (`verify_policy::verifies_once`) leaves out walking its
+/// descriptors again on the same ground: the walk reads the same bytes of
+/// the same held journal and holds them to the same held index, both
+/// unchanged. The index's own owner is still revalidated (its identity,
+/// timestamp and digest). `--verify thorough`, `--recheck-everything` and
+/// every recovery walk as before.
+fn verify_index_against_journal_again(
+    file: &mut File,
+    policy: &HeldPagedWritePolicy,
+    pins: &PagedRecoveryPins<'_>,
+    body_read: bool,
+) -> io::Result<()> {
+    if descriptors_walked_again(body_read, crate::verify_policy::verifies_once()) {
+        verify_index_against_journal(file, policy, pins)
+    } else {
+        policy.revalidate()
+    }
+}
+
+/// The rule of [`verify_index_against_journal_again`], apart from the switch.
+fn descriptors_walked_again(body_read: bool, verifies_once: bool) -> bool {
+    body_read || !verifies_once
 }
 
 type VerifiedNewBytes = ([u8; 32], [u8; 32]);
@@ -768,40 +898,43 @@ fn verify_paged_new_bytes<R: Read + Seek>(
     let before = verify_journal_owner(journal, pins, facts.journal_length)?;
     let modified = journal.metadata()?.modified()?;
     state.check(journal, pins)?;
-    if crate::bulk_digest::journal_body(
+    let (body, body_read) = crate::bulk_digest::journal_body_reading(
         pins.digest,
         journal,
         BODY,
         facts.journal_length - BODY,
         &pins.immutable_sha256,
-    )? != pins.immutable_sha256
-    {
+    )?;
+    if body != pins.immutable_sha256 {
         return Err(state.say(
             "handoff journal immutable body differs",
             "before the handoff: the journal immutable body differs",
         ));
     }
-    verify_index_against_journal(journal, policy, pins)?;
-    if !selected_new_bytes_already_verified(pins) {
+    verify_index_against_journal_again(journal, policy, pins, body_read)?;
+    let checked_now = !selected_new_bytes_already_verified(pins);
+    if checked_now {
         verify_selected_digest(source, policy, pins.digest, pins.new_selected_sha256)?;
         note_selected_new_bytes_verified(&pins.immutable_sha256, &pins.new_selected_sha256);
     }
     state.check(journal, pins)?;
-    if crate::bulk_digest::journal_body(
-        pins.digest,
-        journal,
-        BODY,
-        facts.journal_length - BODY,
-        &pins.immutable_sha256,
-    )? != pins.immutable_sha256
-    {
-        return Err(state.say(
-            "handoff journal changed during selected-byte verification",
-            "before the handoff: the journal changed during selected-byte verification",
-        ));
+    if checked_now {
+        let (body, body_read) = crate::bulk_digest::journal_body_reading(
+            pins.digest,
+            journal,
+            BODY,
+            facts.journal_length - BODY,
+            &pins.immutable_sha256,
+        )?;
+        if body != pins.immutable_sha256 {
+            return Err(state.say(
+                "handoff journal changed during selected-byte verification",
+                "before the handoff: the journal changed during selected-byte verification",
+            ));
+        }
+        verify_index_against_journal_again(journal, policy, pins, body_read)?;
+        state.check(journal, pins)?;
     }
-    verify_index_against_journal(journal, policy, pins)?;
-    state.check(journal, pins)?;
     let after = verify_journal_owner(journal, pins, facts.journal_length)?;
     if before.identity != after.identity
         || before.file_bytes != after.file_bytes
@@ -826,6 +959,26 @@ fn verify_paged_abort<R: Read + Seek>(
     policy: &HeldPagedWritePolicy,
     journal: &mut File,
     pins: &PagedRecoveryPins<'_>,
+) -> io::Result<()> {
+    verify_paged_abort_reaching(
+        source,
+        source_length,
+        binding,
+        policy,
+        journal,
+        pins,
+        |_, _| (),
+    )
+}
+
+fn verify_paged_abort_reaching<R: Read + Seek>(
+    source: &mut R,
+    source_length: u64,
+    binding: &crate::general_layout::GeneralDiskBinding,
+    policy: &HeldPagedWritePolicy,
+    journal: &mut File,
+    pins: &PagedRecoveryPins<'_>,
+    reach: impl FnMut(&mut R, u64),
 ) -> io::Result<()> {
     pins.journal_binding.validate()?;
     let facts = policy.facts()?;
@@ -858,9 +1011,13 @@ fn verify_paged_abort<R: Read + Seek>(
     }
     verify_index_against_journal(journal, policy, pins)?;
     if abandoned {
-        verify_selected_digest(source, policy, pins.digest, pins.old_selected_sha256)?;
+        if selected_digest_reaching(source, policy, pins.digest, false, reach)?
+            != pins.old_selected_sha256
+        {
+            return Err(invalid("actual excluded source selected bytes differ"));
+        }
     } else {
-        verify_restored_digest(source, policy, pins)?;
+        verify_restored_digest_reaching(source, policy, pins, reach)?;
     }
     // The restored boot identity must itself still be NTFS. It is also covered
     // by the authenticated restored-range digest when selected for writing.
@@ -925,7 +1082,17 @@ impl GeneralFrozenPartition {
         }
         let binding = self.binding.clone();
         let length = self.byte_len();
-        verify_paged_abort(&mut self, length, &binding, policy, journal, pins)?;
+        self.with_read_ahead(|source| {
+            verify_paged_abort_reaching(
+                source,
+                length,
+                &binding,
+                policy,
+                journal,
+                pins,
+                GeneralFrozenPartition::set_read_ahead_reach,
+            )
+        })?;
         if self.state(events)? != before {
             return Err(invalid("rollback source changed during verification"));
         }
@@ -1563,6 +1730,7 @@ impl GeneralFrozenPartition {
                 source,
                 policy,
                 pins.digest,
+                false,
                 GeneralFrozenPartition::set_read_ahead_reach,
             )
         })?;
@@ -1622,11 +1790,16 @@ impl GeneralFrozenPartition {
     /// protected target, arena and journal owners for the complete borrow.
     /// The journal's AP is flushed and read back before the disk becomes
     /// writable; interruption between those steps leaves OFFLINE|READ_ONLY+AP.
+    ///
+    /// `hashed_behind`: the caller paid for [`SELECTED_DIGEST_BEHIND_BYTES`]
+    /// (spare memory), and the OLD bytes are hashed on a worker while this
+    /// thread reads on. The digest, and what it is held to, are the same.
     pub fn begin_paged_fresh_apply<'a>(
         &'a mut self,
         policy: HeldPagedWritePolicy,
         journal: &mut File,
         pins: &PagedRecoveryPins<'_>,
+        hashed_behind: bool,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<BorrowedPagedWriter<'a>> {
         pins.journal_binding.validate()?;
@@ -1677,6 +1850,7 @@ impl GeneralFrozenPartition {
                         source,
                         &policy,
                         algorithm,
+                        hashed_behind,
                         GeneralFrozenPartition::set_read_ahead_reach,
                     )?;
                     if actual != pins.old_selected_sha256 {
@@ -1700,20 +1874,23 @@ impl GeneralFrozenPartition {
         }
         check_clear_lifecycle(journal)?;
         // Ordinary sharing excludes new file writers, not privileged raw
-        // aliases. Preserve a complete closing body hash before publishing AP.
-        if crate::bulk_digest::journal_body(
+        // aliases. Preserve a complete closing body hash before publishing AP
+        // (left out under check-once, where the body matched in this gate a
+        // moment ago, and with it the second walk of its descriptors under
+        // `--verify fast`).
+        let (closing, body_read) = crate::bulk_digest::journal_body_reading(
             pins.digest,
             journal,
             BODY,
             facts.journal_length - BODY,
             &pins.immutable_sha256,
-        )? != pins.immutable_sha256
-        {
+        )?;
+        if closing != pins.immutable_sha256 {
             return Err(invalid(
                 "fresh held journal changed during OLD verification",
             ));
         }
-        verify_index_against_journal(journal, &policy, pins)?;
+        verify_index_against_journal_again(journal, &policy, pins, body_read)?;
         check_clear_lifecycle(journal)?;
         let journal_after = verify_journal_owner(journal, pins, facts.journal_length)?;
         if journal_before.identity != journal_after.identity
@@ -1728,11 +1905,19 @@ impl GeneralFrozenPartition {
             ));
         }
         let path = format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number);
+        // The apply writes through this handle. It is unbuffered, so every
+        // read comes from the device, but not write-through: durability is
+        // the apply's own barriers (`BorrowedPagedWriter::sync_all`), one
+        // after every changed range but the boot granule, which is written
+        // only after it, and one after the boot granule before anything is
+        // read back or any marker follows. A write-through write waited for
+        // the disk each time: 309,578 of them, 50 s on the full Windows
+        // volume (owner's decision, 2026-11-21, #249).
         let gate = OpenOptions::new()
             .read(true)
             .write(true)
             .share_mode(1)
-            .custom_flags(0xa000_0000)
+            .custom_flags(super::UNBUFFERED_WRITER_FLAGS)
             .open(&path)?;
         if general_disk_state(&gate, &self.binding, events)? != before {
             return Err(invalid(
@@ -2235,6 +2420,18 @@ mod review_gate_tests {
                 );
             });
         }
+    }
+
+    #[test]
+    fn descriptors_are_walked_again_unless_the_body_read_was_left_out_of_a_fast_run() {
+        // A body read in full is followed by its walk, whatever the run.
+        assert!(descriptors_walked_again(true, true));
+        assert!(descriptors_walked_again(true, false));
+        // `--verify thorough`, `--recheck-everything` and a recovery walk
+        // again even where the body's read was left out.
+        assert!(descriptors_walked_again(false, false));
+        // Only a run that verifies once leaves the walk out, beside the read.
+        assert!(!descriptors_walked_again(false, true));
     }
 
     #[test]

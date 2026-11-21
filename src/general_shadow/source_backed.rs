@@ -373,7 +373,7 @@ const SELECTED_CHUNK_DIGEST: &str = "sha256-over-frames-and-xxh3-128-per-compare
 /// same frozen disk.
 #[path = "original_prefetch.rs"]
 pub(crate) mod original_prefetch;
-use original_prefetch::OriginalPrefetch;
+use original_prefetch::{LaneReads, OriginalPrefetch};
 
 /// Framed digest of the bytes one side of a capture compared. `Stream` and
 /// `Overlapped` are a SHA-256 of the framed byte stream (recomputed by the
@@ -742,6 +742,10 @@ pub struct PagedSourceByteAdapterWithScope<'a, 'scope> {
     allow_sparse: Option<bool>,
     logical_bytes: u64,
     poisoned: bool,
+    /// Bytes of the source a read lane has just read, at their place on the
+    /// partition, which a stream's reads take where they lie wholly inside
+    /// them ([`AheadReader`]); empty but where a caller offered them.
+    read_ahead: Vec<(u64, Vec<u8>)>,
     _session_ram: crate::ntfs_inspect::paged_storage::SourceRamLease,
 }
 
@@ -794,6 +798,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
             allow_sparse: None,
             logical_bytes: 0,
             poisoned: false,
+            read_ahead: Vec::new(),
             _session_ram: session_ram,
         })
     }
@@ -848,6 +853,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
             allow_sparse: None,
             logical_bytes: 0,
             poisoned: false,
+            read_ahead: Vec::new(),
             _session_ram: session_ram,
         })
     }
@@ -951,17 +957,29 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
         prepared?;
         self.poisoned = true;
         let session = self.session.as_mut().context("paged DATA session absent")?;
-        let receipt = if direct {
-            Some(session.read_with_direct_receipts_domain(
+        // A direct read's receipt says the owner itself read the bytes:
+        // only an ordinary read takes bytes read ahead.
+        let receipt = if self.read_ahead.is_empty() || direct {
+            read_session(
+                session,
                 &mut self.source,
                 self.raw,
                 offset,
                 output,
                 &mut self.budget,
-            )?)
+                direct,
+            )?
         } else {
-            session.read_domain(&mut self.source, self.raw, offset, output, &mut self.budget)?;
-            None
+            let mut reader = AheadReader::new(&mut self.source, &self.read_ahead)?;
+            read_session(
+                session,
+                &mut reader,
+                self.raw,
+                offset,
+                output,
+                &mut self.budget,
+                direct,
+            )?
         };
         self.logical_bytes = self
             .logical_bytes
@@ -973,6 +991,41 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
 
     pub fn logical_bytes_read(&self) -> u64 {
         self.logical_bytes
+    }
+
+    /// Offers `bytes`, which a read lane of this source has just read at
+    /// `offset` on the partition, to the reads of the stream read next:
+    /// where one of them lies wholly inside them it takes them instead of
+    /// asking the device again ([`AheadReader`]). Which bytes a stream reads
+    /// is still decided by its session, from the source's own record; bytes
+    /// no read asks for are not used. The caller takes them back
+    /// ([`Self::withdraw_read_ahead`]) once that stream's range is read.
+    pub(crate) fn offer_read_ahead(&mut self, offset: u64, bytes: Vec<u8>) {
+        self.read_ahead.push((offset, bytes));
+    }
+
+    /// Takes back every offer, handing each buffer to `give_back`.
+    pub(crate) fn withdraw_read_ahead(&mut self, give_back: impl FnMut(Vec<u8>)) {
+        self.read_ahead
+            .drain(..)
+            .map(|(_, bytes)| bytes)
+            .for_each(give_back);
+    }
+
+    /// How many reads the source's device takes at once where the source
+    /// may be read through lanes of its own (a dedicated source inside its
+    /// read scope); zero where it may not.
+    pub(crate) fn read_lane_depth(&self) -> usize {
+        self.source.read_lane_depth()
+    }
+
+    /// `count` read lanes of the source, where [`Self::read_lane_depth`] is
+    /// not zero; none otherwise. They are to be dropped before the adapter.
+    pub(crate) fn read_lanes(
+        &mut self,
+        count: usize,
+    ) -> io::Result<Vec<n2r_win32::GeneralFrozenLane>> {
+        self.source.read_lanes(count)
     }
 
     pub fn source_binding(&self) -> &n2r_win32::general_layout::GeneralDiskBinding {
@@ -1118,6 +1171,44 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
         offset: u64,
         output: &mut [u8],
     ) -> Result<crate::ntfs_inspect::StreamRangeReadProof> {
+        let allocation = self.read_range(identity, offset, output)?;
+        let whole = offset == 0 && output.len() as u64 == identity.length;
+        let sha256 = hex::encode(n2r_win32::content_digest::sha256(output)?);
+        self.end_range()?;
+        Ok(crate::ntfs_inspect::StreamRangeReadProof {
+            record_number: identity.record_number,
+            stream_name_utf16: identity.name_utf16.to_vec(),
+            logical_offset: offset,
+            logical_bytes: output.len() as u64,
+            stream_logical_bytes: identity.length,
+            expected_stream_sha256: identity.sha256.map(str::to_owned),
+            sha256,
+            whole_stream_hash_matched: whole && identity.sha256.is_some(),
+            allocation,
+        })
+    }
+
+    /// [`Self::read_range_proof`] for a caller that keeps no proof of the
+    /// range: every check is made as there, and only the digest of the
+    /// range, which nothing but the proof carries, is not computed.
+    pub(crate) fn read_range_checked(
+        &mut self,
+        identity: &PagedStreamIdentity<'_>,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<()> {
+        self.read_range(identity, offset, output)?;
+        self.end_range()
+    }
+
+    /// The protection checked, the bytes read, a sparse stream's allocation
+    /// evidence taken and a whole stream held to its expected content.
+    fn read_range(
+        &mut self,
+        identity: &PagedStreamIdentity<'_>,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<Option<crate::ntfs_inspect::StreamAllocationEvidence>> {
         self.validate_protection()?;
         self.read_into(identity, offset, output)?;
         let allocation = if identity.allow_sparse {
@@ -1137,7 +1228,10 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
                 anyhow::bail!("checked full source stream differs from expected content");
             }
         }
-        let sha256 = hex::encode(n2r_win32::content_digest::sha256(output)?);
+        Ok(allocation)
+    }
+
+    fn end_range(&mut self) -> Result<()> {
         // Closing the stream's session reads its file record again (all of
         // them, for a stream with an attribute list) and checks the mapping.
         // Where everything is re-read at each step that happens after every
@@ -1148,17 +1242,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
         if n2r_win32::verify_policy::full_unremembered() {
             self.finish_stream()?;
         }
-        Ok(crate::ntfs_inspect::StreamRangeReadProof {
-            record_number: identity.record_number,
-            stream_name_utf16: identity.name_utf16.to_vec(),
-            logical_offset: offset,
-            logical_bytes: output.len() as u64,
-            stream_logical_bytes: identity.length,
-            expected_stream_sha256: identity.sha256.map(str::to_owned),
-            sha256,
-            whole_stream_hash_matched: whole && identity.sha256.is_some(),
-            allocation,
-        })
+        Ok(())
     }
 
     pub fn finish(mut self) -> Result<u64> {
@@ -1175,6 +1259,198 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
         )?;
         self.source.validate(self.before.as_ref())?;
         Ok(self.logical_bytes)
+    }
+}
+
+/// The most tails one batch of a pass that reads tails ahead has asked
+/// for, and the most objects it holds.
+pub(crate) const TAIL_BATCH: usize = 1024;
+/// The most bytes of tails one batch has read ahead and holds.
+pub(crate) const TAIL_BATCH_BYTES: u64 = 16 * 1024 * 1024;
+/// What a batch's lists hold for each tail read ahead: its ticket, its
+/// place and length, and its slot.
+const TAIL_ASK_BYTES: u64 = 64;
+
+/// Where on the partition `count` bytes of `stream` at `offset` lie, where
+/// the stream's expected run list puts all of them in one run: the place the
+/// tail is read ahead from. Only a hint for the read ahead: what the tail's
+/// read takes is decided by the session, from the source's own record, and
+/// bytes read from another place are not used.
+pub(crate) fn tail_place(
+    stream: &crate::shadow_tree::StreamRef<'_>,
+    offset: u64,
+    count: u64,
+) -> Option<u64> {
+    if stream.sparse.is_some() {
+        return None;
+    }
+    let end = offset.checked_add(count)?;
+    if let Some(base) = stream.source_offset {
+        return base.checked_add(offset);
+    }
+    let run = stream.source_extents.iter().find(|run| {
+        run.logical_offset <= offset
+            && run
+                .logical_offset
+                .checked_add(run.length)
+                .is_some_and(|stop| end <= stop)
+    })?;
+    run.physical_offset?
+        .checked_add(offset - run.logical_offset)
+}
+
+/// Whether opening read lanes failed for want of a resource (memory,
+/// handles, a share another holder refuses), which leaves reading without
+/// lanes, rather than for something that may mean the source is no longer
+/// what it was frozen as (a lane's route that differs from the frozen state,
+/// a failed state query, a scope that failed, access refused), which is the
+/// run's failure.
+fn lane_open_wants_resource(error: &io::Error) -> bool {
+    // ERROR_TOO_MANY_OPEN_FILES, ERROR_NOT_ENOUGH_MEMORY, ERROR_OUTOFMEMORY,
+    // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION, ERROR_NO_SYSTEM_RESOURCES,
+    // ERROR_WORKING_SET_QUOTA, ERROR_COMMITMENT_LIMIT.
+    error.kind() == io::ErrorKind::OutOfMemory
+        || matches!(
+            error.raw_os_error(),
+            Some(4 | 8 | 14 | 32 | 33 | 1450 | 1453 | 1455)
+        )
+}
+
+/// Lanes of the source for reading tails ahead: as many as its device
+/// asks for and the ledger grants as spare memory (their buffers and
+/// stacks, and a batch's bytes and lists), down to one. None where the
+/// source is not read through lanes of its own, where there is no ledger,
+/// where nothing is granted, or where the lanes cannot be opened or started
+/// for want of a resource; then every tail is read as before. A lane that
+/// cannot be opened for any other reason (its route differs from the frozen
+/// state, among them) is an error, as the source's other reads would be.
+pub(crate) fn tails_ahead(
+    bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
+    group: Option<crate::artifact_arena::ArtifactGroupPermit>,
+    name: &'static str,
+) -> Result<Option<LaneReads>> {
+    let wanted = LaneReads::lanes_for(bytes.read_lane_depth());
+    let Some(group) = group else {
+        return Ok(None);
+    };
+    let Some((lanes, paid)) = (1..=wanted).rev().find_map(|lanes| {
+        let workspace = LaneReads::workspace_bytes(lanes)?
+            .checked_add(TAIL_BATCH_BYTES)?
+            .checked_add((TAIL_BATCH as u64).checked_mul(TAIL_ASK_BYTES)?)?;
+        group
+            .arena()
+            .reserve_spare_ram(workspace)
+            .ok()
+            .map(|paid| (lanes, paid))
+    }) else {
+        return Ok(None);
+    };
+    let lanes = match bytes.read_lanes(lanes) {
+        Ok(lanes) if !lanes.is_empty() => lanes,
+        Ok(_) => return Ok(None),
+        Err(error) if lane_open_wants_resource(&error) => return Ok(None),
+        Err(error) => {
+            return Err(anyhow::Error::new(error).context(format!(
+                "opening {lanes} read lanes of the source to read stream tails ahead"
+            )));
+        }
+    };
+    // Helpers that cannot be started read nothing; their lanes are closed.
+    Ok(LaneReads::start(name, lanes, Some(Box::new(paid))).ok())
+}
+
+/// One read of a stream's session, through `reader`.
+fn read_session<R: Read + Seek>(
+    session: &mut crate::ntfs_inspect::PlainStreamRangeSession,
+    reader: &mut R,
+    raw: &crate::ntfs_inspect::PagedInspection,
+    offset: u64,
+    output: &mut [u8],
+    budget: &mut crate::ntfs_inspect::StreamTransferBudget,
+    direct: bool,
+) -> Result<Option<crate::ntfs_inspect::DirectReadReceipt>> {
+    if direct {
+        Ok(Some(session.read_with_direct_receipts_domain(
+            reader, raw, offset, output, budget,
+        )?))
+    } else {
+        session.read_domain(reader, raw, offset, output, budget)?;
+        Ok(None)
+    }
+}
+
+/// The source as a stream's session reads it where bytes of it were read
+/// ahead on a lane ([`PagedSourceByteAdapterWithScope::offer_read_ahead`]):
+/// a read that lies wholly inside such bytes takes them, and every other
+/// read is made by the source itself, at the same place, as before.
+struct AheadReader<'r, R: Read + Seek> {
+    inner: &'r mut R,
+    blocks: &'r [(u64, Vec<u8>)],
+    position: u64,
+    // Whether `inner` stands at `position`.
+    synced: bool,
+}
+impl<'r, R: Read + Seek> AheadReader<'r, R> {
+    fn new(inner: &'r mut R, blocks: &'r [(u64, Vec<u8>)]) -> io::Result<Self> {
+        let position = inner.stream_position()?;
+        Ok(Self {
+            inner,
+            blocks,
+            position,
+            synced: true,
+        })
+    }
+}
+impl<R: Read + Seek> Read for AheadReader<'_, R> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let at = self.position;
+        let end = at.checked_add(output.len() as u64);
+        let inside = self.blocks.iter().find(|(start, bytes)| {
+            *start <= at
+                && end.is_some_and(|end| {
+                    start
+                        .checked_add(bytes.len() as u64)
+                        .is_some_and(|stop| end <= stop)
+                })
+        });
+        if let Some((start, bytes)) = inside {
+            let local = (at - start) as usize;
+            output.copy_from_slice(&bytes[local..local + output.len()]);
+            self.position = end.unwrap_or(at);
+            self.synced = false;
+            return Ok(output.len());
+        }
+        if !self.synced {
+            self.inner.seek(SeekFrom::Start(at))?;
+            self.synced = true;
+        }
+        let read = self.inner.read(output)?;
+        self.position = at + read as u64;
+        Ok(read)
+    }
+}
+impl<R: Read + Seek> Seek for AheadReader<'_, R> {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        if let SeekFrom::Start(at) = from {
+            self.position = at;
+            self.synced = false;
+            return Ok(at);
+        }
+        if !self.synced {
+            self.inner.seek(SeekFrom::Start(self.position))?;
+        }
+        self.position = self.inner.seek(from)?;
+        self.synced = true;
+        Ok(self.position)
+    }
+}
+impl<R: Read + Seek> Drop for AheadReader<'_, R> {
+    fn drop(&mut self) {
+        // The source stands where the session's last read ended, as it
+        // would had every read been its own.
+        if !self.synced {
+            let _ = self.inner.seek(SeekFrom::Start(self.position));
+        }
     }
 }
 
@@ -2375,5 +2651,59 @@ impl Seek for SourceBackedShadow<'_> {
         }
         self.position = next as u64;
         Ok(self.position)
+    }
+}
+
+#[cfg(test)]
+mod ahead_reader_tests {
+    use super::*;
+
+    /// Only a lane that could not be had for want of a resource leaves the
+    /// tails read without lanes; a lane whose route differs from the frozen
+    /// state, or any other failure, is the run's.
+    #[test]
+    fn only_a_resource_failure_leaves_reading_without_lanes() {
+        let memory = io::Error::new(io::ErrorKind::OutOfMemory, "aligned allocation failed");
+        assert!(lane_open_wants_resource(&memory));
+        assert!(lane_open_wants_resource(&io::Error::from_raw_os_error(32)));
+        assert!(lane_open_wants_resource(&io::Error::from_raw_os_error(
+            1450
+        )));
+        let route = io::Error::new(io::ErrorKind::InvalidData, "frozen read lane route differs");
+        assert!(!lane_open_wants_resource(&route));
+        assert!(!lane_open_wants_resource(&io::Error::from_raw_os_error(5)));
+        assert!(!lane_open_wants_resource(&io::Error::other(
+            "failed frozen source read scope cannot open read lanes"
+        )));
+    }
+
+    /// A read that lies wholly inside bytes read ahead takes them; any other
+    /// is made by the source itself at the same place, and the source is
+    /// left where the last read ended.
+    #[test]
+    fn only_a_read_wholly_inside_bytes_read_ahead_takes_them() {
+        let disk: Vec<u8> = (0..65_536u32).map(|n| (n % 251) as u8).collect();
+        let mut source = io::Cursor::new(disk.clone());
+        // What a lane read at 8192, marked so that it can be told apart.
+        let blocks = vec![(8192u64, vec![0xAA; 4096])];
+        let mut reader = AheadReader::new(&mut source, &blocks).unwrap();
+        let mut output = [0u8; 1024];
+        reader.seek(SeekFrom::Start(9000)).unwrap();
+        reader.read_exact(&mut output).unwrap();
+        assert_eq!(output, [0xAA; 1024], "inside: taken from the read ahead");
+        reader.seek(SeekFrom::Start(12_000)).unwrap();
+        reader.read_exact(&mut output).unwrap();
+        assert_eq!(
+            &output[..],
+            &disk[12_000..13_024],
+            "across its end: the source"
+        );
+        reader.seek(SeekFrom::Start(100)).unwrap();
+        reader.read_exact(&mut output).unwrap();
+        assert_eq!(&output[..], &disk[100..1124], "outside: the source");
+        reader.seek(SeekFrom::Start(8192)).unwrap();
+        reader.read_exact(&mut output).unwrap();
+        drop(reader);
+        assert_eq!(source.position(), 8192 + 1024);
     }
 }

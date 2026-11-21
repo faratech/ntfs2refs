@@ -74,21 +74,16 @@ fn named_snapshot(file: &File, previous: &Snapshot, maximum: u64) -> io::Result<
     named_snapshot_in(file, NamedScope::of(previous), maximum)
 }
 fn named_snapshot_in(file: &File, scope: NamedScope, maximum: u64) -> io::Result<Snapshot> {
-    let mut current = crate::attestation_native::source_snapshot_paged(
+    // Keep the exact feature scope of the already validated ADS observation,
+    // while using the ORIGINAL admitted security bound for the live query.
+    // What is outside that scope is not asked for.
+    Ok(crate::attestation_native::source_snapshot_paged_scoped(
         file,
         false,
         usize::try_from(maximum).map_err(io::Error::other)?,
-    );
-    // Keep the exact feature scope of the already validated ADS observation,
-    // while using the ORIGINAL admitted security bound for the live query.
-    if !scope.reparse {
-        current.reparse = None;
-    }
-    if !scope.extended_attributes {
-        current.extended_attributes = None;
-        current.extended_attributes_error = None;
-    }
-    Ok(current)
+        scope.extended_attributes,
+        scope.reparse,
+    ))
 }
 
 /// What the check of every object shares.

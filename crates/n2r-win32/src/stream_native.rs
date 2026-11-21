@@ -637,9 +637,14 @@ fn hash_stream(
     }
     out
 }
+/// `extent_identity_streams` are the selectors that prove this object's
+/// streams by their extents: the request's own, or with paged selectors the
+/// object's row of them (borrowed, where a request was once cloned per object).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn capture(
     file: &File,
     r: &Request,
+    extent_identity_streams: &[ExtentIdentityStream],
     id: &FileIdentity,
     budget: &mut crate::logical_hash::Budget,
     evidence_limit: usize,
@@ -752,8 +757,7 @@ pub(crate) fn capture(
         };
         q.retrieval = Some(first);
         q.retrieval_continuation = continuation;
-        let wanted = r
-            .extent_identity_streams
+        let wanted = extent_identity_streams
             .iter()
             .find(|wanted| wanted.identity == *id && wanted.name_utf16 == entry.name);
         let omission = wanted.and_then(|wanted| {

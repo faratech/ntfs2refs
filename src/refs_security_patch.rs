@@ -348,14 +348,25 @@ impl<R: Read + Seek> Walker<'_, R> {
         );
         self.pages += 1;
         let mut bytes = vec![0; PAGE];
-        for (i, lcn) in physical.into_iter().enumerate() {
+        for lcn in physical {
             ensure!(
                 lcn < self.volume_clusters,
                 "trust-label page outside volume"
             );
-            self.reader.seek(SeekFrom::Start(lcn * CLUSTER as u64))?;
+        }
+        if physical[1] == physical[0] + 1
+            && physical[2] == physical[0] + 2
+            && physical[3] == physical[0] + 3
+        {
             self.reader
-                .read_exact(&mut bytes[i * CLUSTER..(i + 1) * CLUSTER])?;
+                .seek(SeekFrom::Start(physical[0] * CLUSTER as u64))?;
+            self.reader.read_exact(&mut bytes)?;
+        } else {
+            for (i, lcn) in physical.into_iter().enumerate() {
+                self.reader.seek(SeekFrom::Start(lcn * CLUSTER as u64))?;
+                self.reader
+                    .read_exact(&mut bytes[i * CLUSTER..(i + 1) * CLUSTER])?;
+            }
         }
         Ok(bytes)
     }
@@ -906,6 +917,9 @@ fn plan_profile<R: Read + Seek>(
         );
         for page in &tree.pages {
             protected.extend(page.lcn_slots);
+        }
+        if let Some(compact) = &tree.compact {
+            protected.extend(compact.page_lcns.iter().copied());
         }
     }
     let virtual_roots = bootstrap

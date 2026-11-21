@@ -212,6 +212,7 @@ fn walk<R: Read + Seek>(
             mapping_sha256: hex::encode(mapping_hash.clone().finalize()),
             page_transcript_sha256: hex::encode(transcript.clone().finalize()),
             addresses: Vec::new(),
+            page_lcns: Vec::new(),
             binding: None,
         });
         if next.depth == 0 {
@@ -327,6 +328,7 @@ fn walk<R: Read + Seek>(
         mapping_sha256: hex::encode(mapping_hash.finalize()),
         page_transcript_sha256: hex::encode(transcript.finalize()),
         addresses,
+        page_lcns: visited.into_iter().collect(),
         binding: Some(CompactBinding {
             checkpoint_lcn: root.checkpoint_lcn,
             root_index: root.root_index,

@@ -68,6 +68,19 @@ pub(super) fn restore_acl_protection_with_limit(
     item: &Input<'_>,
     maximum: Option<u64>,
 ) -> io::Result<ProtectionRestore> {
+    let actual = security_snapshot_with_limit(file, maximum);
+    restore_acl_protection_observed(file, item, maximum, &actual)
+}
+/// [`restore_acl_protection_with_limit`] where the object's security views
+/// were just read through `file`, and nothing has changed the object since:
+/// the protection is set from the kernel descriptor of that observation
+/// instead of one read again.
+pub(super) fn restore_acl_protection_observed(
+    file: &File,
+    item: &Input<'_>,
+    maximum: Option<u64>,
+    actual: &Snapshot,
+) -> io::Result<ProtectionRestore> {
     use crate::security_descriptor::{self, Presence};
     use windows_sys::Win32::Security::{
         Authorization::{SE_FILE_OBJECT, SetSecurityInfo},
@@ -75,7 +88,6 @@ pub(super) fn restore_acl_protection_with_limit(
         PROTECTED_SACL_SECURITY_INFORMATION, SACL_SECURITY_INFORMATION,
         UNPROTECTED_DACL_SECURITY_INFORMATION, UNPROTECTED_SACL_SECURITY_INFORMATION,
     };
-    let actual = security_snapshot_with_limit(file, maximum);
     let kernel = actual
         .kernel_security
         .as_ref()
@@ -126,18 +138,20 @@ pub(super) fn restore_acl_protection_with_limit(
             }
         }
         if expressible && information != 0 {
-            if let Some(maximum) = maximum {
-                descriptor_with_limit(item.security, maximum)?;
+            let mut request = if let Some(maximum) = maximum {
+                descriptor_with_limit(item.security, maximum)?
             } else {
-                descriptor(item.security)?;
-            }
-            let mut request = item.security.to_vec();
-            let control = u16::from_le_bytes([request[2], request[3]])
+                descriptor(item.security)?
+            };
+            let words = request.as_mut_ptr().cast::<u8>();
+            // SAFETY: `descriptor*` validated length >= 20 bytes inside 8-byte-aligned `Vec<u64>`.
+            let control_bytes = unsafe { std::slice::from_raw_parts_mut(words.add(2), 2) };
+            let control = u16::from_le_bytes([control_bytes[0], control_bytes[1]])
                 | SE_DACL_AUTO_INHERIT_REQ
                 | SE_SACL_AUTO_INHERIT_REQ;
-            request[2..4].copy_from_slice(&control.to_le_bytes());
-            // SAFETY: live authorized metadata handle; `request` is the validated
-            // self-relative source descriptor with only its control word changed.
+            control_bytes.copy_from_slice(&control.to_le_bytes());
+            // SAFETY: live authorized metadata handle; `request` is the 8-byte-aligned
+            // validated self-relative source descriptor with only its control word changed.
             check(unsafe {
                 SetKernelObjectSecurity(
                     file.as_raw_handle(),
@@ -272,14 +286,19 @@ pub(super) fn clear_acl_auto_inheritance(directory: &File) -> io::Result<bool> {
     if information == 0 {
         return Ok(false);
     }
-    let mut request = kernel.bytes.clone();
-    let control = (u16::from_le_bytes([request[2], request[3]])
+    let mut request = vec![0u64; kernel.bytes.len().div_ceil(8)];
+    // SAFETY: `request` holds at least `kernel.bytes.len()` bytes with 8-byte alignment.
+    let raw_request = unsafe {
+        std::slice::from_raw_parts_mut(request.as_mut_ptr().cast::<u8>(), kernel.bytes.len())
+    };
+    raw_request.copy_from_slice(&kernel.bytes);
+    let control = (u16::from_le_bytes([raw_request[2], raw_request[3]])
         & !(SE_DACL_AUTO_INHERITED | SE_SACL_AUTO_INHERITED))
         | SE_DACL_AUTO_INHERIT_REQ
         | SE_SACL_AUTO_INHERIT_REQ;
-    request[2..4].copy_from_slice(&control.to_le_bytes());
+    raw_request[2..4].copy_from_slice(&control.to_le_bytes());
     // SAFETY: live directory handle holding WRITE_DAC and ACCESS_SYSTEM_SECURITY;
-    // `request` is the descriptor the kernel just returned with only its
+    // `request` is the 8-byte-aligned descriptor the kernel just returned with only its
     // control word changed, and outlives the call.
     check(unsafe {
         SetKernelObjectSecurity(
@@ -559,7 +578,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     // Only namespace scalars remain resident. Looking up a child must not
     // decode every paged object for every native directory entry.
     let mut namespace_index = BTreeMap::new();
-    let mut expected_children: BTreeMap<Vec<String>, BTreeSet<Vec<String>>> = BTreeMap::new();
+    let mut expected_children: BTreeMap<Vec<String>, BTreeSet<String>> = BTreeMap::new();
     const DIRECTORY: u8 = 1;
     const EXTENDED_ATTRIBUTES: u8 = 2;
     const REPARSE: u8 = 4;
@@ -600,6 +619,10 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     // changed, on a shadow that is discarded. A recovery takes over what an
     // interrupted run left and changes one object at a time, as before.
     let change_payer = if recovering { None } else { enumeration_payer };
+    // Under "verify once" the final read-back pass is skipped on a non-recovering
+    // run, so Pass 0 does not need to query FSCTL_GET_RETRIEVAL_POINTERS or hash
+    // retrieval maps solely for `mappings`.
+    let read_back = recovering || !crate::verify_policy::verifies_once();
     let handle_shape = |(index, item): &(usize, Input<'_>)| {
         let handle = handles
             .get(index)
@@ -624,7 +647,8 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             {
                 return Err(invalid("owned metadata stream shape differs"));
             }
-            if item.logical_length() != 0
+            if read_back
+                && item.logical_length() != 0
                 && layout::u64_at(&standard, 0)? >= crate::target_cluster::bytes()
             {
                 let canonical = crate::stream_native::retrieval_capture(handle)?.canonical;
@@ -710,11 +734,11 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                     {
                         return Err(invalid("duplicate owned metadata namespace path"));
                     }
-                    if !path.is_empty() {
+                    if let Some((name, parent)) = path.split_last() {
                         expected_children
-                            .entry(path[..path.len() - 1].to_vec())
+                            .entry(parent.to_vec())
                             .or_default()
-                            .insert(path.to_vec());
+                            .insert(name.clone());
                     }
                 }
                 let (id, mapping) = shape?;
@@ -744,10 +768,12 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                     "derived alias collides with a canonical source name",
                 ));
             }
-            expected_children
-                .entry(path[..path.len() - 1].to_vec())
-                .or_default()
-                .insert(path.to_vec());
+            if let Some((name, parent)) = path.split_last() {
+                expected_children
+                    .entry(parent.to_vec())
+                    .or_default()
+                    .insert(name.clone());
+            }
         }
     }
     // One directory's listing held to what is expected of it: every entry
@@ -780,17 +806,20 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                            aliases: Option<&super::windows_aliases::StagedWindowsAliases>,
                            _seen_memory: Option<Box<dyn report_memory::ReportMemoryLease>>|
      -> io::Result<()> {
-        let mut seen = BTreeSet::new();
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut path = Vec::with_capacity(components.len() + 1);
+        path.extend_from_slice(components);
+        path.push(String::new());
         for entry in entries {
             if entry.name_utf16 == [46] || entry.name_utf16 == [46, 46] {
                 continue;
             }
             let name = String::from_utf16(&entry.name_utf16)
                 .map_err(|_| invalid("owned metadata namespace UTF-16 differs"))?;
-            let mut path = components.to_vec();
-            path.push(name);
+            *path.last_mut().unwrap() = name;
             if let Some(alias) = aliases.and_then(|aliases| aliases.entry(&path)) {
-                if !seen.insert(path.clone())
+                let inserted_name = std::mem::take(path.last_mut().unwrap());
+                if !seen.insert(inserted_name)
                     || (entry.attributes & 16 != 0) != alias.directory
                     || (!(recovering && !points_installed)
                         && (entry.attributes & 0x400 != 0) != points_installed)
@@ -803,7 +832,8 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             let &(child_index, child_directory, child_reparse) = namespace_index
                 .get(&path)
                 .ok_or_else(|| invalid("unexpected owned metadata namespace entry"))?;
-            if !seen.insert(path.clone())
+            let inserted_name = std::mem::take(path.last_mut().unwrap());
+            if !seen.insert(inserted_name)
                 || (entry.attributes & 16 != 0) != child_directory
                 || (if recovering && !points_installed {
                     (entry.attributes & 0x400 != 0) && !child_reparse
@@ -1092,22 +1122,29 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 Ok(security_snapshot_with_limit(handle, row_limit))
             },
         );
+        // An object whose descriptor differs keeps the views just read: its
+        // protection is restored from that kernel descriptor, which the
+        // protection restore read again through the same handle. Nothing
+        // changes the object in between: it is held by this run, and the
+        // objects of a batch are of one depth (or all files), so that no
+        // other object of the batch is an ancestor whose restore could
+        // reach it. The views read after the restore stay the check.
         let mut restoring = Vec::new();
         for (object, found) in items.iter().zip(found) {
             let (slot, _, item) = object;
             let differs = found.and_then(|found| {
                 if security_matches(item, &found, &same_security)? {
-                    return Ok(false);
+                    return Ok(None);
                 }
                 // One before the protection change, one before the
                 // descriptor's.
                 input.before_mutation(item.security.len() as u64)?;
                 input.before_mutation(item.security.len() as u64)?;
-                Ok(true)
+                Ok(Some(found))
             });
             match differs {
-                Ok(true) => restoring.push(object),
-                Ok(false) => {}
+                Ok(Some(found)) => restoring.push((object, found)),
+                Ok(None) => {}
                 Err(error) => failures[*slot] = Some(error),
             }
         }
@@ -1115,17 +1152,17 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             change_payer,
             &restoring,
             |_| snapshot_workspace,
-            |(_, index, item)| -> io::Result<(ProtectionRestore, io::Result<Snapshot>)> {
+            |((_, index, item), found)| -> io::Result<(ProtectionRestore, io::Result<Snapshot>)> {
                 let handle = held(handles, *index)?;
-                let protection = restore_acl_protection_with_limit(handle, item, row_limit)?;
+                let protection = restore_acl_protection_observed(handle, item, row_limit, found)?;
                 Ok((
                     protection,
-                    backup_security_with_limit(handle, item.security, row_limit)
+                    super::backup_security_write_with_limit(handle, item.security, row_limit)
                         .map(|_| security_snapshot_with_limit(handle, row_limit)),
                 ))
             },
         );
-        for (object, restored) in restoring.iter().zip(restored) {
+        for ((object, _), restored) in restoring.iter().zip(restored) {
             let (slot, _, item) = *object;
             let checked = restored.and_then(|(protection, restored_view)| {
                 dacl_protection_updates += usize::from(protection.dacl);
@@ -1506,7 +1543,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     // mapping) to the same expectations, before anything is written to the
     // source. A run that resumes metadata an earlier process restored still
     // reads all of it back here.
-    let read_back = recovering || !crate::verify_policy::verifies_once();
+    // `read_back` was computed before Pass 0 (`recovering || !verifies_once()`).
     let mut next = if read_back { 0usize } else { input.len() };
     while next < input.len() {
         metadata_progress(8, next as u64);
@@ -1581,6 +1618,11 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         next = end;
     }
     metadata_progress(8, input.len() as u64);
+    // Under "verify once" the read-back above is skipped; what remains of
+    // this step (the route, the volume extent, the source and the disk
+    // state checked once more, and what the caller does before its next
+    // step) is timed apart from it.
+    crate::perf::step("metadata: final route, volume and source checks");
     target.revalidate_route(&mut events)?;
     pair.shadow
         .validate_volume_extent(&ctl(volume, 0x00560000, &[], 1024)?)?;
@@ -1605,6 +1647,12 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         report["metadata_objects_verified"] = 0u64.into();
         report["metadata_readback_verified"] = false.into();
         report["metadata_readback_left_to_frozen_shadow_observation"] = true.into();
+    }
+    if let Some(aliases) = aliases.as_deref()
+        && !aliases.reads_back_restored_metadata()
+    {
+        report["alias_metadata_readback_verified"] = false.into();
+        report["alias_metadata_readback_left_to_frozen_shadow_observation"] = true.into();
     }
     if !check_listings_again {
         report["directory_listings_checked_after_restore"] = false.into();

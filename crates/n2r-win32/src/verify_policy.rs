@@ -42,9 +42,15 @@ static VERIFY_ONCE: AtomicBool = AtomicBool::new(false);
 /// - Windows reading the contents of a plain stream and the raw reading of
 ///   it (Windows' map of the stream is still held to the raw run list, and
 ///   Windows still confirms that its valid data runs to its end);
-/// - the shadow's payloads and metadata read back before the capture and
-///   again by the walk of the frozen shadow, and its directories listed again
-///   after their metadata is restored;
+/// - the shadow's payloads and metadata (its short-name links' among them)
+///   read back before the capture and again by the walk of the frozen
+///   shadow, and its directories listed again after their metadata is
+///   restored;
+/// - the source's side of every stream's supply (its file record, its run
+///   list against each reference and hole) walked by the planning of the
+///   payload supply and not again by its verification: the source stays
+///   held, and the gate reads its metadata and extents again against the
+///   source fingerprint;
 /// - a move of the shadow's extents held to the mapping of the range it
 ///   moved, and each file's complete mapping compared once, when placement
 ///   ends, instead of after every one of its moves;
@@ -164,18 +170,22 @@ pub fn repeats_once_as_verified() -> bool {
 }
 
 /// The full verification that precedes the first write to the source. While
-/// one is alive, every full check runs for real, once.
-pub struct Gate(u64);
+/// one is alive, every full check runs for real, once. Nested gates restore
+/// the enclosing gate on drop so an inner gate never disables an outer gate.
+pub struct Gate {
+    id: u64,
+    previous: u64,
+}
 impl Gate {
     pub fn enter() -> Self {
         let id = NEXT_GATE.fetch_add(1, SeqCst);
-        GATE.store(id, SeqCst);
-        Self(id)
+        let previous = GATE.swap(id, SeqCst);
+        Self { id, previous }
     }
 }
 impl Drop for Gate {
     fn drop(&mut self) {
-        let _ = GATE.compare_exchange(self.0, 0, SeqCst, SeqCst);
+        let _ = GATE.compare_exchange(self.id, self.previous, SeqCst, SeqCst);
     }
 }
 
@@ -320,7 +330,12 @@ mod tests {
     #[test]
     fn a_gate_ends_when_it_is_dropped() {
         let first = Gate::enter();
-        let id = first.0;
+        let id = first.id;
+        assert_eq!(GATE.load(SeqCst), id);
+        let inner = Gate::enter();
+        let inner_id = inner.id;
+        assert_eq!(GATE.load(SeqCst), inner_id);
+        drop(inner);
         assert_eq!(GATE.load(SeqCst), id);
         drop(first);
         assert_ne!(GATE.load(SeqCst), id);

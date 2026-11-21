@@ -578,6 +578,29 @@ impl SourceScratch {
             _arena_ram: arena_ram,
         })
     }
+    /// Memory that only buys speed (doing more at once), which the caller
+    /// does without when it is refused: `ArtifactArena::reserve_spare_ram`,
+    /// granted only where it leaves room, by the arena's reckoning, for the
+    /// largest reservation the run has needed. It is not counted in this
+    /// ledger, so the source's own needed reservations, held to this
+    /// ledger, are not refused for it here; in the arena it is held like any
+    /// lease until it is given back, and a long-held one narrows the room
+    /// the arena has for others. Without an arena there is none.
+    #[track_caller]
+    pub fn lease_spare_ram(&self, bytes: u64) -> Result<SourceRamLease> {
+        let permit = {
+            let ledger = self.0.borrow();
+            ensure!(!ledger.poisoned, "source scratch is poisoned");
+            ledger.arena.clone()
+        };
+        let permit = permit.context("spare memory needs the run's memory ledger")?;
+        let arena_ram = permit.arena().reserve_spare_ram(bytes)?;
+        Ok(SourceRamLease {
+            scratch: self.clone(),
+            bytes: 0,
+            _arena_ram: Some(arena_ram),
+        })
+    }
     #[track_caller]
     fn lease_window(&self) -> Result<SourceRamLease> {
         let bytes = u64::from(self.budget().page_bytes)
@@ -1502,7 +1525,7 @@ impl PagedMetadataRange {
             return Ok(());
         };
         cache.bytes.resize(cache.bytes.capacity(), 0);
-        self.read_through_pages(0, &mut cache.bytes)?;
+        self.read_through_pages_with(0, &mut cache.bytes, false)?;
         self.decodes.set(0);
         // The whole store is held: its chunks are not needed beside it.
         self.decoded.borrow_mut().kept.clear();
@@ -1642,7 +1665,15 @@ impl PagedMetadataRange {
         }
     }
     /// Reads from the store's pages, decoding the chunks the range lies in.
-    fn read_through_pages(&self, offset: u64, mut output: &mut [u8]) -> Result<()> {
+    fn read_through_pages(&self, offset: u64, output: &mut [u8]) -> Result<()> {
+        self.read_through_pages_with(offset, output, true)
+    }
+    fn read_through_pages_with(
+        &self,
+        offset: u64,
+        mut output: &mut [u8],
+        keep_chunks: bool,
+    ) -> Result<()> {
         let mut at = offset;
         while !output.is_empty() {
             let ordinal = at / u64::from(self.pin.chunk_bytes);
@@ -1700,7 +1731,9 @@ impl PagedMetadataRange {
                 );
                 self.decoded.borrow_mut().recent = Some((ordinal, chunk));
                 self.decodes.set(self.decodes.get().saturating_add(1));
-                self.keep_decoded(ordinal);
+                if keep_chunks {
+                    self.keep_decoded(ordinal);
+                }
             }
             let cached = self.decoded.borrow();
             let chunk = &cached

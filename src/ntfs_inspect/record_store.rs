@@ -157,6 +157,43 @@ impl SortedRecordWriter {
         Ok(())
     }
 
+    /// As [`Self::push`], for the bytes `serde_json::to_vec` made of a value
+    /// in this process (on another thread, while this one went on): they
+    /// are what `push` would have written of it, under the same bounds.
+    pub(crate) fn push_serialized(&mut self, key: [u8; 16], json: &[u8]) -> Result<()> {
+        ensure!(!self.poisoned, "record writer is poisoned");
+        self.poisoned = true;
+        ensure!(
+            self.previous.is_none_or(|previous| previous < key),
+            "record keys duplicate or unordered"
+        );
+        ensure!(
+            json.len() as u64 <= self.maximum_record_bytes,
+            "record exceeds resource working window"
+        );
+        ensure!(!json.is_empty(), "empty record JSON");
+        let length = json.len() as u64;
+        let end = self
+            .bytes
+            .checked_add(length)
+            .context("record byte offset overflow")?;
+        let records = self
+            .records
+            .checked_add(1)
+            .context("record count overflow")?;
+        self.data.write_all(json)?;
+        let mut entry = [0u8; 32];
+        entry[..16].copy_from_slice(&key);
+        entry[16..24].copy_from_slice(&self.bytes.to_le_bytes());
+        entry[24..].copy_from_slice(&length.to_le_bytes());
+        self.directory.write_all(&entry)?;
+        self.previous = Some(key);
+        self.bytes = end;
+        self.records = records;
+        self.poisoned = false;
+        Ok(())
+    }
+
     /// Preserve an already encoded spill/merge row exactly. Validation does
     /// not allocate a serde Value tree; partial writes poison this owner.
     pub fn push_json(&mut self, key: [u8; 16], payload: &[u8]) -> Result<()> {

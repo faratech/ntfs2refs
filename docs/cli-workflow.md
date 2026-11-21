@@ -759,8 +759,12 @@ it to its run.
     reading is what the new volume is checked against.
   - **Building the new volume.** What was written to it is checked as it is
     written, and it is examined once when it is complete; its payloads and
-    its metadata are not read back a second time in between, and its
-    directories are not listed again after their metadata is restored.
+    its metadata (its short-name links' among them) are not read back a
+    second time in between, and its directories are not listed again after
+    their metadata is restored. Where each stream lies on the source is
+    checked when its copy is planned and not again when the copy is
+    verified: the source stays offline and read-only, and its metadata is
+    read again at the gate before the first write.
   - **Placing the new volume's extents.** After each move only the mapping
     of the moved range is read, to see that it landed where it was sent.
     Each file's complete mapping is compared with every piece placed for it

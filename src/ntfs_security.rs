@@ -200,18 +200,52 @@ impl PagedReconciliation {
             bytes == pin.descriptor_bytes && aces == pin.aces,
             "cached security byte/ACE totals differ"
         );
+        const MAX_SECURITY_CACHE: usize = 4096;
+        let mut central_sha_cache: std::collections::HashMap<u32, String> =
+            std::collections::HashMap::new();
         for ordinal in 0..value.bindings.len() {
             let binding = value.binding(ordinal)?;
-            let descriptor = if let Some(id) = binding.security_id {
-                value.find_id(id)?
+            let descriptor_sha256 = if let Some(id) = binding.security_id {
+                if let Some(cached) = central_sha_cache.get(&id) {
+                    cached.as_str()
+                } else {
+                    let sha = value
+                        .find_id(id)?
+                        .context("cached security binding descriptor absent")?
+                        .descriptor
+                        .sha256;
+                    if central_sha_cache.len() < MAX_SECURITY_CACHE {
+                        central_sha_cache.insert(id, sha);
+                        central_sha_cache.get(&id).unwrap().as_str()
+                    } else {
+                        ensure!(
+                            binding.sequence_number != 0
+                                && value.bindings.key(ordinal)?
+                                    == identity_key(binding.record_number)
+                                && sha == binding.descriptor_sha256,
+                            "cached security binding identity/digest differs"
+                        );
+                        continue;
+                    }
+                }
             } else {
-                value.find_legacy(binding.record_number)?
-            }
-            .context("cached security binding descriptor absent")?;
+                let sha = value
+                    .find_legacy(binding.record_number)?
+                    .context("cached security binding descriptor absent")?
+                    .descriptor
+                    .sha256;
+                ensure!(
+                    binding.sequence_number != 0
+                        && value.bindings.key(ordinal)? == identity_key(binding.record_number)
+                        && sha == binding.descriptor_sha256,
+                    "cached security binding identity/digest differs"
+                );
+                continue;
+            };
             ensure!(
                 binding.sequence_number != 0
                     && value.bindings.key(ordinal)? == identity_key(binding.record_number)
-                    && descriptor.descriptor.sha256 == binding.descriptor_sha256,
+                    && descriptor_sha256 == binding.descriptor_sha256,
                 "cached security binding identity/digest differs"
             );
         }
@@ -483,10 +517,14 @@ pub fn reconcile_paged(
     );
     let mut binding_writer =
         SortedRecordWriter::new(&base.join("security-bindings"), *b"N2RSBND1", scratch)?;
+    const MAX_SECURITY_CACHE: usize = 4096;
+    let mut central_sha_cache: std::collections::HashMap<u32, String> =
+        std::collections::HashMap::new();
+    let has_legacy = legacy.len() > 0;
     let mut legacy_bound = 0u64;
     let mut previous = None;
     for ordinal in 0..files.file_count() {
-        let file = files.file(ordinal)?;
+        let file = files.file_shared(ordinal)?;
         ensure!(
             file.base_file_reference == 0
                 && !file.attributes.iter().any(|a| a.type_code == 0x20)
@@ -508,17 +546,26 @@ pub fn reconcile_paged(
             .as_ref()
             .and_then(|si| si.security_id)
             .filter(|id| *id != 0);
-        let record: DescriptorRecord = if let Some(id) = id {
+        let descriptor_sha256: String = if let Some(id) = id {
             ensure!(
                 !file.attributes.iter().any(|a| a.type_code == 0x50)
-                    && legacy
-                        .find::<DescriptorRecord>(identity_key(file.record_number))?
-                        .is_none(),
+                    && (!has_legacy
+                        || legacy
+                            .find::<DescriptorRecord>(identity_key(file.record_number))?
+                            .is_none()),
                 "file has both central and legacy security"
             );
-            central
-                .find(identity_key(u64::from(id)))?
-                .context("MFT security ID absent from complete SDS/index domain")?
+            if let Some(cached) = central_sha_cache.get(&id) {
+                cached.clone()
+            } else {
+                let record: DescriptorRecord = central
+                    .find(identity_key(u64::from(id)))?
+                    .context("MFT security ID absent from complete SDS/index domain")?;
+                if central_sha_cache.len() < MAX_SECURITY_CACHE {
+                    central_sha_cache.insert(id, record.descriptor.sha256.clone());
+                }
+                record.descriptor.sha256
+            }
         } else {
             let record: DescriptorRecord = legacy
                 .find(identity_key(file.record_number))?
@@ -547,7 +594,7 @@ pub fn reconcile_paged(
             legacy_bound = legacy_bound
                 .checked_add(1)
                 .context("legacy binding count overflow")?;
-            record
+            record.descriptor.sha256
         };
         binding_writer.push(
             identity_key(file.record_number),
@@ -555,7 +602,7 @@ pub fn reconcile_paged(
                 record_number: file.record_number,
                 sequence_number: file.sequence_number,
                 security_id: id,
-                descriptor_sha256: record.descriptor.sha256,
+                descriptor_sha256,
             },
         )?;
     }

@@ -14,6 +14,7 @@ use std::{
     fs::File,
     io::{self, Read, Write},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 const PURPOSE: [u8; 8] = *b"N2REXP01";
@@ -208,7 +209,7 @@ pub struct PagedExpectedTree {
 /// policy, nothing is served from here.
 #[derive(Default)]
 struct DecodedObjects {
-    rows: Vec<Option<Box<Object>>>,
+    rows: Vec<Option<Arc<Object>>>,
     leases: Vec<crate::artifact_arena::ArenaRamLease>,
     unspent: u64,
     // Objects still to pass by before the arena is asked again.
@@ -256,7 +257,7 @@ const DECODED_OBJECT_ALLOWANCE: u64 = 64 * 1024;
 /// One decoded object keeps its actual shared-memory lease through all native
 /// views/caches. It has no Clone or Deserialize implementation.
 pub struct LeasedExpectedObject {
-    object: Object,
+    object: Arc<Object>,
     _ram: crate::artifact_arena::ArenaRamLease,
     // What the object holds beyond what was reserved to decode it.
     _more: Option<crate::artifact_arena::ArenaRamLease>,
@@ -2022,7 +2023,7 @@ impl PagedExpectedTree {
 
     pub fn object(&self, index: usize) -> Result<Object> {
         let _working = self.reserve_decode_ram(index)?;
-        self.decode_object(index)
+        Ok((*self.decode_object(index)?).clone())
     }
     /// The workspace for decoding object `index`.
     ///
@@ -2320,7 +2321,7 @@ impl PagedExpectedTree {
             && !self.cached_body_pending
             && !n2r_win32::verify_policy::full_unremembered()
     }
-    fn keep_decoded(&self, index: usize, object: &Object) {
+    fn keep_decoded(&self, index: usize, object: &Arc<Object>) {
         let (Some(arena), Some(admission)) = (&self.arena, self.resource_admission) else {
             return;
         };
@@ -2339,7 +2340,7 @@ impl PagedExpectedTree {
         let slots = decoded.rows.is_empty();
         if slots {
             bytes = bytes
-                .saturating_add((self.len() * std::mem::size_of::<Option<Box<Object>>>()) as u64);
+                .saturating_add((self.len() * std::mem::size_of::<Option<Arc<Object>>>()) as u64);
         }
         if decoded.unspent < bytes {
             let block = DECODED_BLOCK_BYTES.max(bytes);
@@ -2362,9 +2363,9 @@ impl PagedExpectedTree {
             decoded.rows.resize_with(self.len(), || None);
         }
         decoded.unspent -= bytes;
-        decoded.rows[index] = Some(Box::new(object.clone()));
+        decoded.rows[index] = Some(Arc::clone(object));
     }
-    fn decode_object(&self, index: usize) -> Result<Object> {
+    fn decode_object(&self, index: usize) -> Result<Arc<Object>> {
         ensure!(
             index < self.len(),
             "expected-tree ordinal outside complete object domain"
@@ -2377,11 +2378,12 @@ impl PagedExpectedTree {
                 .borrow()
                 .rows
                 .get(index)
-                .and_then(Option::as_deref)
+                .and_then(Option::as_ref)
         {
-            return Ok(object.clone());
+            self.decoded.1.set(n2r_win32::evict::now());
+            return Ok(Arc::clone(object));
         }
-        let object = self.decode_object_from_pages(index)?;
+        let object = Arc::new(self.decode_object_from_pages(index)?);
         if keeps {
             self.keep_decoded(index, &object);
         }

@@ -135,6 +135,7 @@ fn sparse_candidate(
     let mut initialized_extents = Vec::new();
     let mut initialized_data = 0u64;
     let mut retained = 0u64;
+    let mut allocated_total = 0u64;
     for extent in &stream.extents {
         ensure!(
             extent.logical_offset == coverage
@@ -170,12 +171,18 @@ fn sparse_candidate(
                     .min(rounded);
                 match allocated.last_mut() {
                     Some(LogicalRange { offset, length }) if *offset + *length >= start => {
-                        *length = end - *offset;
+                        let new_length = end - *offset;
+                        allocated_total += new_length - *length;
+                        *length = new_length;
                     }
-                    _ => allocated.push(LogicalRange {
-                        offset: start,
-                        length: end - start,
-                    }),
+                    _ => {
+                        let length = end - start;
+                        allocated_total += length;
+                        allocated.push(LogicalRange {
+                            offset: start,
+                            length,
+                        });
+                    }
                 }
             }
             let logical_end = coverage
@@ -202,11 +209,8 @@ fn sparse_candidate(
             // on 64 KiB boundaries and its first did not.)
             let retained_end = coverage.min(initialized_end) / target * target;
             // Where this run begins among the stream's allocated bytes.
-            let allocated_before = allocated
-                .iter()
-                .map(|range| range.length)
-                .sum::<u64>()
-                .checked_sub(allocated.last().map_or(0, |range| {
+            let allocated_before =
+                allocated_total.checked_sub(allocated.last().map_or(0, |range| {
                     (range.offset + range.length).saturating_sub(extent.logical_offset)
                 }));
             if retained_end > extent.logical_offset

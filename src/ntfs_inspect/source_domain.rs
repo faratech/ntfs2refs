@@ -177,6 +177,22 @@ pub struct SourceDirectoryHeader {
 pub trait RootDirectoryDomain {
     fn directory_count(&self) -> u64;
     fn directory(&self, ordinal: u64) -> Result<SourceDirectoryHeader>;
+    /// Locate a directory ordinal by its MFT `record_number`. Paged stores
+    /// override this with a key-only binary search to avoid decoding
+    /// `SourceDirectoryHeader` JSON on every probe.
+    fn find_directory_ordinal(&self, record_number: u64) -> Result<Option<u64>> {
+        let mut low = 0;
+        let mut high = self.directory_count();
+        while low < high {
+            let middle = low + (high - low) / 2;
+            match self.directory(middle)?.record_number.cmp(&record_number) {
+                std::cmp::Ordering::Less => low = middle + 1,
+                std::cmp::Ordering::Greater => high = middle,
+                std::cmp::Ordering::Equal => return Ok(Some(middle)),
+            }
+        }
+        Ok(None)
+    }
     fn entry(
         &self,
         directory_ordinal: u64,

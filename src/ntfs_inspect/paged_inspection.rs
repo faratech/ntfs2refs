@@ -745,6 +745,262 @@ pub(crate) fn inspect_paged_with_layout_scope<R: Read + Seek>(
     inspect_paged_internal(reader, length, resources, policy, root, scratch, purpose)
 }
 
+/// The raw file rows of the MFT scan, serialized on a worker thread while
+/// the scan reads and parses the records after them (#250): serializing
+/// each row was about a quarter of the scan's single thread. Rows are
+/// written to the store in record order, as the scan made them.
+///
+/// The worker and every row it holds are paid as spare memory
+/// (`SourceScratch::lease_spare_ram`): memory that only buys speed, granted
+/// only where the arena keeps room for what the run needs, and outside the
+/// source ledger the scan's own reservations are held to (in the arena it
+/// is held like any lease while the scan runs). A row is paid for
+/// what it holds (its inventory) and a bounded estimate of its JSON, and the
+/// rows in flight together stay within a small pool. A row that cannot be
+/// paid for is written by the scan's thread after the rows before it, as
+/// before; so is every row of a scan without the worker's memory or thread,
+/// and every row after one whose JSON came out longer than its estimate.
+/// The worker serializes each row into a buffer of exactly its estimate and
+/// stops there: such a row comes back unserialized and is written by the
+/// scan's thread.
+struct RowsAhead {
+    jobs: Option<std::sync::mpsc::SyncSender<(FileInventory, usize)>>,
+    done: std::sync::mpsc::Receiver<Serialized>,
+    worker: Option<std::thread::JoinHandle<()>>,
+    in_flight: std::collections::VecDeque<RowInFlight>,
+    /// What the rows in flight are paid with between them.
+    held: u64,
+    scratch: SourceScratch,
+    row_bytes: u64,
+    workspace: Option<super::paged_storage::SourceRamLease>,
+}
+/// A row handed to the worker: its record, all it was paid for and the
+/// lease that pays it.
+struct RowInFlight {
+    number: u64,
+    bytes: u64,
+    _paid: super::paged_storage::SourceRamLease,
+}
+/// What the worker made of a row.
+enum Serialized {
+    /// Its JSON, within the estimate it was paid for.
+    Json(Vec<u8>),
+    /// Its JSON is longer than that estimate: the row, for the scan's thread.
+    Longer(Box<FileInventory>),
+    /// What serializing it failed with.
+    Failed(String),
+}
+/// A buffer of `limit` bytes that refuses to grow beyond them.
+struct Bounded {
+    bytes: Vec<u8>,
+    limit: usize,
+    over: bool,
+}
+impl std::io::Write for Bounded {
+    fn write(&mut self, input: &[u8]) -> std::io::Result<usize> {
+        if self.bytes.len().saturating_add(input.len()) > self.limit {
+            self.over = true;
+            return Err(std::io::Error::other(
+                "raw file row longer than its estimate",
+            ));
+        }
+        self.bytes.extend_from_slice(input);
+        Ok(input.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl RowsAhead {
+    /// Rows handed to the worker and not yet written, at most (queued,
+    /// being serialized or serialized and waiting to be written).
+    const IN_FLIGHT: usize = 64;
+    /// What the rows in flight may be paid with between them, at most.
+    const POOL_BYTES: u64 = 32 * 1024 * 1024;
+    /// The worker's thread, beside the rows.
+    const WORKSPACE_BYTES: u64 = 2 * 1024 * 1024;
+    fn new(scratch: &SourceScratch, row_bytes: u64) -> Self {
+        let (jobs, received) =
+            std::sync::mpsc::sync_channel::<(FileInventory, usize)>(Self::IN_FLIGHT);
+        let (finished, done) = std::sync::mpsc::channel();
+        let mut workspace = scratch.lease_spare_ram(Self::WORKSPACE_BYTES).ok();
+        let worker = workspace.as_ref().and_then(|_| {
+            std::thread::Builder::new()
+                .name("raw-file-rows".into())
+                .spawn(move || {
+                    let _sampled = n2r_win32::stack_sampler::helper();
+                    for (inventory, estimate) in received {
+                        // Exactly the estimate the row was paid for: the
+                        // buffer never grows past it.
+                        let mut json = Bounded {
+                            bytes: Vec::with_capacity(estimate),
+                            limit: estimate,
+                            over: false,
+                        };
+                        let made = match serde_json::to_writer(&mut json, &inventory) {
+                            Ok(()) => Serialized::Json(json.bytes),
+                            Err(_) if json.over => Serialized::Longer(Box::new(inventory)),
+                            Err(error) => Serialized::Failed(error.to_string()),
+                        };
+                        if finished.send(made).is_err() {
+                            break;
+                        }
+                    }
+                })
+                .ok()
+        });
+        if worker.is_none() {
+            // No thread to pay for: the memory goes back at once.
+            workspace = None;
+        }
+        Self {
+            jobs: worker.as_ref().map(|_| jobs),
+            done,
+            worker,
+            in_flight: std::collections::VecDeque::new(),
+            held: 0,
+            scratch: scratch.clone(),
+            row_bytes,
+            workspace,
+        }
+    }
+    /// The JSON a row of `heap` bytes is paid for before it is serialized:
+    /// four bytes of text for each byte it holds (a number of an array of
+    /// them), and 4 KiB of names and punctuation; never more than a row may
+    /// be.
+    fn json_estimate(&self, heap: u64) -> u64 {
+        heap.saturating_mul(4)
+            .saturating_add(4096)
+            .min(self.row_bytes)
+    }
+    fn push(
+        &mut self,
+        writer: &mut SortedRecordWriter,
+        number: u64,
+        inventory: FileInventory,
+    ) -> Result<()> {
+        self.write_ready(writer, false)?;
+        let wanted = self
+            .jobs
+            .as_ref()
+            .and_then(|_| file_heap_bytes(&inventory).ok())
+            .and_then(|heap| {
+                let json_estimate = self.json_estimate(heap);
+                heap.checked_add(json_estimate)
+                    .filter(|bytes| *bytes <= Self::POOL_BYTES)
+                    .map(|bytes| (json_estimate, bytes))
+            });
+        if let Some((_, bytes)) = wanted {
+            // Room in the pool, and among the rows in flight, is made by
+            // writing the oldest rows first.
+            while (self.held.saturating_add(bytes) > Self::POOL_BYTES
+                || self.in_flight.len() >= Self::IN_FLIGHT)
+                && self.write_next(writer, true)?
+            {}
+        }
+        let paid = wanted.and_then(|(json_estimate, bytes)| {
+            self.scratch
+                .lease_spare_ram(bytes)
+                .ok()
+                .map(|lease| (json_estimate, bytes, lease))
+        });
+        match (paid, &self.jobs) {
+            (Some((json_estimate, bytes, lease)), Some(jobs)) => {
+                jobs.send((inventory, usize::try_from(json_estimate)?))
+                    .map_err(|_| anyhow::anyhow!("the raw file row worker stopped"))?;
+                self.held = self.held.saturating_add(bytes);
+                self.in_flight.push_back(RowInFlight {
+                    number,
+                    bytes,
+                    _paid: lease,
+                });
+                Ok(())
+            }
+            _ => {
+                self.write_ready(writer, true)?;
+                writer.push(file_key(number), &inventory)
+            }
+        }
+    }
+    /// Writes the oldest row in flight once the worker has finished it;
+    /// with `wait`, waits for it. False when there was none to write.
+    fn write_next(&mut self, writer: &mut SortedRecordWriter, wait: bool) -> Result<bool> {
+        if self.in_flight.is_empty() {
+            return Ok(false);
+        }
+        let made = if wait {
+            self.done
+                .recv()
+                .map_err(|_| anyhow::anyhow!("the raw file row worker stopped"))?
+        } else {
+            match self.done.try_recv() {
+                Ok(made) => made,
+                Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(false),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    anyhow::bail!("the raw file row worker stopped")
+                }
+            }
+        };
+        let row = self
+            .in_flight
+            .pop_front()
+            .context("raw file row in flight absent")?;
+        match made {
+            Serialized::Json(json) => writer.push_serialized(file_key(row.number), &json)?,
+            Serialized::Longer(inventory) => {
+                // The estimate does not hold for this volume's rows: the
+                // worker finishes the rows it holds, and the scan writes
+                // this one and every one after them.
+                self.jobs = None;
+                writer.push(file_key(row.number), &inventory)?;
+            }
+            Serialized::Failed(error) => anyhow::bail!(error),
+        }
+        self.held = self.held.saturating_sub(row.bytes);
+        self.retire_if_drained()?;
+        Ok(true)
+    }
+    /// Once the worker takes no more rows and every row it took is
+    /// written, its thread is ended and its memory given back, for the
+    /// rest of the scan.
+    fn retire_if_drained(&mut self) -> Result<()> {
+        if self.jobs.is_none() && self.in_flight.is_empty() {
+            if let Some(worker) = self.worker.take() {
+                worker
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("the raw file row worker panicked"))?;
+            }
+            self.workspace = None;
+        }
+        Ok(())
+    }
+    /// Writes the rows the worker has finished, in order; with `wait`,
+    /// every row handed to it.
+    fn write_ready(&mut self, writer: &mut SortedRecordWriter, wait: bool) -> Result<()> {
+        while self.write_next(writer, wait)? {}
+        Ok(())
+    }
+    fn finish(mut self, writer: &mut SortedRecordWriter) -> Result<()> {
+        self.write_ready(writer, true)?;
+        self.jobs.take();
+        if let Some(worker) = self.worker.take() {
+            worker
+                .join()
+                .map_err(|_| anyhow::anyhow!("the raw file row worker panicked"))?;
+        }
+        Ok(())
+    }
+}
+impl Drop for RowsAhead {
+    fn drop(&mut self) {
+        // Ends the worker on every path, the scan's errors among them.
+        self.jobs.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 fn inspect_paged_internal<R: Read + Seek>(
     reader: &mut R,
     length: u64,
@@ -809,26 +1065,37 @@ fn inspect_paged_internal<R: Read + Seek>(
     };
     n2r_win32::perf::step("NTFS: scan MFT records");
     let (mut root_seen, mut volume_bitmap, mut ext_byte) = (false, None, 0u8);
+    let _working = scratch.lease_ram(
+        budget
+            .record_bytes
+            .checked_mul(8)
+            .and_then(|n| {
+                n.checked_add(if preparation_only {
+                    0
+                } else {
+                    LARGE_STREAM_HASH_BYTES as u64 + STREAM_HASH_BUFFER_BYTES as u64
+                })
+            })
+            .context("raw current-row RAM overflow")?,
+    )?;
+    let mut raw = Vec::new();
+    raw.try_reserve_exact(geometry.file_record_size as usize)?;
+    raw.resize(geometry.file_record_size as usize, 0);
+    let mut bitmap_buf = [0u8; 4096];
+    let mut bitmap_block = u64::MAX;
+    let bitmap_len = bitmap.byte_len();
+    let mut rows_ahead = RowsAhead::new(&scratch, budget.record_bytes);
     for number in 0..record_count {
-        let mut allocated = [0u8; 1];
-        bitmap.read_exact_at(number / 8, &mut allocated)?;
-        if allocated[0] & (1 << (number % 8)) != 0 {
-            let _working = scratch.lease_ram(
-                budget
-                    .record_bytes
-                    .checked_mul(8)
-                    .and_then(|n| {
-                        n.checked_add(if preparation_only {
-                            0
-                        } else {
-                            LARGE_STREAM_HASH_BYTES as u64 + STREAM_HASH_BUFFER_BYTES as u64
-                        })
-                    })
-                    .context("raw current-row RAM overflow")?,
-            )?;
-            let mut raw = Vec::new();
-            raw.try_reserve_exact(geometry.file_record_size as usize)?;
-            raw.resize(geometry.file_record_size as usize, 0);
+        let byte_offset = number / 8;
+        let block = byte_offset / bitmap_buf.len() as u64;
+        if block != bitmap_block {
+            let start = block * bitmap_buf.len() as u64;
+            let len = (bitmap_len - start).min(bitmap_buf.len() as u64) as usize;
+            bitmap.read_exact_at(start, &mut bitmap_buf[..len])?;
+            bitmap_block = block;
+        }
+        let allocated_byte = bitmap_buf[(byte_offset % bitmap_buf.len() as u64) as usize];
+        if allocated_byte & (1 << (number % 8)) != 0 {
             resolver.read_physical_record(reader, number, &mut raw)?;
             // Declared before the record so the assembly lease drops only
             // after the assembled record and its resident values are gone.
@@ -929,7 +1196,7 @@ fn inspect_paged_internal<R: Read + Seek>(
                     file_heap_bytes(&inventory)? <= row_budget.limit,
                     "current source row exceeds resource RAM"
                 );
-                files_writer.push(file_key(number), &inventory)?;
+                rows_ahead.push(&mut files_writer, number, inventory)?;
                 for item in report.blockers.drain(..) {
                     emit_blocker(&mut blockers, &mut blocker_count, &item)?;
                 }
@@ -940,6 +1207,7 @@ fn inspect_paged_internal<R: Read + Seek>(
             ext_byte = 0;
         }
     }
+    rows_ahead.finish(&mut files_writer)?;
     drop(mft_data);
     drop(bootstrap_record);
     n2r_win32::perf::step("NTFS: finish raw file store");

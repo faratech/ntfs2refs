@@ -198,19 +198,88 @@ pub fn install_fresh_owned(
     directory: bool,
     relative_target_component: &[u16],
 ) -> io::Result<Observation> {
+    install_fresh_owned_under(
+        parent,
+        None,
+        canonical,
+        alias,
+        directory,
+        relative_target_component,
+    )
+}
+
+/// [`install_fresh_owned`] beneath a parent that the caller examined
+/// ([`examine_parent`]) through this same held handle, once for the links of
+/// a batch that lie in it: installing a link's point changes the link, never
+/// its parent's identity, path, type or reparse point, which is what the
+/// examination holds. Only in a run that verifies once (see
+/// `install_fresh_owned_under`); otherwise each installation examines the
+/// parent itself, as before.
+pub fn install_fresh_owned_in(
+    parent: &File,
+    examined: &ExaminedParent,
+    canonical: &File,
+    alias: &File,
+    directory: bool,
+    relative_target_component: &[u16],
+) -> io::Result<Observation> {
+    install_fresh_owned_under(
+        parent,
+        Some(examined),
+        canonical,
+        alias,
+        directory,
+        relative_target_component,
+    )
+}
+
+fn install_fresh_owned_under(
+    parent: &File,
+    examined: Option<&ExaminedParent>,
+    canonical: &File,
+    alias: &File,
+    directory: bool,
+    relative_target_component: &[u16],
+) -> io::Result<Observation> {
     let expected = Point::relative_component_alias(relative_target_component)?;
-    let parent_before = snapshot(parent, true).map_err(|e| of(PARENT, e))?;
+    // In a run that verifies once (`--verify fast` under the check-once
+    // policy) what this call has read through one of its held handles is
+    // not asked of that handle again while nothing has changed the object:
+    // the parent (examined by the caller or here) and the target are not
+    // looked at again by the verification that follows the installation,
+    // and the link's point is the one the installation read back. Every
+    // distinct check is still made once. A thorough run, a recovery and a
+    // run with `--recheck-everything` ask each again, as before.
+    let reuse = crate::verify_policy::checks_once() && crate::verify_policy::verifies_once();
+    let examined_here;
+    let parent_before = match examined.filter(|_| reuse) {
+        Some(examined) => &examined.before,
+        None => {
+            examined_here = snapshot(parent, true).map_err(|e| of(PARENT, e))?;
+            &examined_here
+        }
+    };
     let canonical_before = snapshot(canonical, directory).map_err(|e| of(CANONICAL, e))?;
     let alias_before = snapshot(alias, directory).map_err(|e| of(ALIAS, e))?;
     validate_pair(
-        &parent_before,
+        parent_before,
         &canonical_before,
         &alias_before,
         relative_target_component,
     )?;
-    let canonical_point = reparse_native::capture(canonical)?;
-    if reparse_native::capture(parent)?.is_some()
-        || reparse_native::capture(alias)?.is_some()
+    // The target's point is compared only by the second look below, and read
+    // here only where this call does not reuse what it read: the run that
+    // reuses never takes that look, and the verification that follows reads
+    // nothing of it either.
+    let canonical_point = if reuse {
+        None
+    } else {
+        Some(reparse_native::capture(canonical)?)
+    };
+    // The examination of the parent found it without a reparse point; the
+    // installation below finds the fresh link without one before it sets it.
+    if (!(reuse && examined.is_some()) && reparse_native::capture(parent)?.is_some())
+        || (!reuse && reparse_native::capture(alias)?.is_some())
         || (!directory && u64::from_le_bytes(alias_before.standard[8..16].try_into().unwrap()) != 0)
     {
         return Err(invalid(
@@ -223,13 +292,28 @@ pub fn install_fresh_owned(
     if installed != expected {
         return Err(invalid("derived alias install readback differs"));
     }
-    let result = verify_owned(
-        parent,
-        canonical,
-        alias,
-        directory,
-        relative_target_component,
-    )?;
+    let result = if reuse {
+        verify_held(
+            parent,
+            parent_before,
+            canonical,
+            alias,
+            directory,
+            relative_target_component,
+            Some(Seen {
+                canonical: &canonical_before,
+                alias_point: &installed,
+            }),
+        )?
+    } else {
+        verify_owned(
+            parent,
+            canonical,
+            alias,
+            directory,
+            relative_target_component,
+        )?
+    };
     if result.parent_file_id_info != parent_before.id
         || result.canonical_file_id_info != canonical_before.id
         || result.alias_file_id_info != alias_before.id
@@ -245,14 +329,23 @@ pub fn install_fresh_owned(
     // left out under the check-once policy.
     if !crate::verify_policy::checks_once()
         && (snapshot(canonical, directory)? != canonical_before
-            || reparse_native::capture(canonical)? != canonical_point
-            || !same_parent(&parent_before, &snapshot(parent, true)?))
+            || Some(reparse_native::capture(canonical)?) != canonical_point
+            || !same_parent(parent_before, &snapshot(parent, true)?))
     {
         return Err(invalid(
             "held canonical target or parent changed during derived alias installation",
         ));
     }
     Ok(result)
+}
+
+/// What [`install_fresh_owned`] read through its held handles in the same
+/// call, for the verification that follows the installation: the target,
+/// which nothing has changed since, and the link's point as the
+/// installation read it back, after which nothing has changed the link.
+struct Seen<'a> {
+    canonical: &'a Snapshot,
+    alias_point: &'a Point,
 }
 
 /// Read-only no-follow verification on the same caller-owned alias/target/parent
@@ -310,18 +403,55 @@ pub fn verify_owned_in(
     directory: bool,
     relative_target_component: &[u16],
 ) -> io::Result<Observation> {
+    verify_held(
+        parent,
+        &examined.before,
+        canonical,
+        alias,
+        directory,
+        relative_target_component,
+        None,
+    )
+}
+
+/// [`verify_owned_in`], where `seen` is what the installation made in the
+/// same call has just read of the target and of the link's point.
+fn verify_held(
+    parent: &File,
+    parent_before: &Snapshot,
+    canonical: &File,
+    alias: &File,
+    directory: bool,
+    relative_target_component: &[u16],
+    seen: Option<Seen<'_>>,
+) -> io::Result<Observation> {
     let expected = Point::relative_component_alias(relative_target_component)?;
-    let parent_before = &examined.before;
-    let canonical_before = snapshot(canonical, directory).map_err(|e| of(CANONICAL, e))?;
+    let read_canonical;
+    let canonical_before = match &seen {
+        Some(seen) => seen.canonical,
+        None => {
+            read_canonical = snapshot(canonical, directory).map_err(|e| of(CANONICAL, e))?;
+            &read_canonical
+        }
+    };
     let alias_before = snapshot(alias, directory).map_err(|e| of(ALIAS, e))?;
     let alias_component = validate_pair(
         parent_before,
-        &canonical_before,
+        canonical_before,
         &alias_before,
         relative_target_component,
     )?;
-    let canonical_point = reparse_native::capture(canonical)?;
-    if reparse_native::capture(alias)?.as_ref() != Some(&expected)
+    // The target's point is compared only by the second look below; the
+    // installation already read it in this call.
+    let canonical_point = match &seen {
+        Some(_) => None,
+        None => reparse_native::capture(canonical)?,
+    };
+    let alias_point = match &seen {
+        Some(seen) => Some(seen.alias_point.clone()),
+        None => reparse_native::capture(alias)?,
+    };
+    if alias_point.as_ref() != Some(&expected)
         || u32::from_le_bytes(alias_before.tag[..4].try_into().unwrap()) & 0x400 == 0
         || u32::from_le_bytes(alias_before.tag[4..].try_into().unwrap()) != expected.tag()
         || (!directory && u64::from_le_bytes(alias_before.standard[8..16].try_into().unwrap()) != 0)
@@ -334,7 +464,7 @@ pub fn verify_owned_in(
     // snapshotted a second time at the end only to see that nothing changed
     // in the microseconds it took. Left out under the check-once policy.
     if !crate::verify_policy::checks_once()
-        && (snapshot(canonical, directory)? != canonical_before
+        && (snapshot(canonical, directory)? != *canonical_before
             || reparse_native::capture(canonical)? != canonical_point
             || snapshot(alias, directory)? != alias_before
             || !same_parent(parent_before, &snapshot(parent, true)?))

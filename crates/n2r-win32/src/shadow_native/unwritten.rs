@@ -11,16 +11,52 @@ use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom, Write},
     mem,
-    os::windows::io::{AsRawHandle, FromRawHandle},
+    os::windows::io::AsRawHandle,
     ptr,
+    sync::OnceLock,
 };
 use windows_sys::Win32::{
-    Foundation::{INVALID_HANDLE_VALUE, LocalFree},
+    Foundation::LocalFree,
     Security::{
-        Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, SECURITY_ATTRIBUTES,
+        Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        GetSecurityDescriptorLength, SECURITY_ATTRIBUTES,
     },
-    Storage::FileSystem::{CreateFileW, SetFileInformationByHandle, SetFileValidData},
+    Storage::FileSystem::{SetFileInformationByHandle, SetFileValidData},
 };
+
+fn private_system_security_descriptor() -> io::Result<&'static [u64]> {
+    static SD: OnceLock<Vec<u64>> = OnceLock::new();
+    if let Some(cached) = SD.get() {
+        return Ok(cached.as_slice());
+    }
+    let sddl = wide("O:SYG:SYD:P(A;;FA;;;SY)");
+    let mut descriptor = ptr::null_mut();
+    // SAFETY: constant NUL-terminated SDDL, allocated output freed below.
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            1,
+            &mut descriptor,
+            ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `descriptor` is a valid self-relative SD returned by the call above.
+    let len = unsafe { GetSecurityDescriptorLength(descriptor) } as usize;
+    let mut words = vec![0u64; len.div_ceil(8)];
+    // SAFETY: `words` is 8-byte-aligned with at least `len` bytes; `descriptor` has `len` bytes.
+    unsafe {
+        ptr::copy_nonoverlapping(
+            descriptor.cast::<u8>(),
+            words.as_mut_ptr().cast::<u8>(),
+            len,
+        );
+        LocalFree(descriptor);
+    }
+    Ok(SD.get_or_init(|| words).as_slice())
+}
 
 /// Per-placeholder native submissions. One large or fragmented file may use
 /// most of the tree-wide budget, which remains the binding ceiling.
@@ -425,30 +461,17 @@ impl PrivatePlaceholder {
                 "an allocation of {bytes} bytes does not fit a partition of {partition} bytes"
             )));
         }
-        let sddl = wide("O:SYG:SYD:P(A;;FA;;;SY)");
-        let mut descriptor = ptr::null_mut();
-        // SAFETY: constant NUL-terminated SDDL, allocated output freed below.
-        if unsafe {
-            ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                sddl.as_ptr(),
-                1,
-                &mut descriptor,
-                ptr::null_mut(),
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+        let sd = private_system_security_descriptor()?;
         let sa = SECURITY_ATTRIBUTES {
             nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: descriptor,
+            lpSecurityDescriptor: sd.as_ptr() as *mut _,
             bInheritHandle: 0,
         };
         let path = super::streams::path(root, components, stream_name)?;
         let name = wide(&path);
         // Caller-bound volume root, validated components, a fresh object only,
         // sharing disabled and SYSTEM-only protected security descriptor.
-        let created = crate::shadow_native::create_fresh(
+        let file = crate::shadow_native::create_fresh(
             &name,
             !stream_name.is_empty(),
             0xc0020000 | if retire { 0x10000 } else { 0 },
@@ -456,12 +479,7 @@ impl PrivatePlaceholder {
             crate::verify_policy::shadow_file_flags(
                 0x80200080 | crate::shadow_native::BACKUP_INTENT,
             ),
-        );
-        // SAFETY: the descriptor allocated above, freed exactly once.
-        unsafe {
-            LocalFree(descriptor);
-        }
-        let file = created?;
+        )?;
         ctl(&file, 0x9c280, &[0; 8], 0)?;
         if bytes >= crate::target_cluster::bytes() {
             let allocation = crate::target_cluster::ceil(bytes)
@@ -598,6 +616,27 @@ impl PrivatePlaceholder {
     /// uninitialized gap: doing so could zero-fill a huge retained prefix.
     /// Sharing remains disabled and the file remains SYSTEM-only on failure.
     pub fn initialize_at(&mut self, offset: u64, data: &[u8]) -> io::Result<serde_json::Value> {
+        self.initialize_at_with(offset, data, true)
+    }
+
+    /// [`Self::initialize_at`] for a caller that keeps no record of the
+    /// write: every check is made (the range is read back and compared with
+    /// `data` byte for byte), and only the digest of `data`, which nothing
+    /// but the record carries, is not computed. The record has no `sha256`.
+    pub fn initialize_at_unhashed(
+        &mut self,
+        offset: u64,
+        data: &[u8],
+    ) -> io::Result<serde_json::Value> {
+        self.initialize_at_with(offset, data, false)
+    }
+
+    fn initialize_at_with(
+        &mut self,
+        offset: u64,
+        data: &[u8],
+        digest: bool,
+    ) -> io::Result<serde_json::Value> {
         let end = offset
             .checked_add(data.len() as u64)
             .ok_or_else(|| invalid("private write overflow"))?;
@@ -653,8 +692,18 @@ impl PrivatePlaceholder {
         {
             return Err(invalid("private exception changed file shape"));
         }
-        self.verify_placements()?;
+        // Under verify-once, routed payload supply observes the stream's complete
+        // retrieval map immediately after materializing it, so querying all
+        // retrieval pointers on every 64 KiB chunk is redundant.
+        if !crate::verify_policy::verifies_once() {
+            self.verify_placements()?;
+        }
         self.poisoned = false;
+        if !digest {
+            return Ok(serde_json::json!({"offset":offset,"bytes":data.len(),
+                "readback_verified":true,
+                "valid_prefix_bytes":self.valid_prefix,"conversion_qualified":false}));
+        }
         let sha256 = hex::encode(crate::content_digest::sha256(data)?);
         Ok(serde_json::json!({"offset":offset,"bytes":data.len(),
             "sha256":sha256,"readback_verified":true,
@@ -794,11 +843,12 @@ impl PrivatePlaceholder {
             return Err(error);
         }
         let end = logical_end.unwrap();
-        let mut next = Vec::new();
-        let mut previous = self.placed.clone();
-        previous.sort_by_key(|r| r.0);
+        let mut next = Vec::with_capacity(self.placed.len() + 2);
+        if !self.placed.windows(2).all(|w| w[0].0 <= w[1].0) {
+            self.placed.sort_by_key(|r| r.0);
+        }
         let mut covered = starting_vcn;
-        for &(v, l, n) in &previous {
+        for &(v, l, n) in &self.placed {
             let old_end = v + u64::from(n);
             if old_end <= starting_vcn || v >= end {
                 next.push((v, l, n));

@@ -399,9 +399,9 @@ fn reconcile_domains_with_link_counter_hint(
         );
         Ok(file.record_number | (u64::from(file.sequence_number) << 48))
     }
-    fn owner(files: &impl RootFileDomain, id: u64) -> Result<FileInventory> {
+    fn owner(files: &impl RootFileDomain, id: u64) -> Result<std::sync::Arc<FileInventory>> {
         files
-            .find_record(id & 0xffff_ffff_ffff, Some((id >> 48) as u16))?
+            .find_record_shared(id & 0xffff_ffff_ffff, Some((id >> 48) as u16))?
             .context("namespace identity absent or sequence stale")
     }
     fn directory(
@@ -409,24 +409,15 @@ fn reconcile_domains_with_link_counter_hint(
         id: u64,
     ) -> Result<(u64, crate::ntfs_inspect::SourceDirectoryHeader)> {
         let number = id & 0xffff_ffff_ffff;
-        let mut low = 0;
-        let mut high = directories.directory_count();
-        while low < high {
-            let middle = low + (high - low) / 2;
-            let candidate = directories.directory(middle)?;
-            match candidate.record_number.cmp(&number) {
-                Ordering::Less => low = middle + 1,
-                Ordering::Greater => high = middle,
-                Ordering::Equal => {
-                    ensure!(
-                        candidate.sequence_number == (id >> 48) as u16,
-                        "directory index sequence stale"
-                    );
-                    return Ok((middle, candidate));
-                }
-            }
-        }
-        anyhow::bail!("directory missing its complete I30 index")
+        let ordinal = directories
+            .find_directory_ordinal(number)?
+            .context("directory missing its complete I30 index")?;
+        let candidate = directories.directory(ordinal)?;
+        ensure!(
+            candidate.record_number == number && candidate.sequence_number == (id >> 48) as u16,
+            "directory index sequence stale"
+        );
+        Ok((ordinal, candidate))
     }
     let root = files
         .find_record(5, None)?
@@ -463,7 +454,7 @@ fn reconcile_domains_with_link_counter_hint(
     let mut file_directories = 0u64;
     let mut reserved_nameless = 0u64;
     for ordinal in 0..files.file_count() {
-        let file = files.file(ordinal)?;
+        let file = files.file_shared(ordinal)?;
         let id = reference(&file)?;
         ensure!(
             prior_file.is_none_or(|prior| prior < file.record_number)

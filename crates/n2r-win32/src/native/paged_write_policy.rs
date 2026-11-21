@@ -213,6 +213,7 @@ impl PagedPolicyIndexBuilder {
             cached: None,
             lease_issued: false,
             rows: None,
+            rows_lease: None,
             rows_refused: false,
         }))))
     }
@@ -237,6 +238,7 @@ struct PolicyOwner {
     // Every row of the validated index, once any row has been asked for.
     // `None` until then, and for good if the rows could not be held.
     rows: Option<Vec<PagedPolicyIndexRow>>,
+    rows_lease: Option<Box<dyn std::any::Any + Send>>,
     rows_refused: bool,
 }
 /// Clones share the same readonly file, buffered cursor and cache. No clone
@@ -378,6 +380,17 @@ impl PolicyOwner {
     /// binary search, and each probe was a seek and a read of the file.
     fn load_rows(&mut self) -> io::Result<()> {
         let count = self.facts.range_count as usize;
+        let bytes = (count as u64)
+            .checked_mul(std::mem::size_of::<PagedPolicyIndexRow>() as u64)
+            .ok_or_else(|| invalid("paged policy cache size overflow"))?;
+        let lease = match crate::evict::pay_for_cache(bytes) {
+            crate::evict::CachePayment::Paid(paid) => Some(paid),
+            crate::evict::CachePayment::NoLedger => None,
+            crate::evict::CachePayment::Refused => {
+                self.rows_refused = true;
+                return Ok(());
+            }
+        };
         let mut rows = Vec::new();
         if rows.try_reserve_exact(count).is_err() {
             self.rows_refused = true;
@@ -391,6 +404,7 @@ impl PolicyOwner {
             rows.push(PagedPolicyIndexRow::decode(&bytes));
         }
         self.rows = Some(rows);
+        self.rows_lease = lease;
         Ok(())
     }
     fn row(&mut self, ordinal: u64) -> io::Result<PagedPolicyIndexRow> {

@@ -7,6 +7,9 @@ use crate::{
 };
 use std::io::{Read, Seek, SeekFrom, Write};
 
+mod read_back;
+mod staged_writes;
+
 pub(crate) struct ResourceFreshApply<'journal, 'domain, 'capture, 'proof, 'scope, 'expected> {
     prepared: ResourcePreparedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>,
     admission: PreparedResourceSourceAdmission,
@@ -476,12 +479,27 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         };
         let (source, _) = prepared.context.source_and_inspection()?;
         n2r_win32::perf::step("verify journal and source, write apply marker");
+        // A run that verifies each thing once hashes the OLD bytes on a
+        // worker while they are read, where the worker's second buffer can
+        // be paid for as spare memory. `--verify thorough` and
+        // `--recheck-everything` hash them on the reading thread, as before.
+        let hashed_behind = if n2r_win32::verify_policy::verifies_once() {
+            self.prepared
+                .closure
+                .arena()
+                .reserve_spare_ram(n2r_win32::SELECTED_DIGEST_BEHIND_BYTES)
+                .ok()
+        } else {
+            None
+        };
         let mut target = prepared.inner._journal.begin_sealed_fresh_apply(
             source,
             index.policy(),
             &pins,
+            hashed_behind.is_some(),
             events,
         )?;
+        drop(hashed_behind);
         ensure!(
             target.byte_len() == ticket.image_length,
             "fresh source transition changed partition geometry"
@@ -503,40 +521,77 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         // reading range by range.
         target.set_read_ahead(first_write_fault.is_none());
         let domain = prepared.inner._domain;
-        for ordinal in 0..u64::from(ticket.range_count) {
-            if ordinal == u64::from(ticket.range_count) / 2 {
-                n2r_win32::lab_hold::reached("apply-mid-ranges");
-            }
-            let row = domain.row(ordinal)?;
-            let skip = if row.capture.offset == 0 { GRANULE } else { 0 };
-            // The boot granule of a range at offset 0 is written last, on its
-            // own. A range there shorter than one granule cannot be split.
-            let length = row.capture.length.checked_sub(skip).with_context(|| {
-                format!(
-                    "apply: changed range {ordinal} at source offset 0 is {} bytes, shorter than the {GRANULE}-byte boot granule",
-                    row.capture.length
-                )
-            })?;
-            write_span(
+        // A run that verifies each thing once reads nothing of the source
+        // here: its journal reads and its device writes go on two threads
+        // (`staged_writes`), with buffers paid for as spare memory. Without
+        // them, and for every pass that reads each range first, the ranges
+        // are written in turn on this thread, as before.
+        let staged = if first_write_fault.is_none() && n2r_win32::verify_policy::verifies_once() {
+            staged_writes::reserve(self.prepared.closure.arena())
+        } else {
+            None
+        };
+        if let Some((_spare, staged)) = staged {
+            let written = staged_writes::write_ranges(
                 &mut target,
                 prepared.inner._journal,
                 domain,
-                ordinal,
-                row,
-                skip,
-                length,
-                &mut buffers,
-                &mut first_write_fault,
-                &target_before,
-                ticket,
-                events,
+                u64::from(ticket.range_count),
+                staged,
+                facts.path,
             )?;
+            // How much the ranges that follow one another were merged: the
+            // writes made against those one range and a megabyte at a time
+            // makes.
+            eprintln!(
+                "apply-writes: {} changed ranges, {:.2} GB in {} writes of up to {} MiB ({} one range at a time), read and written on two threads",
+                written.ranges,
+                written.bytes as f64 / (1u64 << 30) as f64,
+                written.writes,
+                n2r_win32::BorrowedPagedWriter::MAX_WRITE >> 20,
+                written.serial
+            );
+        } else {
+            for ordinal in 0..u64::from(ticket.range_count) {
+                if ordinal == u64::from(ticket.range_count) / 2 {
+                    n2r_win32::lab_hold::reached("apply-mid-ranges");
+                }
+                let row = domain.row(ordinal)?;
+                let skip = if row.capture.offset == 0 { GRANULE } else { 0 };
+                // The boot granule of a range at offset 0 is written last,
+                // on its own. A range there shorter than one granule cannot
+                // be split.
+                let length = row.capture.length.checked_sub(skip).with_context(|| {
+                    format!(
+                        "apply: changed range {ordinal} at source offset 0 is {} bytes, shorter than the {GRANULE}-byte boot granule",
+                        row.capture.length
+                    )
+                })?;
+                write_span(
+                    &mut target,
+                    prepared.inner._journal,
+                    domain,
+                    ordinal,
+                    row,
+                    skip,
+                    length,
+                    &mut buffers,
+                    &mut first_write_fault,
+                    &target_before,
+                    ticket,
+                    events,
+                )?;
+            }
         }
         n2r_win32::perf::step("flush and write boot sector");
         // Nothing read back from here on may come from memory the writes
         // above went through.
         target.set_read_ahead(false);
         n2r_win32::lab_hold::reached("apply-ranges-written");
+        // The writer's handle is unbuffered but not write-through: this
+        // flush is what makes every range above durable before the boot
+        // granule is written, and the one after the boot granule is what
+        // makes it durable before anything is read back or marked.
         target.sync_all()?;
         n2r_win32::lab_hold::reached("apply-before-boot-granule");
         // Preserve the existing selected-journal protocol: boot granule last,
@@ -565,17 +620,50 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         n2r_win32::lab_hold::reached("apply-boot-granule-written");
         target.sync_all()?;
         n2r_win32::perf::step("read back changed ranges");
-        target.set_read_ahead(true);
-        let digest = check_selected_reaching(
-            &mut target,
-            domain,
-            &mut buffers.current,
-            ticket.digest_algorithm(),
-            ticket.new_selected_sha256,
-            |target, end| target.set_read_ahead_reach(end),
-        );
-        target.set_read_ahead(false);
-        let digest = digest?;
+        // With two reads outstanding where the disk serves two at once
+        // (`io_profile`), the spare memory for them is granted and a second
+        // read-only handle reaches the same disk in the same state: through
+        // this handle and that one (`read_back`). Where any of that is
+        // missing, which a native event records, one at a time through this
+        // handle, reading ahead, as before; only a read that fails or a
+        // digest that differs ends the run. The bytes hashed and the digest
+        // they are held to are the same either way. `--verify thorough` and
+        // `--recheck-everything` read back one at a time, as before.
+        let two_handles = if n2r_win32::verify_policy::verifies_once() {
+            Some(
+                match read_back::prepare(&target, self.prepared.closure.arena(), events) {
+                    Ok(two) => read_back::check_selected_two_handles(
+                        &mut target,
+                        two,
+                        domain,
+                        ticket.digest_algorithm(),
+                        ticket.new_selected_sha256,
+                    )?,
+                    Err(one) => Err(one),
+                },
+            )
+        } else {
+            None
+        };
+        let digest = match two_handles {
+            Some(Ok(digest)) => digest,
+            one_handle => {
+                if let Some(Err(one)) = one_handle {
+                    events.push(one.event());
+                }
+                target.set_read_ahead(true);
+                let digest = check_selected_reaching(
+                    &mut target,
+                    domain,
+                    &mut buffers.current,
+                    ticket.digest_algorithm(),
+                    ticket.new_selected_sha256,
+                    |target, end| target.set_read_ahead_reach(end),
+                );
+                target.set_read_ahead(false);
+                digest?
+            }
+        };
         let applied = SelectedResult {
             selected_sha256: digest,
             selected_bytes: ticket.selected_bytes,

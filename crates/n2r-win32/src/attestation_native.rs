@@ -138,15 +138,30 @@ fn route(volume: &File, disk: &File, r: &Request) -> io::Result<Route> {
     Ok((ext, data, attrs, e))
 }
 fn query(file: &File, class: i32, count: usize) -> Query {
-    let mut bytes = vec![0; count];
-    // SAFETY: exact class-specific fixed buffer, synchronous query, live handle.
-    let ok = unsafe {
-        GetFileInformationByHandleEx(raw(file), class, bytes.as_mut_ptr().cast(), count as u32)
+    debug_assert!(count <= 40);
+    // GetFileInformationByHandleEx requires 8-byte alignment for FileBasicInfo,
+    // FileStandardInfo, FileIdInfo, etc.
+    let mut aligned = [0u64; 5];
+    let ok = if count <= std::mem::size_of_val(&aligned) {
+        // SAFETY: exact class-specific 8-byte-aligned fixed buffer, synchronous query, live handle.
+        unsafe {
+            GetFileInformationByHandleEx(
+                raw(file),
+                class,
+                aligned.as_mut_ptr().cast(),
+                count as u32,
+            )
+        }
+    } else {
+        0
     };
     let native_error = (ok == 0).then(|| io::Error::last_os_error().raw_os_error().unwrap_or(31));
-    if native_error.is_some() {
-        bytes.clear();
-    }
+    let bytes = if native_error.is_none() {
+        // SAFETY: `count <= size_of_val(&aligned)` and the call initialized `count` bytes.
+        unsafe { std::slice::from_raw_parts(aligned.as_ptr().cast::<u8>(), count) }.to_vec()
+    } else {
+        Vec::new()
+    };
     Query {
         class,
         bytes,
@@ -305,28 +320,119 @@ fn source_snapshot(file: &File, require_case: bool) -> Snapshot {
 /// length. Its explicit row budget replaces the old fixed output buffer; both
 /// independent security APIs still run on the same held metadata handle.
 pub(crate) fn source_snapshot_paged(file: &File, require_case: bool, maximum: usize) -> Snapshot {
+    source_snapshot_paged_scoped(file, require_case, maximum, true, true)
+}
+
+/// [`source_snapshot_paged`] that asks Windows for the extended attributes
+/// and the reparse point only where the caller keeps them. A caller that set
+/// them aside after every snapshot (the security checks, a link's metadata)
+/// made two or three calls an object for nothing. What is not asked for is
+/// left `None`, exactly as such a caller left it; what is asked for is
+/// observed as before.
+pub(crate) fn source_snapshot_paged_scoped(
+    file: &File,
+    require_case: bool,
+    maximum: usize,
+    extended_attributes: bool,
+    reparse: bool,
+) -> Snapshot {
     let queries = [(0, 40), (1, 24), (18, 24), (9, 8)]
         .into_iter()
         .map(|(class, bytes)| query(file, class, bytes))
         .collect();
     let (security, security_error) = security_with_limit(file, maximum);
+    let kernel_security = Some(kernel_security_paged(file, maximum));
+    let mut snapshot = Snapshot {
+        queries,
+        security,
+        security_error,
+        kernel_security,
+        extended_attributes: None,
+        extended_attributes_error: None,
+        reparse: None,
+        directory_case_sensitivity: None,
+    };
+    if extended_attributes {
+        match crate::extended_attributes_native::capture(file) {
+            Ok(set) => snapshot.extended_attributes = Some(set),
+            Err(error) => snapshot.extended_attributes_error = Some(error.to_string()),
+        }
+    }
+    if reparse {
+        snapshot.reparse = Some(match crate::reparse_native::capture(file) {
+            Ok(point) => ReparseObservation { point, error: None },
+            Err(error) => ReparseObservation {
+                point: None,
+                error: Some(error.to_string()),
+            },
+        });
+    }
+    if require_case {
+        snapshot.directory_case_sensitivity = source_directory_case(file, &snapshot.queries);
+    }
+    snapshot
+}
+
+/// Only an object's two security views, the API's and the kernel's, each
+/// asked for with the row's bound as [`source_snapshot_paged`] asks for
+/// them: what a security check reads, and nothing else. Its `queries` are
+/// empty, so a caller that looks for an identity, times or attributes in it
+/// finds none and fails.
+pub(crate) fn security_snapshot_paged(file: &File, maximum: usize) -> Snapshot {
+    let (security, security_error) = security_with_limit(file, maximum);
+    Snapshot {
+        queries: Vec::new(),
+        security,
+        security_error,
+        kernel_security: Some(kernel_security_paged(file, maximum)),
+        extended_attributes: None,
+        extended_attributes_error: None,
+        reparse: None,
+        directory_case_sensitivity: None,
+    }
+}
+
+/// The kernel's view of an object's descriptor, asked for with the row's
+/// bound: a failed query keeps Windows' error.
+fn kernel_security_paged(file: &File, maximum: usize) -> SecurityQuery {
     let kernel = (|| -> io::Result<Vec<u8>> {
+        thread_local! {
+            static PAGED_STORAGE: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+        }
+        let initial_bytes = MAX_SECURITY_BYTES.min(maximum);
+        let initial_words = initial_bytes.div_ceil(8);
+        let mut held = PAGED_STORAGE.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+        if held.len() < initial_words {
+            held.resize(initial_words, 0);
+        }
         let mut required = 0u32;
-        // SAFETY: size-only synchronous query; no output buffer is passed.
+        // SAFETY: live handle and 8-byte-aligned output buffer of `initial_bytes`.
         let ok = unsafe {
             GetKernelObjectSecurity(
                 raw(file),
                 COMPLETE_SECURITY_INFORMATION,
-                ptr::null_mut(),
-                0,
+                held.as_mut_ptr().cast(),
+                initial_bytes as u32,
                 &mut required,
             )
         };
-        if ok == 0 {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() != Some(122) {
-                return Err(error);
-            }
+        if ok != 0 {
+            let result = if (20..=initial_bytes).contains(&(required as usize)) {
+                // SAFETY: successful API initialized exactly `required` bytes.
+                Ok(unsafe {
+                    std::slice::from_raw_parts(held.as_ptr().cast::<u8>(), required as usize)
+                }
+                .to_vec())
+            } else {
+                Err(invalid("security descriptor returned size differs"))
+            };
+            PAGED_STORAGE.with(|cell| *cell.borrow_mut() = held);
+            return result;
+        }
+        PAGED_STORAGE.with(|cell| *cell.borrow_mut() = held);
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(122) {
+            return Err(error);
         }
         let length = required as usize;
         if !(20..=maximum).contains(&length) {
@@ -362,7 +468,7 @@ pub(crate) fn source_snapshot_paged(file: &File, require_case: bool, maximum: us
                 .to_vec(),
         )
     })();
-    let kernel_security = Some(match kernel {
+    match kernel {
         Ok(bytes) => SecurityQuery {
             bytes,
             native_error: None,
@@ -371,32 +477,7 @@ pub(crate) fn source_snapshot_paged(file: &File, require_case: bool, maximum: us
             bytes: Vec::new(),
             native_error: Some(error.raw_os_error().unwrap_or(13)),
         },
-    });
-    let mut snapshot = Snapshot {
-        queries,
-        security,
-        security_error,
-        kernel_security,
-        extended_attributes: None,
-        extended_attributes_error: None,
-        reparse: None,
-        directory_case_sensitivity: None,
-    };
-    match crate::extended_attributes_native::capture(file) {
-        Ok(set) => snapshot.extended_attributes = Some(set),
-        Err(error) => snapshot.extended_attributes_error = Some(error.to_string()),
     }
-    snapshot.reparse = Some(match crate::reparse_native::capture(file) {
-        Ok(point) => ReparseObservation { point, error: None },
-        Err(error) => ReparseObservation {
-            point: None,
-            error: Some(error.to_string()),
-        },
-    });
-    if require_case {
-        snapshot.directory_case_sensitivity = source_directory_case(file, &snapshot.queries);
-    }
-    snapshot
 }
 
 fn case_only_snapshot(file: &File) -> DirectoryCaseSnapshot {
@@ -709,16 +790,13 @@ impl SourceObjects<'_> {
         let request = self.request;
         let plain = if self.skip_plain_reads { plain } else { &[] };
         let identity = &selected.identity;
-        let row_request;
-        let capture_request = if request.has_paged_selectors() {
-            row_request = Request {
-                files: vec![identity.clone()],
-                extent_identity_streams: selected.extent_identity_streams.clone(),
-                ..request.clone()
-            };
-            &row_request
+        // With paged selectors the object's own row names the streams its
+        // extents prove; the request is borrowed with that row, where a
+        // copy of the whole request was made for each object.
+        let extent_identity_streams = if request.has_paged_selectors() {
+            selected.extent_identity_streams.as_slice()
         } else {
-            request
+            request.extent_identity_streams.as_slice()
         };
         let mut logical = LogicalFile {
             identity: identity.clone(),
@@ -772,7 +850,8 @@ impl SourceObjects<'_> {
         obs.before = Some(snapshot(&file));
         let (capture, hashes) = crate::stream_native::capture(
             &file,
-            capture_request,
+            request,
+            extent_identity_streams,
             identity,
             read_budget,
             row_stream_budget,
@@ -787,7 +866,8 @@ impl SourceObjects<'_> {
         } else {
             let (capture, hashes) = crate::stream_native::capture(
                 &file,
-                capture_request,
+                request,
+                extent_identity_streams,
                 identity,
                 read_budget,
                 row_stream_budget
@@ -1239,6 +1319,7 @@ pub(crate) fn collect_file_metadata_with_routes(
         read_budget,
         mut stream_bytes,
         skipped,
+        helper_workspaces,
         ..
     } = taken;
     sink = returned;
@@ -1268,12 +1349,16 @@ pub(crate) fn collect_file_metadata_with_routes(
     }
     let namespace = if let Some(sink) = sink.as_deref_mut() {
         let row_limit = usize::try_from(sink.maximum_row_bytes()).map_err(io::Error::other)?;
-        crate::namespace_native::collect_rows_domain(
+        // The helpers that observed the objects list the directories
+        // ahead the same way, where their workspaces are still held.
+        crate::namespace_native::collect_rows_domain_with_helpers(
             &volume,
             request,
             selectors,
             true,
             Some(row_limit),
+            row_payer,
+            helper_workspaces,
             |row| sink.namespace(&row),
         )?;
         NamespaceData { files: Vec::new() }

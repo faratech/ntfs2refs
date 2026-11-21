@@ -132,6 +132,11 @@ static REPEAT_ONCE_AS_VERIFIED: AtomicBool = AtomicBool::new(false);
 ///
 /// Left out under it:
 ///
+/// - the read of a changed range immediately before the replay writes it.
+///   Every range was classified as old or new, complete, before the
+///   direction marker and the first write, and everything written is read
+///   back after the flush against the digest of the side written, as a
+///   conversion's apply does under [`verify_once`] (#218);
 /// - the second probe of the short-name links of a converted Windows volume.
 ///   The finalizer of a recovery issues its ledger of the links by probing
 ///   every one of them on the converted volume, inside the READ_ONLY lease

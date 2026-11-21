@@ -1091,12 +1091,43 @@ impl PrivatePlaceholder {
         self.verify_placements()
     }
 
+    /// [`Self::check_placements`] for a helper thread of a batch: the same
+    /// query and the same comparison, under a workspace the batch's caller
+    /// reserved for it ([`Self::mapping_workspace_bytes`]). A helper never
+    /// makes a reservation the pass cannot do without.
+    pub(in crate::shadow_native) fn check_placements_prepaid(&self) -> io::Result<()> {
+        if self.poisoned {
+            return Err(invalid("poisoned private placement cannot supply data"));
+        }
+        self.verify_placements_prepaid(true)
+    }
+
+    /// What one comparison of this file's complete mapping with its tracked
+    /// pieces reserves ([`Self::check_placements`] and
+    /// [`Self::readonly_supply_mapping_fingerprint`] reserve the same), or
+    /// `None` where it reserves nothing: no piece is tracked, so there is no
+    /// query, or the file has no resource owner to reserve from.
+    pub(in crate::shadow_native) fn mapping_workspace_bytes(&self) -> io::Result<Option<u64>> {
+        if self.placed.is_empty() {
+            return Ok(None);
+        }
+        self.resource
+            .as_ref()
+            .map(|resource| resource.tracking_workspace_bytes(self.bytes))
+            .transpose()
+    }
+
     /// Same-FileObject readonly batch evidence. The complete native mapping
     /// still checks EVERY tracked piece, then its full canonical digest binds
     /// the closing observation. No path reopen or payload read is exposed.
+    ///
+    /// With `prepaid` the query runs under a workspace its caller holds
+    /// already ([`Self::mapping_workspace_bytes`]), as a helper thread of a
+    /// batch asks for it; otherwise the workspace is reserved here.
     pub(in crate::shadow_native) fn readonly_supply_mapping_fingerprint(
         &self,
         readonly: &File,
+        prepaid: bool,
     ) -> io::Result<Option<[u8; 32]>> {
         if self.poisoned {
             return Err(invalid("poisoned private supply mapping"));
@@ -1113,7 +1144,11 @@ impl PrivatePlaceholder {
             .resource
             .as_ref()
             .ok_or_else(|| invalid("readonly supply mapping requires actual resource owner"))?;
-        let _memory = resource.tracking_workspace(self.bytes)?;
+        let _memory = if prepaid {
+            None
+        } else {
+            Some(resource.tracking_workspace(self.bytes)?)
+        };
         let capture = resource.capture(readonly)?;
         let mapping = PreparedMapping::from_runs(capture.runs)?;
         for &(v, l, n) in &self.placed {

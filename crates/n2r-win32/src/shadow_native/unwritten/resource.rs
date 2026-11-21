@@ -109,17 +109,24 @@ impl ResourcePlacement {
         retrieval_bytes_for(self.retrieval_bytes, file_bytes)
     }
 
-    pub(super) fn tracking_workspace(&self, file_bytes: u64) -> io::Result<Lease> {
+    /// What [`Self::tracking_workspace`] reserves for a file of `file_bytes`:
+    /// for a caller that pays for a batch of files before helper threads
+    /// read their mappings, so that no helper makes a reservation itself.
+    pub(super) fn tracking_workspace_bytes(&self, file_bytes: u64) -> io::Result<u64> {
         let clusters = usize::try_from(file_bytes / crate::target_cluster::bytes())
             .map_err(io::Error::other)?;
         let slots = self.max_tracked_slots.min(clusters);
-        let bytes = (self.retrieval_bytes_for(file_bytes) as u64)
+        (self.retrieval_bytes_for(file_bytes) as u64)
             .checked_mul(8)
             .and_then(|n| n.checked_add((slots as u64).checked_mul(256)?))
             .and_then(|n| n.checked_add(4 * 1024 * 1024))
             .and_then(|n| n.checked_add(self.payer.lease_heap_bytes()))
-            .ok_or_else(|| invalid("resource tracking RAM overflow"))?;
-        self.payer.reserve(bytes)
+            .ok_or_else(|| invalid("resource tracking RAM overflow"))
+    }
+
+    pub(super) fn tracking_workspace(&self, file_bytes: u64) -> io::Result<Lease> {
+        self.payer
+            .reserve(self.tracking_workspace_bytes(file_bytes)?)
     }
 
     /// Pay bitmap windows, lossless encodings, complete retrieval assembly,

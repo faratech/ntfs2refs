@@ -62,6 +62,38 @@ pub struct StreamSupplySummary {
 /// No native query, path construction, owned key, or map clone precedes this
 /// estimate. A caller can therefore pay before the first summary observation.
 pub(super) fn workspace_bytes(tree: &PrivateTree, index: usize, name: &[u16]) -> io::Result<u64> {
+    workspace_bytes_with(tree, index, name, |_| {
+        crate::retrieval_paging::max_returned_bytes()
+    })
+}
+/// [`workspace_bytes`] for a stream that a batch pays for before a helper
+/// thread observes it. A batch holds one of these for every stream it
+/// takes, as memory the pass can do without, so it is as long as that
+/// memory reaches: the term for the mapping follows the file's own length
+/// here (a file has no more extents than clusters;
+/// [`crate::retrieval_paging::returned_bytes_for_stream`]), where the
+/// estimate above takes the longest mapping any file may have, 67 MB at the
+/// least, for a file of one cluster too. The comparison of the mapping
+/// itself is paid for apart, as it is today
+/// ([`unwritten::PrivatePlaceholder::mapping_workspace_bytes`]).
+pub(super) fn batch_workspace_bytes(
+    tree: &PrivateTree,
+    index: usize,
+    name: &[u16],
+) -> io::Result<u64> {
+    workspace_bytes_with(
+        tree,
+        index,
+        name,
+        crate::retrieval_paging::returned_bytes_for_stream,
+    )
+}
+fn workspace_bytes_with(
+    tree: &PrivateTree,
+    index: usize,
+    name: &[u16],
+    mapping_bytes: impl Fn(u64) -> usize,
+) -> io::Result<u64> {
     let add = |a: u64, b: u64| {
         a.checked_add(b)
             .ok_or_else(|| invalid("stream supply working RAM overflow"))
@@ -99,7 +131,8 @@ pub(super) fn workspace_bytes(tree: &PrivateTree, index: usize, name: &[u16]) ->
     // second parsed PreparedMapping. This is the same conservative query
     // multiplier used by the native constructor, independent of source row
     // size. Coordinate cloning and stable-sort scratch can coexist with it.
-    let mut bytes = mul(crate::retrieval_paging::max_returned_bytes() as u64, 32)?;
+    let mapped = file.map_or(0, |(_, file)| file.logical_length());
+    let mut bytes = mul(mapping_bytes(mapped) as u64, 32)?;
     bytes = add(bytes, 4 * 1024 * 1024)?;
     bytes = add(bytes, mul(path as u64 + 4096, 16)?)?;
     bytes = add(bytes, mul(name.len() as u64, 32)?)?;
@@ -131,17 +164,31 @@ pub(super) fn workspace_bytes(tree: &PrivateTree, index: usize, name: &[u16]) ->
     Ok(bytes)
 }
 
+/// How the comparison of a file's complete mapping with its tracked pieces
+/// is made where a stream's ranges are derived.
+pub(super) enum MappingCheck {
+    /// Here, by asking Windows for the mapping.
+    Live,
+    /// Not here: the caller's own capture of the same file's mapping
+    /// encloses the derivation (a read-only snapshot), or nothing of the
+    /// derivation leaves the caller unless such a capture holds (a batch
+    /// deciding which prefixes its helpers observe).
+    Held,
+    /// A helper thread of a batch made it; this is what it returned.
+    Seen(io::Result<()>),
+}
+
 fn visit_data(
     tree: &PrivateTree,
     key: &StreamKey,
     mut visit: impl FnMut(SupplyRange) -> io::Result<()>,
 ) -> io::Result<u64> {
-    visit_data_inner(tree, key, true, &mut visit)
+    visit_data_inner(tree, key, MappingCheck::Live, &mut visit)
 }
 fn visit_data_inner(
     tree: &PrivateTree,
     key: &StreamKey,
-    check_mapping: bool,
+    mapping: MappingCheck,
     mut visit: impl FnMut(SupplyRange) -> io::Result<()>,
 ) -> io::Result<u64> {
     let Some(file) = tree.files.get(key) else {
@@ -152,8 +199,10 @@ fn visit_data_inner(
         }
         return Err(invalid("private supply stream absent"));
     };
-    if check_mapping {
-        file.check_placements()?;
+    match mapping {
+        MappingCheck::Live => file.check_placements()?,
+        MappingCheck::Held => {}
+        MappingCheck::Seen(seen) => seen?,
     }
     let length = file.logical_length();
     let mut cursor = 0;
@@ -241,13 +290,18 @@ fn visit_parts(
     Ok(())
 }
 
+/// One stream's ranges between two source fences. `seen` is the comparison
+/// of the file's mapping as a helper thread of a batch made it; `None` makes
+/// it here.
 pub(super) fn stream(
     tree: &PrivateTree,
     key: &StreamKey,
+    seen: Option<io::Result<()>>,
     mut emit: impl FnMut(SupplyKind, &SupplyRange) -> io::Result<()>,
 ) -> io::Result<StreamSupplySummary> {
     tree.require_source_excluded()?;
-    let result = stream_inner(tree, key, true, &mut emit);
+    let mapping = seen.map_or(MappingCheck::Live, MappingCheck::Seen);
+    let result = stream_inner(tree, key, mapping, &mut emit);
     let closing = tree.require_source_excluded();
     super::supply_snapshot::close_result(result, closing, "stream supply source closing fence")
 }
@@ -257,12 +311,24 @@ pub(super) fn stream_in_snapshot(
     snapshot: &super::supply_snapshot::NativeReadOnlySupplyStreamSnapshot<'_>,
     emit: impl FnMut(SupplyKind, &SupplyRange) -> io::Result<()>,
 ) -> io::Result<StreamSupplySummary> {
-    stream_inner(snapshot.tree(), snapshot.key(), false, emit)
+    stream_inner(snapshot.tree(), snapshot.key(), MappingCheck::Held, emit)
+}
+/// A stream's ranges from this process's own records alone, for a batch
+/// that has to know them before its helpers observe anything: whether a
+/// prefix is observed follows from them. They decide only that. What the
+/// pass uses is derived again inside the stream's snapshot, whose capture
+/// and revalidation of the file's mapping the batch's helper makes.
+pub(super) fn stream_before_observation(
+    tree: &PrivateTree,
+    key: &StreamKey,
+    emit: impl FnMut(SupplyKind, &SupplyRange) -> io::Result<()>,
+) -> io::Result<StreamSupplySummary> {
+    stream_inner(tree, key, MappingCheck::Held, emit)
 }
 fn stream_inner(
     tree: &PrivateTree,
     key: &StreamKey,
-    check_mapping: bool,
+    mapping: MappingCheck,
     mut emit: impl FnMut(SupplyKind, &SupplyRange) -> io::Result<()>,
 ) -> io::Result<StreamSupplySummary> {
     if !tree.placement_complete {
@@ -341,7 +407,7 @@ fn stream_inner(
         hash.update(range.source_physical_offset.unwrap_or(0).to_le_bytes());
         emit(kind, range)
     };
-    let observed_length = visit_data_inner(tree, key, check_mapping, |range| {
+    let observed_length = visit_data_inner(tree, key, mapping, |range| {
         while next_hole < holes.len() && holes[next_hole].offset < range.logical_offset {
             let hole = &holes[next_hole];
             output(

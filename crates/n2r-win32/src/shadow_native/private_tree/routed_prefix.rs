@@ -14,7 +14,11 @@ struct Evidence {
 /// One same-file readonly native owner, with actual allocator and storage
 /// observations. There is no Clone, Deserialize or raw handle accessor.
 pub struct RoutedPrefixReady {
-    file: File,
+    // `None` where a helper thread of a batch made the observation: it made
+    // the revalidation too, on the same duplicate, and closed it.
+    file: Option<File>,
+    // That revalidation, taken by the one `revalidate` the owner makes.
+    seen_revalidation: std::cell::Cell<Option<io::Result<()>>>,
     expected_path: String,
     logical_length: u64,
     prefix: u64,
@@ -23,6 +27,42 @@ pub struct RoutedPrefixReady {
     evidence: Evidence,
     payer: Arc<dyn ReportMemoryAccountant>,
     _memory: Box<dyn ReportMemoryLease>,
+}
+
+/// What `observe` asks Windows about one prefix, settled from this
+/// process's own records before a helper thread of a batch is started.
+pub(super) struct Plan<'tree> {
+    file: &'tree unwritten::PrivatePlaceholder,
+    // Whether the prefix's storage is prepared. Where it is not, `observe`
+    // compares the file's mapping and then stops, with nothing observed.
+    prepared: bool,
+    path: String,
+    logical: u64,
+    prefix: u64,
+    partition: u64,
+    row: usize,
+}
+/// What a helper thread saw for one `observe` of a prefix and the
+/// `revalidate` that follows it, in their order.
+pub(super) struct PrefixSeen {
+    /// The comparison of the file's complete mapping with its tracked
+    /// pieces, which `observe` makes before it looks at the prefix.
+    placements: io::Result<()>,
+    /// The observation and then its revalidation, where the helper came to
+    /// them: the mapping held and the prefix's storage is prepared.
+    observed: Option<io::Result<(Evidence, io::Result<()>)>>,
+}
+impl PrefixSeen {
+    /// Whether the helper saw everything of the prefix, without a failure.
+    pub(super) fn held(&self) -> bool {
+        self.placements.is_ok() && matches!(self.observed, Some(Ok((_, Ok(())))))
+    }
+}
+/// One `observe` and its `revalidate` as a batch made them ready: what its
+/// helper saw, and the workspace of `observe`, which the batch reserved.
+pub(super) struct PrepaidPrefix {
+    pub(super) seen: PrefixSeen,
+    pub(super) work: Box<dyn ReportMemoryLease>,
 }
 fn bad(message: &str) -> io::Error {
     invalid(message)
@@ -268,26 +308,137 @@ impl RoutedPrefixReady {
         &self.evidence.digest
     }
     pub fn revalidate(&self) -> io::Result<()> {
+        if let Some(seen) = self.seen_revalidation.take() {
+            return seen;
+        }
+        let file = self.file.as_ref().ok_or_else(|| {
+            bad("a routed prefix that a helper thread observed is revalidated once, by that thread")
+        })?;
         let _work = self.payer.reserve(peak(
             row_for(self.row_bytes, self.logical_length),
             self.expected_path.len(),
         )?)?;
-        let current = capture(
-            &self.file,
+        revalidate(
+            file,
             &self.expected_path,
             self.logical_length,
             self.prefix,
             self.partition,
             self.row_bytes,
-        )?;
-        if current.digest != self.evidence.digest {
-            return Err(bad(
-                "private routed prefix identity/mapping/storage proof changed",
-            ));
-        }
-        Ok(())
+            &self.evidence.digest,
+        )
     }
 }
+/// The observation made again, held to the digest of the first.
+fn revalidate(
+    file: &File,
+    path: &str,
+    logical: u64,
+    prefix: u64,
+    partition: u64,
+    row: usize,
+    digest: &str,
+) -> io::Result<()> {
+    let current = capture(file, path, logical, prefix, partition, row)?;
+    if current.digest != digest {
+        return Err(bad(
+            "private routed prefix identity/mapping/storage proof changed",
+        ));
+    }
+    Ok(())
+}
+/// What [`observe`] will ask Windows about this prefix, for a batch whose
+/// helper thread asks it. `None` where `observe` does not come to ask: it
+/// then says why itself, as it does for every stream taken by itself.
+pub(super) fn plan<'tree>(
+    tree: &'tree PrivateTree,
+    index: usize,
+    name: &[u16],
+    components: &[String],
+    logical: u64,
+    prefix: u64,
+) -> Option<Plan<'tree>> {
+    tree.memory.as_ref()?;
+    let admission = tree.metadata_resource_admission?;
+    let row = usize::try_from(admission.budget.max_row_bytes).ok()?;
+    if prefix == 0
+        || !crate::target_cluster::aligned(prefix)
+        || prefix != crate::target_cluster::floor(logical)
+    {
+        return None;
+    }
+    let key = StreamKey::named(index, name);
+    if tree.sparse_targets.contains_key(&key) {
+        return None;
+    }
+    let file = tree.files.get(&key)?;
+    let path = streams::path(&tree.pair.shadow.volume_path().ok()?, components, name).ok()?;
+    Some(Plan {
+        file,
+        prepared: tree.placement_complete && file.valid_prefix() >= prefix,
+        path,
+        logical,
+        prefix,
+        partition: tree.pair.shadow.identity.partition_bytes,
+        row,
+    })
+}
+impl Plan<'_> {
+    /// The workspace [`observe`] reserves for this prefix.
+    pub(super) fn observation_bytes(&self) -> io::Result<u64> {
+        peak(row_for(self.row, self.logical), 32768)
+    }
+    /// The workspace [`RoutedPrefixReady::revalidate`] reserves for it.
+    pub(super) fn revalidation_bytes(&self) -> io::Result<u64> {
+        peak(row_for(self.row, self.logical), self.path.len())
+    }
+    /// The Windows calls of one [`observe`] and of the `revalidate` after
+    /// it, on a helper thread: the same calls in the same order, on one
+    /// duplicate that is closed before this returns. Every workspace is the
+    /// caller's ([`Self::observation_bytes`], [`Self::revalidation_bytes`]
+    /// and the file's mapping workspace).
+    pub(super) fn observe(&self) -> PrefixSeen {
+        let placements = self.file.check_placements_prepaid();
+        if placements.is_err() || !self.prepared {
+            return PrefixSeen {
+                placements,
+                observed: None,
+            };
+        }
+        let observed = (|| {
+            let duplicate = crate::file_storage::duplicate_readonly(self.file.metadata_handle())?;
+            crate::file_storage::require_readonly_access(&duplicate)?;
+            let evidence = capture(
+                &duplicate,
+                &self.path,
+                self.logical,
+                self.prefix,
+                self.partition,
+                self.row,
+            )?;
+            let revalidated = revalidate(
+                &duplicate,
+                &self.path,
+                self.logical,
+                self.prefix,
+                self.partition,
+                self.row,
+                &evidence.digest,
+            );
+            Ok((evidence, revalidated))
+        })();
+        PrefixSeen {
+            placements,
+            observed: Some(observed),
+        }
+    }
+}
+/// `prepaid` is this observation as a batch made it ready ([`Plan`]): the
+/// comparison of the file's mapping, the observation of the prefix and its
+/// revalidation are then what the batch's helper thread returned for them,
+/// taken where this function and `revalidate` make them, and the workspace
+/// is the one the batch reserved. Everything else is done here, in the same
+/// order, whoever observed the file.
 pub(super) fn observe(
     tree: &PrivateTree,
     index: usize,
@@ -295,6 +446,7 @@ pub(super) fn observe(
     components: &[String],
     logical: u64,
     prefix: u64,
+    prepaid: Option<PrepaidPrefix>,
 ) -> io::Result<RoutedPrefixReady> {
     let memory = tree.memory.as_ref().ok_or_else(|| {
         io::Error::new(
@@ -307,7 +459,18 @@ pub(super) fn observe(
         .ok_or_else(|| bad("routed prefix resource admission absent"))?;
     let row = usize::try_from(admission.budget.max_row_bytes).map_err(io::Error::other)?;
     let payer = memory.payer();
-    let mut work = payer.reserve(peak(row_for(row, logical), 32768)?)?;
+    let (seen_placements, seen_observed, prepaid_work) = match prepaid {
+        Some(batch) => (
+            Some(batch.seen.placements),
+            batch.seen.observed,
+            Some(batch.work),
+        ),
+        None => (None, None, None),
+    };
+    let mut work = match prepaid_work {
+        Some(lease) => lease,
+        None => payer.reserve(peak(row_for(row, logical), 32768)?)?,
+    };
     if prefix == 0
         || !crate::target_cluster::aligned(prefix)
         || prefix != crate::target_cluster::floor(logical)
@@ -324,7 +487,7 @@ pub(super) fn observe(
             "sparse/carrier routing retains its existing supply path",
         ));
     }
-    tree.validate_stream_shape_named(index, name, components, logical)?;
+    tree.validate_stream_shape_observed(index, name, components, logical, seen_placements)?;
     let file = tree
         .files
         .get(&key)
@@ -336,20 +499,30 @@ pub(super) fn observe(
         ));
     }
     let path = streams::path(&tree.pair.shadow.volume_path()?, components, name)?;
-    let duplicate = crate::file_storage::duplicate_readonly(file.metadata_handle())?;
-    crate::file_storage::require_readonly_access(&duplicate)?;
-    let evidence = capture(
-        &duplicate,
-        &path,
-        logical,
-        prefix,
-        tree.pair.shadow.identity.partition_bytes,
-        row,
-    )?;
+    let (duplicate, evidence, seen_revalidation) = match seen_observed {
+        Some(observed) => {
+            let (evidence, revalidated) = observed?;
+            (None, evidence, Some(revalidated))
+        }
+        None => {
+            let duplicate = crate::file_storage::duplicate_readonly(file.metadata_handle())?;
+            crate::file_storage::require_readonly_access(&duplicate)?;
+            let evidence = capture(
+                &duplicate,
+                &path,
+                logical,
+                prefix,
+                tree.pair.shadow.identity.partition_bytes,
+                row,
+            )?;
+            (Some(duplicate), evidence, None)
+        }
+    };
     tree.require_source_excluded()?;
     work.shrink_to(retained_bytes(&evidence, &path)?)?;
     Ok(RoutedPrefixReady {
         file: duplicate,
+        seen_revalidation: std::cell::Cell::new(seen_revalidation),
         expected_path: path,
         logical_length: logical,
         prefix,

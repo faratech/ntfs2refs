@@ -566,7 +566,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     // Only namespace scalars remain resident. Looking up a child must not
     // decode every paged object for every native directory entry.
     let mut namespace_index = BTreeMap::new();
-    let mut expected_children: BTreeMap<Vec<String>, BTreeSet<Vec<String>>> = BTreeMap::new();
+    let mut expected_children: BTreeMap<Vec<String>, BTreeSet<String>> = BTreeMap::new();
     const DIRECTORY: u8 = 1;
     const EXTENDED_ATTRIBUTES: u8 = 2;
     const REPARSE: u8 = 4;
@@ -722,11 +722,11 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                     {
                         return Err(invalid("duplicate owned metadata namespace path"));
                     }
-                    if !path.is_empty() {
+                    if let Some((name, parent)) = path.split_last() {
                         expected_children
-                            .entry(path[..path.len() - 1].to_vec())
+                            .entry(parent.to_vec())
                             .or_default()
-                            .insert(path.to_vec());
+                            .insert(name.clone());
                     }
                 }
                 let (id, mapping) = shape?;
@@ -756,10 +756,12 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                     "derived alias collides with a canonical source name",
                 ));
             }
-            expected_children
-                .entry(path[..path.len() - 1].to_vec())
-                .or_default()
-                .insert(path.to_vec());
+            if let Some((name, parent)) = path.split_last() {
+                expected_children
+                    .entry(parent.to_vec())
+                    .or_default()
+                    .insert(name.clone());
+            }
         }
     }
     // One directory's listing held to what is expected of it: every entry
@@ -792,17 +794,20 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                            aliases: Option<&super::windows_aliases::StagedWindowsAliases>,
                            _seen_memory: Option<Box<dyn report_memory::ReportMemoryLease>>|
      -> io::Result<()> {
-        let mut seen = BTreeSet::new();
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut path = Vec::with_capacity(components.len() + 1);
+        path.extend_from_slice(components);
+        path.push(String::new());
         for entry in entries {
             if entry.name_utf16 == [46] || entry.name_utf16 == [46, 46] {
                 continue;
             }
             let name = String::from_utf16(&entry.name_utf16)
                 .map_err(|_| invalid("owned metadata namespace UTF-16 differs"))?;
-            let mut path = components.to_vec();
-            path.push(name);
+            *path.last_mut().unwrap() = name;
             if let Some(alias) = aliases.and_then(|aliases| aliases.entry(&path)) {
-                if !seen.insert(path.clone())
+                let inserted_name = std::mem::take(path.last_mut().unwrap());
+                if !seen.insert(inserted_name)
                     || (entry.attributes & 16 != 0) != alias.directory
                     || (!(recovering && !points_installed)
                         && (entry.attributes & 0x400 != 0) != points_installed)
@@ -815,7 +820,8 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             let &(child_index, child_directory, child_reparse) = namespace_index
                 .get(&path)
                 .ok_or_else(|| invalid("unexpected owned metadata namespace entry"))?;
-            if !seen.insert(path.clone())
+            let inserted_name = std::mem::take(path.last_mut().unwrap());
+            if !seen.insert(inserted_name)
                 || (entry.attributes & 16 != 0) != child_directory
                 || (if recovering && !points_installed {
                     (entry.attributes & 0x400 != 0) && !child_reparse

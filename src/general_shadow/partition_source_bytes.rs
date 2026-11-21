@@ -37,6 +37,29 @@ impl BorrowedPagedSource<'_, '_> {
             Self::Partition { identity, .. } => *identity,
         }
     }
+    /// Whether a capture's reads of the original may go ahead of it on a
+    /// read lane of their own: a dedicated source inside its read scope, on
+    /// a device that takes more than one read at once. A partition source
+    /// is one volume of a disk that stays in use and gets none, and neither
+    /// does a source held without a scope: its capture has an observer that
+    /// reads through the owner.
+    pub(crate) fn takes_read_lane(&self) -> bool {
+        match self {
+            Self::DedicatedScoped(scope) => scope.io_profile().queue_depth >= 2,
+            Self::Dedicated(_) | Self::Partition { .. } => false,
+        }
+    }
+    /// One read lane of the source, where [`Self::takes_read_lane`]. What it
+    /// reads lies between the checks that bracket the scope, so it is to be
+    /// dropped before the scope ends. A lane that cannot be opened is the
+    /// scope's failure (the scope remembers it) and is returned as one: it
+    /// is not a reason to read without a lane.
+    pub(crate) fn read_lane(&mut self) -> io::Result<Option<n2r_win32::GeneralFrozenLane>> {
+        match self {
+            Self::DedicatedScoped(scope) => Ok(scope.read_lanes(1, &mut Vec::new())?.pop()),
+            Self::Dedicated(_) | Self::Partition { .. } => Ok(None),
+        }
+    }
     pub(super) fn validate(&mut self, before: Option<&n2r_win32::GeneralDiskState>) -> Result<()> {
         // A dedicated source is offline, read-only and held for the whole
         // run. Supply asks this several times for every 64 KiB it copies;

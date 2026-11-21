@@ -5,7 +5,7 @@ use super::{
     source_backed::{
         CandidateChunk, CandidateReadSpans, ClosingShadowBytes, ClosingSourceBytes,
         PagedSourceByteAdapterWithScope, PagedStreamIdentity, ReadCounts,
-        candidate_span_workspace_bytes,
+        candidate_span_workspace_bytes, original_prefetch::OriginalPrefetch,
     },
 };
 use crate::{
@@ -14,6 +14,7 @@ use crate::{
         paged_storage::{SourceRamLease, SourceScratch},
         record_store::{RecordStorePin, SortedRecordStore},
     },
+    refs_write_set::ByteRange,
     shadow_tree::PagedExpectedTree,
 };
 use anyhow::{Context, Result, ensure};
@@ -436,6 +437,11 @@ pub struct PagedSourceBackedCandidateWithScope<'source, 'observation, 'scope> {
     object: Option<(usize, crate::shadow_tree::pages::LeasedExpectedObject)>,
     closing_shadow: Option<&'source mut dyn ClosingShadowBytes>,
     closing_source: Option<&'source mut dyn ClosingSourceBytes>,
+    // The originals of the capture's selection, read ahead of the comparison
+    // through a lane of the source (`read_originals_ahead`). The lane lives
+    // in its helper thread, which has ended when this is finished or
+    // dropped: before the source's read scope closes.
+    originals_ahead: Option<OriginalPrefetch>,
     poisoned: bool,
     _ram: SourceRamLease,
 }
@@ -485,6 +491,7 @@ impl<'source, 'observation, 'scope>
             object: None,
             closing_shadow: None,
             closing_source: None,
+            originals_ahead: None,
             poisoned: false,
             _ram: ram,
         })
@@ -778,26 +785,116 @@ impl<'source, 'observation, 'scope>
             .context("candidate reused-reference count overflow")?;
         Ok(true)
     }
+    /// Has the originals of a capture read ahead of its comparison, where
+    /// that is possible. `range` gives the capture's `ranges` in its order;
+    /// the capture then asks [`Self::read_original_exact`] for exactly their
+    /// chunks, each of at most 4 MiB from its range's start.
+    ///
+    /// The comparison read the shadow, then the source, then compared: the
+    /// source had no read outstanding while the shadow was read or a chunk
+    /// was compared. A helper thread now reads the source through a lane of
+    /// its own, and hashes each chunk, while this thread does the rest.
+    ///
+    /// It is done only for a dedicated source inside its read scope, on a
+    /// device that takes more than one read at once, without an observer of
+    /// the original reads, and where the ledger has the memory to spare
+    /// (three chunks, the lane, the list of ranges and a stack). Otherwise
+    /// nothing changes: the capture reads the source as it did. A lane that
+    /// cannot be opened is an error, as any failed read of the scope is.
+    pub(crate) fn read_originals_ahead(
+        &mut self,
+        ranges: u64,
+        range: impl Fn(u64) -> Result<ByteRange>,
+    ) -> Result<()> {
+        ensure!(
+            !self.poisoned && self.originals_ahead.is_none(),
+            "candidate cannot begin to read its originals ahead"
+        );
+        if self.closing_source.is_some() || !self.bytes.original_owner().takes_read_lane() {
+            return Ok(());
+        }
+        let Some(group) = self.routes.scratch.artifact_group() else {
+            return Ok(());
+        };
+        let Some(paid) = OriginalPrefetch::workspace_bytes(CHUNK, ranges)
+            .and_then(|bytes| group.arena().reserve_spare_ram(bytes).ok())
+        else {
+            return Ok(());
+        };
+        let mut list = Vec::new();
+        if usize::try_from(ranges)
+            .ok()
+            .is_none_or(|count| list.try_reserve_exact(count).is_err())
+        {
+            return Ok(());
+        }
+        for ordinal in 0..ranges {
+            list.push(range(ordinal)?);
+        }
+        self.poisoned = true;
+        let lane = self.bytes.original_owner().read_lane()?;
+        self.poisoned = false;
+        let Some(lane) = lane else {
+            return Ok(());
+        };
+        // A helper that cannot be started read nothing: no lane is left
+        // open, and the capture reads as it did.
+        self.originals_ahead = OriginalPrefetch::start(
+            "n2r-capture-source-ahead",
+            lane,
+            list,
+            CHUNK,
+            true,
+            Some(Box::new(paid)),
+        )
+        .ok();
+        Ok(())
+    }
+
+    /// Reads `count` bytes of the original at `offset` into the start of
+    /// `original` and returns their XXH3-128 (`parallel_digest::xxh3_128`):
+    /// from the chunks read ahead, whose buffer then takes the place of
+    /// `original`, or through the owner of the source.
+    ///
     /// The closing collector receives only the actual immutable original read
     /// buffer and this same frozen owner, before any caller can recycle it.
-    pub(crate) fn read_original_exact(&mut self, offset: u64, output: &mut [u8]) -> Result<()> {
+    pub(crate) fn read_original_exact(
+        &mut self,
+        offset: u64,
+        original: &mut Vec<u8>,
+        count: usize,
+    ) -> Result<[u8; 16]> {
         ensure!(
             !self.poisoned
-                && output.len() <= CHUNK
+                && count <= CHUNK
                 && offset
-                    .checked_add(output.len() as u64)
+                    .checked_add(count as u64)
                     .is_some_and(|end| end <= self.length),
             "original capture read escapes protected partition/window"
         );
         self.poisoned = true;
-        let source = self.bytes.original_owner();
-        source.seek(SeekFrom::Start(offset))?;
-        source.read_exact(output)?;
-        if let Some(observer) = &mut self.closing_source {
-            source.observe_closing(&mut **observer, offset, output)?;
-        }
+        let digest = if let Some(ahead) = &mut self.originals_ahead {
+            let chunk = ahead.next(offset, count)?;
+            let digest = chunk
+                .xxh3_128
+                .context("original chunk read ahead was not hashed")?;
+            ahead.recycle(std::mem::replace(original, chunk.bytes));
+            digest
+        } else {
+            if original.len() < count {
+                original.resize(count, 0);
+            }
+            let output = &mut original[..count];
+            let source = self.bytes.original_owner();
+            source.seek(SeekFrom::Start(offset))?;
+            source.read_exact(output)?;
+            if let Some(observer) = &mut self.closing_source {
+                source.observe_closing(&mut **observer, offset, output)?;
+            }
+            crate::parallel_digest::xxh3_128(output)
+        };
         self.poisoned = false;
-        Ok(())
+        Ok(digest)
     }
     pub(crate) fn read_reference_exact(&mut self, offset: u64, output: &mut [u8]) -> Result<()> {
         ensure!(
@@ -822,6 +919,12 @@ impl<'source, 'observation, 'scope>
     }
     pub fn finish(mut self) -> Result<ReadCounts> {
         ensure!(!self.poisoned, "failed paged candidate cannot finish");
+        // The helper that read the originals ahead has read exactly the
+        // capture's chunks and ends here, its lane with it, before the
+        // source and its scope are closed.
+        if let Some(ahead) = self.originals_ahead.take() {
+            ahead.finish()?;
+        }
         self.routes.revalidate(self.expected)?;
         ensure!(
             self.shadow.state(&mut Vec::new())? == self.shadow_before,

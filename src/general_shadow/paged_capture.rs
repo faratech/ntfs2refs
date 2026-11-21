@@ -715,6 +715,9 @@ fn capture_selected_inner(
             .is_some_and(|n| n <= batch_bytes),
         "capture batch allocation exceeds its payment"
     );
+    // From here the source's chunks of this selection may be read ahead of
+    // the comparison, on a lane of their own; the same chunks, in this order.
+    candidate.read_originals_ahead(selection.store.len(), |ordinal| selection.range(ordinal))?;
     for ordinal in 0..selection.store.len() {
         let selected = selection.range(ordinal)?;
         source_digest.update(selected.offset.to_le_bytes());
@@ -729,8 +732,10 @@ fn capture_selected_inner(
                 .checked_add(done)
                 .context("capture selected offset overflow")?;
             let chunk = candidate.read_capture_chunk(at, &mut new_bytes[..count], true)?;
-            candidate.read_original_exact(at, &mut original[..count])?;
-            source_digest.update(crate::parallel_digest::xxh3_128(&original[..count]));
+            // The chunk's XXH3-128 comes with it: where the originals are
+            // read ahead it was made by the thread that read them.
+            let original_xxh3 = candidate.read_original_exact(at, &mut original, count)?;
+            source_digest.update(original_xxh3);
             candidate_digest.update(crate::parallel_digest::xxh3_128(chunk.bytes()));
             if let Some(hash) = &mut raw_digest {
                 hash.update(&original[..count])?;

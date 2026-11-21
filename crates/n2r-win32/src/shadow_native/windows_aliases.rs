@@ -1529,7 +1529,9 @@ impl StagedWindowsAliases {
             let entry = &link.staged.entry;
             let file = &link.staged.file;
             let canonical_held = held(handles, entry.canonical_object_index, "canonical object")?;
-            let reopened_target = if crate::verify_policy::verifies_once() {
+            let reopened_target = if crate::verify_policy::verifies_once()
+                && entry.canonical_components.as_slice() == link.canonical.components
+            {
                 super::validate_bound_type(canonical_held, &link.canonical)?;
                 None
             } else {

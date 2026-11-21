@@ -470,14 +470,13 @@ impl Write for BorrowedPagedWriter<'_> {
         // The device write itself, apart from the policy check above.
         let _timed = crate::perf::scope(crate::perf::Point::DeviceWrite);
         crate::perf::add_bytes(crate::perf::Point::DeviceWrite, input.len() as u64);
-        self.source.file.seek(SeekFrom::Start(offset))?;
         self.source.buffer.bytes_mut()[..input.len()].copy_from_slice(input);
         self.requested = attempted;
-        match self
-            .source
-            .file
-            .write(&self.source.buffer.bytes_mut()[..input.len()])
-        {
+        match std::os::windows::fs::FileExt::seek_write(
+            &self.source.file,
+            &self.source.buffer.bytes_mut()[..input.len()],
+            offset,
+        ) {
             Ok(count) if count == input.len() => {
                 self.written += count as u64;
                 let at = self.source.position;
@@ -548,10 +547,29 @@ fn verify_index_against_journal(
             "held recovery journal header differs from the paged policy",
         ));
     }
+    const DESCRIPTOR_WINDOW: usize = 64 * 1024;
+    let mut window = vec![0u8; DESCRIPTOR_WINDOW];
+    let mut window_start = 0u64;
+    let mut window_len = 0usize;
+    let journal_end = facts.journal_length;
     for ordinal in 0..u64::from(facts.range_count) {
         let row = policy.row(ordinal)?;
         let mut descriptor = [0; 104];
-        read_at(file, row.descriptor_offset, &mut descriptor[..record_size])?;
+        let at = row.descriptor_offset;
+        let end = at
+            .checked_add(record_size as u64)
+            .ok_or_else(|| invalid("journal descriptor offset overflow"))?;
+        if end > journal_end {
+            return Err(invalid("journal descriptor escapes journal length"));
+        }
+        if !(at >= window_start && end <= window_start + window_len as u64) {
+            let to_read = (journal_end - at).min(DESCRIPTOR_WINDOW as u64) as usize;
+            read_at(file, at, &mut window[..to_read])?;
+            window_start = at;
+            window_len = to_read;
+        }
+        let rel = (at - window_start) as usize;
+        descriptor[..record_size].copy_from_slice(&window[rel..rel + record_size]);
         let new_kind = if facts.format_version >= 2 {
             u64_at(&descriptor, 16)
         } else {
@@ -782,26 +800,29 @@ fn verify_paged_new_bytes<R: Read + Seek>(
         ));
     }
     verify_index_against_journal(journal, policy, pins)?;
-    if !selected_new_bytes_already_verified(pins) {
+    let checked_now = !selected_new_bytes_already_verified(pins);
+    if checked_now {
         verify_selected_digest(source, policy, pins.digest, pins.new_selected_sha256)?;
         note_selected_new_bytes_verified(&pins.immutable_sha256, &pins.new_selected_sha256);
     }
     state.check(journal, pins)?;
-    if crate::bulk_digest::journal_body(
-        pins.digest,
-        journal,
-        BODY,
-        facts.journal_length - BODY,
-        &pins.immutable_sha256,
-    )? != pins.immutable_sha256
-    {
-        return Err(state.say(
-            "handoff journal changed during selected-byte verification",
-            "before the handoff: the journal changed during selected-byte verification",
-        ));
+    if checked_now {
+        if crate::bulk_digest::journal_body(
+            pins.digest,
+            journal,
+            BODY,
+            facts.journal_length - BODY,
+            &pins.immutable_sha256,
+        )? != pins.immutable_sha256
+        {
+            return Err(state.say(
+                "handoff journal changed during selected-byte verification",
+                "before the handoff: the journal changed during selected-byte verification",
+            ));
+        }
+        verify_index_against_journal(journal, policy, pins)?;
+        state.check(journal, pins)?;
     }
-    verify_index_against_journal(journal, policy, pins)?;
-    state.check(journal, pins)?;
     let after = verify_journal_owner(journal, pins, facts.journal_length)?;
     if before.identity != after.identity
         || before.file_bytes != after.file_bytes

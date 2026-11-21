@@ -427,7 +427,7 @@ fn check_side(
     expected: &[u8; 32],
     range: &SelectedRange,
     mut aggregate: Option<&mut PinHash>,
-    immutable: &mut PinHash,
+    mut immutable: Option<&mut PinHash>,
     digests: &mut RowDigests,
     buffer: &mut [u8],
     descriptors_only: bool,
@@ -438,6 +438,9 @@ fn check_side(
         }
         return Ok(());
     }
+    let immutable = immutable
+        .as_deref_mut()
+        .context("immutable pin hash absent for full journal scan")?;
     if let Some(aggregate) = aggregate.as_deref_mut() {
         frame(aggregate, range)?;
     }
@@ -613,10 +616,23 @@ impl<'a> JournalObservation<'a> {
         let mut index_hash = Sha256::new();
         output.write_all(&index_head)?;
         index_hash.update(index_head);
-        let mut immutable = aggregate_pin_hash(algorithm)?;
-        immutable.update(&header)?;
-        let mut old = aggregate_pin_hash(algorithm)?;
-        let mut new = Some(aggregate_pin_hash(algorithm)?);
+        let mut immutable = if descriptors_only {
+            None
+        } else {
+            let mut h = aggregate_pin_hash(algorithm)?;
+            h.update(&header)?;
+            Some(h)
+        };
+        let mut old = if descriptors_only {
+            None
+        } else {
+            Some(aggregate_pin_hash(algorithm)?)
+        };
+        let mut new = if descriptors_only {
+            None
+        } else {
+            Some(aggregate_pin_hash(algorithm)?)
+        };
         let mut buffer = vec![0u8; BUFFER];
         let mut selected = 0u64;
         let mut source_free = 0u64;
@@ -643,7 +659,9 @@ impl<'a> JournalObservation<'a> {
             for _ in 0..ticket.range_count {
                 let mut descriptor = [0u8; OLD_ZERO_RECORD];
                 reader.read_exact(journal, &mut descriptor[..fmt.record_size])?;
-                immutable.update(&descriptor[..fmt.record_size])?;
+                if let Some(immutable) = immutable.as_mut() {
+                    immutable.update(&descriptor[..fmt.record_size])?;
+                }
                 let row = Record::decode(&descriptor, position, fmt, ticket.image_length)?;
                 ensure!(
                     row.offset >= previous_end && row.next <= ticket.journal_length - FOOTER as u64,
@@ -673,7 +691,7 @@ impl<'a> JournalObservation<'a> {
                         &row.old_hash,
                         &range,
                         None,
-                        &mut immutable,
+                        immutable.as_mut(),
                         &mut row_digests,
                         &mut buffer,
                         descriptors_only,
@@ -689,8 +707,8 @@ impl<'a> JournalObservation<'a> {
                         row.old_kind == 0,
                         &row.old_hash,
                         &range,
-                        Some(&mut old),
-                        &mut immutable,
+                        old.as_mut(),
+                        immutable.as_mut(),
                         &mut row_digests,
                         &mut buffer,
                         descriptors_only,
@@ -713,7 +731,7 @@ impl<'a> JournalObservation<'a> {
                         &row.new_hash,
                         &range,
                         new.as_mut(),
-                        &mut immutable,
+                        immutable.as_mut(),
                         &mut row_digests,
                         &mut buffer,
                         descriptors_only,
@@ -745,7 +763,9 @@ impl<'a> JournalObservation<'a> {
         row_digests.finish()?;
         let mut footer = [0u8; FOOTER];
         reader.read_exact(journal, &mut footer)?;
-        immutable.update(&footer)?;
+        if let Some(immutable) = immutable.as_mut() {
+            immutable.update(&footer)?;
+        }
         // The pass over the rows is over, and its window goes back. Where
         // it ended is held to the journal's length below.
         let scanned_to = reader.position();
@@ -776,11 +796,13 @@ impl<'a> JournalObservation<'a> {
                 && get_u64(&footer, 72) == ticket.journal_length
                 && scanned_to == ticket.journal_length
                 && (descriptors_only
-                    || finish(old)?
+                    || finish(old.context("OLD aggregate hash absent")?)?
                         == ticket
                             .old_restored_selected_sha256
                             .unwrap_or(ticket.old_selected_sha256))
-                && (descriptors_only || finish(immutable)? == ticket.immutable_sha256),
+                && (descriptors_only
+                    || finish(immutable.context("immutable aggregate hash absent")?)?
+                        == ticket.immutable_sha256),
             "recovery immutable body, footer or OLD aggregate differs"
         );
         if let Some(new) = new {

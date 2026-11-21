@@ -261,13 +261,16 @@ fn write_partition_span(
         )?;
         super::apply::record(row, domain, &mut journal)?
     };
+    let check_before_write = !n2r_win32::verify_policy::verifies_once();
     let mut done = 0;
     while done < length {
         let count = usize::try_from((length - done).min(BUFFER as u64))?;
         let within = add(start, done)?;
         let offset = add(row.capture.offset, within)?;
-        at(writer, offset, &mut buffers.current[..count])
-            .with_context(||format!("partition apply: current-source read request offset={offset},bytes={count} (includes pending flush/readback)"))?;
+        if check_before_write {
+            at(writer, offset, &mut buffers.current[..count])
+                .with_context(||format!("partition apply: current-source read request offset={offset},bytes={count} (includes pending flush/readback)"))?;
+        }
         {
             let mut journal = writer.journal_read_view().context(
                 "partition apply: opening same-J read view after pending source flush/readback",
@@ -280,27 +283,29 @@ fn write_partition_span(
                 within,
                 &mut buffers.new[..count],
             )?;
-            if row.capture.old_is_source_free {
-                sj::check_free_granules(
-                    &mut journal,
-                    &original,
-                    within,
-                    &buffers.current[..count],
-                    Some(&buffers.new[..count]),
-                )?;
-            } else {
-                sj::read_before(&mut journal, &original, within, &mut buffers.old[..count])?;
-                ensure!(
-                    sj::bytes_are_old_or_new(
+            if check_before_write {
+                if row.capture.old_is_source_free {
+                    sj::check_free_granules(
+                        &mut journal,
+                        &original,
+                        within,
                         &buffers.current[..count],
-                        &buffers.old[..count],
-                        &buffers.new[..count]
-                    ),
-                    "partition selected bytes changed immediately before native write"
-                );
+                        Some(&buffers.new[..count]),
+                    )?;
+                } else {
+                    sj::read_before(&mut journal, &original, within, &mut buffers.old[..count])?;
+                    ensure!(
+                        sj::bytes_are_old_or_new(
+                            &buffers.current[..count],
+                            &buffers.old[..count],
+                            &buffers.new[..count]
+                        ),
+                        "partition selected bytes changed immediately before native write"
+                    );
+                }
             }
         }
-        if buffers.current[..count] != buffers.new[..count] {
+        if !check_before_write || buffers.current[..count] != buffers.new[..count] {
             writer.seek(SeekFrom::Start(offset))
                 .with_context(||format!("partition apply: prewrite logical seek offset={offset} (includes pending flush/readback)"))?;
             ensure!(

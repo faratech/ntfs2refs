@@ -4375,15 +4375,14 @@ impl Write for GeneralJournaledPartition {
                 "general native write violates bounded journal policy",
             ));
         }
-        self.inner.file.seek(SeekFrom::Start(
-            self.inner.binding.identity.partition_offset + self.inner.position,
-        ))?;
         self.inner.buffer.bytes_mut()[..input.len()].copy_from_slice(input);
         self.native_write_bytes_requested = attempted;
-        let result = self
-            .inner
-            .file
-            .write(&self.inner.buffer.bytes_mut()[..input.len()]);
+        let write_offset = self.inner.binding.identity.partition_offset + self.inner.position;
+        let result = std::os::windows::fs::FileExt::seek_write(
+            &self.inner.file,
+            &self.inner.buffer.bytes_mut()[..input.len()],
+            write_offset,
+        );
         match result {
             Ok(count) => {
                 self.native_bytes_written += count as u64;

@@ -758,9 +758,12 @@ pub(crate) fn inspect_paged_with_layout_scope<R: Read + Seek>(
 /// paid for is written by the scan's thread after the rows before it, as
 /// before; so is every row of a scan without the worker's memory or thread,
 /// and every row after one whose JSON came out longer than its estimate.
+/// The worker serializes each row into a buffer of exactly its estimate and
+/// stops there: such a row comes back unserialized and is written by the
+/// scan's thread.
 struct RowsAhead {
-    jobs: Option<std::sync::mpsc::SyncSender<FileInventory>>,
-    done: std::sync::mpsc::Receiver<std::result::Result<Vec<u8>, String>>,
+    jobs: Option<std::sync::mpsc::SyncSender<(FileInventory, usize)>>,
+    done: std::sync::mpsc::Receiver<Serialized>,
     worker: Option<std::thread::JoinHandle<()>>,
     in_flight: std::collections::VecDeque<RowInFlight>,
     /// What the rows in flight are paid with between them.
@@ -769,23 +772,54 @@ struct RowsAhead {
     row_bytes: u64,
     _workspace: Option<super::paged_storage::SourceRamLease>,
 }
-/// A row handed to the worker: its record, the JSON it was paid for, all it
-/// was paid for and the lease that pays it.
+/// A row handed to the worker: its record, all it was paid for and the
+/// lease that pays it.
 struct RowInFlight {
     number: u64,
-    json_estimate: u64,
     bytes: u64,
     _paid: super::paged_storage::SourceRamLease,
 }
+/// What the worker made of a row.
+enum Serialized {
+    /// Its JSON, within the estimate it was paid for.
+    Json(Vec<u8>),
+    /// Its JSON is longer than that estimate: the row, for the scan's thread.
+    Longer(FileInventory),
+    /// What serializing it failed with.
+    Failed(String),
+}
+/// A buffer of `limit` bytes that refuses to grow beyond them.
+struct Bounded {
+    bytes: Vec<u8>,
+    limit: usize,
+    over: bool,
+}
+impl std::io::Write for Bounded {
+    fn write(&mut self, input: &[u8]) -> std::io::Result<usize> {
+        if self.bytes.len().saturating_add(input.len()) > self.limit {
+            self.over = true;
+            return Err(std::io::Error::other(
+                "raw file row longer than its estimate",
+            ));
+        }
+        self.bytes.extend_from_slice(input);
+        Ok(input.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 impl RowsAhead {
-    /// Rows handed to the worker and not yet written, at most.
+    /// Rows handed to the worker and not yet written, at most (queued,
+    /// being serialized or serialized and waiting to be written).
     const IN_FLIGHT: usize = 64;
     /// What the rows in flight may be paid with between them, at most.
     const POOL_BYTES: u64 = 32 * 1024 * 1024;
     /// The worker's thread, beside the rows.
     const WORKSPACE_BYTES: u64 = 2 * 1024 * 1024;
     fn new(scratch: &SourceScratch, row_bytes: u64) -> Self {
-        let (jobs, received) = std::sync::mpsc::sync_channel::<FileInventory>(Self::IN_FLIGHT);
+        let (jobs, received) =
+            std::sync::mpsc::sync_channel::<(FileInventory, usize)>(Self::IN_FLIGHT);
         let (finished, done) = std::sync::mpsc::channel();
         let mut workspace = scratch.lease_spare_ram(Self::WORKSPACE_BYTES).ok();
         let worker = workspace.as_ref().and_then(|_| {
@@ -793,11 +827,20 @@ impl RowsAhead {
                 .name("raw-file-rows".into())
                 .spawn(move || {
                     let _sampled = n2r_win32::stack_sampler::helper();
-                    for inventory in received {
-                        let json =
-                            serde_json::to_vec(&inventory).map_err(|error| error.to_string());
-                        drop(inventory);
-                        if finished.send(json).is_err() {
+                    for (inventory, estimate) in received {
+                        // Exactly the estimate the row was paid for: the
+                        // buffer never grows past it.
+                        let mut json = Bounded {
+                            bytes: Vec::with_capacity(estimate),
+                            limit: estimate,
+                            over: false,
+                        };
+                        let made = match serde_json::to_writer(&mut json, &inventory) {
+                            Ok(()) => Serialized::Json(json.bytes),
+                            Err(_) if json.over => Serialized::Longer(inventory),
+                            Err(error) => Serialized::Failed(error.to_string()),
+                        };
+                        if finished.send(made).is_err() {
                             break;
                         }
                     }
@@ -846,8 +889,10 @@ impl RowsAhead {
                     .map(|bytes| (json_estimate, bytes))
             });
         if let Some((_, bytes)) = wanted {
-            // Room in the pool is made by writing the oldest rows first.
-            while self.held.saturating_add(bytes) > Self::POOL_BYTES
+            // Room in the pool, and among the rows in flight, is made by
+            // writing the oldest rows first.
+            while (self.held.saturating_add(bytes) > Self::POOL_BYTES
+                || self.in_flight.len() >= Self::IN_FLIGHT)
                 && self.write_next(writer, true)?
             {}
         }
@@ -859,12 +904,11 @@ impl RowsAhead {
         });
         match (paid, &self.jobs) {
             (Some((json_estimate, bytes, lease)), Some(jobs)) => {
-                jobs.send(inventory)
+                jobs.send((inventory, usize::try_from(json_estimate)?))
                     .map_err(|_| anyhow::anyhow!("the raw file row worker stopped"))?;
                 self.held = self.held.saturating_add(bytes);
                 self.in_flight.push_back(RowInFlight {
                     number,
-                    json_estimate,
                     bytes,
                     _paid: lease,
                 });
@@ -882,30 +926,34 @@ impl RowsAhead {
         if self.in_flight.is_empty() {
             return Ok(false);
         }
-        let json = if wait {
+        let made = if wait {
             self.done
                 .recv()
                 .map_err(|_| anyhow::anyhow!("the raw file row worker stopped"))?
         } else {
             match self.done.try_recv() {
-                Ok(json) => json,
+                Ok(made) => made,
                 Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(false),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     anyhow::bail!("the raw file row worker stopped")
                 }
             }
         };
-        let json = json.map_err(anyhow::Error::msg)?;
         let row = self
             .in_flight
             .pop_front()
             .context("raw file row in flight absent")?;
-        if json.len() as u64 > row.json_estimate {
-            // The estimate does not hold for this volume's rows: the worker
-            // finishes the rows it holds, and the scan writes the rest.
-            self.jobs = None;
+        match made {
+            Serialized::Json(json) => writer.push_serialized(file_key(row.number), &json)?,
+            Serialized::Longer(inventory) => {
+                // The estimate does not hold for this volume's rows: the
+                // worker finishes the rows it holds, and the scan writes
+                // this one and every one after them.
+                self.jobs = None;
+                writer.push(file_key(row.number), &inventory)?;
+            }
+            Serialized::Failed(error) => anyhow::bail!(error),
         }
-        writer.push_serialized(file_key(row.number), &json)?;
         self.held = self.held.saturating_sub(row.bytes);
         Ok(true)
     }

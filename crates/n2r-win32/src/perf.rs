@@ -180,10 +180,12 @@ static STEPS: Mutex<Steps> = Mutex::new(Steps {
 // its holders were last written down at with what they were.
 static STEP_NEEDED_PEAK: AtomicU64 = AtomicU64::new(0);
 static STEP_HOLDERS: Mutex<(u64, String)> = Mutex::new((0, String::new()));
+static STEP_HOLDERS_DESCRIBED: AtomicU64 = AtomicU64::new(0);
 
 /// Ends the running step's memory record and files it under its name.
 fn end_step_memory(steps: &mut Steps, name: &'static str) {
     let peak = STEP_NEEDED_PEAK.swap(0, Relaxed);
+    STEP_HOLDERS_DESCRIBED.store(0, Relaxed);
     let holders = STEP_HOLDERS
         .lock()
         .map(|mut holders| std::mem::take(&mut *holders).1)
@@ -306,6 +308,7 @@ static LEDGER_NEEDED_PEAK: AtomicU64 = AtomicU64::new(0);
 // What held the ledger's memory when the needed peak was last written down,
 // and the level it was written down at.
 static LEDGER_HOLDERS: Mutex<(u64, String)> = Mutex::new((0, String::new()));
+static LEDGER_HOLDERS_DESCRIBED: AtomicU64 = AtomicU64::new(0);
 
 /// What a run's memory ledger holds after a reservation, and what it may
 /// hold: the highest level is printed with the totals, so that what a
@@ -331,16 +334,14 @@ pub fn note_ledger(held: u64, needed: u64, limit: u64) -> bool {
     if LEDGER_PEAK.fetch_max(held, Relaxed) < held {
         LEDGER_LIMIT.store(limit, Relaxed);
     }
-    // The running step's own highest level, and the run's.
-    let step_due = STEP_NEEDED_PEAK.fetch_max(needed, Relaxed) < needed && {
-        let described = STEP_HOLDERS.lock().map_or(u64::MAX, |holders| holders.0);
-        holders_due(needed, described, limit)
-    };
+    // The running step's own highest level, and the run's. Lock-free on the
+    // fast path (called under ArtifactArena's mutex on every reservation).
+    let step_due = STEP_NEEDED_PEAK.fetch_max(needed, Relaxed) < needed
+        && holders_due(needed, STEP_HOLDERS_DESCRIBED.load(Relaxed), limit);
     if LEDGER_NEEDED_PEAK.fetch_max(needed, Relaxed) >= needed {
         return step_due;
     }
-    let described = LEDGER_HOLDERS.lock().map_or(u64::MAX, |holders| holders.0);
-    step_due || holders_due(needed, described, limit)
+    step_due || holders_due(needed, LEDGER_HOLDERS_DESCRIBED.load(Relaxed), limit)
 }
 
 fn holders_due(needed: u64, described: u64, limit: u64) -> bool {
@@ -367,12 +368,14 @@ pub fn note_ledger_holders(needed: u64, holders: String) {
         && needed > described.0
     {
         *described = (needed, holders.clone());
+        STEP_HOLDERS_DESCRIBED.store(needed, Relaxed);
     }
     if let Ok(mut described) = LEDGER_HOLDERS.lock()
         && needed > described.0
         && needed >= LEDGER_NEEDED_PEAK.load(Relaxed)
     {
         *described = (needed, holders);
+        LEDGER_HOLDERS_DESCRIBED.store(needed, Relaxed);
     }
 }
 

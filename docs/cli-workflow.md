@@ -758,6 +758,11 @@ it to its run.
     written, and it is examined once when it is complete; its payloads and
     its metadata are not read back a second time in between, and its
     directories are not listed again after their metadata is restored.
+  - **Tails.** The end of a stream that does not fill a whole cluster is
+    read from the volume once, when it is copied to the new volume, and the
+    checksum of that reading is what the new volume's copy is held to. It is
+    not read from the volume a second time before the changes are captured
+    (a sparse stream's is).
   - **Placing the new volume's extents.** After each move only the mapping
     of the moved range is read, to see that it landed where it was sent.
     Each file's complete mapping is compared with every piece placed for it

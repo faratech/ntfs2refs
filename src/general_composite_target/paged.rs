@@ -247,6 +247,16 @@ impl SourceTailProvider {
             .context("paged target requires resource admission")?;
         expected.require_resource_owner(admission)?;
         bytes.require_admission(admission)?;
+        // The digests the payload supply kept of the tails it read are for
+        // this pass alone: they go, and their memory with them, when it has
+        // written its rows or has failed.
+        struct SuppliedTailsEnd;
+        impl Drop for SuppliedTailsEnd {
+            fn drop(&mut self) {
+                crate::general_shadow::source_backed::forget_supplied_tails();
+            }
+        }
+        let _supplied_tails_end = SuppliedTailsEnd;
         let mut writer = SortedRecordWriter::new(path, *b"N2RSRTL1", scratch)?;
         // A tail is shorter than one target cluster.
         let cluster = n2r_win32::target_cluster::bytes();
@@ -315,13 +325,27 @@ impl SourceTailProvider {
                     sha256: stream.sha256,
                     allow_sparse: stream.sparse.is_some(),
                 };
-                let proof = bytes.read_range_proof(&identity, offset, &mut buffer[..count])?;
-                ensure!(
-                    proof.stream_logical_bytes == stream.length
-                        && proof.expected_stream_sha256.as_deref() == stream.sha256
-                        && proof.stream_name_utf16 == stream.name_utf16,
-                    "source residual identity changed"
-                );
+                // The payload supply of this run read this tail from the same
+                // frozen source and hashed it. A run that verifies each
+                // thing once takes that digest, with the stream held to the
+                // source's record of it as for a read; every other run, and
+                // every tail the supply did not read, reads the tail here.
+                // The row is the same either way: the SHA-256 of the same
+                // bytes of the same stream.
+                let sha256 = match bytes.supplied_tail_sha256(&identity, offset, count as u64)? {
+                    Some(sha256) => sha256,
+                    None => {
+                        let proof =
+                            bytes.read_range_proof(&identity, offset, &mut buffer[..count])?;
+                        ensure!(
+                            proof.stream_logical_bytes == stream.length
+                                && proof.expected_stream_sha256.as_deref() == stream.sha256
+                                && proof.stream_name_utf16 == stream.name_utf16,
+                            "source residual identity changed"
+                        );
+                        proof.sha256
+                    }
+                };
                 writer.push(
                     key(index as u64, ordinal as u64),
                     &LayoutResidualExpectation {
@@ -329,7 +353,7 @@ impl SourceTailProvider {
                         stream_name_utf16: stream.name_utf16.to_vec(),
                         logical_offset: offset,
                         length: count as u64,
-                        sha256: proof.sha256,
+                        sha256,
                     },
                 )?;
             }

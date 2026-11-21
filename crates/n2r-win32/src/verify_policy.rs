@@ -45,6 +45,12 @@ static VERIFY_ONCE: AtomicBool = AtomicBool::new(false);
 /// - the shadow's payloads and metadata read back before the capture and
 ///   again by the walk of the frozen shadow, and its directories listed again
 ///   after their metadata is restored;
+/// - the tail of a stream (what lies beyond its last whole cluster) read from
+///   the source when it is supplied to the shadow and read again when the
+///   capture writes down what the shadow's tails must hold: the capture
+///   takes the digest of the supply's reading (the stream is still held to
+///   the source's record of it there, and a tail the supply did not read,
+///   a sparse stream's among them, is read as before);
 /// - a move of the shadow's extents held to the mapping of the range it
 ///   moved, and each file's complete mapping compared once, when placement
 ///   ends, instead of after every one of its moves;

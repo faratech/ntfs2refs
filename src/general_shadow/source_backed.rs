@@ -731,6 +731,169 @@ pub type PagedSourceByteAdapter<'a> = PagedSourceByteAdapterWithScope<'a, 'a>;
 /// supply, verification and capture.
 pub(super) const SESSION_WORKSPACE: u64 = 4 * 16 * 4096;
 
+/// The tail of one stream (what lies beyond its last whole target cluster)
+/// as the payload supply read it from the source.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct SuppliedTail {
+    record_number: u64,
+    sequence_number: u16,
+    name_utf16: Vec<u16>,
+    stream_length: u64,
+    tail_offset: u64,
+}
+impl SuppliedTail {
+    /// The tail of `identity`'s stream, if it has one and is not sparse: a
+    /// sparse stream's tail is read with its allocation evidence, every time.
+    fn of(identity: &PagedStreamIdentity<'_>) -> Option<Self> {
+        let tail_offset = n2r_win32::target_cluster::floor(identity.length);
+        (!identity.allow_sparse && tail_offset != identity.length).then(|| Self {
+            record_number: identity.record_number,
+            sequence_number: identity.sequence_number,
+            name_utf16: identity.name_utf16.to_vec(),
+            stream_length: identity.length,
+            tail_offset,
+        })
+    }
+    /// What one kept tail is charged: the row and its name, twice over for
+    /// the map that holds it.
+    fn charge(&self) -> u64 {
+        ((std::mem::size_of::<Self>() + 32 + 2 * self.name_utf16.len()) * 2) as u64
+    }
+}
+
+/// The SHA-256 of the stream tails the payload supply read, for the capture
+/// that follows it in a run that verifies each thing once.
+///
+/// The supply reads every tail it copies to the shadow and hashes what it
+/// read. The capture then read the same tails from the same frozen source a
+/// second time, one small read at the end of every file, to write down what
+/// the shadow's tails must hold: 22 s of a full Windows volume. A run that
+/// verifies each thing once keeps the digest of the supply's reading here
+/// and the capture takes it from here, after holding the stream to the
+/// source's record of it as before. A tail that is not here (a sparse
+/// stream's, a system file's, one a resumed run supplied in an earlier
+/// process, one given up for memory) is read as before.
+///
+/// It is a cache of the run: paid for a block at a time as optional memory
+/// of the run's ledger, given up when memory is short, and nothing depends
+/// on it. It belongs to the thread that drives the run and to one source,
+/// by that source's inspection pin. The capture forgets it once it has its
+/// tails.
+#[derive(Default)]
+struct SuppliedTailRows {
+    source_pin: [u8; 32],
+    rows: std::collections::BTreeMap<SuppliedTail, [u8; 32]>,
+    leases: Vec<crate::artifact_arena::ArenaRamLease>,
+    unspent: u64,
+    // Tails still to pass by before the ledger is asked again.
+    refused_for: u32,
+}
+struct SuppliedTails {
+    kept: std::cell::RefCell<SuppliedTailRows>,
+    // When it was last used, on the thread's clock of cache uses.
+    used: std::cell::Cell<u64>,
+}
+const SUPPLIED_TAIL_BLOCK_BYTES: u64 = 1024 * 1024;
+const SUPPLIED_TAIL_RETRY: u32 = 4096;
+impl n2r_win32::evict::Evict for SuppliedTails {
+    fn last_used(&self) -> u64 {
+        self.used.get()
+    }
+    fn evict(&self) -> bool {
+        // Borrowed means in use at this moment: left alone. What is taken
+        // is dropped after the borrow has ended, the rows before the blocks
+        // that paid for them.
+        let taken = match self.kept.try_borrow_mut() {
+            Ok(mut tails) if !tails.leases.is_empty() => {
+                tails.unspent = 0;
+                // Memory was short: not asked for again at once.
+                tails.refused_for = SUPPLIED_TAIL_RETRY;
+                Some((
+                    std::mem::take(&mut tails.rows),
+                    std::mem::take(&mut tails.leases),
+                ))
+            }
+            _ => None,
+        };
+        taken.is_some()
+    }
+}
+impl SuppliedTails {
+    /// The rows of the source with this pin: those of another are dropped.
+    fn of_source(&self, source_pin: [u8; 32]) -> std::cell::RefMut<'_, SuppliedTailRows> {
+        let mut tails = self.kept.borrow_mut();
+        if tails.source_pin != source_pin {
+            *tails = SuppliedTailRows {
+                source_pin,
+                ..Default::default()
+            };
+        }
+        tails
+    }
+    fn keep(
+        &self,
+        source_pin: [u8; 32],
+        tail: SuppliedTail,
+        sha256: [u8; 32],
+        arena: impl FnOnce() -> Option<crate::artifact_arena::ArtifactArena>,
+    ) {
+        self.used.set(n2r_win32::evict::now());
+        let mut tails = self.of_source(source_pin);
+        if tails.rows.contains_key(&tail) {
+            return;
+        }
+        if tails.refused_for > 0 {
+            tails.refused_for -= 1;
+            return;
+        }
+        let bytes = tail.charge();
+        if tails.unspent < bytes {
+            let block = SUPPLIED_TAIL_BLOCK_BYTES.max(bytes);
+            match arena().and_then(|arena| arena.reserve_optional_ram(block).ok()) {
+                Some(lease) => {
+                    tails.leases.push(lease);
+                    tails.unspent += block;
+                }
+                None => {
+                    tails.refused_for = SUPPLIED_TAIL_RETRY;
+                    return;
+                }
+            }
+        }
+        tails.unspent -= bytes;
+        tails.rows.insert(tail, sha256);
+    }
+    fn get(&self, source_pin: [u8; 32], tail: &SuppliedTail) -> Option<[u8; 32]> {
+        self.used.set(n2r_win32::evict::now());
+        self.of_source(source_pin).rows.get(tail).copied()
+    }
+    fn forget(&self) {
+        // Dropped after the borrow has ended, as when it is given up.
+        let taken = self
+            .kept
+            .try_borrow_mut()
+            .ok()
+            .map(|mut tails| std::mem::take(&mut *tails));
+        drop(taken);
+    }
+}
+thread_local! {
+    static SUPPLIED_TAILS: std::rc::Rc<SuppliedTails> = {
+        let tails = std::rc::Rc::new(SuppliedTails {
+            kept: std::cell::RefCell::default(),
+            used: std::cell::Cell::new(0),
+        });
+        n2r_win32::evict::register(&tails);
+        tails
+    };
+}
+
+/// The capture has its tail rows, or has failed: the digests the supply
+/// kept for it are dropped, and the memory that paid for them returned.
+pub(crate) fn forget_supplied_tails() {
+    let _ = SUPPLIED_TAILS.try_with(|tails| tails.forget());
+}
+
 pub struct PagedSourceByteAdapterWithScope<'a, 'scope> {
     source: BorrowedPagedSource<'a, 'scope>,
     raw: &'a crate::ntfs_inspect::PagedInspection,
@@ -1137,7 +1300,9 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
                 anyhow::bail!("checked full source stream differs from expected content");
             }
         }
-        let sha256 = hex::encode(n2r_win32::content_digest::sha256(output)?);
+        let digest = n2r_win32::content_digest::sha256(output)?;
+        self.keep_supplied_tail(identity, offset, output, &digest);
+        let sha256 = hex::encode(digest);
         // Closing the stream's session reads its file record again (all of
         // them, for a stream with an attribute list) and checks the mapping.
         // Where everything is re-read at each step that happens after every
@@ -1159,6 +1324,96 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
             whole_stream_hash_matched: whole && identity.sha256.is_some(),
             allocation,
         })
+    }
+
+    /// Keeps the SHA-256 of a stream's tail when the range just read, whose
+    /// SHA-256 is `digest`, reaches from at or before the tail's start to
+    /// the stream's end: for the capture of a run that verifies each thing
+    /// once ([`SuppliedTails`]). Where the range is more than the tail, the
+    /// tail's part of it is hashed by itself. Nothing is kept of a sparse
+    /// stream, without a ledger to pay for it, or in any other run.
+    fn keep_supplied_tail(
+        &self,
+        identity: &PagedStreamIdentity<'_>,
+        offset: u64,
+        output: &[u8],
+        digest: &[u8; 32],
+    ) {
+        if !n2r_win32::verify_policy::verifies_once() {
+            return;
+        }
+        let Some(tail) = SuppliedTail::of(identity) else {
+            return;
+        };
+        if offset > tail.tail_offset
+            || offset.checked_add(output.len() as u64) != Some(identity.length)
+        {
+            return;
+        }
+        let sha256 = if offset == tail.tail_offset {
+            *digest
+        } else {
+            let Some(tail_bytes) = usize::try_from(tail.tail_offset - offset)
+                .ok()
+                .and_then(|start| output.get(start..))
+            else {
+                return;
+            };
+            let Ok(sha256) = n2r_win32::content_digest::sha256(tail_bytes) else {
+                return;
+            };
+            sha256
+        };
+        let pin = self.admission.source_inspection_sha256;
+        let _ = SUPPLIED_TAILS.try_with(|tails| {
+            tails.keep(pin, tail, sha256, || {
+                self.raw
+                    .metadata_scratch()
+                    .artifact_group()
+                    .map(|group| group.arena().clone())
+            })
+        });
+    }
+
+    /// The SHA-256, in hex, of the tail of `identity`'s stream as the
+    /// payload supply of this run read it: `tail_bytes` bytes from
+    /// `tail_offset` to the stream's end. `None` wherever the tail is to be
+    /// read: in a run that does not verify each thing once, inside the gate
+    /// before the first write to the source, for a sparse stream, and for a
+    /// tail the supply did not read or no longer has.
+    ///
+    /// The source's protection and the stream are checked as they are for a
+    /// read: the stream is held to the source's record of it, its session
+    /// is opened, and the mapping is checked again when the session closes.
+    /// Only the tail's bytes are not read a second time.
+    pub(crate) fn supplied_tail_sha256(
+        &mut self,
+        identity: &PagedStreamIdentity<'_>,
+        tail_offset: u64,
+        tail_bytes: u64,
+    ) -> Result<Option<String>> {
+        if !n2r_win32::verify_policy::verifies_once()
+            || !n2r_win32::verify_policy::may_reuse_frozen_reads()
+        {
+            return Ok(None);
+        }
+        let Some(tail) = SuppliedTail::of(identity).filter(|tail| {
+            tail.tail_offset == tail_offset
+                && tail_offset.checked_add(tail_bytes) == Some(identity.length)
+        }) else {
+            return Ok(None);
+        };
+        let pin = self.admission.source_inspection_sha256;
+        let Some(sha256) = SUPPLIED_TAILS
+            .try_with(|tails| tails.get(pin, &tail))
+            .ok()
+            .flatten()
+        else {
+            return Ok(None);
+        };
+        self.validate_protection()?;
+        self.check_stream(identity)?;
+        Ok(Some(hex::encode(sha256)))
     }
 
     pub fn finish(mut self) -> Result<u64> {

@@ -490,11 +490,12 @@ fn is_zero(n: &u64) -> bool {
 }
 impl PagedFileComparison {
     /// The source object this row compared and its internal role, for the
-    /// caller that takes the row. They are the ones the comparison read and
+    /// caller that takes the row. In a run that verifies once (`--verify
+    /// fast`, outside a gate) they are the ones the comparison read and
     /// derived from the held source, where it was looked up and its role
-    /// derived once more, the same way, for each row. With
-    /// `--recheck-everything` (or inside a gate) they still are, and held to
-    /// the row's.
+    /// derived once more, the same way, for each row. Every other run
+    /// (thorough, a diagnosis, `--recheck-everything`, inside a gate) still
+    /// looks it up and derives its role again, held to the row's.
     pub(crate) fn source_file_and_role(
         &self,
         source: &PagedInspection,
@@ -502,7 +503,9 @@ impl PagedFileComparison {
         std::sync::Arc<crate::ntfs_inspect::FileInventory>,
         Option<String>,
     )> {
-        if !n2r_win32::verify_policy::full_unremembered() {
+        if n2r_win32::verify_policy::verifies_once()
+            && !n2r_win32::verify_policy::full_unremembered()
+        {
             return Ok((
                 std::sync::Arc::clone(&self.source_file),
                 self.internal_replacement_role.clone(),

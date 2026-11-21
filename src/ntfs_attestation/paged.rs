@@ -834,11 +834,13 @@ fn compare_domain_with_header(
                 "native stream metadata open refused"
             );
             // Both captures are held to the raw model, and to each other.
-            // Where they are equal (a single content pass mirrors the first
-            // into the second) the check of the second is the check of the
-            // first on the same input: it is not made twice.
+            // In a run that verifies once, where they are equal (a single
+            // content pass mirrors the first into the second) the check of
+            // the second is the check of the first on the same input: it is
+            // not made twice. Every other run checks both.
             let same = observation.streams_before == observation.streams_after;
-            let captures: &[&Option<n2r_win32::attestation::StreamCapture>] = if same {
+            let once = same && policy.verifies_once();
+            let captures: &[&Option<n2r_win32::attestation::StreamCapture>] = if once {
                 &[&observation.streams_before]
             } else {
                 &[&observation.streams_before, &observation.streams_after]

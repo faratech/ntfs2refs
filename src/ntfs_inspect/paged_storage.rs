@@ -578,6 +578,27 @@ impl SourceScratch {
             _arena_ram: arena_ram,
         })
     }
+    /// Memory that only buys speed (doing more at once), which the caller
+    /// does without when it is refused: `ArtifactArena::reserve_spare_ram`,
+    /// granted only where it leaves room for what the run cannot do
+    /// without. It is not counted in this ledger, which the source's own
+    /// needed reservations are held to, so it is never what one of those
+    /// fails for. Without an arena there is none.
+    #[track_caller]
+    pub fn lease_spare_ram(&self, bytes: u64) -> Result<SourceRamLease> {
+        let permit = {
+            let ledger = self.0.borrow();
+            ensure!(!ledger.poisoned, "source scratch is poisoned");
+            ledger.arena.clone()
+        };
+        let permit = permit.context("spare memory needs the run's memory ledger")?;
+        let arena_ram = permit.arena().reserve_spare_ram(bytes)?;
+        Ok(SourceRamLease {
+            scratch: self.clone(),
+            bytes: 0,
+            _arena_ram: Some(arena_ram),
+        })
+    }
     #[track_caller]
     fn lease_window(&self) -> Result<SourceRamLease> {
         let bytes = u64::from(self.budget().page_bytes)

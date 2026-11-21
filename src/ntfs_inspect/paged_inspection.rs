@@ -745,6 +745,128 @@ pub(crate) fn inspect_paged_with_layout_scope<R: Read + Seek>(
     inspect_paged_internal(reader, length, resources, policy, root, scratch, purpose)
 }
 
+/// The raw file rows of the MFT scan, serialized on a worker thread while
+/// the scan reads and parses the records after them (#250): serializing
+/// each row was about a quarter of the scan's single thread. Rows are
+/// written to the store in record order, as the scan made them; a row the
+/// memory for which (its inventory and its JSON, as spare working RAM)
+/// cannot be had, and every row of a scan without the worker's own memory,
+/// is written by the scan's thread after the rows before it, as before.
+struct RowsAhead {
+    jobs: Option<std::sync::mpsc::SyncSender<FileInventory>>,
+    done: std::sync::mpsc::Receiver<std::result::Result<Vec<u8>, String>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+    in_flight: std::collections::VecDeque<(u64, super::paged_storage::SourceRamLease)>,
+    scratch: SourceScratch,
+    row_bytes: u64,
+    _workspace: Option<super::paged_storage::SourceRamLease>,
+}
+impl RowsAhead {
+    /// Rows handed to the worker and not yet written, at most.
+    const IN_FLIGHT: usize = 64;
+    /// The worker's thread and its serializer's buffer, beside the rows.
+    const WORKSPACE_BYTES: u64 = 2 * 1024 * 1024;
+    fn new(scratch: &SourceScratch, row_bytes: u64) -> Self {
+        let (jobs, received) = std::sync::mpsc::sync_channel::<FileInventory>(Self::IN_FLIGHT);
+        let (finished, done) = std::sync::mpsc::channel();
+        let workspace = scratch
+            .lease_ram_if_room(Self::WORKSPACE_BYTES.saturating_add(row_bytes))
+            .ok();
+        let worker = workspace.as_ref().and_then(|_| {
+            std::thread::Builder::new()
+                .name("raw-file-rows".into())
+                .spawn(move || {
+                    let _sampled = n2r_win32::stack_sampler::helper();
+                    for inventory in received {
+                        let json = serde_json::to_vec(&inventory).map_err(|error| error.to_string());
+                        drop(inventory);
+                        if finished.send(json).is_err() {
+                            break;
+                        }
+                    }
+                })
+                .ok()
+        });
+        Self {
+            jobs: worker.as_ref().map(|_| jobs),
+            done,
+            worker,
+            in_flight: std::collections::VecDeque::new(),
+            scratch: scratch.clone(),
+            row_bytes,
+            _workspace: workspace,
+        }
+    }
+    fn push(
+        &mut self,
+        writer: &mut SortedRecordWriter,
+        number: u64,
+        inventory: FileInventory,
+    ) -> Result<()> {
+        self.write_ready(writer, false)?;
+        let lease = self.jobs.as_ref().and_then(|_| {
+            file_heap_bytes(&inventory)
+                .ok()
+                .and_then(|heap| heap.checked_add(self.row_bytes))
+                .and_then(|bytes| self.scratch.lease_ram_if_room(bytes).ok())
+        });
+        match (lease, &self.jobs) {
+            (Some(lease), Some(jobs)) => {
+                jobs.send(inventory)
+                    .map_err(|_| anyhow::anyhow!("the raw file row worker stopped"))?;
+                self.in_flight.push_back((number, lease));
+                Ok(())
+            }
+            _ => {
+                self.write_ready(writer, true)?;
+                writer.push(file_key(number), &inventory)
+            }
+        }
+    }
+    /// Writes the rows the worker has finished, in order; with `wait`,
+    /// every row handed to it.
+    fn write_ready(&mut self, writer: &mut SortedRecordWriter, wait: bool) -> Result<()> {
+        while let Some(&(number, _)) = self.in_flight.front() {
+            let json = if wait {
+                self.done
+                    .recv()
+                    .map_err(|_| anyhow::anyhow!("the raw file row worker stopped"))?
+            } else {
+                match self.done.try_recv() {
+                    Ok(json) => json,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        anyhow::bail!("the raw file row worker stopped")
+                    }
+                }
+            };
+            let json = json.map_err(anyhow::Error::msg)?;
+            writer.push_serialized(file_key(number), &json)?;
+            self.in_flight.pop_front();
+        }
+        Ok(())
+    }
+    fn finish(mut self, writer: &mut SortedRecordWriter) -> Result<()> {
+        self.write_ready(writer, true)?;
+        self.jobs.take();
+        if let Some(worker) = self.worker.take() {
+            worker
+                .join()
+                .map_err(|_| anyhow::anyhow!("the raw file row worker panicked"))?;
+        }
+        Ok(())
+    }
+}
+impl Drop for RowsAhead {
+    fn drop(&mut self) {
+        // Ends the worker on every path, the scan's errors among them.
+        self.jobs.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 fn inspect_paged_internal<R: Read + Seek>(
     reader: &mut R,
     length: u64,
@@ -828,6 +950,7 @@ fn inspect_paged_internal<R: Read + Seek>(
     let mut bitmap_buf = [0u8; 4096];
     let mut bitmap_block = u64::MAX;
     let bitmap_len = bitmap.byte_len();
+    let mut rows_ahead = RowsAhead::new(&scratch, budget.record_bytes);
     for number in 0..record_count {
         let byte_offset = number / 8;
         let block = byte_offset / bitmap_buf.len() as u64;
@@ -939,7 +1062,7 @@ fn inspect_paged_internal<R: Read + Seek>(
                     file_heap_bytes(&inventory)? <= row_budget.limit,
                     "current source row exceeds resource RAM"
                 );
-                files_writer.push(file_key(number), &inventory)?;
+                rows_ahead.push(&mut files_writer, number, inventory)?;
                 for item in report.blockers.drain(..) {
                     emit_blocker(&mut blockers, &mut blocker_count, &item)?;
                 }
@@ -950,6 +1073,7 @@ fn inspect_paged_internal<R: Read + Seek>(
             ext_byte = 0;
         }
     }
+    rows_ahead.finish(&mut files_writer)?;
     drop(mft_data);
     drop(bootstrap_record);
     n2r_win32::perf::step("NTFS: finish raw file store");

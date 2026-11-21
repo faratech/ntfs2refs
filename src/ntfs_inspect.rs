@@ -923,10 +923,11 @@ fn parse_record(mut bytes: Vec<u8>, geometry: &NtfsGeometry) -> Result<Record> {
         .checked_add(usa_count * 2)
         .context("USA range overflow")?;
     ensure!(
-        usa_end <= bytes.len(),
-        "update sequence array outside record"
+        usa_end <= bytes.len() && usa_end <= USA_STRIDE - 2,
+        "update sequence array outside record or overlaps first sector tail"
     );
     let sequence = [bytes[usa], bytes[usa + 1]];
+    ensure!(sequence != [0, 0], "zero update sequence number in FILE record");
     for index in 1..usa_count {
         let tail = index * USA_STRIDE - 2;
         ensure!(
@@ -4362,4 +4363,50 @@ fn inspect_internal<R: Read + Seek>(
     }
     report.stream_hash_bytes = hash_budget.used;
     Ok(report)
+}
+
+#[cfg(test)]
+mod usa_fixup_tests {
+    use super::*;
+
+    fn sample_geometry() -> NtfsGeometry {
+        NtfsGeometry {
+            bytes_per_sector: 512,
+            sectors_per_cluster: 8,
+            cluster_size: 4096,
+            total_sectors: 4096,
+            volume_size: 4096 * 512,
+            total_clusters: 512,
+            mft_lcn: 4,
+            mftmirr_lcn: 2,
+            file_record_size: 1024,
+            index_record_size: 4096,
+            serial_number: 1,
+        }
+    }
+
+    #[test]
+    fn parse_record_rejects_usa_overlapping_first_sector_tail_and_zero_sequence() {
+        let geometry = sample_geometry();
+        // USA starting at 508 with 3 entries (6 bytes) reaches 514 > 510 (USA_STRIDE - 2).
+        let mut overlap = vec![0u8; 1024];
+        overlap[0..4].copy_from_slice(b"FILE");
+        overlap[4..6].copy_from_slice(&508u16.to_le_bytes());
+        overlap[6..8].copy_from_slice(&3u16.to_le_bytes());
+        overlap[508..510].copy_from_slice(&1u16.to_le_bytes());
+        overlap[510..512].copy_from_slice(&1u16.to_le_bytes());
+        overlap[1022..1024].copy_from_slice(&1u16.to_le_bytes());
+        assert!(parse_record(overlap, &geometry).is_err());
+
+        // Zero update sequence number is invalid in NTFS.
+        let mut zero_seq = vec![0u8; 1024];
+        zero_seq[0..4].copy_from_slice(b"FILE");
+        zero_seq[4..6].copy_from_slice(&48u16.to_le_bytes());
+        zero_seq[6..8].copy_from_slice(&3u16.to_le_bytes());
+        zero_seq[20..22].copy_from_slice(&56u16.to_le_bytes());
+        zero_seq[24..28].copy_from_slice(&64u32.to_le_bytes());
+        zero_seq[28..32].copy_from_slice(&1024u32.to_le_bytes());
+        zero_seq[56..60].copy_from_slice(&0xffff_ffffu32.to_le_bytes());
+        assert!(parse_record(zero_seq, &geometry).is_err());
+    }
 }

@@ -25,7 +25,11 @@ pub fn request_for_inspection(
     ensure!(
         inspection.source.length == binding.identity.partition_bytes
             && (raw.geometry.volume_size == inspection.source.length
-                || raw.geometry.volume_size.checked_add(512) == Some(inspection.source.length)),
+                || raw
+                    .geometry
+                    .volume_size
+                    .checked_add(u64::from(raw.geometry.bytes_per_sector))
+                    == Some(inspection.source.length)),
         "source inspection and native partition length differ"
     );
     let request = n2r_win32::attestation::Request {
@@ -62,7 +66,11 @@ pub fn request_for_general_inspection(
     binding.validate()?;
     ensure!(
         raw.geometry.volume_size == binding.identity.partition_bytes
-            || raw.geometry.volume_size.checked_add(512) == Some(binding.identity.partition_bytes),
+            || raw
+                .geometry
+                .volume_size
+                .checked_add(u64::from(raw.geometry.bytes_per_sector))
+                == Some(binding.identity.partition_bytes),
         "general raw NTFS geometry differs from bound partition"
     );
     let request = n2r_win32::attestation::Request {
@@ -101,7 +109,11 @@ pub fn request_for_general_inspection_with_profile(
     binding.validate()?;
     ensure!(
         raw.geometry.volume_size == binding.identity.partition_bytes
-            || raw.geometry.volume_size.checked_add(512) == Some(binding.identity.partition_bytes),
+            || raw
+                .geometry
+                .volume_size
+                .checked_add(u64::from(raw.geometry.bytes_per_sector))
+                == Some(binding.identity.partition_bytes),
         "general raw NTFS geometry differs from bound partition"
     );
     ensure!(

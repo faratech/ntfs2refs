@@ -1195,6 +1195,24 @@ impl RoutedSupplyOwner<'_, '_, '_> {
         // walks every stream's mapping on both sides, which is what the plan
         // digest in its receipt is made from.
         let reread = self.reread;
+        // Nor, under "verify once" (owner decision D2, #251), does it walk
+        // the source's side of each stream again: opening the stream's
+        // session (its file record read from the source and decoded), each
+        // reference and hole held to the source's run list, and closing the
+        // session (the record read again and the mapping checked). The
+        // planning pass (`scan_plan`) of this same process made exactly
+        // those checks of every stream, on a source that has been offline,
+        // read-only and held since; the source's read-only state and
+        // protection are still checked here as this pass begins and ends
+        // (`phase`); and the gate in front of the first write to the source
+        // reads every metadata range and extent the inspection read again and
+        // holds them to the source fingerprint pinned at inspection
+        // (`recheck_source`), so a changed file record or run list stops the
+        // run before it writes. Every observation of the shadow's side, and
+        // the plan digest and counts they make, are still taken and compared
+        // with the plan. A run that reads the payloads again (thorough,
+        // `--recheck-everything`, a recovered supply) walks both sides.
+        let walk_source = reread;
         let (mut logical, mut referenced, mut routed, mut materialized, mut holes) =
             (0u64, 0u64, 0u64, 0u64, 0u64);
         let mut source_buffer = vec![0u8; WINDOW];
@@ -1233,7 +1251,9 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                         "routed verification lacks source content or extent evidence"
                     );
                     let id = identity(object, stream);
-                    self.bytes.check_stream(&id)?;
+                    if walk_source {
+                        self.bytes.check_stream(&id)?;
+                    }
                     let mut observed = leased_ranges(
                         self.bytes,
                         self.template,
@@ -1269,8 +1289,10 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                         pieces(stream, *kind, range, prefix, |piece, offset, length| {
                             match piece {
                                 Piece::Reference(physical) => {
-                                    self.bytes
-                                        .require_reference(&id, offset, physical, length)?;
+                                    if walk_source {
+                                        self.bytes
+                                            .require_reference(&id, offset, physical, length)?;
+                                    }
                                     referenced = referenced
                                         .checked_add(length)
                                         .context("reference total overflow")?;
@@ -1280,8 +1302,10 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                                         stream.sha256.is_none() && stream.source_evidence.is_some(),
                                         "routed prefix cannot claim an unmeasured content digest"
                                     );
-                                    self.bytes
-                                        .require_reference(&id, offset, physical, length)?;
+                                    if walk_source {
+                                        self.bytes
+                                            .require_reference(&id, offset, physical, length)?;
+                                    }
                                     routed = routed
                                         .checked_add(length)
                                         .context("routed total overflow")?;
@@ -1292,7 +1316,9 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                                         .context("materialized total overflow")?;
                                 }
                                 Piece::Hole => {
-                                    self.bytes.require_hole(&id, offset, length)?;
+                                    if walk_source {
+                                        self.bytes.require_hole(&id, offset, length)?;
+                                    }
                                     holes = holes.checked_add(length).context("hole total overflow")?;
                                 }
                             }
@@ -1355,7 +1381,9 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                     } else {
                         None
                     };
-                    self.bytes.finish_stream()?;
+                    if walk_source {
+                        self.bytes.finish_stream()?;
+                    }
                     // The workspace of the closing observation's mapping
                     // queries. Where a batch's helper made them, they ran under
                     // what the batch reserved for the stream, which `seen`
@@ -1436,6 +1464,12 @@ impl RoutedSupplyOwner<'_, '_, '_> {
             receipt["payload_bytes_reread"] = false.into();
             receipt["payload_contents_held_by"] =
                 "read-back at materialization; complete digests on the converted volume".into();
+        }
+        if !walk_source {
+            receipt["source_mappings_rewalked"] = false.into();
+            receipt["source_mappings_held_by"] =
+                "the planning pass; the source fingerprint at the gate before the first source write"
+                    .into();
         }
         Ok(receipt)
     }

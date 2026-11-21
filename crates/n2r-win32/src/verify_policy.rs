@@ -46,6 +46,11 @@ static VERIFY_ONCE: AtomicBool = AtomicBool::new(false);
 ///   read back before the capture and again by the walk of the frozen
 ///   shadow, and its directories listed again after their metadata is
 ///   restored;
+/// - the source's side of every stream's supply (its file record, its run
+///   list against each reference and hole) walked by the planning of the
+///   payload supply and not again by its verification: the source stays
+///   held, and the gate reads its metadata and extents again against the
+///   source fingerprint;
 /// - a move of the shadow's extents held to the mapping of the range it
 ///   moved, and each file's complete mapping compared once, when placement
 ///   ends, instead of after every one of its moves;

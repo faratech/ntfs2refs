@@ -1432,7 +1432,6 @@ fn observe_and_select_scoped(
         context.inspection().budget(),
         capture_group.clone(),
     )?;
-    n2r_win32::perf::step("derive source projection");
     // The expected tree was derived from the held source evidence when it was
     // built, and both have been held since. Deriving it all over again here
     // only to compare the two (a minute at 26,000 objects) repeats a
@@ -1441,6 +1440,7 @@ fn observe_and_select_scoped(
     let source_projection = if n2r_win32::verify_policy::checks_once() {
         None
     } else {
+        n2r_win32::perf::step("derive source projection");
         let source_projection =
             context.derive_projection(admission, &projection_dir, &projection_scratch)?;
         ensure!(
@@ -1453,6 +1453,7 @@ fn observe_and_select_scoped(
         // now-unused object decoding workspace.
         Some(source_projection.into_revalidation_owner()?)
     };
+    n2r_win32::perf::step("capture source tails");
     let source_tails = context.with_bytes(
         admission,
         expected.logical_bytes().max(1),

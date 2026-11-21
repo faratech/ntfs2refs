@@ -1250,6 +1250,9 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         mut checkpoint_events: impl FnMut(&mut Vec<n2r_win32::NativeEvent>) -> Result<()>,
     ) -> Result<ResourceFreshApply<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>> {
         checkpoint_native_events(events, &mut checkpoint_events)?;
+        // The gate's steps, timed apart (about half of the 33 s this phase
+        // took on the full Windows volume had no counter of its own).
+        n2r_win32::perf::step("revalidate working files, capture and frozen source");
         // Admission is one immediate read-only operation. Keep exhaustive
         // arena/capture and frozen source/target checks on BOTH sides of the
         // whole operation instead of nesting two complete before/after scans.
@@ -1264,6 +1267,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                     events,
                     |frozen, prepared, events| {
                         let result = (|| {
+                            n2r_win32::perf::step("check publication");
                             require_published_between_frozen_checks(
                                 frozen, prepared, self.expected, self.maps.as_ref(),
                                 &mut self.locator, &self.publication, &self.checksum,
@@ -1276,6 +1280,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                                 "fresh resource apply requires the actual prepared markerless write index"
                             );
                             frozen.require(prepared)?;
+                            n2r_win32::perf::step("qualify prepared target");
                             let admission = prepared.context.qualify_prepared_target(
                                 prepared.candidate.protected_proof(),
                                 self.expected,
@@ -1289,6 +1294,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                                 self.expected,
                                 &self.closure,
                             )?;
+                            n2r_win32::perf::step("check publication again");
                             require_published_between_frozen_checks(
                                 frozen, prepared, self.expected, self.maps.as_ref(),
                                 &mut self.locator, &self.publication, &self.checksum,
@@ -1299,6 +1305,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                         // Drain even a failed callback before the closing
                         // source/device observations need their bounded batch.
                         let drained = checkpoint_native_events(events, &mut checkpoint_events);
+                        n2r_win32::perf::step("closing frozen source, capture and working-file checks");
                         match (result, drained) {
                             (Ok(admission), Ok(())) => Ok(admission),
                             (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),

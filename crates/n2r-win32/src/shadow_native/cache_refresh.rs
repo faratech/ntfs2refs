@@ -1599,6 +1599,11 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         next = end;
     }
     metadata_progress(8, input.len() as u64);
+    // Under "verify once" the read-back above is skipped; what remains of
+    // this step (the route, the volume extent, the source and the disk
+    // state checked once more, and what the caller does before its next
+    // step) is timed apart from it.
+    crate::perf::step("metadata: final route, volume and source checks");
     target.revalidate_route(&mut events)?;
     pair.shadow
         .validate_volume_extent(&ctl(volume, 0x00560000, &[], 1024)?)?;

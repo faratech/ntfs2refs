@@ -25,8 +25,10 @@ use n2r_win32::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    cell::RefCell,
     io::{self, Read, Seek, SeekFrom},
     path::Path,
+    rc::Rc,
 };
 
 const CHUNK: usize = crate::ntfs_inspect::SESSION_READ_BYTES;
@@ -140,6 +142,16 @@ fn route_key(offset: u64, ordinal: u64) -> [u8; 16] {
     key
 }
 
+/// What [`PagedPayloadRoutes::locate`] last answered. The routes are sorted
+/// by where they lie and do not overlap, so every position of
+/// `start..boundary` has this one answer: the route that covers them, or
+/// none for the gap between two routes.
+struct Located {
+    start: u64,
+    boundary: u64,
+    route: Option<Rc<LeasedPagedPayloadRoute>>,
+}
+
 /// Fully closed disk-sorted routing facts plus the actual protected native
 /// origin. There is deliberately no constructor accepting a serialized pin.
 pub struct PagedPayloadRoutes<'observation> {
@@ -149,6 +161,14 @@ pub struct PagedPayloadRoutes<'observation> {
     expected_sha256: String,
     payload_bytes: u64,
     scratch: SourceScratch,
+    // The last answer of `locate`. The capture asks about positions in
+    // ascending order, several times for every changed 4 KiB (which route a
+    // granule lies in, where its bytes come from, where the next read ends),
+    // and each answer decoded the route's row, its path and names with it,
+    // under a lease of its own. The store is closed, held and never
+    // rewritten, so the row decoded for one position is the row of its
+    // neighbours.
+    located: RefCell<Option<Located>>,
 }
 impl<'observation> PagedPayloadRoutes<'observation> {
     pub fn capture(
@@ -275,6 +295,7 @@ impl<'observation> PagedPayloadRoutes<'observation> {
             expected_sha256: expected.semantic_sha256().to_owned(),
             payload_bytes,
             scratch,
+            located: RefCell::new(None),
         };
         value.revalidate(expected)?;
         bytes.validate_protection()?;
@@ -327,7 +348,18 @@ impl<'observation> PagedPayloadRoutes<'observation> {
         );
         self.store.revalidate()
     }
-    fn locate(&self, position: u64) -> Result<(Option<LeasedPagedPayloadRoute>, u64)> {
+    /// The route that covers `position`, if one does, and where that answer
+    /// ends: the route's end, or the start of the next route (the end of the
+    /// partition after the last).
+    fn locate(&self, position: u64) -> Result<(Option<Rc<LeasedPagedPayloadRoute>>, u64)> {
+        if let Some(known) = self.located.borrow().as_ref()
+            && (known.start..known.boundary).contains(&position)
+        {
+            return Ok((known.route.clone(), known.boundary));
+        }
+        // One decoded route is kept at a time: the one that was kept goes,
+        // with its lease, before another is decoded.
+        self.located.borrow_mut().take();
         let (mut low, mut high) = (0u64, self.store.len());
         while low < high {
             let middle = low + (high - low) / 2;
@@ -339,15 +371,23 @@ impl<'observation> PagedPayloadRoutes<'observation> {
                 high = middle;
             }
         }
+        // Where the gap that holds `position` begins, when no route does.
+        let mut gap = 0;
         if low > 0 {
-            let previous = self.route(low - 1)?;
+            let previous = Rc::new(self.route(low - 1)?);
             let end = previous
                 .target_physical_offset
                 .checked_add(previous.length)
                 .context("held route overflow")?;
             if position < end {
+                *self.located.borrow_mut() = Some(Located {
+                    start: previous.target_physical_offset,
+                    boundary: end,
+                    route: Some(Rc::clone(&previous)),
+                });
                 return Ok((Some(previous), end));
             }
+            gap = end;
         }
         let boundary = if low < self.store.len() {
             let key = self.store.key(low)?;
@@ -355,6 +395,11 @@ impl<'observation> PagedPayloadRoutes<'observation> {
         } else {
             self.pair().shadow.identity.partition_bytes
         };
+        *self.located.borrow_mut() = Some(Located {
+            start: gap,
+            boundary,
+            route: None,
+        });
         Ok((None, boundary))
     }
 }

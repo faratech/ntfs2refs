@@ -1842,6 +1842,12 @@ impl Drop for AlignedBuffer {
         }
     }
 }
+// SAFETY: the buffer uniquely owns its allocation, as a `Box<[u8]>` does, and
+// hands it out only through `&mut self`; moving it to another thread moves
+// that exclusive ownership. It is what keeps a frozen partition, and the
+// fresh-apply writer that borrows one, from being handed to the thread that
+// writes the changed ranges while this one reads the journal.
+unsafe impl Send for AlignedBuffer {}
 
 /// Partition-relative stream whose raw file never escapes. Drop does not clear
 /// persistent offline/read-only attributes and therefore cannot mount partial data.

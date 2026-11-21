@@ -7,6 +7,8 @@ use crate::{
 };
 use std::io::{Read, Seek, SeekFrom, Write};
 
+mod staged_writes;
+
 pub(crate) struct ResourceFreshApply<'journal, 'domain, 'capture, 'proof, 'scope, 'expected> {
     prepared: ResourcePreparedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>,
     admission: PreparedResourceSourceAdmission,
@@ -503,34 +505,61 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         // reading range by range.
         target.set_read_ahead(first_write_fault.is_none());
         let domain = prepared.inner._domain;
-        for ordinal in 0..u64::from(ticket.range_count) {
-            if ordinal == u64::from(ticket.range_count) / 2 {
-                n2r_win32::lab_hold::reached("apply-mid-ranges");
-            }
-            let row = domain.row(ordinal)?;
-            let skip = if row.capture.offset == 0 { GRANULE } else { 0 };
-            // The boot granule of a range at offset 0 is written last, on its
-            // own. A range there shorter than one granule cannot be split.
-            let length = row.capture.length.checked_sub(skip).with_context(|| {
-                format!(
-                    "apply: changed range {ordinal} at source offset 0 is {} bytes, shorter than the {GRANULE}-byte boot granule",
-                    row.capture.length
-                )
-            })?;
-            write_span(
+        // A run that verifies each thing once reads nothing of the source
+        // here: its journal reads and its device writes go on two threads
+        // (`staged_writes`), with buffers paid for as spare memory. Without
+        // them, and for every pass that reads each range first, the ranges
+        // are written in turn on this thread, as before.
+        let staged = if first_write_fault.is_none() && n2r_win32::verify_policy::verifies_once() {
+            staged_writes::reserve(self.prepared.closure.arena())
+        } else {
+            None
+        };
+        if let Some((_spare, staged)) = staged {
+            let written = staged_writes::write_ranges(
                 &mut target,
                 prepared.inner._journal,
                 domain,
-                ordinal,
-                row,
-                skip,
-                length,
-                &mut buffers,
-                &mut first_write_fault,
-                &target_before,
-                ticket,
-                events,
+                staged,
+                facts.path,
             )?;
+            eprintln!(
+                "apply-writes: {} changed ranges, {:.2} GB in {} writes, read and written on two threads",
+                written.ranges,
+                written.bytes as f64 / (1u64 << 30) as f64,
+                written.writes
+            );
+        } else {
+            for ordinal in 0..u64::from(ticket.range_count) {
+                if ordinal == u64::from(ticket.range_count) / 2 {
+                    n2r_win32::lab_hold::reached("apply-mid-ranges");
+                }
+                let row = domain.row(ordinal)?;
+                let skip = if row.capture.offset == 0 { GRANULE } else { 0 };
+                // The boot granule of a range at offset 0 is written last,
+                // on its own. A range there shorter than one granule cannot
+                // be split.
+                let length = row.capture.length.checked_sub(skip).with_context(|| {
+                    format!(
+                        "apply: changed range {ordinal} at source offset 0 is {} bytes, shorter than the {GRANULE}-byte boot granule",
+                        row.capture.length
+                    )
+                })?;
+                write_span(
+                    &mut target,
+                    prepared.inner._journal,
+                    domain,
+                    ordinal,
+                    row,
+                    skip,
+                    length,
+                    &mut buffers,
+                    &mut first_write_fault,
+                    &target_before,
+                    ticket,
+                    events,
+                )?;
+            }
         }
         n2r_win32::perf::step("flush and write boot sector");
         // Nothing read back from here on may come from memory the writes

@@ -959,6 +959,7 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             boot_volume: boot,
             scratch_disk_id,
             windows_disk_id,
+            windows_partition_offset: selected.partition.offset_bytes,
         })?;
         Ok(0)
     }

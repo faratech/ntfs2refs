@@ -1840,11 +1840,11 @@ fn preflight_input_domain(
         return Err(invalid("private tree root or object bound differs"));
     }
     if let Some(admission) = resource_admission {
-        super::hard_links::validate_resource_domain(
+        super::hard_links::validate_resource_domain_once(
             input,
             admission.maximum_namespace_names()?,
             resource_root,
-            crate::shadow_names::valid_unicode_component,
+            super::hard_links::Names::Unicode,
         )?;
     } else {
         super::hard_links::validate_domain(

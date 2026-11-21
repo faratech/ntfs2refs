@@ -1005,6 +1005,127 @@ fn check_object_memory(object: &Object, compact: u64, maximum: u64) -> Result<()
     object_memory_bytes(object, compact, maximum).map(|_| ())
 }
 
+/// The pages of a tree that is being created: the writer, past the header
+/// record, and what was counted of the objects written so far.
+struct CompactObjects {
+    writer: Writer,
+    counts: ExpectedTreePageCounts,
+    maximum_chunk: usize,
+    // The most compact bytes one object may take.
+    maximum_bytes: u64,
+    // The row budget of a resource admission: the decoded object is held
+    // to it as well.
+    row_limit: Option<u64>,
+}
+impl CompactObjects {
+    fn begin(
+        path: &Path,
+        budget: PageBudget,
+        header: &HeaderRef<'_>,
+        semantic_byte_budget: u64,
+        row_limit: Option<u64>,
+    ) -> Result<Self> {
+        let maximum_chunk = chunk_bytes(budget)?;
+        let mut writer = Writer::new(path, PURPOSE, budget)?;
+        writer.push(&[], &record(header, budget)?)?;
+        Ok(Self {
+            writer,
+            counts: ExpectedTreePageCounts::default(),
+            maximum_chunk,
+            maximum_bytes: row_limit.unwrap_or(semantic_byte_budget),
+            row_limit,
+        })
+    }
+    /// Counts `object` and writes it as the chunks of object `ordinal`.
+    fn write(&mut self, ordinal: usize, object: &Object) -> Result<()> {
+        self.counts.include(object)?;
+        if let Some(limit) = self.row_limit {
+            check_object_memory(object, 0, limit)?;
+        }
+        let mut chunks = ChunkWriter {
+            writer: &mut self.writer,
+            object: u64::try_from(ordinal)?,
+            chunks: 0,
+            bytes: 0,
+            maximum: self.maximum_bytes,
+            buffer: Vec::new(),
+            chunk_bytes: self.maximum_chunk,
+        };
+        serde_json::to_writer(&mut chunks, object)?;
+        if let Some(limit) = self.row_limit {
+            check_object_memory(object, chunks.bytes, limit)?;
+        }
+        chunks.finish()?;
+        Ok(())
+    }
+}
+
+/// A tree's legacy JSON, written as its own serializer writes it (the four
+/// fields of [`ExpectedTree`] in their order, the objects in theirs: see
+/// [`LegacyView`]), with every object also written to the tree's pages as
+/// it goes by.
+///
+/// Creating the pages went through the tree twice, once for the digest of
+/// this JSON and once for the pages, and a tree that is a projection store
+/// decodes an object from its row each time it is asked for one. Here each
+/// object is asked for once.
+///
+/// The JSON used to be complete before the first page was written, so
+/// whatever it refused was refused before anything of the pages was. That
+/// order is kept: the first failure of the pages is put aside, nothing
+/// more is written to them, and the JSON goes on to its end. Its refusal,
+/// if it has one, is the one reported; otherwise the pages' is.
+struct CreationView<'a, T: ExpectedObjectDomain> {
+    tree: &'a T,
+    compact: &'a RefCell<Result<CompactObjects>>,
+}
+impl<T: ExpectedObjectDomain> Serialize for CreationView<'_, T> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut fields = serializer.serialize_struct("ExpectedTree", 4)?;
+        fields.serialize_field("profile", self.tree.profile())?;
+        fields.serialize_field(
+            "objects",
+            &CreationObjects {
+                tree: self.tree,
+                compact: self.compact,
+            },
+        )?;
+        fields.serialize_field("logical_bytes", &self.tree.logical_bytes())?;
+        fields.serialize_field(
+            "internal_replacement_pending",
+            self.tree.internal_replacement_pending(),
+        )?;
+        fields.end()
+    }
+}
+struct CreationObjects<'a, T: ExpectedObjectDomain> {
+    tree: &'a T,
+    compact: &'a RefCell<Result<CompactObjects>>,
+}
+impl<T: ExpectedObjectDomain> Serialize for CreationObjects<'_, T> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let count = self.tree.object_count();
+        let mut sequence = serializer.serialize_seq(Some(count))?;
+        for index in 0..count {
+            let object = self.tree.object(index).map_err(S::Error::custom)?;
+            {
+                let mut compact = self.compact.borrow_mut();
+                let written = match compact.as_mut() {
+                    Ok(pages) => pages.write(index, &object),
+                    // Already put aside: the JSON alone goes on.
+                    Err(_) => Ok(()),
+                };
+                if let Err(error) = written {
+                    // The writer goes with it: nothing certifies a prefix.
+                    *compact = Err(error);
+                }
+            }
+            sequence.serialize_element(object.as_ref())?;
+        }
+        sequence.end()
+    }
+}
+
 impl PagedExpectedTree {
     pub fn create_with_resources_in_group(
         tree: &impl ExpectedObjectDomain,
@@ -1103,8 +1224,6 @@ impl PagedExpectedTree {
             "expected-tree object domain exceeds record budget"
         );
         let mut semantic = SemanticHash::new(semantic_byte_budget)?;
-        serde_json::to_writer_pretty(&mut semantic, tree)?;
-        let semantic_sha256 = semantic.finish()?;
         let header = HeaderRef {
             schema_version: if resource_admission.is_some() { 3 } else { 2 },
             profile: tree.profile(),
@@ -1113,32 +1232,42 @@ impl PagedExpectedTree {
             total_objects: objects,
             resource_admission,
         };
-        let maximum_chunk = chunk_bytes(budget)?;
-        let mut writer = Writer::new(path, PURPOSE, budget)?;
-        writer.push(&[], &record(&header, budget)?)?;
-        let mut counts = ExpectedTreePageCounts::default();
-        for ordinal in 0..tree.object_count() {
-            let object = tree.object(ordinal)?;
-            counts.include(&object)?;
-            if let Some(admission) = resource_admission {
-                check_object_memory(&object, 0, admission.budget.max_row_bytes)?;
+        let row_limit = resource_admission.map(|admission| admission.budget.max_row_bytes);
+        let (semantic_sha256, compact) = if n2r_win32::verify_policy::full_unremembered() {
+            // Two passes over the tree, as it always was: its legacy JSON
+            // first, then its pages.
+            serde_json::to_writer_pretty(&mut semantic, tree)?;
+            let semantic_sha256 = semantic.finish()?;
+            let mut compact =
+                CompactObjects::begin(path, budget, &header, semantic_byte_budget, row_limit)?;
+            for ordinal in 0..tree.object_count() {
+                let object = tree.object(ordinal)?;
+                compact.write(ordinal, &object)?;
             }
-            let mut chunks = ChunkWriter {
-                writer: &mut writer,
-                object: u64::try_from(ordinal)?,
-                chunks: 0,
-                bytes: 0,
-                maximum: resource_admission
-                    .map_or(semantic_byte_budget, |a| a.budget.max_row_bytes),
-                buffer: Vec::new(),
-                chunk_bytes: maximum_chunk,
-            };
-            serde_json::to_writer(&mut chunks, object.as_ref())?;
-            if let Some(admission) = resource_admission {
-                check_object_memory(&object, chunks.bytes, admission.budget.max_row_bytes)?;
-            }
-            chunks.finish()?;
-        }
+            (semantic_sha256, compact)
+        } else {
+            // One pass (check-once, outside its gate): each object is
+            // decoded once, for its pages and for the legacy JSON. What
+            // the pages refuse is kept until the JSON is complete, so the
+            // refusal that comes first is the one that came first.
+            let compact = RefCell::new(CompactObjects::begin(
+                path,
+                budget,
+                &header,
+                semantic_byte_budget,
+                row_limit,
+            ));
+            serde_json::to_writer_pretty(
+                &mut semantic,
+                &CreationView {
+                    tree,
+                    compact: &compact,
+                },
+            )?;
+            let semantic_sha256 = semantic.finish()?;
+            (semantic_sha256, compact.into_inner()?)
+        };
+        let CompactObjects { writer, counts, .. } = compact;
         if let Some(admission) = resource_admission {
             admission.validate_tree(counts.files, counts.directories, counts.data_streams)?;
         }

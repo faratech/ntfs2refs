@@ -510,19 +510,21 @@ fn verify_domain_with_windows<R: Read + Seek>(
             .context("index working RAM overflow")?,
     )?;
     let mapping = CheckedMftDomain::open(reader, source)?;
-    let mut selected: [Option<ntfs_inspect::FileInventory>; 3] = [None, None, None];
+    // The rows that are kept beyond the pass are the ones the source holds,
+    // shared: this pass changes none of them.
+    let mut selected: [Option<std::sync::Arc<ntfs_inspect::FileInventory>>; 3] = [None, None, None];
     let mut object_id_count = 0u64;
     let mut volume_id = None;
     let mut expected_reparse =
         SortedRecordWriter::new(&root.join("expected-reparse"), *b"N2RRPEXP", &scratch)?;
     for ordinal in 0..source.file_count() {
-        let file = source.file(ordinal)?;
+        let file = source.file_shared(ordinal)?;
         for attribute in file.attributes.iter().filter(|a| a.type_code == 0x40) {
             object_id_count = object_id_count
                 .checked_add(1)
                 .context("object ID count overflow")?;
             if object_id_count == 1 {
-                volume_id = Some((file.clone(), attribute.clone()));
+                volume_id = Some((std::sync::Arc::clone(&file), attribute.clone()));
             }
         }
         if let Some(point) = crate::ntfs_reparse::file_point(&file)? {
@@ -574,8 +576,8 @@ fn verify_domain_with_windows<R: Read + Seek>(
     .into_iter()
     .enumerate()
     {
-        let file = selected[slot]
-            .as_ref()
+        let file: &ntfs_inspect::FileInventory = selected[slot]
+            .as_deref()
             .context("missing internal index object")?;
         let storage = storage(
             reader, source, &mapping, file, name, role, ordinal, root, &scratch,

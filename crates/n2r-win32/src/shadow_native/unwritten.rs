@@ -616,6 +616,27 @@ impl PrivatePlaceholder {
     /// uninitialized gap: doing so could zero-fill a huge retained prefix.
     /// Sharing remains disabled and the file remains SYSTEM-only on failure.
     pub fn initialize_at(&mut self, offset: u64, data: &[u8]) -> io::Result<serde_json::Value> {
+        self.initialize_at_with(offset, data, true)
+    }
+
+    /// [`Self::initialize_at`] for a caller that keeps no record of the
+    /// write: every check is made (the range is read back and compared with
+    /// `data` byte for byte), and only the digest of `data`, which nothing
+    /// but the record carries, is not computed. The record has no `sha256`.
+    pub fn initialize_at_unhashed(
+        &mut self,
+        offset: u64,
+        data: &[u8],
+    ) -> io::Result<serde_json::Value> {
+        self.initialize_at_with(offset, data, false)
+    }
+
+    fn initialize_at_with(
+        &mut self,
+        offset: u64,
+        data: &[u8],
+        digest: bool,
+    ) -> io::Result<serde_json::Value> {
         let end = offset
             .checked_add(data.len() as u64)
             .ok_or_else(|| invalid("private write overflow"))?;
@@ -678,6 +699,11 @@ impl PrivatePlaceholder {
             self.verify_placements()?;
         }
         self.poisoned = false;
+        if !digest {
+            return Ok(serde_json::json!({"offset":offset,"bytes":data.len(),
+                "readback_verified":true,
+                "valid_prefix_bytes":self.valid_prefix,"conversion_qualified":false}));
+        }
         let sha256 = hex::encode(crate::content_digest::sha256(data)?);
         Ok(serde_json::json!({"offset":offset,"bytes":data.len(),
             "sha256":sha256,"readback_verified":true,

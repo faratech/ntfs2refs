@@ -1035,7 +1035,14 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
                             let at = offset
                                 .checked_add(done)
                                 .context("routed materialization offset overflow")?;
-                            let read = bytes.read_range_proof(&id, at, &mut buffer[..n])?;
+                            // The window is written from this very buffer and
+                            // read back and compared with it byte for byte.
+                            // Neither side keeps a record of the window: the
+                            // SHA-256 of the source read and that of the
+                            // bytes written were both taken of this buffer
+                            // and compared with each other, which could not
+                            // differ. They are no longer computed.
+                            bytes.read_range_checked(&id, at, &mut buffer[..n])?;
                             // Sparse materialization can return an island/parts
                             // receipt; retain the original complete-row allowance
                             // only while that native proof is built and consumed.
@@ -1044,7 +1051,7 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
                             } else {
                                 None
                             };
-                            let write = template.materialize_range_named(
+                            let write = template.materialize_range_named_unhashed(
                                 index,
                                 stream.name_utf16,
                                 &object.path,
@@ -1053,8 +1060,7 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
                                 &buffer[..n],
                             )?;
                             ensure!(
-                                write["sha256"] == read.sha256
-                                    && write["readback_verified"] == true,
+                                write["readback_verified"] == true,
                                 "routed remaining materialization readback differs"
                             );
                             bytes.validate_protection()?;

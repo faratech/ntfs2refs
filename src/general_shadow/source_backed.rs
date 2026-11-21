@@ -1118,6 +1118,44 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
         offset: u64,
         output: &mut [u8],
     ) -> Result<crate::ntfs_inspect::StreamRangeReadProof> {
+        let allocation = self.read_range(identity, offset, output)?;
+        let whole = offset == 0 && output.len() as u64 == identity.length;
+        let sha256 = hex::encode(n2r_win32::content_digest::sha256(output)?);
+        self.end_range()?;
+        Ok(crate::ntfs_inspect::StreamRangeReadProof {
+            record_number: identity.record_number,
+            stream_name_utf16: identity.name_utf16.to_vec(),
+            logical_offset: offset,
+            logical_bytes: output.len() as u64,
+            stream_logical_bytes: identity.length,
+            expected_stream_sha256: identity.sha256.map(str::to_owned),
+            sha256,
+            whole_stream_hash_matched: whole && identity.sha256.is_some(),
+            allocation,
+        })
+    }
+
+    /// [`Self::read_range_proof`] for a caller that keeps no proof of the
+    /// range: every check is made as there, and only the digest of the
+    /// range, which nothing but the proof carries, is not computed.
+    pub(crate) fn read_range_checked(
+        &mut self,
+        identity: &PagedStreamIdentity<'_>,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<()> {
+        self.read_range(identity, offset, output)?;
+        self.end_range()
+    }
+
+    /// The protection checked, the bytes read, a sparse stream's allocation
+    /// evidence taken and a whole stream held to its expected content.
+    fn read_range(
+        &mut self,
+        identity: &PagedStreamIdentity<'_>,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<Option<crate::ntfs_inspect::StreamAllocationEvidence>> {
         self.validate_protection()?;
         self.read_into(identity, offset, output)?;
         let allocation = if identity.allow_sparse {
@@ -1137,7 +1175,10 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
                 anyhow::bail!("checked full source stream differs from expected content");
             }
         }
-        let sha256 = hex::encode(n2r_win32::content_digest::sha256(output)?);
+        Ok(allocation)
+    }
+
+    fn end_range(&mut self) -> Result<()> {
         // Closing the stream's session reads its file record again (all of
         // them, for a stream with an attribute list) and checks the mapping.
         // Where everything is re-read at each step that happens after every
@@ -1148,17 +1189,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
         if n2r_win32::verify_policy::full_unremembered() {
             self.finish_stream()?;
         }
-        Ok(crate::ntfs_inspect::StreamRangeReadProof {
-            record_number: identity.record_number,
-            stream_name_utf16: identity.name_utf16.to_vec(),
-            logical_offset: offset,
-            logical_bytes: output.len() as u64,
-            stream_logical_bytes: identity.length,
-            expected_stream_sha256: identity.sha256.map(str::to_owned),
-            sha256,
-            whole_stream_hash_matched: whole && identity.sha256.is_some(),
-            allocation,
-        })
+        Ok(())
     }
 
     pub fn finish(mut self) -> Result<u64> {

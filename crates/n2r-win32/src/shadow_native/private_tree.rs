@@ -1146,6 +1146,51 @@ impl PrivateTree {
         offset: u64,
         bytes: &[u8],
     ) -> io::Result<serde_json::Value> {
+        self.materialize_range_with(
+            object_index,
+            name,
+            components,
+            logical_length,
+            offset,
+            bytes,
+            true,
+        )
+    }
+    /// [`Self::materialize_range_named`] for a caller that keeps no record
+    /// of the write: every check is made, the bytes written are read back
+    /// and compared with `bytes` byte for byte, and only the digests of
+    /// `bytes` (which equal the digest of the bytes read back, since they
+    /// are compared) are not computed. The record has no `sha256`.
+    pub fn materialize_range_named_unhashed(
+        &mut self,
+        object_index: usize,
+        name: &[u16],
+        components: &[String],
+        logical_length: u64,
+        offset: u64,
+        bytes: &[u8],
+    ) -> io::Result<serde_json::Value> {
+        self.materialize_range_with(
+            object_index,
+            name,
+            components,
+            logical_length,
+            offset,
+            bytes,
+            false,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn materialize_range_with(
+        &mut self,
+        object_index: usize,
+        name: &[u16],
+        components: &[String],
+        logical_length: u64,
+        offset: u64,
+        bytes: &[u8],
+        digest: bool,
+    ) -> io::Result<serde_json::Value> {
         let _working = self
             .memory
             .as_ref()
@@ -1248,14 +1293,18 @@ impl PrivateTree {
                     if let Some(guard) = &backing_guard {
                         guard.check_before_operation(part.length)?;
                     }
-                    proofs.push(file.initialize_at(part.dense, &bytes[local..stop])?);
+                    proofs.push(if digest {
+                        file.initialize_at(part.dense, &bytes[local..stop])?
+                    } else {
+                        file.initialize_at_unhashed(part.dense, &bytes[local..stop])?
+                    });
                     file.read_initialized_at(part.dense, &mut readback[local..stop])?;
                 }
             }
             if readback != bytes {
                 return Err(invalid("sparse logical materialization readback differs"));
             }
-            let sha256 = hex::encode(Sha256::digest(&readback));
+            let sha256 = digest.then(|| hex::encode(Sha256::digest(&readback)));
             let hole_bytes = allocated.iter().filter(|&&value| !value).count();
             let native_file_id = info(&target.file, 18, 24)?;
             let plain = !target.sparse_mode;
@@ -1263,6 +1312,13 @@ impl PrivateTree {
             if plain {
                 self.record_materialized_tail(&key, logical_length, offset, bytes, native_file_id)?;
             }
+            let Some(sha256) = sha256 else {
+                return Ok(
+                    serde_json::json!({"object_index":object_index,"stream_name_utf16":name,
+                        "offset":offset,"bytes":bytes.len(),"readback_verified":true,
+                        "logical_hole_bytes":hole_bytes,"parts":proofs,"conversion_qualified":false}),
+                );
+            };
             return Ok(
                 serde_json::json!({"object_index":object_index,"stream_name_utf16":name,
                     "offset":offset,"bytes":bytes.len(),"sha256":sha256,"readback_verified":true,
@@ -1293,7 +1349,11 @@ impl PrivateTree {
         if file.path != expected_path || file.logical_length() != logical_length {
             return Err(invalid("private materialization object binding differs"));
         }
-        let proof = file.initialize_at(offset, bytes)?;
+        let proof = if digest {
+            file.initialize_at(offset, bytes)?
+        } else {
+            file.initialize_at_unhashed(offset, bytes)?
+        };
         let native_file_id = info(file.metadata_handle(), 18, 24)?;
         self.require_source_excluded()?;
         self.record_materialized_tail(&key, logical_length, offset, bytes, native_file_id)?;

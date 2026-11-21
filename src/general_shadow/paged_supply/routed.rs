@@ -1016,6 +1016,9 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
     (|| -> Result<()> {
         let mut first = 0usize;
         while first < expected.len() {
+            // An object that does not decode is reported as itself: a batch
+            // ends before it, and it is the first of the next.
+            failing_object.set(first);
             let held = if ahead.is_some() {
                 let (mut objects, mut streams) = (0usize, 0usize);
                 expected.objects_leased_at_once(first, |object| {
@@ -1155,6 +1158,13 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
                         *summary == observe_stream(template, index, object, stream)?,
                         "native stream mapping changed during routed preparation"
                     );
+                }
+            }
+            // Every tail asked for was taken by its stream; should one not
+            // have been, its bytes are not kept past its batch.
+            if let Some(reads) = ahead.as_mut() {
+                for (ticket, _) in std::mem::take(&mut tickets).into_values() {
+                    let _ = reads.take(ticket);
                 }
             }
             first += held.len();

@@ -3,7 +3,9 @@
 What changed for someone who runs the converter. The measurements behind each
 entry are in the pull request named beside it and in `docs/performance.md`.
 
-## Unreleased
+## 0.0.2
+
+What changed since 0.0.1:
 
 ### What it converts
 

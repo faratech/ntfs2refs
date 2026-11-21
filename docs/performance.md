@@ -109,7 +109,7 @@ decoded once, the observations of the payload supply and of the walk on
 helper threads, a capture compare that reads both disks ahead, and a
 recovery that makes each identical check once (#140, #215 to #226). Before
 is the build the pass started from (`b0-*`); after is the 0.0.2 candidate
-(`g2b-*`, `g2d-*`). Each pair is the same volume on the same VM with the same
+(`g2b-*`, `g2g-*`). Each pair is the same volume on the same VM with the same
 memory. Neither had the host to itself throughout (the host shares its
 memory with other work), so read the differences to about a tenth.
 
@@ -133,7 +133,7 @@ C:, converted in the machine's own recovery environment (Windows 11 build
 | Run | Seconds | |
 |---|---|---|
 | Converted (`g2b-c-convert`) | 1,107 | 19.4 minutes from the restart until Windows was back, on ReFS |
-| Power cut halfway through the writes, recovered on the next start (`g2d-c-cut-apply-mid`) | 408 | the recovery alone. Before the pass the same cut took 1 h 51 min from the cut until Windows was back (`runc-cut-apply-10`), two starts included |
+| Power cut halfway through the writes, recovered on the next start (`g2g-c-cut-apply-mid`) | 385 | the recovery alone; Windows was back, on ReFS, 7 min 8 s after the cut. Before the pass the same cut took 1 h 51 min from the cut until Windows was back (`runc-cut-apply-10`) |
 
 The recovery and the rollback of the full volume after the same cut, in the
 boot harness, took 862 s and 1,182 s before the pass (`b0-cut-resume`,

@@ -653,7 +653,8 @@ impl Writer {
         // buffering 64-byte index rows into 64 KiB batches instead of issuing
         // one unbuffered seek+write syscall per page.
         const INDEX_BATCH: usize = 1024;
-        let mut index_batch = Vec::with_capacity((self.pages as usize).min(INDEX_BATCH) * INDEX as usize);
+        let mut index_batch =
+            Vec::with_capacity((self.pages as usize).min(INDEX_BATCH) * INDEX as usize);
         let mut batch_start = self.data_end;
         for _ in 0..self.pages {
             let mut frame = [0; 64];

@@ -200,6 +200,8 @@ impl NativePageWriter {
     fn row(&mut self, phase: u8, ordinal: u64, value: &impl Serialize) -> io::Result<()> {
         require(!self.poisoned, "native page writer is incomplete")?;
         self.poisoned = true;
+        // The rows' byte fields are written as hex (owner's decision D3).
+        let _hex = crate::attestation::byte_text::hex_rows();
         let mut sink = ChunkSink {
             writer: &mut self.writer,
             budget: self.budget,

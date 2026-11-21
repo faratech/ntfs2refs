@@ -69,6 +69,8 @@ impl LaneFingerprint {
             .chunks(self.batch.max(1))
             .zip(self.frames.chunks(self.batch.max(1)))
         {
+            // Each lane also looks before it claims a chunk: a batch can
+            // be the whole fingerprint.
             ensure!(
                 !self.cancel.load(std::sync::atomic::Ordering::Acquire),
                 "the source fingerprint re-read was given up"
@@ -82,6 +84,7 @@ impl LaneFingerprint {
                 first,
                 &mut others[..depth - 1],
                 pieces,
+                Some(&*self.cancel),
             )?;
             ensure!(
                 digests.len() == frames.len(),

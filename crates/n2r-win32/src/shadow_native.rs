@@ -1557,11 +1557,11 @@ fn security_stream_with_limit(sd: &[u8], maximum: u64) -> io::Result<Vec<u8>> {
 fn backup_security(file: &File, sd: &[u8]) -> io::Result<SecurityBackup> {
     backup_security_with_limit(file, sd, None)
 }
-fn backup_security_with_limit(
+fn backup_security_write_with_limit(
     file: &File,
     sd: &[u8],
     maximum: Option<u64>,
-) -> io::Result<SecurityBackup> {
+) -> io::Result<Vec<u8>> {
     let stream = if let Some(maximum) = maximum {
         descriptor_with_limit(sd, maximum)?;
         security_stream_with_limit(sd, maximum)?
@@ -1602,10 +1602,18 @@ fn backup_security_with_limit(
     if accepted as usize != stream.len() {
         return Err(invalid("partial root backup-security restoration"));
     }
+    Ok(stream)
+}
+fn backup_security_with_limit(
+    file: &File,
+    sd: &[u8],
+    maximum: Option<u64>,
+) -> io::Result<SecurityBackup> {
+    let stream = backup_security_write_with_limit(file, sd, maximum)?;
     Ok(SecurityBackup {
         stream_sha256: hex::encode(Sha256::digest(&stream)),
         submitted_bytes: stream.len() as u32,
-        accepted_bytes: accepted,
+        accepted_bytes: stream.len() as u32,
         context_released: true,
     })
 }

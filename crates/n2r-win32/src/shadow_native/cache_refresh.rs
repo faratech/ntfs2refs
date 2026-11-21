@@ -1132,7 +1132,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 let protection = restore_acl_protection_with_limit(handle, item, row_limit)?;
                 Ok((
                     protection,
-                    backup_security_with_limit(handle, item.security, row_limit)
+                    super::backup_security_write_with_limit(handle, item.security, row_limit)
                         .map(|_| security_snapshot_with_limit(handle, row_limit)),
                 ))
             },

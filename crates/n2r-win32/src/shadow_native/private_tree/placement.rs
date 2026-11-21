@@ -1329,6 +1329,7 @@ fn allocate_deferred(
     evidence: &mut Evidence,
     counters: &mut Counters,
     move_bytes: &mut u64,
+    initial_views: Option<(resource::Bitmap, resource::Bitmap)>,
 ) -> io::Result<()> {
     // Plan every deferred hole from one snapshot of both native views. If
     // ReFS allocates a planned destination after it, the mover refuses that
@@ -1344,8 +1345,13 @@ fn allocate_deferred(
     } else {
         None
     };
-    let (legacy, metadata) = views(tree, wanted.limits)?;
-    counters.phase_bitmap_snapshots += 1;
+    let (legacy, metadata) = match initial_views {
+        Some(pair) => pair,
+        None => {
+            counters.phase_bitmap_snapshots += 1;
+            views(tree, wanted.limits)?
+        }
+    };
     let mut base_moves = evidence.len();
     let mut deferred = match plan_deferred(
         wanted,
@@ -2290,6 +2296,7 @@ fn run_domain_inner(
             &mut evidence,
             &mut counters,
             &mut move_bytes,
+            None,
         )?;
     }
     let owned_memory = if limits.resource {
@@ -2677,6 +2684,7 @@ fn run_domain_inner(
             &mut evidence,
             &mut counters,
             &mut move_bytes,
+            Some((legacy, metadata)),
         )?;
         // Direct deferred allocations are now occupied and must not be planned
         // again. Never infer these bitmap bits from submitted move receipts.
@@ -2882,24 +2890,75 @@ fn run_domain_inner(
     let mut retained = Vec::new();
     let mut original_coordinates: BTreeMap<usize, Vec<(u64, u64, u64)>> = BTreeMap::new();
     let mut retained_bytes = 0u64;
-    for &index in &indexes {
-        let file = tree.file_by_slot(index)?;
-        // Every stream's complete mapping, read now and compared with every
-        // piece tracked for it. For a run that verifies each thing once this
-        // is the one comparison of the pieces a stream's moves did not
-        // themselves move: `indexes` is every stream slot of the tree, and
-        // no move follows this loop.
-        file.check_placements().map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!(
-                    "extent placement, final comparison of the complete mapping: stream slot \
-                     {index}, {} ({} tracked pieces): {error}",
-                    file.path,
-                    file.tracked_mappings().len()
-                ),
-            )
-        })?;
+    // Every stream's complete mapping, read now and compared with every
+    // piece tracked for it. For a run that verifies each thing once this
+    // is the one comparison of the pieces a stream's moves did not
+    // themselves move: `indexes` is every stream slot of the tree, and
+    // no move follows this loop. Run read-only retrieval queries in parallel
+    // across worker threads and report the first error in slot order.
+    let files: Vec<(usize, &crate::shadow_native::unwritten::PrivatePlaceholder)> = indexes
+        .iter()
+        .map(|&index| tree.file_by_slot(index).map(|file| (index, file)))
+        .collect::<io::Result<_>>()?;
+    let workers = if crate::verify_policy::verifies_once() && files.len() >= 32 {
+        std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(8)
+    } else {
+        1
+    };
+    if workers > 1 {
+        let chunk_size = files.len().div_ceil(workers);
+        let first_error: Option<io::Error> = std::thread::scope(|scope| {
+            let handles: Vec<_> = files
+                .chunks(chunk_size)
+                .map(|chunk| {
+                    scope.spawn(move || {
+                        for &(index, file) in chunk {
+                            if let Err(error) = file.check_placements() {
+                                return Some(io::Error::new(
+                                    error.kind(),
+                                    format!(
+                                        "extent placement, final comparison of the complete mapping: stream slot \
+                                         {index}, {} ({} tracked pieces): {error}",
+                                        file.path,
+                                        file.tracked_mappings().len()
+                                    ),
+                                ));
+                            }
+                        }
+                        None
+                    })
+                })
+                .collect();
+            let mut first = None;
+            for handle in handles {
+                if let Ok(Some(err)) = handle.join()
+                    && first.is_none()
+                {
+                    first = Some(err);
+                }
+            }
+            first
+        });
+        if let Some(err) = first_error {
+            return Err(err);
+        }
+    }
+    for (index, file) in files {
+        if workers <= 1 {
+            file.check_placements().map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "extent placement, final comparison of the complete mapping: stream slot \
+                         {index}, {} ({} tracked pieces): {error}",
+                        file.path,
+                        file.tracked_mappings().len()
+                    ),
+                )
+            })?;
+        }
         let tracked = file.tracked_mappings();
         // The owning file records native tracking in VCN order and sorts and
         // coalesces each successful move. Check the entire in-memory ordering

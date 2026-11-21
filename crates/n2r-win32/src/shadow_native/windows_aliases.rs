@@ -1528,22 +1528,24 @@ impl StagedWindowsAliases {
         let restore_one = |link: &Link<'_>| -> io::Result<Snapshot> {
             let entry = &link.staged.entry;
             let file = &link.staged.file;
-            let target = File::options()
-                .access_mode(0x01020189)
-                .share_mode(3)
-                .custom_flags(0x02200000)
-                .open(format!("{root}{}", entry.canonical_components.join("\\")))?;
-            super::suppress_access(&target)?;
-            super::validate_bound_type(&target, &link.canonical)?;
-            if super::info(&target, 18, 24)?
-                != super::info(
-                    held(handles, entry.canonical_object_index, "canonical object")?,
-                    18,
-                    24,
-                )?
-            {
-                return Err(invalid("derived alias canonical link identity changed"));
-            }
+            let canonical_held = held(handles, entry.canonical_object_index, "canonical object")?;
+            let reopened_target = if crate::verify_policy::verifies_once() {
+                super::validate_bound_type(canonical_held, &link.canonical)?;
+                None
+            } else {
+                let target = File::options()
+                    .access_mode(0x01020189)
+                    .share_mode(3)
+                    .custom_flags(0x02200000)
+                    .open(format!("{root}{}", entry.canonical_components.join("\\")))?;
+                super::suppress_access(&target)?;
+                super::validate_bound_type(&target, &link.canonical)?;
+                if super::info(&target, 18, 24)? != super::info(canonical_held, 18, 24)? {
+                    return Err(invalid("derived alias canonical link identity changed"));
+                }
+                Some(target)
+            };
+            let target = reopened_target.as_ref().unwrap_or(canonical_held);
             let relative: Vec<u16> = entry
                 .canonical_components
                 .last()
@@ -1552,7 +1554,7 @@ impl StagedWindowsAliases {
                 .collect();
             crate::windows_alias_native::install_fresh_owned(
                 held(handles, entry.parent_object_index, "parent directory")?,
-                &target,
+                target,
                 file,
                 entry.directory,
                 &relative,

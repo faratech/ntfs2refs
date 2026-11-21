@@ -1233,10 +1233,7 @@ impl Reader {
     ) -> io::Result<()> {
         self.install_resident(Some(paid))
     }
-    fn install_resident(
-        &mut self,
-        paid: Option<Box<dyn std::any::Any + Send>>,
-    ) -> io::Result<()> {
+    fn install_resident(&mut self, paid: Option<Box<dyn std::any::Any + Send>>) -> io::Result<()> {
         require(
             !self.pages_resident(),
             "metadata pages are already resident",

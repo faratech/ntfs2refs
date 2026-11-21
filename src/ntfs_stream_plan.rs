@@ -209,9 +209,10 @@ fn sparse_candidate(
             // on 64 KiB boundaries and its first did not.)
             let retained_end = coverage.min(initialized_end) / target * target;
             // Where this run begins among the stream's allocated bytes.
-            let allocated_before = allocated_total.checked_sub(allocated.last().map_or(0, |range| {
-                (range.offset + range.length).saturating_sub(extent.logical_offset)
-            }));
+            let allocated_before =
+                allocated_total.checked_sub(allocated.last().map_or(0, |range| {
+                    (range.offset + range.length).saturating_sub(extent.logical_offset)
+                }));
             if retained_end > extent.logical_offset
                 && extent.logical_offset.is_multiple_of(target)
                 && offset.is_multiple_of(target)

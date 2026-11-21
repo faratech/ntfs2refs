@@ -927,7 +927,10 @@ fn parse_record(mut bytes: Vec<u8>, geometry: &NtfsGeometry) -> Result<Record> {
         "update sequence array outside record or overlaps first sector tail"
     );
     let sequence = [bytes[usa], bytes[usa + 1]];
-    ensure!(sequence != [0, 0], "zero update sequence number in FILE record");
+    ensure!(
+        sequence != [0, 0],
+        "zero update sequence number in FILE record"
+    );
     for index in 1..usa_count {
         let tail = index * USA_STRIDE - 2;
         ensure!(

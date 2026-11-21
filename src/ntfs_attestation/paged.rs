@@ -734,8 +734,10 @@ fn compare_domain_with_header(
                     let bytes: std::sync::Arc<[u8]> =
                         hex::decode(&record.descriptor.relative_hex)?.into();
                     if security_cache.len() < MAX_SECURITY_CACHE {
-                        security_cache
-                            .insert(id, (record.descriptor.sha256, std::sync::Arc::clone(&bytes)));
+                        security_cache.insert(
+                            id,
+                            (record.descriptor.sha256, std::sync::Arc::clone(&bytes)),
+                        );
                     }
                     bytes
                 }

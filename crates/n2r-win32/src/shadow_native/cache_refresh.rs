@@ -276,8 +276,9 @@ pub(super) fn clear_acl_auto_inheritance(directory: &File) -> io::Result<bool> {
     }
     let mut request = vec![0u64; kernel.bytes.len().div_ceil(8)];
     // SAFETY: `request` holds at least `kernel.bytes.len()` bytes with 8-byte alignment.
-    let raw_request =
-        unsafe { std::slice::from_raw_parts_mut(request.as_mut_ptr().cast::<u8>(), kernel.bytes.len()) };
+    let raw_request = unsafe {
+        std::slice::from_raw_parts_mut(request.as_mut_ptr().cast::<u8>(), kernel.bytes.len())
+    };
     raw_request.copy_from_slice(&kernel.bytes);
     let control = (u16::from_le_bytes([raw_request[2], raw_request[3]])
         & !(SE_DACL_AUTO_INHERITED | SE_SACL_AUTO_INHERITED))

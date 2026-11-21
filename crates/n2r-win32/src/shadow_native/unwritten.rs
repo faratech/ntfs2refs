@@ -48,7 +48,11 @@ fn private_system_security_descriptor() -> io::Result<&'static [u64]> {
     let mut words = vec![0u64; len.div_ceil(8)];
     // SAFETY: `words` is 8-byte-aligned with at least `len` bytes; `descriptor` has `len` bytes.
     unsafe {
-        ptr::copy_nonoverlapping(descriptor.cast::<u8>(), words.as_mut_ptr().cast::<u8>(), len);
+        ptr::copy_nonoverlapping(
+            descriptor.cast::<u8>(),
+            words.as_mut_ptr().cast::<u8>(),
+            len,
+        );
         LocalFree(descriptor);
     }
     Ok(SD.get_or_init(|| words).as_slice())

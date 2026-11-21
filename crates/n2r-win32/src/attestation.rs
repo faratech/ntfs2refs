@@ -1508,14 +1508,47 @@ pub fn validate_domain_resources(domain: &impl NativeObservationDomain) -> io::R
     if remembered.is_some_and(std::cell::Cell::get) {
         return Ok(());
     }
-    validate_domain_resources_now(domain)?;
+    validate_domain_resources_now(domain, &mut |_, _| Ok(()))?;
     if let Some(passed) = remembered {
         passed.set(true);
     }
     Ok(())
 }
 
-fn validate_domain_resources_now(domain: &impl NativeObservationDomain) -> io::Result<()> {
+/// What a check of each row hands the caller: the row's ordinal and the row
+/// as it was decoded for the check.
+pub(crate) type EachValidatedRow<'f> =
+    dyn FnMut(usize, &NativeObservationRow<'_>) -> io::Result<()> + 'f;
+
+/// [`validate_domain_resources`] that also hands every row it decodes to
+/// `each_row`, for a caller that checks something more of every row and
+/// decoded each of them once more to do it. Every row is handed over even
+/// where the domain remembers passing (each is then decoded for `each_row`
+/// alone); where the rows are checked here, each is decoded once for both.
+pub(crate) fn validate_domain_resources_with_rows(
+    domain: &impl NativeObservationDomain,
+    each_row: &mut EachValidatedRow<'_>,
+) -> io::Result<()> {
+    let remembered = domain
+        .resources_validated()
+        .filter(|_| !crate::verify_policy::full_unremembered());
+    if remembered.is_some_and(std::cell::Cell::get) {
+        for index in 0..domain.len() {
+            each_row(index, &domain.row_view(index)?)?;
+        }
+        return Ok(());
+    }
+    validate_domain_resources_now(domain, each_row)?;
+    if let Some(passed) = remembered {
+        passed.set(true);
+    }
+    Ok(())
+}
+
+fn validate_domain_resources_now(
+    domain: &impl NativeObservationDomain,
+    each_row: &mut EachValidatedRow<'_>,
+) -> io::Result<()> {
     let h = domain.header();
     if domain.is_paged()
         && h.schema_version == 16
@@ -1527,7 +1560,12 @@ fn validate_domain_resources_now(domain: &impl NativeObservationDomain) -> io::R
         && domain.len() == domain.namespace_len()
         && domain.request_len().is_ok_and(|n| n == domain.len())
     {
-        return validate_regular_paged_resources(domain, domain.len());
+        return validate_regular_paged_resources(domain, domain.len(), each_row);
+    }
+    // The irregular forms keep their own validator; the caller's rows are
+    // read for it first, as they were before it.
+    for index in 0..domain.len() {
+        each_row(index, &domain.row_view(index)?)?;
     }
     validate_domain_resources_irregular(domain)
 }
@@ -1562,6 +1600,7 @@ fn mark_native_identity(
 fn validate_regular_paged_resources(
     domain: &impl NativeObservationDomain,
     count: usize,
+    each_row: &mut EachValidatedRow<'_>,
 ) -> io::Result<()> {
     let header = domain.header();
     let invalid = || {
@@ -1676,6 +1715,7 @@ fn validate_regular_paged_resources(
     };
     for index in 0..count {
         let owner = domain.row_view(index)?;
+        each_row(index, &owner)?;
         let row = owner.request();
         validate_request_row(&header.request, &row)?;
         let flags = mark_native_identity(&mut identities, row.identity.reference(), 1, count)?;

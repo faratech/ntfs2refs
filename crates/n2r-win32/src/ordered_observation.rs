@@ -175,6 +175,11 @@ pub(crate) fn in_order<S, R: Sync, O: Send>(
     Ok(())
 }
 
+/// What one helper saw: each object's index in its batch and its result.
+type HelperResults<O> = Vec<(usize, Option<O>)>;
+/// The helpers observing one batch.
+type Helpers<'scope, O> = Vec<std::thread::ScopedJoinHandle<'scope, HelperResults<O>>>;
+
 /// Starts `observe` for every object of `objects` on up to `helpers` scoped
 /// threads that take runs of [`RUN`] neighbouring objects.
 fn spawn_batch<'scope, 'env, R: Sync, O: Send + 'scope>(
@@ -182,7 +187,7 @@ fn spawn_batch<'scope, 'env, R: Sync, O: Send + 'scope>(
     objects: &'scope [R],
     helpers: usize,
     observe: &'scope (impl Fn(&R) -> Option<O> + Sync),
-) -> Vec<std::thread::ScopedJoinHandle<'scope, Vec<(usize, Option<O>)>>> {
+) -> Helpers<'scope, O> {
     let threads = helpers.min(objects.len().div_ceil(RUN)).max(1);
     let next = std::sync::Arc::new(AtomicUsize::new(0));
     (0..threads)
@@ -208,10 +213,7 @@ fn spawn_batch<'scope, 'env, R: Sync, O: Send + 'scope>(
 }
 
 /// What [`spawn_batch`]'s threads saw, in the objects' order.
-fn join_batch<O>(
-    handles: Vec<std::thread::ScopedJoinHandle<'_, Vec<(usize, Option<O>)>>>,
-    len: usize,
-) -> Vec<Option<O>> {
+fn join_batch<O>(handles: Helpers<'_, O>, len: usize) -> Vec<Option<O>> {
     let mut results: Vec<Option<O>> = (0..len).map(|_| None).collect();
     for handle in handles {
         match handle.join() {

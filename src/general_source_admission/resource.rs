@@ -1572,7 +1572,7 @@ impl ResourceSourceContext {
             let mut reread_done = None;
             if !reread_beside_comparison {
                 n2r_win32::perf::step("re-read source fingerprint");
-                let after_hash = fingerprint.hash(&mut source)?;
+                let after_hash = fingerprint.hash(source)?;
                 let after = native_batch(events, |batch| source.state(batch))?;
                 ensure!(
                     before == after
@@ -1691,10 +1691,10 @@ impl ResourceSourceContext {
             let mut storage_hint_count = 0u64;
             let reread = if reread_beside_comparison {
                 n2r_win32::perf::step("re-read source fingerprint");
-                match fingerprint.lane_reread(&source)? {
+                match fingerprint.lane_reread(source)? {
                     Some((lanes, ram)) => Some((lanes.start()?, ram)),
                     None => {
-                        let after_hash = fingerprint.hash(&mut source)?;
+                        let after_hash = fingerprint.hash(source)?;
                         let after = native_batch(events, |batch| source.state(batch))?;
                         ensure!(
                             before == after

@@ -479,14 +479,19 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         };
         let (source, _) = prepared.context.source_and_inspection()?;
         n2r_win32::perf::step("verify journal and source, write apply marker");
-        // The OLD bytes are hashed on a worker while they are read, where
-        // the worker's second buffer can be paid for as spare memory.
-        let hashed_behind = self
-            .prepared
-            .closure
-            .arena()
-            .reserve_spare_ram(n2r_win32::SELECTED_DIGEST_BEHIND_BYTES)
-            .ok();
+        // A run that verifies each thing once hashes the OLD bytes on a
+        // worker while they are read, where the worker's second buffer can
+        // be paid for as spare memory. `--verify thorough` and
+        // `--recheck-everything` hash them on the reading thread, as before.
+        let hashed_behind = if n2r_win32::verify_policy::verifies_once() {
+            self.prepared
+                .closure
+                .arena()
+                .reserve_spare_ram(n2r_win32::SELECTED_DIGEST_BEHIND_BYTES)
+                .ok()
+        } else {
+            None
+        };
         let mut target = prepared.inner._journal.begin_sealed_fresh_apply(
             source,
             index.policy(),
@@ -622,21 +627,30 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         // missing, which a native event records, one at a time through this
         // handle, reading ahead, as before; only a read that fails or a
         // digest that differs ends the run. The bytes hashed and the digest
-        // they are held to are the same either way.
-        let two_handles = match read_back::prepare(&target, self.prepared.closure.arena(), events) {
-            Ok(two) => read_back::check_selected_two_handles(
-                &mut target,
-                two,
-                domain,
-                ticket.digest_algorithm(),
-                ticket.new_selected_sha256,
-            )?,
-            Err(one) => Err(one),
+        // they are held to are the same either way. `--verify thorough` and
+        // `--recheck-everything` read back one at a time, as before.
+        let two_handles = if n2r_win32::verify_policy::verifies_once() {
+            Some(
+                match read_back::prepare(&target, self.prepared.closure.arena(), events) {
+                    Ok(two) => read_back::check_selected_two_handles(
+                        &mut target,
+                        two,
+                        domain,
+                        ticket.digest_algorithm(),
+                        ticket.new_selected_sha256,
+                    )?,
+                    Err(one) => Err(one),
+                },
+            )
+        } else {
+            None
         };
         let digest = match two_handles {
-            Ok(digest) => digest,
-            Err(one) => {
-                events.push(one.event());
+            Some(Ok(digest)) => digest,
+            one_handle => {
+                if let Some(Err(one)) = one_handle {
+                    events.push(one.event());
+                }
                 target.set_read_ahead(true);
                 let digest = check_selected_reaching(
                     &mut target,

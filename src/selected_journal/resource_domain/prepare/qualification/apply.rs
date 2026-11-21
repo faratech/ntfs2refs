@@ -7,6 +7,7 @@ use crate::{
 };
 use std::io::{Read, Seek, SeekFrom, Write};
 
+mod read_back;
 mod staged_writes;
 
 pub(crate) struct ResourceFreshApply<'journal, 'domain, 'capture, 'proof, 'scope, 'expected> {
@@ -614,17 +615,51 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         n2r_win32::lab_hold::reached("apply-boot-granule-written");
         target.sync_all()?;
         n2r_win32::perf::step("read back changed ranges");
-        target.set_read_ahead(true);
-        let digest = check_selected_reaching(
-            &mut target,
-            domain,
-            &mut buffers.current,
-            ticket.digest_algorithm(),
-            ticket.new_selected_sha256,
-            |target, end| target.set_read_ahead_reach(end),
-        );
-        target.set_read_ahead(false);
-        let digest = digest?;
+        // With two reads outstanding where the disk serves two at once
+        // (`io_profile`) and the spare memory for them is granted: through
+        // this handle and one more read-only one (`read_back`). Otherwise
+        // one at a time, reading ahead, as before. The bytes hashed and the
+        // digest they are held to are the same.
+        let two_handles = if target.io_profile().queue_depth >= 2 {
+            self.prepared
+                .closure
+                .arena()
+                .reserve_spare_ram(read_back::WORKSPACE)
+                .ok()
+        } else {
+            None
+        };
+        let digest = if let Some(_spare) = two_handles {
+            let lane = target
+                .read_lanes(1, events)
+                .with_context(|| {
+                    format!(
+                        "apply read-back: opening a second read handle on source disk {}",
+                        facts.source.disk_number
+                    )
+                })?
+                .pop()
+                .context("apply read-back: no second read handle was opened")?;
+            read_back::check_selected_two_handles(
+                &mut target,
+                lane,
+                domain,
+                ticket.digest_algorithm(),
+                ticket.new_selected_sha256,
+            )?
+        } else {
+            target.set_read_ahead(true);
+            let digest = check_selected_reaching(
+                &mut target,
+                domain,
+                &mut buffers.current,
+                ticket.digest_algorithm(),
+                ticket.new_selected_sha256,
+                |target, end| target.set_read_ahead_reach(end),
+            );
+            target.set_read_ahead(false);
+            digest?
+        };
         let applied = SelectedResult {
             selected_sha256: digest,
             selected_bytes: ticket.selected_bytes,

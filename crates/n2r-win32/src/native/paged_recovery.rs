@@ -457,6 +457,23 @@ impl BorrowedPagedWriter<'_> {
     pub fn set_read_ahead_reach(&mut self, end: u64) {
         self.source.set_read_ahead_reach(end);
     }
+    /// The storage transfer profile Windows reports for the source's disk.
+    pub fn io_profile(&self) -> crate::io_profile::IoProfile {
+        self.source.io_profile()
+    }
+    /// `count` more read-only, unbuffered handles on the source, each
+    /// proven to reach the same disk in the same state as this writer's own
+    /// (`GeneralFrozenPartition::read_lanes`). The writer's handle shares
+    /// reading and refuses every other writer; these read only, so the
+    /// source has still one writer, this one. For a pass that reads what
+    /// was written, after its flush, with more than one read outstanding.
+    pub fn read_lanes(
+        &self,
+        count: usize,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Vec<super::GeneralFrozenLane>> {
+        self.source.read_lanes(count, events)
+    }
     pub fn sync_all(&mut self) -> io::Result<()> {
         if self.poisoned {
             return Err(invalid("cannot sync a poisoned fresh paged writer"));

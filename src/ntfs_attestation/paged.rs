@@ -678,6 +678,9 @@ fn compare_domain_with_header(
         all_supported_user_views_compatible: false,
         conversion_qualified: false,
     };
+    const MAX_SECURITY_CACHE: usize = 4096;
+    let mut security_cache: std::collections::HashMap<u32, (String, std::sync::Arc<[u8]>)> =
+        std::collections::HashMap::new();
     for ordinal in 0..expected.len() {
         // The row is read here and by the selector's row below, and changed
         // by neither: both are handed the one the source holds, where it
@@ -712,17 +715,41 @@ fn compare_domain_with_header(
                 binding.sequence_number == file.sequence_number,
                 "source security binding sequence differs"
             );
-            let descriptor = if let Some(id) = binding.security_id {
-                source.security().find_id(id)?
+            let descriptor: std::sync::Arc<[u8]> = if let Some(id) = binding.security_id {
+                if let Some((sha, bytes)) = security_cache.get(&id) {
+                    ensure!(
+                        *sha == binding.descriptor_sha256,
+                        "source security descriptor binding differs"
+                    );
+                    std::sync::Arc::clone(bytes)
+                } else {
+                    let record = source
+                        .security()
+                        .find_id(id)?
+                        .context("source security descriptor absent")?;
+                    ensure!(
+                        record.descriptor.sha256 == binding.descriptor_sha256,
+                        "source security descriptor binding differs"
+                    );
+                    let bytes: std::sync::Arc<[u8]> =
+                        hex::decode(&record.descriptor.relative_hex)?.into();
+                    if security_cache.len() < MAX_SECURITY_CACHE {
+                        security_cache
+                            .insert(id, (record.descriptor.sha256, std::sync::Arc::clone(&bytes)));
+                    }
+                    bytes
+                }
             } else {
-                source.security().find_legacy(file.record_number)?
-            }
-            .context("source security descriptor absent")?;
-            ensure!(
-                descriptor.descriptor.sha256 == binding.descriptor_sha256,
-                "source security descriptor binding differs"
-            );
-            let descriptor = hex::decode(&descriptor.descriptor.relative_hex)?;
+                let record = source
+                    .security()
+                    .find_legacy(file.record_number)?
+                    .context("source security descriptor absent")?;
+                ensure!(
+                    record.descriptor.sha256 == binding.descriptor_sha256,
+                    "source security descriptor binding differs"
+                );
+                hex::decode(&record.descriptor.relative_hex)?.into()
+            };
             let before = observation
                 .before
                 .as_ref()

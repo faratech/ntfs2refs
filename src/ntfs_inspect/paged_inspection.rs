@@ -809,26 +809,36 @@ fn inspect_paged_internal<R: Read + Seek>(
     };
     n2r_win32::perf::step("NTFS: scan MFT records");
     let (mut root_seen, mut volume_bitmap, mut ext_byte) = (false, None, 0u8);
+    let _working = scratch.lease_ram(
+        budget
+            .record_bytes
+            .checked_mul(8)
+            .and_then(|n| {
+                n.checked_add(if preparation_only {
+                    0
+                } else {
+                    LARGE_STREAM_HASH_BYTES as u64 + STREAM_HASH_BUFFER_BYTES as u64
+                })
+            })
+            .context("raw current-row RAM overflow")?,
+    )?;
+    let mut raw = Vec::new();
+    raw.try_reserve_exact(geometry.file_record_size as usize)?;
+    raw.resize(geometry.file_record_size as usize, 0);
+    let mut bitmap_buf = [0u8; 4096];
+    let mut bitmap_block = u64::MAX;
+    let bitmap_len = bitmap.byte_len();
     for number in 0..record_count {
-        let mut allocated = [0u8; 1];
-        bitmap.read_exact_at(number / 8, &mut allocated)?;
-        if allocated[0] & (1 << (number % 8)) != 0 {
-            let _working = scratch.lease_ram(
-                budget
-                    .record_bytes
-                    .checked_mul(8)
-                    .and_then(|n| {
-                        n.checked_add(if preparation_only {
-                            0
-                        } else {
-                            LARGE_STREAM_HASH_BYTES as u64 + STREAM_HASH_BUFFER_BYTES as u64
-                        })
-                    })
-                    .context("raw current-row RAM overflow")?,
-            )?;
-            let mut raw = Vec::new();
-            raw.try_reserve_exact(geometry.file_record_size as usize)?;
-            raw.resize(geometry.file_record_size as usize, 0);
+        let byte_offset = number / 8;
+        let block = byte_offset / bitmap_buf.len() as u64;
+        if block != bitmap_block {
+            let start = block * bitmap_buf.len() as u64;
+            let len = (bitmap_len - start).min(bitmap_buf.len() as u64) as usize;
+            bitmap.read_exact_at(start, &mut bitmap_buf[..len])?;
+            bitmap_block = block;
+        }
+        let allocated_byte = bitmap_buf[(byte_offset % bitmap_buf.len() as u64) as usize];
+        if allocated_byte & (1 << (number % 8)) != 0 {
             resolver.read_physical_record(reader, number, &mut raw)?;
             // Declared before the record so the assembly lease drops only
             // after the assembled record and its resident values are gone.

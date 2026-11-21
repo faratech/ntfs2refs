@@ -1284,16 +1284,28 @@ fn read_logical_range_observed<R: Read + Seek>(
     );
     let mut position = offset;
     let mut done = 0usize;
+    let extents = &attribute.report.extents;
+    let mut extent_at = extents.partition_point(|e| {
+        e.logical_offset
+            .checked_add(e.length)
+            .is_some_and(|end| end <= position)
+    });
     while done < output.len() {
         if position >= attribute.report.initialized_size {
             output[done..].fill(0);
             break;
         }
-        let extent = attribute
-            .report
-            .extents
-            .iter()
-            .find(|e| {
+        while extent_at < extents.len()
+            && extents[extent_at]
+                .logical_offset
+                .checked_add(extents[extent_at].length)
+                .is_some_and(|end| end <= position)
+        {
+            extent_at += 1;
+        }
+        let extent = extents
+            .get(extent_at)
+            .filter(|e| {
                 e.logical_offset <= position
                     && e.logical_offset
                         .checked_add(e.length)

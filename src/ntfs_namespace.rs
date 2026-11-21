@@ -399,9 +399,9 @@ fn reconcile_domains_with_link_counter_hint(
         );
         Ok(file.record_number | (u64::from(file.sequence_number) << 48))
     }
-    fn owner(files: &impl RootFileDomain, id: u64) -> Result<FileInventory> {
+    fn owner(files: &impl RootFileDomain, id: u64) -> Result<std::sync::Arc<FileInventory>> {
         files
-            .find_record(id & 0xffff_ffff_ffff, Some((id >> 48) as u16))?
+            .find_record_shared(id & 0xffff_ffff_ffff, Some((id >> 48) as u16))?
             .context("namespace identity absent or sequence stale")
     }
     fn directory(
@@ -463,7 +463,7 @@ fn reconcile_domains_with_link_counter_hint(
     let mut file_directories = 0u64;
     let mut reserved_nameless = 0u64;
     for ordinal in 0..files.file_count() {
-        let file = files.file(ordinal)?;
+        let file = files.file_shared(ordinal)?;
         let id = reference(&file)?;
         ensure!(
             prior_file.is_none_or(|prior| prior < file.record_number)

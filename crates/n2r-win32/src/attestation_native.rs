@@ -326,22 +326,43 @@ pub(crate) fn source_snapshot_paged(file: &File, require_case: bool, maximum: us
         .collect();
     let (security, security_error) = security_with_limit(file, maximum);
     let kernel = (|| -> io::Result<Vec<u8>> {
+        thread_local! {
+            static PAGED_STORAGE: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+        }
+        let initial_bytes = MAX_SECURITY_BYTES.min(maximum);
+        let initial_words = initial_bytes.div_ceil(8);
+        let mut held = PAGED_STORAGE.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+        if held.len() < initial_words {
+            held.resize(initial_words, 0);
+        }
         let mut required = 0u32;
-        // SAFETY: size-only synchronous query; no output buffer is passed.
+        // SAFETY: live handle and 8-byte-aligned output buffer of `initial_bytes`.
         let ok = unsafe {
             GetKernelObjectSecurity(
                 raw(file),
                 COMPLETE_SECURITY_INFORMATION,
-                ptr::null_mut(),
-                0,
+                held.as_mut_ptr().cast(),
+                initial_bytes as u32,
                 &mut required,
             )
         };
-        if ok == 0 {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() != Some(122) {
-                return Err(error);
-            }
+        if ok != 0 {
+            let result = if (20..=initial_bytes).contains(&(required as usize)) {
+                // SAFETY: successful API initialized exactly `required` bytes.
+                Ok(unsafe {
+                    std::slice::from_raw_parts(held.as_ptr().cast::<u8>(), required as usize)
+                }
+                .to_vec())
+            } else {
+                Err(invalid("security descriptor returned size differs"))
+            };
+            PAGED_STORAGE.with(|cell| *cell.borrow_mut() = held);
+            return result;
+        }
+        PAGED_STORAGE.with(|cell| *cell.borrow_mut() = held);
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(122) {
+            return Err(error);
         }
         let length = required as usize;
         if !(20..=maximum).contains(&length) {

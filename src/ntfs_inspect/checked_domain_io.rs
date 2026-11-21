@@ -601,9 +601,13 @@ impl CheckedMftDomain {
                 None
             }
         };
-        let attrs: Vec<_> = record.attributes.iter().map(|a| a.report.clone()).collect();
         ensure!(
-            attrs == file.attributes,
+            record.attributes.len() == file.attributes.len()
+                && record
+                    .attributes
+                    .iter()
+                    .zip(&file.attributes)
+                    .all(|(a, b)| a.report == *b),
             "actual canonical FILE attributes changed"
         );
         Ok(CheckedRecord {

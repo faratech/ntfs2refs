@@ -616,49 +616,39 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         target.sync_all()?;
         n2r_win32::perf::step("read back changed ranges");
         // With two reads outstanding where the disk serves two at once
-        // (`io_profile`) and the spare memory for them is granted: through
-        // this handle and one more read-only one (`read_back`). Otherwise
-        // one at a time, reading ahead, as before. The bytes hashed and the
-        // digest they are held to are the same.
-        let two_handles = if target.io_profile().queue_depth >= 2 {
-            self.prepared
-                .closure
-                .arena()
-                .reserve_spare_ram(read_back::WORKSPACE)
-                .ok()
-        } else {
-            None
+        // (`io_profile`), the spare memory for them is granted and a second
+        // read-only handle reaches the same disk in the same state: through
+        // this handle and that one (`read_back`). Where any of that is
+        // missing, which a native event records, one at a time through this
+        // handle, reading ahead, as before; only a read that fails or a
+        // digest that differs ends the run. The bytes hashed and the digest
+        // they are held to are the same either way.
+        let two_handles = match read_back::prepare(&target, self.prepared.closure.arena(), events) {
+            Ok(two) => read_back::check_selected_two_handles(
+                &mut target,
+                two,
+                domain,
+                ticket.digest_algorithm(),
+                ticket.new_selected_sha256,
+            )?,
+            Err(one) => Err(one),
         };
-        let digest = if let Some(_spare) = two_handles {
-            let lane = target
-                .read_lanes(1, events)
-                .with_context(|| {
-                    format!(
-                        "apply read-back: opening a second read handle on source disk {}",
-                        facts.source.disk_number
-                    )
-                })?
-                .pop()
-                .context("apply read-back: no second read handle was opened")?;
-            read_back::check_selected_two_handles(
-                &mut target,
-                lane,
-                domain,
-                ticket.digest_algorithm(),
-                ticket.new_selected_sha256,
-            )?
-        } else {
-            target.set_read_ahead(true);
-            let digest = check_selected_reaching(
-                &mut target,
-                domain,
-                &mut buffers.current,
-                ticket.digest_algorithm(),
-                ticket.new_selected_sha256,
-                |target, end| target.set_read_ahead_reach(end),
-            );
-            target.set_read_ahead(false);
-            digest?
+        let digest = match two_handles {
+            Ok(digest) => digest,
+            Err(one) => {
+                events.push(one.event());
+                target.set_read_ahead(true);
+                let digest = check_selected_reaching(
+                    &mut target,
+                    domain,
+                    &mut buffers.current,
+                    ticket.digest_algorithm(),
+                    ticket.new_selected_sha256,
+                    |target, end| target.set_read_ahead_reach(end),
+                );
+                target.set_read_ahead(false);
+                digest?
+            }
         };
         let applied = SelectedResult {
             selected_sha256: digest,

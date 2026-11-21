@@ -33,7 +33,98 @@ const AHEAD: usize = 2;
 
 /// The memory the pass holds beyond the caller's: each reader's buffers and
 /// the extra handle's own aligned buffer.
-pub(super) const WORKSPACE: u64 = ((2 * AHEAD + 1) * SPAN) as u64;
+const WORKSPACE: u64 = ((2 * AHEAD + 1) * SPAN) as u64;
+
+/// What a read-back with two reads outstanding holds: the spare memory that
+/// pays for it, both readers' buffers, and the second read handle.
+pub(super) struct TwoHandles {
+    _lease: crate::artifact_arena::ArenaRamLease,
+    buffers: Vec<Vec<u8>>,
+    lane: n2r_win32::GeneralFrozenLane,
+}
+
+/// Why the read-back reads through the writer's handle alone, with the OS
+/// error where one said why, for the native event that records it.
+#[derive(Debug)]
+pub(super) struct OneHandle {
+    reason: String,
+    native_error: Option<i32>,
+}
+
+impl OneHandle {
+    fn because(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            native_error: None,
+        }
+    }
+
+    /// The native event that records that the read-back reads through the
+    /// writer's handle alone, and why.
+    pub(super) fn event(&self) -> n2r_win32::NativeEvent {
+        n2r_win32::NativeEvent {
+            operation: "apply-read-back-on-one-handle".into(),
+            control_code: 0,
+            input: vec![],
+            succeeded: true,
+            native_error: self.native_error,
+            output: self.reason.clone().into_bytes(),
+        }
+    }
+}
+
+/// Both readers' buffers, or `None` where Windows has no memory for them.
+fn reader_buffers() -> Option<Vec<Vec<u8>>> {
+    let mut buffers = Vec::with_capacity(2 * AHEAD);
+    for _ in 0..2 * AHEAD {
+        let mut buffer = Vec::new();
+        buffer.try_reserve_exact(SPAN).ok()?;
+        buffer.resize(SPAN, 0);
+        buffers.push(buffer);
+    }
+    Some(buffers)
+}
+
+/// Everything a read-back with two reads outstanding needs, or why it reads
+/// through the writer's handle alone: a disk that serves one read at a time
+/// (`io_profile`), spare memory or Windows memory refused, or a second
+/// handle that could not be opened or did not reach the same disk in the
+/// same state. They only buy speed, and the boot granule is already on the
+/// source: none of them is a reason for the run to stop. The read-back then
+/// reads one range at a time through the writer's handle, as before.
+pub(super) fn prepare(
+    target: &n2r_win32::BorrowedPagedWriter<'_>,
+    arena: &crate::artifact_arena::ArtifactArena,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+) -> Result<TwoHandles, OneHandle> {
+    let depth = target.io_profile().queue_depth;
+    if depth < 2 {
+        return Err(OneHandle::because(format!(
+            "the disk serves one read at a time (queue depth {depth})"
+        )));
+    }
+    let lease = arena.reserve_spare_ram(WORKSPACE).map_err(|error| {
+        OneHandle::because(format!("no spare memory for its buffers: {error:#}"))
+    })?;
+    let buffers = reader_buffers()
+        .ok_or_else(|| OneHandle::because("Windows has no memory for its buffers"))?;
+    let lane = match target.read_lanes(1, events) {
+        Ok(mut lanes) => lanes
+            .pop()
+            .ok_or_else(|| OneHandle::because("no second read handle was opened"))?,
+        Err(error) => {
+            return Err(OneHandle {
+                reason: format!("the second read handle could not be opened: {error}"),
+                native_error: error.raw_os_error(),
+            });
+        }
+    };
+    Ok(TwoHandles {
+        _lease: lease,
+        buffers,
+        lane,
+    })
+}
 
 /// Part of a range, `length` bytes at `offset` of the source; `frame` where
 /// it begins its range (the range's offset and length), whose frame is
@@ -193,17 +284,25 @@ fn hash_next(
 }
 
 /// The framed digest of every changed range of `domain`, read back through
-/// `target` and `lane` with a read outstanding on each, held to `expected`
-/// as `check_selected_reaching` holds it.
+/// `target` and the second handle of `two` with a read outstanding on each,
+/// held to `expected` as `check_selected_reaching` holds it. `Ok(Err(_))`
+/// where its reading threads could not be started: nothing was read or
+/// hashed, and the caller reads back through `target` alone. A read that
+/// fails on either handle, and a digest that differs, end the pass.
 pub(super) fn check_selected_two_handles(
     target: &mut n2r_win32::BorrowedPagedWriter<'_>,
-    mut lane: n2r_win32::GeneralFrozenLane,
+    two: TwoHandles,
     domain: &ResourceJournalDomain<'_>,
     algorithm: n2r_win32::bulk_digest::Algorithm,
     expected: [u8; 32],
-) -> Result<[u8; 32]> {
+) -> Result<Result<[u8; 32], OneHandle>> {
+    let TwoHandles {
+        _lease,
+        buffers,
+        mut lane,
+    } = two;
     let mut aggregate = aggregate_pin_hash(algorithm)?;
-    hash_two_readers(
+    if let Some(one) = hash_two_readers(
         (target, "writer's handle"),
         (&mut lane, "second read handle"),
         u64::from(domain.facts.range_count),
@@ -212,61 +311,86 @@ pub(super) fn check_selected_two_handles(
                 .row(ordinal)
                 .map(|row| (row.capture.offset, row.capture.length))
         },
+        buffers,
         &mut aggregate,
-    )?;
+    )? {
+        return Ok(Err(one));
+    }
     let digest = finish(aggregate)?;
     ensure!(
         digest == expected,
         "fresh apply actual selected target digest differs"
     );
-    Ok(digest)
+    Ok(Ok(digest))
 }
 
 /// Frames and hashes into `aggregate` the `range_count` ranges `range`
 /// gives (offset and length, ascending), read in spans alternately through
-/// `first` and `second`, each on a thread of its own.
+/// `first` and `second`, each on a thread of its own, into `buffers` (both
+/// readers', [`reader_buffers`]). `Ok(Some(_))` where a reading thread could
+/// not be started: nothing was read or hashed then.
 fn hash_two_readers<A: Read + Seek + Send, B: Read + Seek + Send>(
     first: (&mut A, &'static str),
     second: (&mut B, &'static str),
     range_count: u64,
     mut range: impl FnMut(u64) -> Result<(u64, u64)>,
+    buffers: Vec<Vec<u8>>,
     aggregate: &mut crate::selected_journal::PinHash,
-) -> Result<()> {
+) -> Result<Option<OneHandle>> {
+    if buffers.len() != 2 * AHEAD || buffers.iter().any(|buffer| buffer.len() < SPAN) {
+        return Ok(Some(OneHandle::because(
+            "the read buffers are not those of two readers",
+        )));
+    }
+    let mut buffers = buffers.into_iter();
     let mut lanes = Vec::with_capacity(2);
     let mut readers = Vec::with_capacity(2);
     for _ in 0..2 {
         let (jobs, queue) = mpsc::sync_channel::<(u64, usize)>(AHEAD);
         let (results, read) = mpsc::sync_channel::<Result<Vec<u8>>>(AHEAD);
-        let (free, buffers) = mpsc::channel::<Vec<u8>>();
-        for _ in 0..AHEAD {
-            let mut buffer = Vec::new();
-            buffer
-                .try_reserve_exact(SPAN)
-                .map_err(|_| anyhow::anyhow!("apply read-back: no memory for a read buffer"))?;
-            buffer.resize(SPAN, 0);
-            free.send(buffer).map_err(|_| {
-                anyhow::anyhow!("apply read-back: a read buffer could not be queued")
-            })?;
+        let (free, held) = mpsc::channel::<Vec<u8>>();
+        // Its receiver is alive here: the send cannot fail.
+        for buffer in buffers.by_ref().take(AHEAD) {
+            let _ = free.send(buffer);
         }
         lanes.push(Lane {
             jobs,
             results: read,
             free,
         });
-        readers.push((queue, results, buffers));
+        readers.push((queue, results, held));
     }
-    std::thread::scope(|scope| -> Result<()> {
+    let not_started = |error: std::io::Error| OneHandle {
+        reason: format!("a reading thread could not be started: {error}"),
+        native_error: error.raw_os_error(),
+    };
+    std::thread::scope(|scope| -> Result<Option<OneHandle>> {
         let mut readers = readers.into_iter();
-        let (queue, results, buffers) = readers.next().context("apply read-back: no reader")?;
+        let (queue, results, held) = readers.next().context("apply read-back: no reader")?;
         let (reader, name) = first;
-        let first = scope.spawn(move || {
-            read_spans(reader, name, queue, results, buffers);
-        });
-        let (queue, results, buffers) = readers.next().context("apply read-back: no reader")?;
+        let first = match std::thread::Builder::new()
+            .name("n2r-read-back".into())
+            .spawn_scoped(scope, move || {
+                read_spans(reader, name, queue, results, held);
+            }) {
+            Ok(first) => first,
+            Err(error) => return Ok(Some(not_started(error))),
+        };
+        let (queue, results, held) = readers.next().context("apply read-back: no reader")?;
         let (reader, name) = second;
-        let second = scope.spawn(move || {
-            read_spans(reader, name, queue, results, buffers);
-        });
+        let second = match std::thread::Builder::new()
+            .name("n2r-read-back".into())
+            .spawn_scoped(scope, move || {
+                read_spans(reader, name, queue, results, held);
+            }) {
+            Ok(second) => second,
+            Err(error) => {
+                // The first reader has been given nothing: it ends here.
+                drop(lanes);
+                let _ = first.join();
+                return Ok(Some(not_started(error)));
+            }
+        };
         let hashed = (|| -> Result<()> {
             let mut spans = Spans::new();
             let mut ready: VecDeque<Span> = VecDeque::new();
@@ -323,7 +447,7 @@ fn hash_two_readers<A: Read + Seek + Send, B: Read + Seek + Send>(
         if first.is_err() || second.is_err() {
             anyhow::bail!("apply read-back: a reading thread panicked");
         }
-        hashed
+        hashed.map(|()| None)
     })
 }
 
@@ -383,14 +507,16 @@ mod tests {
         let mut first = std::io::Cursor::new(image.clone());
         let mut second = std::io::Cursor::new(image.clone());
         let mut hash = aggregate_pin_hash(n2r_win32::bulk_digest::Algorithm::WRITTEN).unwrap();
-        hash_two_readers(
+        let started = hash_two_readers(
             (&mut first, "first"),
             (&mut second, "second"),
             ranges.len() as u64,
             |ordinal| Ok(ranges[ordinal as usize]),
+            reader_buffers().unwrap(),
             &mut hash,
         )
         .unwrap();
+        assert!(started.is_none(), "both readers started");
         assert_eq!(finish(hash).unwrap(), serial(&image, &ranges));
     }
 
@@ -406,6 +532,7 @@ mod tests {
             (&mut second, "second"),
             ranges.len() as u64,
             |ordinal| Ok(ranges[ordinal as usize]),
+            reader_buffers().unwrap(),
             &mut hash,
         )
         .unwrap_err();

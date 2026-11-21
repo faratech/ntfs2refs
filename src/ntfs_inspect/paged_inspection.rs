@@ -770,7 +770,7 @@ struct RowsAhead {
     held: u64,
     scratch: SourceScratch,
     row_bytes: u64,
-    _workspace: Option<super::paged_storage::SourceRamLease>,
+    workspace: Option<super::paged_storage::SourceRamLease>,
 }
 /// A row handed to the worker: its record, all it was paid for and the
 /// lease that pays it.
@@ -859,7 +859,7 @@ impl RowsAhead {
             held: 0,
             scratch: scratch.clone(),
             row_bytes,
-            _workspace: workspace,
+            workspace,
         }
     }
     /// The JSON a row of `heap` bytes is paid for before it is serialized:
@@ -955,7 +955,22 @@ impl RowsAhead {
             Serialized::Failed(error) => anyhow::bail!(error),
         }
         self.held = self.held.saturating_sub(row.bytes);
+        self.retire_if_drained()?;
         Ok(true)
+    }
+    /// Once the worker takes no more rows and every row it took is
+    /// written, its thread is ended and its memory given back, for the
+    /// rest of the scan.
+    fn retire_if_drained(&mut self) -> Result<()> {
+        if self.jobs.is_none() && self.in_flight.is_empty() {
+            if let Some(worker) = self.worker.take() {
+                worker
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("the raw file row worker panicked"))?;
+            }
+            self.workspace = None;
+        }
+        Ok(())
     }
     /// Writes the rows the worker has finished, in order; with `wait`,
     /// every row handed to it.

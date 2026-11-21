@@ -943,11 +943,15 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
             .checked_add(2 * WINDOW as u64)
             .context("routed supply RAM overflow")?,
     )?;
-    // The verification hands its streams to helper threads where the run
-    // verifies each thing once. Planning takes one stream at a time.
+    // Planning only observes the shadow, and so does the verification of a
+    // run that verifies each thing once: such a run hands the streams of
+    // both to helper threads. The pass below stays one stream at a time: it
+    // writes, and what it observes of a file after writing to it is not
+    // what a helper would have seen before. The budget refusal still stands
+    // between the plan and the first write.
     let at_once = policy.verifies_once();
     let plan = scan_plan(
-        bytes, expected, template, row_window, policy, false, progress,
+        bytes, expected, template, row_window, policy, at_once, progress,
     )?;
     ensure!(
         plan.materialized <= maximum_materialized_bytes,

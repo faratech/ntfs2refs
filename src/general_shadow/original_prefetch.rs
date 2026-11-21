@@ -314,6 +314,173 @@ impl Drop for OriginalPrefetch {
     }
 }
 
+/// The most lanes [`LaneReads`] opens: the scheduler's deepest queue.
+const MOST_SMALL_LANES: usize = n2r_win32::io_profile::MAX_QUEUE_DEPTH;
+/// A [`LaneReads`] helper's stack: it reads into a buffer of its own.
+const SMALL_STACK_BYTES: u64 = 256 * 1024;
+
+/// Single reads of small ranges of a frozen disk, asked for ahead of the
+/// caller and made on helper threads that each own a read lane of it.
+///
+/// The caller asks for ranges in the order it likes the disk to be read in
+/// (its place on the disk), is given a ticket for each, and takes them back
+/// by their tickets in the order it needs them: the order of the results is
+/// restored by the tickets. A ticket's read may have failed; that is for the
+/// caller to decide on, and it has the bytes read some other way then. The
+/// helpers own their lanes and borrow nothing of the run; they have ended,
+/// and their lanes are closed, when the owner is dropped.
+pub(crate) struct LaneReads {
+    asks: Option<mpsc::Sender<(u64, u64, usize)>>,
+    results: mpsc::Receiver<(u64, io::Result<Vec<u8>>)>,
+    arrived: std::collections::BTreeMap<u64, io::Result<Vec<u8>>>,
+    issued: u64,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    workers: Vec<std::thread::JoinHandle<()>>,
+    _paid: Option<Box<dyn std::any::Any>>,
+}
+
+impl LaneReads {
+    /// How many lanes to read small ranges through, from the number of
+    /// reads Windows says the device takes at once: none on a device that
+    /// takes one at a time. Each of these reads is a few KiB, far below the
+    /// requests that depth was measured with, so the device is given four
+    /// times its depth, up to the scheduler's deepest queue.
+    pub(crate) fn lanes_for(queue_depth: usize) -> usize {
+        if queue_depth < 2 {
+            0
+        } else {
+            queue_depth.saturating_mul(4).min(MOST_SMALL_LANES)
+        }
+    }
+
+    /// What `lanes` lanes hold beside the bytes read, which the caller pays
+    /// for apart (they are its own once taken): each lane's buffer and what
+    /// opening it asks, and a helper's stack.
+    pub(crate) fn workspace_bytes(lanes: usize) -> Option<u64> {
+        GeneralFrozenPartition::read_buffer_memory_bytes()
+            .checked_add(LANE_OPEN_BYTES)?
+            .checked_add(SMALL_STACK_BYTES)?
+            .checked_mul(lanes as u64)
+    }
+
+    /// Starts a helper for each of `lanes`. An error is a helper that could
+    /// not be started; those started are stopped and nothing was read.
+    pub(crate) fn start<L: Read + Seek + Send + 'static>(
+        name: &'static str,
+        lanes: Vec<L>,
+        paid: Option<Box<dyn std::any::Any>>,
+    ) -> io::Result<Self> {
+        if lanes.is_empty() {
+            return Err(io::Error::other("lane reads need a lane"));
+        }
+        let (asks, asked) = mpsc::channel::<(u64, u64, usize)>();
+        let asked = Arc::new(std::sync::Mutex::new(asked));
+        let (results_tx, results) = mpsc::channel();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut started = Self {
+            asks: Some(asks),
+            results,
+            arrived: std::collections::BTreeMap::new(),
+            issued: 0,
+            stop: Arc::clone(&stop),
+            workers: Vec::with_capacity(lanes.len()),
+            _paid: paid,
+        };
+        for mut lane in lanes {
+            let asked = Arc::clone(&asked);
+            let results = results_tx.clone();
+            let stop = Arc::clone(&stop);
+            let worker = std::thread::Builder::new()
+                .name(name.into())
+                .stack_size(SMALL_STACK_BYTES as usize)
+                .spawn(move || {
+                    let _sampled = n2r_win32::stack_sampler::helper();
+                    loop {
+                        let next = asked
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .recv();
+                        let Ok((ticket, offset, length)) = next else {
+                            return;
+                        };
+                        if stop.load(std::sync::atomic::Ordering::Acquire) {
+                            return;
+                        }
+                        let mut buffer = Vec::new();
+                        let result = match buffer.try_reserve_exact(length) {
+                            Err(_) => Err(io::Error::new(
+                                io::ErrorKind::OutOfMemory,
+                                "no memory to read ahead",
+                            )),
+                            Ok(()) => {
+                                buffer.resize(length, 0);
+                                lane.seek(SeekFrom::Start(offset))
+                                    .and_then(|_| lane.read_exact(&mut buffer))
+                                    .map(|()| buffer)
+                            }
+                        };
+                        if results.send((ticket, result)).is_err() {
+                            return;
+                        }
+                    }
+                })?;
+            started.workers.push(worker);
+        }
+        Ok(started)
+    }
+
+    /// Asks for the `length` bytes at `offset`; the ticket takes them back.
+    pub(crate) fn ask(&mut self, offset: u64, length: usize) -> u64 {
+        let ticket = self.issued;
+        self.issued += 1;
+        let asked = self
+            .asks
+            .as_ref()
+            .is_some_and(|asks| asks.send((ticket, offset, length)).is_ok());
+        if !asked {
+            self.arrived.insert(
+                ticket,
+                Err(io::Error::other("lane reads have ended")),
+            );
+        }
+        ticket
+    }
+
+    /// The bytes asked for under `ticket`, or why they could not be read.
+    /// Waits for them; the results of other tickets that arrive meanwhile
+    /// are kept for theirs.
+    pub(crate) fn take(&mut self, ticket: u64) -> io::Result<Vec<u8>> {
+        loop {
+            if let Some(result) = self.arrived.remove(&ticket) {
+                return result;
+            }
+            match self.results.recv() {
+                Ok((arrived, result)) => {
+                    self.arrived.insert(arrived, result);
+                }
+                Err(_) => return Err(io::Error::other("lane reads stopped early")),
+            }
+        }
+    }
+
+    /// Ends the helpers and waits for them: what is still asked is not
+    /// read.
+    fn stop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        self.asks.take();
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
+        self.arrived.clear();
+    }
+}
+
+impl Drop for LaneReads {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,6 +600,43 @@ mod tests {
                 "{lanes} lanes: {error:#}"
             );
         }
+    }
+
+    /// Ranges asked for in one order are taken back by their tickets in
+    /// another, each with the bytes at its place; a read that failed is
+    /// reported for its own ticket; and dropping the owner with reads still
+    /// asked for ends the helpers.
+    #[test]
+    fn lane_reads_are_taken_back_by_their_tickets_in_any_order() {
+        let failing = 300_000;
+        let mut reads = LaneReads::start(
+            "test-lane-reads",
+            (0..3).map(|_| disk(Some(failing))).collect(),
+            None,
+        )
+        .unwrap();
+        let places = [70_000u64, 4096, 900_000, failing, 12, 65_536];
+        let tickets: Vec<u64> = places.iter().map(|&at| reads.ask(at, 3000)).collect();
+        for (&ticket, &at) in tickets.iter().zip(&places).rev() {
+            match reads.take(ticket) {
+                Ok(bytes) => {
+                    assert_ne!(at, failing);
+                    let expected: Vec<u8> = (at..at + 3000).map(|n| (n % 251) as u8).collect();
+                    assert_eq!(bytes, expected, "read at {at}");
+                }
+                Err(error) => {
+                    assert_eq!(at, failing);
+                    assert!(error.to_string().contains("unreadable sector"));
+                }
+            }
+        }
+        for at in 0..64 {
+            reads.ask(at * 4096, 4096);
+        }
+        drop(reads);
+        assert_eq!(LaneReads::lanes_for(1), 0);
+        assert_eq!(LaneReads::lanes_for(2), 8);
+        assert_eq!(LaneReads::lanes_for(4), 8);
     }
 
     #[test]

@@ -742,6 +742,10 @@ pub struct PagedSourceByteAdapterWithScope<'a, 'scope> {
     allow_sparse: Option<bool>,
     logical_bytes: u64,
     poisoned: bool,
+    /// Bytes of the source a read lane has just read, at their place on the
+    /// partition, which a stream's reads take where they lie wholly inside
+    /// them ([`AheadReader`]); empty but where a caller offered them.
+    read_ahead: Vec<(u64, Vec<u8>)>,
     _session_ram: crate::ntfs_inspect::paged_storage::SourceRamLease,
 }
 
@@ -794,6 +798,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
             allow_sparse: None,
             logical_bytes: 0,
             poisoned: false,
+            read_ahead: Vec::new(),
             _session_ram: session_ram,
         })
     }
@@ -848,6 +853,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
             allow_sparse: None,
             logical_bytes: 0,
             poisoned: false,
+            read_ahead: Vec::new(),
             _session_ram: session_ram,
         })
     }
@@ -951,17 +957,29 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
         prepared?;
         self.poisoned = true;
         let session = self.session.as_mut().context("paged DATA session absent")?;
-        let receipt = if direct {
-            Some(session.read_with_direct_receipts_domain(
+        // A direct read's receipt says the owner itself read the bytes:
+        // only an ordinary read takes bytes read ahead.
+        let receipt = if self.read_ahead.is_empty() || direct {
+            read_session(
+                session,
                 &mut self.source,
                 self.raw,
                 offset,
                 output,
                 &mut self.budget,
-            )?)
+                direct,
+            )?
         } else {
-            session.read_domain(&mut self.source, self.raw, offset, output, &mut self.budget)?;
-            None
+            let mut reader = AheadReader::new(&mut self.source, &self.read_ahead)?;
+            read_session(
+                session,
+                &mut reader,
+                self.raw,
+                offset,
+                output,
+                &mut self.budget,
+                direct,
+            )?
         };
         self.logical_bytes = self
             .logical_bytes
@@ -973,6 +991,38 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
 
     pub fn logical_bytes_read(&self) -> u64 {
         self.logical_bytes
+    }
+
+    /// Offers `bytes`, which a read lane of this source has just read at
+    /// `offset` on the partition, to the reads of the stream read next:
+    /// where one of them lies wholly inside them it takes them instead of
+    /// asking the device again ([`AheadReader`]). Which bytes a stream reads
+    /// is still decided by its session, from the source's own record; bytes
+    /// no read asks for are not used. The caller takes them back
+    /// ([`Self::withdraw_read_ahead`]) once that stream's range is read.
+    pub(crate) fn offer_read_ahead(&mut self, offset: u64, bytes: Vec<u8>) {
+        self.read_ahead.push((offset, bytes));
+    }
+
+    /// Takes back every offer, handing each buffer to `give_back`.
+    pub(crate) fn withdraw_read_ahead(&mut self, give_back: impl FnMut(Vec<u8>)) {
+        self.read_ahead
+            .drain(..)
+            .map(|(_, bytes)| bytes)
+            .for_each(give_back);
+    }
+
+    /// How many reads the source's device takes at once where the source
+    /// may be read through lanes of its own (a dedicated source inside its
+    /// read scope); zero where it may not.
+    pub(crate) fn read_lane_depth(&self) -> usize {
+        self.source.read_lane_depth()
+    }
+
+    /// `count` read lanes of the source, where [`Self::read_lane_depth`] is
+    /// not zero; none otherwise. They are to be dropped before the adapter.
+    pub(crate) fn read_lanes(&mut self, count: usize) -> io::Result<Vec<n2r_win32::GeneralFrozenLane>> {
+        self.source.read_lanes(count)
     }
 
     pub fn source_binding(&self) -> &n2r_win32::general_layout::GeneralDiskBinding {
@@ -1206,6 +1256,101 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
         )?;
         self.source.validate(self.before.as_ref())?;
         Ok(self.logical_bytes)
+    }
+}
+
+/// One read of a stream's session, through `reader`.
+fn read_session<R: Read + Seek>(
+    session: &mut crate::ntfs_inspect::PlainStreamRangeSession,
+    reader: &mut R,
+    raw: &crate::ntfs_inspect::PagedInspection,
+    offset: u64,
+    output: &mut [u8],
+    budget: &mut crate::ntfs_inspect::StreamTransferBudget,
+    direct: bool,
+) -> Result<Option<crate::ntfs_inspect::DirectReadReceipt>> {
+    if direct {
+        Ok(Some(session.read_with_direct_receipts_domain(
+            reader, raw, offset, output, budget,
+        )?))
+    } else {
+        session.read_domain(reader, raw, offset, output, budget)?;
+        Ok(None)
+    }
+}
+
+/// The source as a stream's session reads it where bytes of it were read
+/// ahead on a lane ([`PagedSourceByteAdapterWithScope::offer_read_ahead`]):
+/// a read that lies wholly inside such bytes takes them, and every other
+/// read is made by the source itself, at the same place, as before.
+struct AheadReader<'r, R: Read + Seek> {
+    inner: &'r mut R,
+    blocks: &'r [(u64, Vec<u8>)],
+    position: u64,
+    // Whether `inner` stands at `position`.
+    synced: bool,
+}
+impl<'r, R: Read + Seek> AheadReader<'r, R> {
+    fn new(inner: &'r mut R, blocks: &'r [(u64, Vec<u8>)]) -> io::Result<Self> {
+        let position = inner.stream_position()?;
+        Ok(Self {
+            inner,
+            blocks,
+            position,
+            synced: true,
+        })
+    }
+}
+impl<R: Read + Seek> Read for AheadReader<'_, R> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let at = self.position;
+        let end = at.checked_add(output.len() as u64);
+        let inside = self.blocks.iter().find(|(start, bytes)| {
+            *start <= at
+                && end.is_some_and(|end| {
+                    start
+                        .checked_add(bytes.len() as u64)
+                        .is_some_and(|stop| end <= stop)
+                })
+        });
+        if let Some((start, bytes)) = inside {
+            let local = (at - start) as usize;
+            output.copy_from_slice(&bytes[local..local + output.len()]);
+            self.position = end.unwrap_or(at);
+            self.synced = false;
+            return Ok(output.len());
+        }
+        if !self.synced {
+            self.inner.seek(SeekFrom::Start(at))?;
+            self.synced = true;
+        }
+        let read = self.inner.read(output)?;
+        self.position = at + read as u64;
+        Ok(read)
+    }
+}
+impl<R: Read + Seek> Seek for AheadReader<'_, R> {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        if let SeekFrom::Start(at) = from {
+            self.position = at;
+            self.synced = false;
+            return Ok(at);
+        }
+        if !self.synced {
+            self.inner.seek(SeekFrom::Start(self.position))?;
+        }
+        self.position = self.inner.seek(from)?;
+        self.synced = true;
+        Ok(self.position)
+    }
+}
+impl<R: Read + Seek> Drop for AheadReader<'_, R> {
+    fn drop(&mut self) {
+        // The source stands where the session's last read ended, as it
+        // would had every read been its own.
+        if !self.synced {
+            let _ = self.inner.seek(SeekFrom::Start(self.position));
+        }
     }
 }
 
@@ -2406,5 +2551,36 @@ impl Seek for SourceBackedShadow<'_> {
         }
         self.position = next as u64;
         Ok(self.position)
+    }
+}
+
+#[cfg(test)]
+mod ahead_reader_tests {
+    use super::*;
+
+    /// A read that lies wholly inside bytes read ahead takes them; any other
+    /// is made by the source itself at the same place, and the source is
+    /// left where the last read ended.
+    #[test]
+    fn only_a_read_wholly_inside_bytes_read_ahead_takes_them() {
+        let disk: Vec<u8> = (0..65_536u32).map(|n| (n % 251) as u8).collect();
+        let mut source = io::Cursor::new(disk.clone());
+        // What a lane read at 8192, marked so that it can be told apart.
+        let blocks = vec![(8192u64, vec![0xAA; 4096])];
+        let mut reader = AheadReader::new(&mut source, &blocks).unwrap();
+        let mut output = [0u8; 1024];
+        reader.seek(SeekFrom::Start(9000)).unwrap();
+        reader.read_exact(&mut output).unwrap();
+        assert_eq!(output, [0xAA; 1024], "inside: taken from the read ahead");
+        reader.seek(SeekFrom::Start(12_000)).unwrap();
+        reader.read_exact(&mut output).unwrap();
+        assert_eq!(&output[..], &disk[12_000..13_024], "across its end: the source");
+        reader.seek(SeekFrom::Start(100)).unwrap();
+        reader.read_exact(&mut output).unwrap();
+        assert_eq!(&output[..], &disk[100..1124], "outside: the source");
+        reader.seek(SeekFrom::Start(8192)).unwrap();
+        reader.read_exact(&mut output).unwrap();
+        drop(reader);
+        assert_eq!(source.position(), 8192 + 1024);
     }
 }

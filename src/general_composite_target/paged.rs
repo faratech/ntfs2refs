@@ -6,7 +6,7 @@ use crate::{
         PagedInputs,
         source_backed::{
             PagedSourceByteAdapter, PagedSourceByteAdapterWithScope, PagedStreamIdentity,
-            original_prefetch::OriginalPrefetch,
+            original_prefetch::{LaneReads, OriginalPrefetch},
         },
     },
     ntfs_inspect::{
@@ -234,7 +234,85 @@ struct SourceTailProvider {
     pin_sha256: String,
     admission: n2r_win32::tree_resources::SourceResourceAdmission,
 }
+
+/// The most tails one batch of the tail capture has read ahead, and the
+/// most objects it holds.
+const TAIL_BATCH: usize = 1024;
+/// The most bytes of tails one batch has read ahead and holds.
+const TAIL_BATCH_BYTES: u64 = 16 * 1024 * 1024;
+/// What a batch's lists hold for each tail read ahead: its ticket, its
+/// place and length, and its slot.
+const TAIL_ASK_BYTES: u64 = 64;
+
+/// Where on the partition `count` bytes of `stream` at `offset` lie, where
+/// the stream's expected run list puts all of them in one run: the place the
+/// tail is read ahead from. Only a hint for the read ahead: what the tail's
+/// read takes is decided by the session, from the source's own record, and
+/// bytes read from another place are not used.
+fn tail_place(stream: &crate::shadow_tree::StreamRef<'_>, offset: u64, count: u64) -> Option<u64> {
+    if stream.sparse.is_some() {
+        return None;
+    }
+    let end = offset.checked_add(count)?;
+    if let Some(base) = stream.source_offset {
+        return base.checked_add(offset);
+    }
+    let run = stream.source_extents.iter().find(|run| {
+        run.logical_offset <= offset
+            && run
+                .logical_offset
+                .checked_add(run.length)
+                .is_some_and(|stop| end <= stop)
+    })?;
+    run.physical_offset?.checked_add(offset - run.logical_offset)
+}
+
+/// Lanes of the source for reading the tails ahead: as many as its device
+/// asks for and the ledger grants as spare memory (their buffers and
+/// stacks, and a batch's bytes and lists), down to one. None where the
+/// source is not read through lanes of its own, where there is no ledger,
+/// or nothing is granted; then every tail is read as before.
+fn tails_ahead(
+    bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
+    scratch: &SourceScratch,
+) -> Option<LaneReads> {
+    let wanted = LaneReads::lanes_for(bytes.read_lane_depth());
+    let group = scratch.artifact_group()?;
+    let (lanes, paid) = (1..=wanted).rev().find_map(|lanes| {
+        let workspace = LaneReads::workspace_bytes(lanes)?
+            .checked_add(TAIL_BATCH_BYTES)?
+            .checked_add((TAIL_BATCH as u64).checked_mul(TAIL_ASK_BYTES)?)?;
+        group
+            .arena()
+            .reserve_spare_ram(workspace)
+            .ok()
+            .map(|paid| (lanes, paid))
+    })?;
+    let lanes = bytes.read_lanes(lanes).ok().filter(|lanes| !lanes.is_empty())?;
+    LaneReads::start("n2r-source-tails-ahead", lanes, Some(Box::new(paid))).ok()
+}
+
 impl SourceTailProvider {
+    /// Every stream's tail is read from the source again here and its digest
+    /// is the expectation the shadow's tail is held to: for a stream whose
+    /// contents were not hashed at inspection, that second reading is the
+    /// only independent check of its tail (#225).
+    ///
+    /// One small read of the source after another, each waited for in turn,
+    /// was the whole of this pass (18 s on the full Windows volume). Where
+    /// the source may be read through lanes of its own ([`tails_ahead`]),
+    /// the objects are taken in batches (`objects_leased_at_once`), the
+    /// tails of a batch are asked of the lanes at once, in their order on
+    /// the disk, from where the expected run list places them
+    /// ([`tail_place`]), and each tail's bytes, once read, are offered to
+    /// the adapter's read of that tail (`offer_read_ahead`). That read is
+    /// otherwise what it was: the stream's session is opened from the
+    /// source's record, the tail's range is mapped by it and the bytes are
+    /// taken from the read ahead only where they lie wholly inside what was
+    /// read there, a fresh read of the same frozen device; anything else,
+    /// a read ahead that failed among it, is read by the adapter as before.
+    /// The tails are taken, hashed and written in the same order as before,
+    /// so the store and its pin are the same.
     fn capture(
         bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
         expected: &PagedExpectedTree,
@@ -251,89 +329,151 @@ impl SourceTailProvider {
         // A tail is shorter than one target cluster.
         let cluster = n2r_win32::target_cluster::bytes();
         let mut buffer = vec![0; usize::try_from(cluster)?];
-        for index in 0..expected.len() {
-            let object = expected.object_leased(index)?;
-            if object.directory {
-                continue;
+        let mut ahead = tails_ahead(bytes, scratch);
+        let mut first = 0usize;
+        while first < expected.len() {
+            let held = if ahead.is_some() {
+                let (mut objects, mut tails) = (0usize, 0usize);
+                expected.objects_leased_at_once(first, |object| {
+                    objects += 1;
+                    tails += object
+                        .data_streams()
+                        .filter(|s| s.tail_requires_materialization())
+                        .count();
+                    objects < TAIL_BATCH && tails < TAIL_BATCH
+                })?
+            } else {
+                vec![expected.object_leased(first)?]
+            };
+            // For each tail of the batch, in the order it is taken below:
+            // its ticket and place, where it was asked for.
+            let mut tickets: std::collections::VecDeque<Option<(u64, u64)>> =
+                std::collections::VecDeque::new();
+            if let Some(reads) = ahead.as_mut() {
+                let mut asks = Vec::new();
+                let mut asked_bytes = 0u64;
+                for object in held.iter().filter(|object| !object.directory) {
+                    // The tails in the order they are taken below.
+                    let mut tails: Vec<_> = object
+                        .data_streams()
+                        .filter(|s| s.tail_requires_materialization())
+                        .collect();
+                    tails.sort_unstable_by(|a, b| a.name_utf16.cmp(b.name_utf16));
+                    for stream in tails {
+                        let offset = stream.length / cluster * cluster;
+                        let count = stream.length - offset;
+                        let slot = tickets.len();
+                        tickets.push_back(None);
+                        if asks.len() < TAIL_BATCH
+                            && asked_bytes + count <= TAIL_BATCH_BYTES
+                            && let Some(place) = tail_place(&stream, offset, count)
+                        {
+                            asked_bytes += count;
+                            asks.push((place, count as usize, slot));
+                        }
+                    }
+                }
+                asks.sort_unstable();
+                for (place, count, slot) in asks {
+                    tickets[slot] = Some((reads.ask(place, count), place));
+                }
             }
-            // Pay for this actual object's reference vector before allocating
-            // it; the expected-object lease separately owns the names/data.
-            // The reserve also covers the one tail, of less than a target
-            // cluster, and bounded current source proof/expectation name
-            // copies, not an entire maximum row.
-            let count = object
-                .data_streams()
-                .filter(|s| s.tail_requires_materialization())
-                .count();
-            let max_name_units = object
-                .data_streams()
-                .filter(|s| s.tail_requires_materialization())
-                .map(|s| s.name_utf16.len())
-                .max()
-                .unwrap_or(0);
-            let reference_bytes = (count as u64)
-                .checked_mul(std::mem::size_of::<crate::shadow_tree::StreamRef<'_>>() as u64)
-                .context("source tail reference RAM overflow")?;
-            let admitted = reference_bytes
-                .checked_mul(2)
-                .and_then(|n| n.checked_add((max_name_units as u64).checked_mul(16)?))
-                .and_then(|n| n.checked_add(65536 - 4096 + cluster))
-                .context("source tail RAM overflow")?;
-            ensure!(
-                reference_bytes
-                    <= admission
-                        .budget
-                        .max_row_bytes
-                        .checked_mul(8)
-                        .context("source tail row bound overflow")?,
-                "source tail references exceed admitted row workspace"
-            );
-            let _tail_ram = bytes.lease_working_ram(admitted)?;
-            let mut tails = Vec::new();
-            tails.try_reserve_exact(count)?;
-            tails.extend(
-                object
+            for (index, object) in (first..).zip(&held) {
+                if object.directory {
+                    continue;
+                }
+                // Pay for this actual object's reference vector before allocating
+                // it; the expected-object lease separately owns the names/data.
+                // The reserve also covers the one tail, of less than a target
+                // cluster, and bounded current source proof/expectation name
+                // copies, not an entire maximum row.
+                let count = object
                     .data_streams()
-                    .filter(|s| s.tail_requires_materialization()),
-            );
-            ensure!(tails.len() == count && (tails.capacity() as u64)
-                .checked_mul(std::mem::size_of::<crate::shadow_tree::StreamRef<'_>>() as u64)
-                .is_some_and(|n| n <= admitted), "source tail reference allocation differs");
-            tails.sort_unstable_by(|a, b| a.name_utf16.cmp(b.name_utf16));
-            for (ordinal, stream) in tails.into_iter().enumerate() {
-                let offset = stream.length / cluster * cluster;
-                let count = usize::try_from(stream.length - offset)?;
+                    .filter(|s| s.tail_requires_materialization())
+                    .count();
+                let max_name_units = object
+                    .data_streams()
+                    .filter(|s| s.tail_requires_materialization())
+                    .map(|s| s.name_utf16.len())
+                    .max()
+                    .unwrap_or(0);
+                let reference_bytes = (count as u64)
+                    .checked_mul(std::mem::size_of::<crate::shadow_tree::StreamRef<'_>>() as u64)
+                    .context("source tail reference RAM overflow")?;
+                let admitted = reference_bytes
+                    .checked_mul(2)
+                    .and_then(|n| n.checked_add((max_name_units as u64).checked_mul(16)?))
+                    .and_then(|n| n.checked_add(65536 - 4096 + cluster))
+                    .context("source tail RAM overflow")?;
                 ensure!(
-                    (1..buffer.len()).contains(&count),
-                    "source tail width differs"
+                    reference_bytes
+                        <= admission
+                            .budget
+                            .max_row_bytes
+                            .checked_mul(8)
+                            .context("source tail row bound overflow")?,
+                    "source tail references exceed admitted row workspace"
                 );
-                let identity = PagedStreamIdentity {
-                    record_number: object.record_number,
-                    sequence_number: object.sequence_number,
-                    name_utf16: stream.name_utf16,
-                    length: stream.length,
-                    sha256: stream.sha256,
-                    allow_sparse: stream.sparse.is_some(),
-                };
-                let proof = bytes.read_range_proof(&identity, offset, &mut buffer[..count])?;
-                ensure!(
-                    proof.stream_logical_bytes == stream.length
-                        && proof.expected_stream_sha256.as_deref() == stream.sha256
-                        && proof.stream_name_utf16 == stream.name_utf16,
-                    "source residual identity changed"
+                let _tail_ram = bytes.lease_working_ram(admitted)?;
+                let mut tails = Vec::new();
+                tails.try_reserve_exact(count)?;
+                tails.extend(
+                    object
+                        .data_streams()
+                        .filter(|s| s.tail_requires_materialization()),
                 );
-                writer.push(
-                    key(index as u64, ordinal as u64),
-                    &LayoutResidualExpectation {
-                        object_index: index,
-                        stream_name_utf16: stream.name_utf16.to_vec(),
-                        logical_offset: offset,
-                        length: count as u64,
-                        sha256: proof.sha256,
-                    },
-                )?;
+                ensure!(tails.len() == count && (tails.capacity() as u64)
+                    .checked_mul(std::mem::size_of::<crate::shadow_tree::StreamRef<'_>>() as u64)
+                    .is_some_and(|n| n <= admitted), "source tail reference allocation differs");
+                tails.sort_unstable_by(|a, b| a.name_utf16.cmp(b.name_utf16));
+                for (ordinal, stream) in tails.into_iter().enumerate() {
+                    let offset = stream.length / cluster * cluster;
+                    let count = usize::try_from(stream.length - offset)?;
+                    ensure!(
+                        (1..buffer.len()).contains(&count),
+                        "source tail width differs"
+                    );
+                    let identity = PagedStreamIdentity {
+                        record_number: object.record_number,
+                        sequence_number: object.sequence_number,
+                        name_utf16: stream.name_utf16,
+                        length: stream.length,
+                        sha256: stream.sha256,
+                        allow_sparse: stream.sparse.is_some(),
+                    };
+                    // A read ahead that failed is left to the adapter to make
+                    // again, and to report if it fails there too.
+                    if let (Some(reads), Some((ticket, place))) =
+                        (ahead.as_mut(), tickets.pop_front().flatten())
+                        && let Ok(read) = reads.take(ticket)
+                    {
+                        bytes.offer_read_ahead(place, read);
+                    }
+                    let proof = bytes.read_range_proof(&identity, offset, &mut buffer[..count]);
+                    bytes.withdraw_read_ahead(drop);
+                    let proof = proof?;
+                    ensure!(
+                        proof.stream_logical_bytes == stream.length
+                            && proof.expected_stream_sha256.as_deref() == stream.sha256
+                            && proof.stream_name_utf16 == stream.name_utf16,
+                        "source residual identity changed"
+                    );
+                    writer.push(
+                        key(index as u64, ordinal as u64),
+                        &LayoutResidualExpectation {
+                            object_index: index,
+                            stream_name_utf16: stream.name_utf16.to_vec(),
+                            logical_offset: offset,
+                            length: count as u64,
+                            sha256: proof.sha256,
+                        },
+                    )?;
+                }
             }
+            first += held.len();
         }
+        // The lanes are closed before the adapter's scope ends.
+        drop(ahead);
         let pin = writer.finish()?;
         let store = SortedRecordStore::open(&pin, scratch)?;
         // The provider's data-file pin is an actual complete-file SHA. Its

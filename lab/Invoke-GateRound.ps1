@@ -71,7 +71,13 @@ param(
     # runs the round with less (12), slower, so that the other work's swings
     # do not end it (two rounds were lost to them on 17 and 18 November).
     [ValidateRange(8, 64)][int]$MaxVmGB = 24,
-    [string]$ServerCredentialPath
+    [string]$ServerCredentialPath,
+    # Only the cases named here, by the names the round gives them (as in
+    # its table, without the prefix: 'fixture10', 'full-system', 'lived-in',
+    # 'c-convert', ...): a short round for a change whose risk is known, or
+    # the cases a round did not get to. The sets that hold none of them are
+    # not run. A name no set has is refused.
+    [string[]]$Only
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -304,6 +310,21 @@ $runningCases = @(
     @{ Name = 'c-cut-verify'; Expected = 'CUT-RECOVERED-TO-REFS'; Arguments = @{ HoldAt = 'verify-source-readonly'; HoldAfterMinutes = 20; CutAfterMinutes = 75; AwayMinutes = 180 } }
 )
 
+if ($Only) {
+    $known = @($fixtureRuns.Name) + @($fullRun.Name) + @($runningCases.Name) +
+        @($dataCases + $serverCases | ForEach-Object { $_.Split('|', 2)[0] })
+    $unknown = @($Only | Where-Object { $known -notcontains $_ })
+    if ($unknown) { throw "-Only names cases no set has: $($unknown -join ', ')" }
+    $fixtureRuns = @($fixtureRuns | Where-Object { $Only -contains $_.Name })
+    $dataCases = @($dataCases | Where-Object { $Only -contains $_.Split('|', 2)[0] })
+    $serverCases = @($serverCases | Where-Object { $Only -contains $_.Split('|', 2)[0] })
+    $runningCases = @($runningCases | Where-Object { $Only -contains $_.Name })
+    $Sets = @($Sets | Where-Object {
+            ($_ -eq 'fixtures' -and $fixtureRuns) -or ($_ -eq 'data' -and $dataCases) -or
+            ($_ -eq 'full' -and $Only -contains $fullRun.Name) -or ($_ -eq 'server' -and $serverCases) -or
+            ($_ -eq 'running' -and $runningCases) })
+    Say "only $($Only.Count) case(s), in the sets $($Sets -join ', ')"
+}
 if ($Sets -contains 'fixtures') { foreach ($run in $fixtureRuns) { $expected["$Prefix-$($run.Name)"] = Get-ExpectedBootOutcome $run.Arguments } }
 if ($Sets -contains 'data') { foreach ($case in $dataCases) { $name, $rest = $case.Split('|', 2); $expected["$Prefix-$name"] = Get-ExpectedDataOutcome $rest } }
 if ($Sets -contains 'full') { $expected["$Prefix-$($fullRun.Name)"] = Get-ExpectedBootOutcome $fullRun.Arguments }

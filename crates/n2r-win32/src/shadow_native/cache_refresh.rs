@@ -511,11 +511,11 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     }
     if let Some(admission) = resource_admission {
         input.require_resource_metadata(admission)?;
-        super::hard_links::validate_resource_domain(
+        super::hard_links::validate_resource_domain_once(
             input,
             admission.maximum_namespace_names()?,
             &resource_root,
-            crate::shadow_names::valid_unicode_component,
+            super::hard_links::Names::Unicode,
         )?;
     } else {
         super::hard_links::validate_domain(
@@ -560,6 +560,21 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     // decode every paged object for every native directory entry.
     let mut namespace_index = BTreeMap::new();
     let mut expected_children: BTreeMap<Vec<String>, BTreeSet<Vec<String>>> = BTreeMap::new();
+    const DIRECTORY: u8 = 1;
+    const EXTENDED_ATTRIBUTES: u8 = 2;
+    const REPARSE: u8 = 4;
+    // Reuse the existing prepaid scalar slot; the feature flags add no index
+    // allocation. The held InputDomain is immutable throughout completion.
+    const _: () = assert!(
+        std::mem::size_of::<(usize, usize, u8)>() == std::mem::size_of::<(usize, usize, bool)>()
+    );
+    // What the passes that restore metadata go by: every object with its
+    // depth and what it has to restore, and the files with more than one
+    // name (see the listing refresh further down). Both are noted where the
+    // objects are decoded for their shape, in the objects' order. A pass of
+    // its own decoded every object once more for them.
+    let mut ordered = Vec::new();
+    let mut linked = Vec::new();
     let metadata_progress = |pass, completed| {
         input.progress(
             crate::progress::Update::new(
@@ -653,6 +668,13 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 let ((_, item), shape) = asked
                     .next()
                     .ok_or_else(|| invalid("an object's handle was not asked for its shape"))?;
+                let flags = (u8::from(item.directory) * DIRECTORY)
+                    | (u8::from(item.extended_attributes.is_some()) * EXTENDED_ATTRIBUTES)
+                    | (u8::from(item.reparse.is_some()) * REPARSE);
+                ordered.push((index, item.components.len(), flags));
+                if !item.directory && !item.additional_names.is_empty() {
+                    linked.push(index);
+                }
                 if resource_admission.map_or(item.components.len() > 16, |_| {
                     !super::hard_links::resource_path_valid(&resource_root, item.components)
                 }) || item
@@ -728,124 +750,236 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 .insert(path.to_vec());
         }
     }
+    // One directory's listing held to what is expected of it: every entry
+    // names an object, or a derived alias, of the right kind and identity,
+    // none is there twice and none is missing. Made on this thread, for one
+    // directory after another in the objects' order.
+    // The memory of the paths seen in one listing, reserved before the
+    // listing is compared: a path seen is the directory's components and
+    // the name, each a String, in a Vec in a node of the set.
+    let reserve_seen = |components: &[String],
+                        entries: &[namespace_layout::Entry]|
+     -> io::Result<Option<Box<dyn report_memory::ReportMemoryLease>>> {
+        enumeration_payer
+            .map(|payer| {
+                let parent = components
+                    .iter()
+                    .fold(64 * (components.len() as u64 + 3), |n, part| {
+                        n + part.len() as u64
+                    });
+                payer.reserve(entries.iter().fold(65536, |n: u64, entry| {
+                    n.saturating_add(parent)
+                        .saturating_add(3 * entry.name_utf16.len() as u64)
+                }))
+            })
+            .transpose()
+    };
+    let compare_listing = |components: &[String],
+                           entries: Vec<namespace_layout::Entry>,
+                           points_installed: bool,
+                           aliases: Option<&super::windows_aliases::StagedWindowsAliases>,
+                           _seen_memory: Option<Box<dyn report_memory::ReportMemoryLease>>|
+     -> io::Result<()> {
+        let mut seen = BTreeSet::new();
+        for entry in entries {
+            if entry.name_utf16 == [46] || entry.name_utf16 == [46, 46] {
+                continue;
+            }
+            let name = String::from_utf16(&entry.name_utf16)
+                .map_err(|_| invalid("owned metadata namespace UTF-16 differs"))?;
+            let mut path = components.to_vec();
+            path.push(name);
+            if let Some(alias) = aliases.and_then(|aliases| aliases.entry(&path)) {
+                if !seen.insert(path.clone())
+                    || (entry.attributes & 16 != 0) != alias.directory
+                    || (!(recovering && !points_installed)
+                        && (entry.attributes & 0x400 != 0) != points_installed)
+                    || entry.file_id.as_slice() != &alias.file_id_info[8..24]
+                {
+                    return Err(invalid("derived alias namespace identity/type differs"));
+                }
+                continue;
+            }
+            let &(child_index, child_directory, child_reparse) = namespace_index
+                .get(&path)
+                .ok_or_else(|| invalid("unexpected owned metadata namespace entry"))?;
+            if !seen.insert(path.clone())
+                || (entry.attributes & 16 != 0) != child_directory
+                || (if recovering && !points_installed {
+                    (entry.attributes & 0x400 != 0) && !child_reparse
+                } else {
+                    (entry.attributes & 0x400 != 0) != (points_installed && child_reparse)
+                })
+                || entry.file_id.as_slice() != &identity_of(&identities, child_index)?[8..24]
+            {
+                return Err(invalid("owned metadata namespace identity or type differs"));
+            }
+        }
+        let complete = match expected_children.get(components) {
+            Some(expected) => expected == &seen,
+            None => seen.is_empty(),
+        };
+        if !complete {
+            return Err(invalid("missing owned metadata namespace entry"));
+        }
+        Ok(())
+    };
     let namespace = |points_installed: bool,
                      aliases: Option<&super::windows_aliases::StagedWindowsAliases>|
      -> io::Result<()> {
-        for index in 0..input.len() {
-            metadata_progress(if points_installed { 7 } else { 1 }, index as u64);
-            let owned = input.object(index)?;
-            let directory = owned.input();
-            if !directory.directory {
-                continue;
-            }
-            if (points_installed && directory.reparse.is_some())
-                || (recovering && crate::reparse_native::capture(held(handles, index)?)?.is_some())
-            {
-                continue;
-            }
-            let handle = held(handles, index)?;
-            // A listing is paid for by what it is
-            // (`namespace_layout::listing_memory`); the paths seen are paid
-            // once the names are known.
-            let (enumeration_budget, _enumeration_memory) = if let Some(payer) = enumeration_payer {
-                let count = expected_children
-                    .get(directory.components)
-                    .map_or(0, BTreeSet::len);
-                let (evidence, memory) = namespace_layout::listing_memory(count)
-                    .ok_or_else(|| invalid("owned resource directory enumeration overflow"))?;
-                let memory = payer.reserve(memory)?;
-                (Some(evidence), Some(memory))
-            } else {
-                (None, None)
-            };
-            let entries = enumerate_with_resource_budget(handle, enumeration_budget)?;
-            let _seen_memory = enumeration_payer
-                .map(|payer| {
-                    // A path seen: the directory's components and the name,
-                    // each a String, in a Vec in a node of the set.
-                    let parent = directory
-                        .components
-                        .iter()
-                        .fold(64 * (directory.components.len() as u64 + 3), |n, part| {
-                            n + part.len() as u64
-                        });
-                    payer.reserve(entries.iter().fold(65536, |n: u64, entry| {
-                        n.saturating_add(parent)
-                            .saturating_add(3 * entry.name_utf16.len() as u64)
-                    }))
-                })
-                .transpose()?;
-            let mut seen = BTreeSet::new();
-            for entry in entries {
-                if entry.name_utf16 == [46] || entry.name_utf16 == [46, 46] {
+        let pass = if points_installed { 7 } else { 1 };
+        let Some(payer) = change_payer else {
+            // One directory after another: a recovery, and a domain that
+            // holds no payer.
+            for index in 0..input.len() {
+                metadata_progress(pass, index as u64);
+                let owned = input.object(index)?;
+                let directory = owned.input();
+                if !directory.directory {
                     continue;
                 }
-                let name = String::from_utf16(&entry.name_utf16)
-                    .map_err(|_| invalid("owned metadata namespace UTF-16 differs"))?;
-                let mut path = directory.components.to_vec();
-                path.push(name);
-                if let Some(alias) = aliases.and_then(|aliases| aliases.entry(&path)) {
-                    if !seen.insert(path.clone())
-                        || (entry.attributes & 16 != 0) != alias.directory
-                        || (!(recovering && !points_installed)
-                            && (entry.attributes & 0x400 != 0) != points_installed)
-                        || entry.file_id.as_slice() != &alias.file_id_info[8..24]
-                    {
-                        return Err(invalid("derived alias namespace identity/type differs"));
-                    }
-                    continue;
-                }
-                let &(child_index, child_directory, child_reparse) = namespace_index
-                    .get(&path)
-                    .ok_or_else(|| invalid("unexpected owned metadata namespace entry"))?;
-                if !seen.insert(path.clone())
-                    || (entry.attributes & 16 != 0) != child_directory
-                    || (if recovering && !points_installed {
-                        (entry.attributes & 0x400 != 0) && !child_reparse
-                    } else {
-                        (entry.attributes & 0x400 != 0) != (points_installed && child_reparse)
-                    })
-                    || entry.file_id.as_slice() != &identity_of(&identities, child_index)?[8..24]
+                if (points_installed && directory.reparse.is_some())
+                    || (recovering
+                        && crate::reparse_native::capture(held(handles, index)?)?.is_some())
                 {
-                    return Err(invalid("owned metadata namespace identity or type differs"));
+                    continue;
                 }
+                let handle = held(handles, index)?;
+                // A listing is paid for by what it is
+                // (`namespace_layout::listing_memory`); the paths seen are
+                // paid once the names are known.
+                let (enumeration_budget, _enumeration_memory) = if let Some(payer) =
+                    enumeration_payer
+                {
+                    let count = expected_children
+                        .get(directory.components)
+                        .map_or(0, BTreeSet::len);
+                    let (evidence, memory) = namespace_layout::listing_memory(count)
+                        .ok_or_else(|| invalid("owned resource directory enumeration overflow"))?;
+                    let memory = payer.reserve(memory)?;
+                    (Some(evidence), Some(memory))
+                } else {
+                    (None, None)
+                };
+                let entries = enumerate_with_resource_budget(handle, enumeration_budget)?;
+                let seen = reserve_seen(directory.components, &entries)?;
+                compare_listing(
+                    directory.components,
+                    entries,
+                    points_installed,
+                    aliases,
+                    seen,
+                )?;
             }
-            let complete = match expected_children.get(directory.components) {
-                Some(expected) => expected == &seen,
-                None => seen.is_empty(),
-            };
-            if !complete {
-                return Err(invalid("missing owned metadata namespace entry"));
+            metadata_progress(pass, input.len() as u64);
+            return Ok(());
+        };
+        // Listing a directory is a few queries on its own handle, which one
+        // thread made for one directory after another. On a shadow this run
+        // is building, the directories of a batch are listed on the
+        // available cores (`each_at_once`), each through its own handle,
+        // and the listings are compared on this thread in the objects'
+        // order, so the same difference is reported first.
+        //
+        // A listing is paid for before it is made, by what it is, as
+        // before: the first of a batch as a listing made by itself is, the
+        // others from spare memory. Where the ledger has no spare memory
+        // for one more, or anything else fails for an object behind
+        // listings already paid for (decoding it reserves a workspace of
+        // its own), the batch ends before that object. It is taken again as
+        // the first of the next batch, with this batch's listings returned,
+        // and what it fails with then is the pass's error.
+        let mut next = 0usize;
+        while next < input.len() {
+            metadata_progress(pass, next as u64);
+            let mut batch = Vec::with_capacity(super::PARALLEL_BATCH);
+            while next < input.len() && batch.len() < super::PARALLEL_BATCH {
+                let first = batch.is_empty();
+                let gathered = (|| -> io::Result<_> {
+                    let owned = input.object(next)?;
+                    let directory = owned.input();
+                    if !directory.directory || (points_installed && directory.reparse.is_some()) {
+                        return Ok(None);
+                    }
+                    let handle = held(handles, next)?;
+                    let count = expected_children
+                        .get(directory.components)
+                        .map_or(0, BTreeSet::len);
+                    let (evidence, memory) = namespace_layout::listing_memory(count)
+                        .ok_or_else(|| invalid("owned resource directory enumeration overflow"))?;
+                    let memory = if first {
+                        payer.reserve(memory)?
+                    } else {
+                        payer.reserve_spare(memory)?
+                    };
+                    drop(directory);
+                    Ok(Some((owned, handle, evidence, memory, next)))
+                })();
+                match gathered {
+                    Ok(Some(listing)) => batch.push(listing),
+                    Ok(None) => {}
+                    Err(_) if !first => break,
+                    Err(error) => return Err(error),
+                }
+                next += 1;
+            }
+            let asked: Vec<(&File, usize)> = batch
+                .iter()
+                .map(|(_, handle, evidence, _, _)| (*handle, *evidence))
+                .collect();
+            let listed = super::each_at_once(
+                Some(payer),
+                &asked,
+                // The listing is paid for above. A helper holds nothing
+                // else for it but what it holds for every item.
+                |_| Some(65536),
+                |(handle, evidence)| enumerate_with_resource_budget(handle, Some(*evidence)),
+            );
+            drop(asked);
+            // A listing's memory is returned once the listing was compared.
+            //
+            // The paths seen in a listing are needed memory, reserved when
+            // the listing is compared. One directory at a time, nothing but
+            // that directory's listing is held then. Here the later
+            // listings of the batch are held beside it, as spare memory,
+            // and must not be what the reservation is refused for: on a
+            // refusal they are returned, the reservation is made again as
+            // it would be for one directory by itself (its refusal then is
+            // the pass's error, as before), and the directories whose
+            // listings were returned are listed again in the next batch.
+            let mut rest = batch.into_iter().zip(listed);
+            while let Some(((owned, _, _, _memory, ordinal), entries)) = rest.next() {
+                let entries = entries?;
+                let mut resume = None;
+                let seen = match reserve_seen(owned.input().components, &entries) {
+                    Ok(seen) => seen,
+                    Err(refused) if rest.len() == 0 => return Err(refused),
+                    Err(_) => {
+                        resume = Some(ordinal + 1);
+                        rest.by_ref().for_each(drop);
+                        reserve_seen(owned.input().components, &entries)?
+                    }
+                };
+                compare_listing(
+                    owned.input().components,
+                    entries,
+                    points_installed,
+                    aliases,
+                    seen,
+                )?;
+                if let Some(resume) = resume {
+                    next = resume;
+                }
             }
         }
-        metadata_progress(if points_installed { 7 } else { 1 }, input.len() as u64);
+        metadata_progress(pass, input.len() as u64);
         Ok(())
     };
     crate::perf::step("metadata: check directory listings");
     namespace(false, aliases.as_deref())?;
     crate::perf::step("metadata: restore security");
-    const DIRECTORY: u8 = 1;
-    const EXTENDED_ATTRIBUTES: u8 = 2;
-    const REPARSE: u8 = 4;
-    // Reuse the existing prepaid scalar slot; the feature flags add no index
-    // allocation. The held InputDomain is immutable throughout completion.
-    const _: () = assert!(
-        std::mem::size_of::<(usize, usize, u8)>() == std::mem::size_of::<(usize, usize, bool)>()
-    );
-    let mut ordered = Vec::new();
-    // Files with more than one name; see the listing refresh further down.
-    let mut linked = Vec::new();
-    input.for_each(|index, item| {
-        metadata_progress(2, index as u64);
-        let flags = (u8::from(item.directory) * DIRECTORY)
-            | (u8::from(item.extended_attributes.is_some()) * EXTENDED_ATTRIBUTES)
-            | (u8::from(item.reparse.is_some()) * REPARSE);
-        ordered.push((index, item.components.len(), flags));
-        if !item.directory && !item.additional_names.is_empty() {
-            linked.push(index);
-        }
-        Ok(())
-    })?;
+    // Pass 2 gathered `ordered` and `linked`; they come from the first pass
+    // now, and this says that there is nothing left of it to wait for.
     metadata_progress(2, input.len() as u64);
     ordered.sort_by_key(|(_, depth, _)| *depth);
     let mut dacl_protection_updates = 0usize;

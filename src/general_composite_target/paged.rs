@@ -25,7 +25,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::sync::Arc;
 use std::{io, path::Path};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Span {
     offset: u64,
@@ -59,6 +59,8 @@ struct Intervals {
     store: SortedRecordStore,
     image: u64,
     bytes: u64,
+    // The rows the last lookup decoded, for the next one: see `RowMemo`.
+    rows: crate::general_shadow::paged_capture::RowMemo<Span>,
 }
 impl Intervals {
     fn finish(
@@ -107,10 +109,11 @@ impl Intervals {
             store,
             image,
             bytes,
+            rows: crate::general_shadow::paged_capture::RowMemo::new(),
         })
     }
     fn row(&self, ordinal: u64) -> Result<Span> {
-        self.store.get(ordinal)
+        self.rows.row(ordinal, || self.store.get(ordinal))
     }
     fn subtract(
         &self,
@@ -168,6 +171,7 @@ impl Intervals {
             store: SortedRecordStore::open(&pin, scratch)?,
             image: self.image,
             bytes,
+            rows: crate::general_shadow::paged_capture::RowMemo::new(),
         })
     }
     fn same(&self, other: &Self) -> Result<bool> {
@@ -194,11 +198,16 @@ impl Intervals {
             .checked_add(length)
             .context("in-place intersection overflow")?;
         let (mut low, mut high) = (0, self.store.len());
+        let mut step = 0;
         while low < high {
             let middle = low + (high - low) / 2;
-            if self.row(middle)?.end()? <= offset {
+            let row = self.rows.step(step, middle, || self.store.get(middle))?;
+            step += 1;
+            if row.end()? <= offset {
                 low = middle + 1;
             } else {
+                // Where the search ends, if it is not lowered again.
+                self.rows.keep(middle, row);
                 high = middle;
             }
         }

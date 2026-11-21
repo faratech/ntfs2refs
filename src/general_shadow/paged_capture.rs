@@ -18,7 +18,7 @@ use n2r_win32::reference_file::ReferenceFileSnapshot;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     os::windows::fs::OpenOptionsExt,
@@ -36,6 +36,90 @@ struct RangeWire {
     length: u64,
 }
 
+/// Rows of a held record store that one lookup decoded and the next asks for
+/// again.
+///
+/// A lookup in a sorted store is a binary search that decodes one row of
+/// text at every step, then a scan that decodes the rows it crosses. The
+/// capture holds every payload route to three such stores, one route after
+/// another in the order they lie on the disk: on a full Windows volume that
+/// was most of fifteen million decodings, three searches of seventeen steps
+/// for every route. Searches for neighbouring positions take the same steps
+/// and end at the same rows. Kept here are the row each step of a search
+/// decoded last and the row a scan decoded last; a step or a scan that asks
+/// for the row at the same ordinal is given it again. The rows asked for, and
+/// their order, are what they were: only the decoding of a row that was just
+/// decoded is left out.
+///
+/// The stores are closed, pinned and held open, and are not rewritten. A row
+/// decoded outside the gate before the first write to the source is not
+/// served inside it, nor one of an earlier gate ([`n2r_win32::verify_policy`]).
+pub(crate) struct RowMemo<T> {
+    steps: [Cell<Option<KeptRow<T>>>; ROW_MEMO_STEPS],
+    last: Cell<Option<KeptRow<T>>>,
+    gate: Cell<Option<u64>>,
+}
+#[derive(Clone, Copy)]
+struct KeptRow<T> {
+    ordinal: u64,
+    row: T,
+}
+/// A binary search over a store of 2^64 rows takes this many steps.
+const ROW_MEMO_STEPS: usize = 64;
+impl<T: Copy> RowMemo<T> {
+    pub(crate) fn new() -> Self {
+        Self {
+            steps: std::array::from_fn(|_| Cell::new(None)),
+            last: Cell::new(None),
+            gate: Cell::new(None),
+        }
+    }
+    /// Forgets what was kept when a gate has opened or closed since.
+    fn within_one_gate(&self) {
+        let gate = n2r_win32::verify_policy::open_gate();
+        if self.gate.replace(gate) != gate {
+            for step in &self.steps {
+                step.set(None);
+            }
+            self.last.set(None);
+        }
+    }
+    /// The row at `ordinal` for step `step` of a binary search.
+    pub(crate) fn step(
+        &self,
+        step: usize,
+        ordinal: u64,
+        decode: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        self.within_one_gate();
+        let Some(slot) = self.steps.get(step) else {
+            return decode();
+        };
+        if let Some(kept) = slot.get().filter(|kept| kept.ordinal == ordinal) {
+            return Ok(kept.row);
+        }
+        let row = decode()?;
+        slot.set(Some(KeptRow { ordinal, row }));
+        Ok(row)
+    }
+    /// The row at `ordinal` for a scan.
+    pub(crate) fn row(&self, ordinal: u64, decode: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.within_one_gate();
+        if let Some(kept) = self.last.get().filter(|kept| kept.ordinal == ordinal) {
+            return Ok(kept.row);
+        }
+        let row = decode()?;
+        self.last.set(Some(KeptRow { ordinal, row }));
+        Ok(row)
+    }
+    /// A search ended at `ordinal` and decoded `row` there: the scan that
+    /// follows starts with it.
+    pub(crate) fn keep(&self, ordinal: u64, row: T) {
+        self.within_one_gate();
+        self.last.set(Some(KeptRow { ordinal, row }));
+    }
+}
+
 /// An authenticated, complete store of the explicitly selected ranges. Its
 /// constructor proves only those rows, never required-byte graph completeness.
 /// Production activation must additionally bind an opaque frozen target proof.
@@ -43,6 +127,7 @@ pub(crate) struct DiagnosticCaptureSelection {
     store: SortedRecordStore,
     image: u64,
     bytes: u64,
+    rows: RowMemo<ByteRange>,
 }
 impl DiagnosticCaptureSelection {
     pub(crate) fn from_held_store(store: SortedRecordStore, image: u64) -> Result<Self> {
@@ -82,29 +167,43 @@ impl DiagnosticCaptureSelection {
             store,
             image,
             bytes,
+            rows: RowMemo::new(),
         })
     }
-    fn range(&self, ordinal: u64) -> Result<ByteRange> {
+    fn decode(&self, ordinal: u64) -> Result<ByteRange> {
         let r: RangeWire = self.store.get(ordinal)?;
         Ok(ByteRange {
             offset: r.offset,
             length: r.length,
         })
     }
+    fn range(&self, ordinal: u64) -> Result<ByteRange> {
+        self.rows.row(ordinal, || self.decode(ordinal))
+    }
+    /// The first range that ends after `offset`: its ordinal, or the number
+    /// of ranges when none does.
+    fn first_ending_after(&self, offset: u64) -> Result<u64> {
+        let (mut low, mut high) = (0, self.store.len());
+        let mut step = 0;
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let r = self.rows.step(step, middle, || self.decode(middle))?;
+            step += 1;
+            if r.offset + r.length <= offset {
+                low = middle + 1;
+            } else {
+                // Where the search ends, if it is not lowered again.
+                self.rows.keep(middle, r);
+                high = middle;
+            }
+        }
+        Ok(low)
+    }
     pub(crate) fn covers(&self, offset: u64, length: u64) -> Result<bool> {
         let end = offset
             .checked_add(length)
             .context("selection coverage overflow")?;
-        let (mut low, mut high) = (0, self.store.len());
-        while low < high {
-            let middle = low + (high - low) / 2;
-            let r = self.range(middle)?;
-            if r.offset + r.length <= offset {
-                low = middle + 1;
-            } else {
-                high = middle;
-            }
-        }
+        let mut low = self.first_ending_after(offset)?;
         let mut cursor = offset;
         while cursor < end {
             if low == self.store.len() {
@@ -129,16 +228,7 @@ impl DiagnosticCaptureSelection {
         let end = offset
             .checked_add(length)
             .context("selection intersection overflow")?;
-        let (mut low, mut high) = (0, self.store.len());
-        while low < high {
-            let middle = low + (high - low) / 2;
-            let r = self.range(middle)?;
-            if r.offset + r.length <= offset {
-                low = middle + 1;
-            } else {
-                high = middle;
-            }
-        }
+        let mut low = self.first_ending_after(offset)?;
         let mut bytes = 0u64;
         while low < self.store.len() {
             let r = self.range(low)?;

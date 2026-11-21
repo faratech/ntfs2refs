@@ -307,8 +307,10 @@ pub const SELECTED_DIGEST_BEHIND_BYTES: u64 = MAX_IO as u64;
 /// (`bulk_digest::HashedBehind`) while this thread reads on: hashed here,
 /// each range of a few tens of kilobytes was too short to be divided among
 /// the pool's threads and held up the next read. The caller pays for the
-/// worker's second buffer ([`SELECTED_DIGEST_BEHIND_BYTES`]). The bytes
-/// hashed, their order and so the digest are the same either way.
+/// worker's second buffer ([`SELECTED_DIGEST_BEHIND_BYTES`]); where the
+/// worker cannot be started or its buffers allocated, this thread hashes
+/// them. The bytes hashed, their order and so the digest are the same
+/// either way.
 fn selected_digest_reaching<R: Read + Seek>(
     source: &mut R,
     policy: &HeldPagedWritePolicy,
@@ -320,8 +322,14 @@ fn selected_digest_reaching<R: Read + Seek>(
     let result = (|| {
         let facts = policy.facts()?;
         let mut rows = super::AscendingRanges::new(u64::from(facts.range_count));
-        if hashed_behind {
-            let mut hash = crate::bulk_digest::HashedBehind::new(algorithm, MAX_IO)?;
+        // The worker and its buffers only buy speed: where they cannot be
+        // had (no memory, no thread), the bytes are hashed here, as before.
+        let behind = if hashed_behind {
+            crate::bulk_digest::HashedBehind::new(algorithm, MAX_IO).ok()
+        } else {
+            None
+        };
+        if let Some(mut hash) = behind {
             while let Some((row, group_end)) =
                 rows.next(|ordinal| policy.row(ordinal).map(|row| (row, row.offset, row.length)))?
             {

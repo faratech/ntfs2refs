@@ -520,14 +520,20 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                 &mut target,
                 prepared.inner._journal,
                 domain,
+                u64::from(ticket.range_count),
                 staged,
                 facts.path,
             )?;
+            // How much the ranges that follow one another were merged: the
+            // writes made against those one range and a megabyte at a time
+            // makes.
             eprintln!(
-                "apply-writes: {} changed ranges, {:.2} GB in {} writes, read and written on two threads",
+                "apply-writes: {} changed ranges, {:.2} GB in {} writes of up to {} MiB ({} one range at a time), read and written on two threads",
                 written.ranges,
                 written.bytes as f64 / (1u64 << 30) as f64,
-                written.writes
+                written.writes,
+                n2r_win32::BorrowedPagedWriter::MAX_WRITE >> 20,
+                written.serial
             );
         } else {
             for ordinal in 0..u64::from(ticket.range_count) {

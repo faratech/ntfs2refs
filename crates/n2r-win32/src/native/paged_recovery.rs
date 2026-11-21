@@ -399,6 +399,8 @@ pub struct BorrowedPagedWriter<'a> {
     written: u64,
 }
 impl BorrowedPagedWriter<'_> {
+    /// The longest write the writer accepts: one native request.
+    pub const MAX_WRITE: usize = MAX_IO;
     pub fn byte_len(&self) -> u64 {
         self.source.byte_len()
     }

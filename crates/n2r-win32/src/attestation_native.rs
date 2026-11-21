@@ -790,16 +790,13 @@ impl SourceObjects<'_> {
         let request = self.request;
         let plain = if self.skip_plain_reads { plain } else { &[] };
         let identity = &selected.identity;
-        let row_request;
-        let capture_request = if request.has_paged_selectors() {
-            row_request = Request {
-                files: vec![identity.clone()],
-                extent_identity_streams: selected.extent_identity_streams.clone(),
-                ..request.clone()
-            };
-            &row_request
+        // With paged selectors the object's own row names the streams its
+        // extents prove; the request is borrowed with that row, where a
+        // copy of the whole request was made for each object.
+        let extent_identity_streams = if request.has_paged_selectors() {
+            selected.extent_identity_streams.as_slice()
         } else {
-            request
+            request.extent_identity_streams.as_slice()
         };
         let mut logical = LogicalFile {
             identity: identity.clone(),
@@ -853,7 +850,8 @@ impl SourceObjects<'_> {
         obs.before = Some(snapshot(&file));
         let (capture, hashes) = crate::stream_native::capture(
             &file,
-            capture_request,
+            request,
+            extent_identity_streams,
             identity,
             read_budget,
             row_stream_budget,
@@ -868,7 +866,8 @@ impl SourceObjects<'_> {
         } else {
             let (capture, hashes) = crate::stream_native::capture(
                 &file,
-                capture_request,
+                request,
+                extent_identity_streams,
                 identity,
                 read_budget,
                 row_stream_budget

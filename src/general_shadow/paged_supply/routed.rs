@@ -2,8 +2,11 @@
 //! clusters are routed from the frozen source later; their bytes are not copied
 //! into the private shadow. This stage issues no conversion authority.
 use super::*;
-use crate::shadow_tree::SourceStreamEvidence;
+use crate::shadow_tree::{SourceStreamEvidence, pages::LeasedExpectedObject};
 use n2r_win32::progress::{Counters, Phase, Reporter, Unit, Update};
+use n2r_win32::shadow_native::private_tree::{
+    SUPPLY_BATCH_STREAMS, SupplyStreamRequest, SupplyStreamSeen,
+};
 
 fn supply_progress(
     reporter: &Reporter,
@@ -231,6 +234,10 @@ struct LeasedRanges {
     _range_ram: crate::ntfs_inspect::paged_storage::SourceRamLease,
     native_ram: Option<crate::ntfs_inspect::paged_storage::SourceRamLease>,
 }
+/// `seen` is what a helper thread saw of this stream where a batch took it
+/// ([`StreamsAtOnce`]): the snapshot's two observations of the stream's
+/// files are then the helper's, and everything else here is as it is for a
+/// stream taken by itself.
 fn leased_ranges(
     bytes: &PagedSourceByteAdapterWithScope<'_, '_>,
     template: &PrivateTree,
@@ -238,15 +245,17 @@ fn leased_ranges(
     object: &Object,
     stream: StreamRef<'_>,
     row_window: u64,
+    seen: Option<&mut SupplyStreamSeen>,
 ) -> Result<LeasedRanges> {
     // SDK owns one actual readonly native snapshot and closes its complete
     // source/shadow/file checks before this paid APP clone can escape.
-    let result = template.with_readonly_supply_stream_snapshot(
+    let result = template.with_readonly_supply_stream_snapshot_seen(
         index,
         stream.name_utf16,
         &object.path,
         stream.length,
         row_window,
+        seen,
         |snapshot| {
             (|| -> Result<LeasedRanges> {
                 let summary = snapshot.summary().clone();
@@ -312,24 +321,30 @@ fn leased_ranges(
 
 /// Unsupported target forms use the existing checked materialization path.
 /// Other errors, including a failed revalidation, are never downgraded.
+///
+/// `seen` is what a helper thread saw of this stream where a batch took it
+/// ([`StreamsAtOnce`]): the observation of the prefix and its revalidation
+/// are then the helper's, held to the same rules here.
 fn route_decision(
     template: &PrivateTree,
     index: usize,
     object: &Object,
     stream: StreamRef<'_>,
     ranges: &[(SupplyKind, SupplyRange)],
+    seen: Option<&mut SupplyStreamSeen>,
 ) -> Result<Option<(u64, String)>> {
     let prefix = eligible_prefix(stream)?;
     if !routed_in(ranges, prefix) {
         return Ok(None);
     }
     let prefix = prefix.context("routed prefix absent")?;
-    let ready = match template.observe_routed_prefix_named(
+    let ready = match template.observe_routed_prefix_named_seen(
         index,
         stream.name_utf16,
         &object.path,
         stream.length,
         prefix,
+        seen,
     ) {
         Ok(ready) => ready,
         Err(error) if error.kind() == std::io::ErrorKind::Unsupported => return Ok(None),
@@ -347,6 +362,180 @@ struct RoutedPlan {
     routed: u64,
     materialized: u64,
     holes: u64,
+}
+
+/// The stream observed again as it closes: [`observe_stream`], where `seen`
+/// is what a helper thread saw of this stream if a batch took it. The three
+/// comparisons of the file's mapping are then the helper's, and everything
+/// else is as it is for a stream taken by itself.
+fn closing_stream(
+    template: &PrivateTree,
+    index: usize,
+    object: &Object,
+    stream: StreamRef<'_>,
+    seen: Option<&mut SupplyStreamSeen>,
+) -> Result<StreamSupplySummary> {
+    Ok(template.visit_supply_stream_named_seen(
+        index,
+        stream.name_utf16,
+        &object.path,
+        stream.length,
+        seen,
+        |_, _| Ok(()),
+    )?)
+}
+
+/// Whether a pass over every stream hands its streams to helper threads in
+/// batches. It does where the run verifies each thing once and the tree
+/// can take a batch (not with a partition source, whose fences stand around
+/// every stream). A thorough run, a diagnosis, `--recheck-everything` and a
+/// recovered supply take one stream at a time, as before.
+fn observes_at_once(
+    bytes: &PagedSourceByteAdapterWithScope<'_, '_>,
+    template: &PrivateTree,
+    at_once: bool,
+) -> Option<crate::artifact_arena::ArtifactArena> {
+    if !at_once || !template.observes_supply_streams_at_once() {
+        return None;
+    }
+    bytes
+        .metadata_scratch()
+        .artifact_group()
+        .map(|group| group.arena().clone())
+}
+
+/// The objects a pass takes next, from `first` on: one, or with `at_once`
+/// as many as have [`SUPPLY_BATCH_STREAMS`] streams to supply between them
+/// and the ledger has spare room for, and never more objects than that
+/// (directories have no stream to count). What the first object fails with
+/// is the pass's error, as it is for an object taken by itself.
+fn objects_from(
+    expected: &PagedExpectedTree,
+    first: usize,
+    at_once: bool,
+) -> Result<Vec<LeasedExpectedObject>> {
+    if !at_once {
+        return Ok(vec![expected.object_leased(first)?]);
+    }
+    let (mut objects, mut streams) = (0usize, 0usize);
+    expected.objects_leased_at_once(first, |object| {
+        objects += 1;
+        if !(object.directory || system(object)) {
+            streams += object.data_streams().count();
+        }
+        objects < SUPPLY_BATCH_STREAMS && streams < SUPPLY_BATCH_STREAMS
+    })
+}
+
+/// The streams of a batch of objects whose read-only observations of the
+/// shadow are made on helper threads.
+///
+/// Planning and verification ask Windows several hundred things about
+/// every stream's file on the shadow, and one thread asked all of them: 80 s
+/// and 30 s of the full Windows volume (#140). The streams of the objects
+/// held here are handed to the tree [`SUPPLY_BATCH_STREAMS`] at a time
+/// (`PrivateTree::observe_supply_streams_at_once`); its helpers make each
+/// stream's observations, and the pass then takes the streams in order, as
+/// it always did, giving each stream's entry to the functions that observe a
+/// stream taken by itself. Those take the helper's result where they would
+/// have asked Windows and do everything else themselves, so each stream's
+/// checks, their order and the first failure are what they were, and so
+/// are the frames the plan and receipt digests are made of.
+///
+/// A stream no batch took (its workspace was refused, or one of its own
+/// checks is about to report) has no entry and is taken by itself.
+struct StreamsAtOnce<'a> {
+    requests: Vec<SupplyStreamRequest<'a>>,
+    streams: Vec<StreamRef<'a>>,
+    // How many of them the pass has come to.
+    taken: usize,
+    // What helpers saw of the streams from `taken` on.
+    seen: std::collections::VecDeque<SupplyStreamSeen>,
+    closing: bool,
+    _ram: Option<crate::artifact_arena::ArenaRamLease>,
+}
+impl<'a> StreamsAtOnce<'a> {
+    /// The supplied streams of `objects`, the first of which is object
+    /// `first`, in the order the pass takes them. Without `arena`, or where
+    /// it has no spare room for this list, no stream is handed to a batch.
+    fn new(
+        objects: &'a [LeasedExpectedObject],
+        first: usize,
+        closing: bool,
+        arena: Option<&crate::artifact_arena::ArtifactArena>,
+    ) -> Self {
+        let mut batch = Self {
+            requests: Vec::new(),
+            streams: Vec::new(),
+            taken: 0,
+            seen: std::collections::VecDeque::new(),
+            closing,
+            _ram: None,
+        };
+        let Some(arena) = arena else {
+            return batch;
+        };
+        let supplied = || {
+            objects
+                .iter()
+                .enumerate()
+                .filter(|(_, object)| !(object.directory || system(object)))
+        };
+        let count: usize = supplied()
+            .map(|(_, object)| object.data_streams().count())
+            .sum();
+        let entry =
+            std::mem::size_of::<SupplyStreamRequest<'_>>() + std::mem::size_of::<StreamRef<'_>>();
+        let Ok(ram) = arena.reserve_spare_ram((count * entry) as u64 + 4096) else {
+            return batch;
+        };
+        if batch.requests.try_reserve_exact(count).is_err()
+            || batch.streams.try_reserve_exact(count).is_err()
+        {
+            return batch;
+        }
+        for (offset, object) in supplied() {
+            for stream in object.data_streams() {
+                batch.requests.push(SupplyStreamRequest {
+                    object_index: first + offset,
+                    name_utf16: stream.name_utf16,
+                    components: &object.path,
+                    logical_length: stream.length,
+                });
+                batch.streams.push(stream);
+            }
+        }
+        batch._ram = Some(ram);
+        batch
+    }
+
+    /// What a helper saw of the stream the pass comes to now, if a batch
+    /// took it. Called once for every supplied stream, in order.
+    fn next(&mut self, template: &PrivateTree, row_window: u64) -> Option<SupplyStreamSeen> {
+        if self.taken >= self.requests.len() {
+            return None;
+        }
+        if self.seen.is_empty() {
+            let end = (self.taken + SUPPLY_BATCH_STREAMS).min(self.requests.len());
+            let streams = &self.streams[self.taken..end];
+            // A prefix is observed for exactly the streams `route_decision`
+            // observes one for; what `eligible_prefix` refuses is reported
+            // there, when the pass comes to the stream.
+            self.seen = template
+                .observe_supply_streams_at_once(
+                    &self.requests[self.taken..end],
+                    row_window,
+                    self.closing,
+                    |slot, ranges| {
+                        let prefix = eligible_prefix(streams[slot]).ok().flatten();
+                        prefix.filter(|_| routed_in(ranges, prefix))
+                    },
+                )
+                .into();
+        }
+        self.taken += 1;
+        self.seen.pop_front()
+    }
 }
 
 /// Names the object a supply pass stopped on. The loops that use this run
@@ -556,6 +745,7 @@ fn scan_plan(
     template: &PrivateTree,
     row_window: u64,
     policy: VerificationPolicy,
+    at_once: bool,
     progress: &Reporter,
 ) -> Result<RoutedPlan> {
     let mut hash = Sha256::new();
@@ -563,77 +753,109 @@ fn scan_plan(
     let (mut logical, mut referenced, mut routed, mut materialized, mut holes) =
         (0u64, 0u64, 0u64, 0u64, 0u64);
     let failing_object = std::cell::Cell::new(0usize);
+    // With an arena here, the streams' observations of the shadow are made
+    // by helper threads, a batch of objects at a time ([`StreamsAtOnce`]);
+    // without one `held` is one object and nothing is handed to a batch.
+    let arena = observes_at_once(bytes, template, at_once);
+    let announce = |index: usize| {
+        failing_object.set(index);
+        supply_progress(
+            progress,
+            Phase::PayloadSupply,
+            1,
+            index,
+            expected.len(),
+            0,
+            None,
+        );
+    };
     (|| -> Result<()> {
-        for index in 0..expected.len() {
-            failing_object.set(index);
-            supply_progress(
-                progress,
-                Phase::PayloadSupply,
-                1,
-                index,
-                expected.len(),
-                0,
-                None,
-            );
-            let object = expected.object_leased(index)?;
-            if object.directory || system(&object) {
-                continue;
-            }
-            for stream in object.data_streams() {
-                require_policy_evidence(policy, stream)?;
-                let id = identity(&object, stream);
-                bytes.check_stream(&id)?;
-                let mut observed =
-                    leased_ranges(bytes, template, index, &object, stream, row_window)?;
-                let decision = route_decision(template, index, &object, stream, &observed.ranges)?;
-                // The native observations and route proof own their temporary
-                // allocations; only the separate range vector remains live.
-                drop(observed.native_ram.take());
-                let summary = &observed.summary;
-                let ranges = &observed.ranges;
-                let prefix = decision.as_ref().map(|(prefix, _)| *prefix);
-                let target_pin = decision.as_ref().map(|(_, pin)| pin);
-                let _frame_ram = frame_ram(bytes, stream.name_utf16.len())?;
-                frame(
-                    &mut hash,
-                    &serde_json::json!({"object_index":index,"record_number":object.record_number,
-                "sequence_number":object.sequence_number,"stream_name_utf16":stream.name_utf16,
-                "summary":summary,"target_readiness_sha256":target_pin}),
-                )?;
-                drop(_frame_ram);
-                logical = logical
-                    .checked_add(summary.logical_bytes)
-                    .context("routed logical total overflow")?;
-                for (kind, range) in ranges {
-                    pieces(stream, *kind, range, prefix, |piece, offset, length| {
-                        match piece {
-                            Piece::Reference(physical) => {
-                                bytes.require_reference(&id, offset, physical, length)?;
-                                referenced = referenced
-                                    .checked_add(length)
-                                    .context("reference total overflow")?;
-                            }
-                            Piece::Routed(physical) => {
-                                bytes.require_reference(&id, offset, physical, length)?;
-                                routed = routed
-                                    .checked_add(length)
-                                    .context("routed total overflow")?;
-                            }
-                            Piece::Materialize => {
-                                materialized = materialized
-                                    .checked_add(length)
-                                    .context("materialized total overflow")?
-                            }
-                            Piece::Hole => {
-                                bytes.require_hole(&id, offset, length)?;
-                                holes = holes.checked_add(length).context("hole total overflow")?;
-                            }
-                        }
-                        Ok(())
-                    })?;
+        let mut first = 0usize;
+        while first < expected.len() {
+            announce(first);
+            let held = objects_from(expected, first, arena.is_some())?;
+            let mut batch = StreamsAtOnce::new(&held, first, false, arena.as_ref());
+            for (index, object) in (first..).zip(&held) {
+                if index > first {
+                    announce(index);
                 }
-                bytes.finish_stream()?;
+                if object.directory || system(object) {
+                    continue;
+                }
+                for stream in object.data_streams() {
+                    let mut seen = batch.next(template, row_window);
+                    require_policy_evidence(policy, stream)?;
+                    let id = identity(object, stream);
+                    bytes.check_stream(&id)?;
+                    let mut observed = leased_ranges(
+                        bytes,
+                        template,
+                        index,
+                        object,
+                        stream,
+                        row_window,
+                        seen.as_mut(),
+                    )?;
+                    let decision = route_decision(
+                        template,
+                        index,
+                        object,
+                        stream,
+                        &observed.ranges,
+                        seen.as_mut(),
+                    )?;
+                    // The native observations and route proof own their temporary
+                    // allocations; only the separate range vector remains live.
+                    drop(observed.native_ram.take());
+                    let summary = &observed.summary;
+                    let ranges = &observed.ranges;
+                    let prefix = decision.as_ref().map(|(prefix, _)| *prefix);
+                    let target_pin = decision.as_ref().map(|(_, pin)| pin);
+                    let _frame_ram = frame_ram(bytes, stream.name_utf16.len())?;
+                    frame(
+                        &mut hash,
+                        &serde_json::json!({"object_index":index,
+                    "record_number":object.record_number,
+                    "sequence_number":object.sequence_number,"stream_name_utf16":stream.name_utf16,
+                    "summary":summary,"target_readiness_sha256":target_pin}),
+                    )?;
+                    drop(_frame_ram);
+                    logical = logical
+                        .checked_add(summary.logical_bytes)
+                        .context("routed logical total overflow")?;
+                    for (kind, range) in ranges {
+                        pieces(stream, *kind, range, prefix, |piece, offset, length| {
+                            match piece {
+                                Piece::Reference(physical) => {
+                                    bytes.require_reference(&id, offset, physical, length)?;
+                                    referenced = referenced
+                                        .checked_add(length)
+                                        .context("reference total overflow")?;
+                                }
+                                Piece::Routed(physical) => {
+                                    bytes.require_reference(&id, offset, physical, length)?;
+                                    routed = routed
+                                        .checked_add(length)
+                                        .context("routed total overflow")?;
+                                }
+                                Piece::Materialize => {
+                                    materialized = materialized
+                                        .checked_add(length)
+                                        .context("materialized total overflow")?
+                                }
+                                Piece::Hole => {
+                                    bytes.require_hole(&id, offset, length)?;
+                                    holes =
+                                        holes.checked_add(length).context("hole total overflow")?;
+                                }
+                            }
+                            Ok(())
+                        })?;
+                    }
+                    bytes.finish_stream()?;
+                }
             }
+            first += held.len();
         }
         Ok(())
     })()
@@ -685,6 +907,11 @@ pub(crate) struct RoutedSupplyOwner<'a, 'source, 'scope> {
     /// Whether `verify` reads the payload bytes again. It does not where the
     /// run verifies once and this process supplied the payloads itself.
     reread: bool,
+    /// Whether `verify` hands its streams' observations of the shadow to
+    /// helper threads ([`StreamsAtOnce`]): where the run verifies once. A
+    /// recovered owner, a thorough run and a diagnosis take one stream at a
+    /// time.
+    at_once: bool,
     progress: Reporter,
     _ram: crate::ntfs_inspect::paged_storage::SourceRamLease,
 }
@@ -716,7 +943,12 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
             .checked_add(2 * WINDOW as u64)
             .context("routed supply RAM overflow")?,
     )?;
-    let plan = scan_plan(bytes, expected, template, row_window, policy, progress)?;
+    // The verification hands its streams to helper threads where the run
+    // verifies each thing once. Planning takes one stream at a time.
+    let at_once = policy.verifies_once();
+    let plan = scan_plan(
+        bytes, expected, template, row_window, policy, false, progress,
+    )?;
     ensure!(
         plan.materialized <= maximum_materialized_bytes,
         "necessary routed-plan materialization exceeds explicit payload budget: logical_bytes={}, materialize_bytes={}, same_coordinate_reference_bytes={}, routed_prefix_bytes={}, hole_bytes={}, maximum_materialized_bytes={}, supply_plan_sha256={}; the data that does not stay where it is needs more working storage than this run has: use a working volume with more free space{}",
@@ -756,8 +988,9 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
             for stream in object.data_streams() {
                 let id = identity(&object, stream);
                 let mut observed =
-                    leased_ranges(bytes, template, index, &object, stream, row_window)?;
-                let decision = route_decision(template, index, &object, stream, &observed.ranges)?;
+                    leased_ranges(bytes, template, index, &object, stream, row_window, None)?;
+                let decision =
+                    route_decision(template, index, &object, stream, &observed.ranges, None)?;
                 drop(observed.native_ram.take());
                 let summary = &observed.summary;
                 let ranges = &observed.ranges;
@@ -852,6 +1085,7 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
         row_window,
         recovered: false,
         reread: !policy.verifies_once(),
+        at_once,
         progress: progress.clone(),
         _ram: ram,
     })
@@ -889,7 +1123,10 @@ pub(crate) fn prepare_recovered<'a, 'source, 'scope>(
             .checked_add(2 * WINDOW as u64)
             .context("recovered routed supply RAM overflow")?,
     )?;
-    let plan = scan_plan(bytes, expected, template, row_window, policy, progress)?;
+    // A recovered supply takes one stream at a time, as before.
+    let plan = scan_plan(
+        bytes, expected, template, row_window, policy, false, progress,
+    )?;
     ensure!(
         plan.materialized <= maximum_materialized_bytes && plan.sha256 == prior_plan_sha256,
         "recovered payload plan differs from the authenticated completed supply"
@@ -903,6 +1140,7 @@ pub(crate) fn prepare_recovered<'a, 'source, 'scope>(
         row_window,
         recovered: true,
         reread: true,
+        at_once: false,
         progress: progress.clone(),
         _ram: ram,
     })
@@ -945,155 +1183,191 @@ impl RoutedSupplyOwner<'_, '_, '_> {
         let mut plan_hash = Sha256::new();
         plan_hash.update(b"n2r-private-routed-prefix-plan-v1\0");
         let failing_object = std::cell::Cell::new(0usize);
+        // Where no payload is read again, this pass only observes: every
+        // stream's files on the shadow, and the source's mapping from the
+        // raw model. The observations of the shadow are then made by helper
+        // threads, a batch of objects at a time ([`StreamsAtOnce`]), and
+        // taken here in order. Otherwise `held` is one object and nothing is
+        // handed to a batch.
+        let arena = observes_at_once(self.bytes, self.template, self.at_once && !reread);
         (|| -> Result<()> {
-        for index in 0..self.expected.len() {
-            failing_object.set(index);
-            supply_progress(&self.progress,Phase::PayloadVerification,0,index,self.expected.len(),self.bytes.logical_bytes_read()-before_reads,None);
-            let object = self.expected.object_leased(index)?;
-            if object.directory || system(&object) {
-                continue;
-            }
-            for stream in object.data_streams() {
-                ensure!(
-                    stream.sha256.is_some() || stream.source_evidence.is_some(),
-                    "routed verification lacks source content or extent evidence"
-                );
-                let id = identity(&object, stream);
-                self.bytes.check_stream(&id)?;
-                let mut observed = leased_ranges(
-                    self.bytes,
-                    self.template,
-                    index,
-                    &object,
-                    stream,
-                    self.row_window,
-                )?;
-                let decision =
-                    route_decision(self.template, index, &object, stream, &observed.ranges)?;
-                drop(observed.native_ram.take());
-                let summary = &observed.summary;
-                let ranges = &observed.ranges;
-                let prefix = decision.as_ref().map(|(prefix, _)| *prefix);
-                let target_pin=decision.as_ref().map(|(_,pin)|pin);
-                let plan_frame_ram=frame_ram(self.bytes,stream.name_utf16.len())?;
-                frame(&mut plan_hash,&serde_json::json!({"object_index":index,"record_number":object.record_number,
-                    "sequence_number":object.sequence_number,"stream_name_utf16":stream.name_utf16,
-                    "summary":summary,"target_readiness_sha256":target_pin}))?;
-                drop(plan_frame_ram);
-                logical = logical
-                    .checked_add(summary.logical_bytes)
-                    .context("routed verification total overflow")?;
-                let mut content = n2r_win32::content_digest::Hasher::new();
-                for (kind, range) in ranges {
-                    pieces(stream, *kind, range, prefix, |piece, offset, length| {
-                        match piece {
-                            Piece::Reference(physical) => {
-                                self.bytes
-                                    .require_reference(&id, offset, physical, length)?;
-                                referenced = referenced
-                                    .checked_add(length)
-                                    .context("reference total overflow")?;
-                            }
-                            Piece::Routed(physical) => {
-                                ensure!(
-                                    stream.sha256.is_none() && stream.source_evidence.is_some(),
-                                    "routed prefix cannot claim an unmeasured content digest"
-                                );
-                                self.bytes
-                                    .require_reference(&id, offset, physical, length)?;
-                                routed = routed
-                                    .checked_add(length)
-                                    .context("routed total overflow")?;
-                            }
-                            Piece::Materialize => {
-                                materialized = materialized
-                                    .checked_add(length)
-                                    .context("materialized total overflow")?;
-                            }
-                            Piece::Hole => {
-                                self.bytes.require_hole(&id, offset, length)?;
-                                holes = holes.checked_add(length).context("hole total overflow")?;
-                            }
-                        }
-                        if !matches!(piece, Piece::Materialize) && stream.sha256.is_none() {
-                            return Ok(());
-                        }
-                        if !reread {
-                            return Ok(());
-                        }
-                        let mut done = 0u64;
-                        while done < length {
-                            let n = usize::try_from((length - done).min(WINDOW as u64))?;
-                            let at = offset
-                                .checked_add(done)
-                                .context("routed verify offset overflow")?;
+        let mut first = 0usize;
+        while first < self.expected.len() {
+            failing_object.set(first);
+            supply_progress(&self.progress,Phase::PayloadVerification,0,first,self.expected.len(),self.bytes.logical_bytes_read()-before_reads,None);
+            let held = objects_from(self.expected, first, arena.is_some())?;
+            let mut batch = StreamsAtOnce::new(&held, first, true, arena.as_ref());
+            for (index, object) in (first..).zip(&held) {
+                if index > first {
+                    failing_object.set(index);
+                    supply_progress(&self.progress,Phase::PayloadVerification,0,index,self.expected.len(),self.bytes.logical_bytes_read()-before_reads,None);
+                }
+                if object.directory || system(object) {
+                    continue;
+                }
+                for stream in object.data_streams() {
+                    let mut seen = batch.next(self.template, self.row_window);
+                    ensure!(
+                        stream.sha256.is_some() || stream.source_evidence.is_some(),
+                        "routed verification lacks source content or extent evidence"
+                    );
+                    let id = identity(object, stream);
+                    self.bytes.check_stream(&id)?;
+                    let mut observed = leased_ranges(
+                        self.bytes,
+                        self.template,
+                        index,
+                        object,
+                        stream,
+                        self.row_window,
+                        seen.as_mut(),
+                    )?;
+                    let decision = route_decision(
+                        self.template,
+                        index,
+                        object,
+                        stream,
+                        &observed.ranges,
+                        seen.as_mut(),
+                    )?;
+                    drop(observed.native_ram.take());
+                    let summary = &observed.summary;
+                    let ranges = &observed.ranges;
+                    let prefix = decision.as_ref().map(|(prefix, _)| *prefix);
+                    let target_pin=decision.as_ref().map(|(_,pin)|pin);
+                    let plan_frame_ram=frame_ram(self.bytes,stream.name_utf16.len())?;
+                    frame(&mut plan_hash,&serde_json::json!({"object_index":index,"record_number":object.record_number,
+                        "sequence_number":object.sequence_number,"stream_name_utf16":stream.name_utf16,
+                        "summary":summary,"target_readiness_sha256":target_pin}))?;
+                    drop(plan_frame_ram);
+                    logical = logical
+                        .checked_add(summary.logical_bytes)
+                        .context("routed verification total overflow")?;
+                    let mut content = n2r_win32::content_digest::Hasher::new();
+                    for (kind, range) in ranges {
+                        pieces(stream, *kind, range, prefix, |piece, offset, length| {
                             match piece {
-                                Piece::Hole => target_buffer[..n].fill(0),
-                                Piece::Reference(_) => {
-                                    self.bytes.read_into(&id, at, &mut target_buffer[..n])?
+                                Piece::Reference(physical) => {
+                                    self.bytes
+                                        .require_reference(&id, offset, physical, length)?;
+                                    referenced = referenced
+                                        .checked_add(length)
+                                        .context("reference total overflow")?;
                                 }
-                                Piece::Routed(_) => anyhow::bail!(
-                                    "routed extent unexpectedly requires full-content verification"
-                                ),
-                                Piece::Materialize => {
-                                    self.bytes.read_into(&id, at, &mut source_buffer[..n])?;
-                                    self.template.read_materialized_range_named(
-                                        index,
-                                        stream.name_utf16,
-                                        at,
-                                        &mut target_buffer[..n],
-                                    )?;
+                                Piece::Routed(physical) => {
                                     ensure!(
-                                        source_buffer[..n] == target_buffer[..n],
-                                        "routed remaining materialization differs from actual source"
+                                        stream.sha256.is_none() && stream.source_evidence.is_some(),
+                                        "routed prefix cannot claim an unmeasured content digest"
                                     );
-                                    if self.recovered {
-                                        self.template.revalidate_recovered_materialized_tail_named(
-                                            index,stream.name_utf16,&object.path,stream.length,at,&source_buffer[..n])?;
+                                    self.bytes
+                                        .require_reference(&id, offset, physical, length)?;
+                                    routed = routed
+                                        .checked_add(length)
+                                        .context("routed total overflow")?;
+                                }
+                                Piece::Materialize => {
+                                    materialized = materialized
+                                        .checked_add(length)
+                                        .context("materialized total overflow")?;
+                                }
+                                Piece::Hole => {
+                                    self.bytes.require_hole(&id, offset, length)?;
+                                    holes = holes.checked_add(length).context("hole total overflow")?;
+                                }
+                            }
+                            if !matches!(piece, Piece::Materialize) && stream.sha256.is_none() {
+                                return Ok(());
+                            }
+                            if !reread {
+                                return Ok(());
+                            }
+                            let mut done = 0u64;
+                            while done < length {
+                                let n = usize::try_from((length - done).min(WINDOW as u64))?;
+                                let at = offset
+                                    .checked_add(done)
+                                    .context("routed verify offset overflow")?;
+                                match piece {
+                                    Piece::Hole => target_buffer[..n].fill(0),
+                                    Piece::Reference(_) => {
+                                        self.bytes.read_into(&id, at, &mut target_buffer[..n])?
+                                    }
+                                    Piece::Routed(_) => anyhow::bail!(
+                                        "routed extent unexpectedly requires full-content verification"
+                                    ),
+                                    Piece::Materialize => {
+                                        self.bytes.read_into(&id, at, &mut source_buffer[..n])?;
+                                        self.template.read_materialized_range_named(
+                                            index,
+                                            stream.name_utf16,
+                                            at,
+                                            &mut target_buffer[..n],
+                                        )?;
+                                        ensure!(
+                                            source_buffer[..n] == target_buffer[..n],
+                                            "routed remaining materialization differs from actual source"
+                                        );
+                                        if self.recovered {
+                                            self.template.revalidate_recovered_materialized_tail_named(
+                                                index,stream.name_utf16,&object.path,stream.length,at,&source_buffer[..n])?;
+                                        }
                                     }
                                 }
+                                if stream.sha256.is_some() {
+                                    content.update(&target_buffer[..n]);
+                                }
+                                done += n as u64;
                             }
-                            if stream.sha256.is_some() {
-                                content.update(&target_buffer[..n]);
-                            }
-                            done += n as u64;
-                        }
-                        Ok(())
-                    })?;
-                }
-                let digest = if !reread {
-                    // Nothing was read: no digest is claimed.
-                    None
-                } else if let Some(wanted) = stream.sha256 {
-                    let actual = content.finish();
+                            Ok(())
+                        })?;
+                    }
+                    let digest = if !reread {
+                        // Nothing was read: no digest is claimed.
+                        None
+                    } else if let Some(wanted) = stream.sha256 {
+                        let actual = content.finish();
+                        ensure!(
+                            actual == wanted,
+                            "routed complete logical content digest differs"
+                        );
+                        Some(actual)
+                    } else {
+                        None
+                    };
+                    self.bytes.finish_stream()?;
+                    // The workspace of the closing observation's mapping
+                    // queries. Where a batch's helper made them, they ran under
+                    // what the batch reserved for the stream, which `seen`
+                    // holds until the stream is done.
+                    let _closing_native_ram = if seen
+                        .as_ref()
+                        .is_some_and(SupplyStreamSeen::closing_observed)
+                    {
+                        None
+                    } else {
+                        Some(self.bytes.lease_working_ram(
+                            self.template
+                                .supply_stream_workspace_bytes(index, stream.name_utf16)?,
+                        )?)
+                    };
                     ensure!(
-                        actual == wanted,
-                        "routed complete logical content digest differs"
+                        *summary
+                            == closing_stream(self.template, index, object, stream, seen.as_mut())?,
+                        "native stream mapping changed during routed verification"
                     );
-                    Some(actual)
-                } else {
-                    None
-                };
-                self.bytes.finish_stream()?;
-                let _closing_native_ram = self.bytes.lease_working_ram(
-                    self.template
-                        .supply_stream_workspace_bytes(index, stream.name_utf16)?,
-                )?;
-                ensure!(
-                    *summary == observe_stream(self.template, index, &object, stream)?,
-                    "native stream mapping changed during routed verification"
-                );
-                ensure!(route_decision(self.template,index,&object,stream,ranges)?==decision,
-                    "native routed prefix readiness changed during verification");
-                let _frame_ram = frame_ram(self.bytes, stream.name_utf16.len())?;
-                frame(
-                    &mut receipt_hash,
-                    &serde_json::json!({"object_index":index,
-                    "record_number":object.record_number,"stream_name_utf16":stream.name_utf16,
-                    "logical_bytes":stream.length,"complete_content_digest":digest,
-                    "supply":summary}),
-                )?;
+                    ensure!(route_decision(self.template,index,object,stream,ranges,seen.as_mut())?==decision,
+                        "native routed prefix readiness changed during verification");
+                    let _frame_ram = frame_ram(self.bytes, stream.name_utf16.len())?;
+                    frame(
+                        &mut receipt_hash,
+                        &serde_json::json!({"object_index":index,
+                        "record_number":object.record_number,"stream_name_utf16":stream.name_utf16,
+                        "logical_bytes":stream.length,"complete_content_digest":digest,
+                        "supply":summary}),
+                    )?;
+                }
             }
+            first += held.len();
         }
         Ok(())
         })()

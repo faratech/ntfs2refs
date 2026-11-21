@@ -68,6 +68,19 @@ pub(super) fn restore_acl_protection_with_limit(
     item: &Input<'_>,
     maximum: Option<u64>,
 ) -> io::Result<ProtectionRestore> {
+    let actual = security_snapshot_with_limit(file, maximum);
+    restore_acl_protection_observed(file, item, maximum, &actual)
+}
+/// [`restore_acl_protection_with_limit`] where the object's security views
+/// were just read through `file`, and nothing has changed the object since:
+/// the protection is set from the kernel descriptor of that observation
+/// instead of one read again.
+pub(super) fn restore_acl_protection_observed(
+    file: &File,
+    item: &Input<'_>,
+    maximum: Option<u64>,
+    actual: &Snapshot,
+) -> io::Result<ProtectionRestore> {
     use crate::security_descriptor::{self, Presence};
     use windows_sys::Win32::Security::{
         Authorization::{SE_FILE_OBJECT, SetSecurityInfo},
@@ -75,7 +88,6 @@ pub(super) fn restore_acl_protection_with_limit(
         PROTECTED_SACL_SECURITY_INFORMATION, SACL_SECURITY_INFORMATION,
         UNPROTECTED_DACL_SECURITY_INFORMATION, UNPROTECTED_SACL_SECURITY_INFORMATION,
     };
-    let actual = security_snapshot_with_limit(file, maximum);
     let kernel = actual
         .kernel_security
         .as_ref()
@@ -1110,22 +1122,29 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 Ok(security_snapshot_with_limit(handle, row_limit))
             },
         );
+        // An object whose descriptor differs keeps the views just read: its
+        // protection is restored from that kernel descriptor, which the
+        // protection restore read again through the same handle. Nothing
+        // changes the object in between: it is held by this run, and the
+        // objects of a batch are of one depth (or all files), so that no
+        // other object of the batch is an ancestor whose restore could
+        // reach it. The views read after the restore stay the check.
         let mut restoring = Vec::new();
         for (object, found) in items.iter().zip(found) {
             let (slot, _, item) = object;
             let differs = found.and_then(|found| {
                 if security_matches(item, &found, &same_security)? {
-                    return Ok(false);
+                    return Ok(None);
                 }
                 // One before the protection change, one before the
                 // descriptor's.
                 input.before_mutation(item.security.len() as u64)?;
                 input.before_mutation(item.security.len() as u64)?;
-                Ok(true)
+                Ok(Some(found))
             });
             match differs {
-                Ok(true) => restoring.push(object),
-                Ok(false) => {}
+                Ok(Some(found)) => restoring.push((object, found)),
+                Ok(None) => {}
                 Err(error) => failures[*slot] = Some(error),
             }
         }
@@ -1133,9 +1152,9 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             change_payer,
             &restoring,
             |_| snapshot_workspace,
-            |(_, index, item)| -> io::Result<(ProtectionRestore, io::Result<Snapshot>)> {
+            |((_, index, item), found)| -> io::Result<(ProtectionRestore, io::Result<Snapshot>)> {
                 let handle = held(handles, *index)?;
-                let protection = restore_acl_protection_with_limit(handle, item, row_limit)?;
+                let protection = restore_acl_protection_observed(handle, item, row_limit, found)?;
                 Ok((
                     protection,
                     super::backup_security_write_with_limit(handle, item.security, row_limit)
@@ -1143,7 +1162,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 ))
             },
         );
-        for (object, restored) in restoring.iter().zip(restored) {
+        for ((object, _), restored) in restoring.iter().zip(restored) {
             let (slot, _, item) = *object;
             let checked = restored.and_then(|(protection, restored_view)| {
                 dacl_protection_updates += usize::from(protection.dacl);

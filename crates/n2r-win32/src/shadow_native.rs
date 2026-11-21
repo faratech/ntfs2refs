@@ -1767,17 +1767,17 @@ fn metadata_snapshot_with_limit(file: &File, input: &Input<'_>, maximum: Option<
         metadata_snapshot(file, input)
     }
 }
-/// An object's metadata as its security is checked: only its security views
-/// are read from it, so its extended attributes and reparse point are not
-/// asked for.
+/// An object's metadata as its security is checked. Every caller reads only
+/// the two security views from it (`security_matches`, the protection
+/// restore, the auto-inheritance reset), so with a row bound only those two
+/// are asked for: not its identity, times, size or attributes, its extended
+/// attributes or its reparse point. A check of the identity asks for it
+/// itself.
 fn security_snapshot_with_limit(file: &File, maximum: Option<u64>) -> Snapshot {
     if let Some(maximum) = maximum {
-        crate::attestation_native::source_snapshot_paged_scoped(
+        crate::attestation_native::security_snapshot_paged(
             file,
-            false,
             usize::try_from(maximum).unwrap_or(usize::MAX),
-            false,
-            false,
         )
     } else {
         snapshot(file)

@@ -373,6 +373,25 @@ pub(crate) fn source_snapshot_paged_scoped(
     snapshot
 }
 
+/// Only an object's two security views, the API's and the kernel's, each
+/// asked for with the row's bound as [`source_snapshot_paged`] asks for
+/// them: what a security check reads, and nothing else. Its `queries` are
+/// empty, so a caller that looks for an identity, times or attributes in it
+/// finds none and fails.
+pub(crate) fn security_snapshot_paged(file: &File, maximum: usize) -> Snapshot {
+    let (security, security_error) = security_with_limit(file, maximum);
+    Snapshot {
+        queries: Vec::new(),
+        security,
+        security_error,
+        kernel_security: Some(kernel_security_paged(file, maximum)),
+        extended_attributes: None,
+        extended_attributes_error: None,
+        reparse: None,
+        directory_case_sensitivity: None,
+    }
+}
+
 /// The kernel's view of an object's descriptor, asked for with the row's
 /// bound: a failed query keeps Windows' error.
 fn kernel_security_paged(file: &File, maximum: usize) -> SecurityQuery {

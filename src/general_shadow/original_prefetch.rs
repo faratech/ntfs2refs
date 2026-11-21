@@ -124,22 +124,22 @@ impl OriginalPrefetch {
         })
     }
 
-    /// For a capture that holds the frozen source itself: lanes of it, when
+    /// For a capture that holds the frozen source itself: a lane of it, when
     /// the device takes more than one outstanding read. The ranges are kept,
     /// not one descriptor for every chunk on the volume, so that the list is
     /// in proportion to the selection even for a complete capture of a very
     /// large volume. Nothing pays for this one: the capture that uses it has
-    /// no ledger.
+    /// no ledger, and so it keeps the one lane it had, whose memory nothing
+    /// grants.
     pub(crate) fn for_partition(
         source: &GeneralFrozenPartition,
         selection: &[ByteRange],
         chunk: usize,
     ) -> Result<Option<Self>> {
-        let wanted = Self::lanes_for(source.io_profile().queue_depth);
-        if wanted == 0 {
+        if Self::lanes_for(source.io_profile().queue_depth) == 0 {
             return Ok(None);
         }
-        let lanes = source.read_lanes(wanted, &mut Vec::new())?;
+        let lanes = source.read_lanes(1, &mut Vec::new())?;
         if lanes.is_empty() {
             return Ok(None);
         }

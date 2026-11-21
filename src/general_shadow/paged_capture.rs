@@ -519,6 +519,12 @@ fn progress(
     })
 }
 
+/// Whether a changed granule's new bytes go to the literal file: they are
+/// neither zero nor a copy of bytes the journal already holds.
+fn is_literal(planned: &CaptureBatchRange) -> bool {
+    !planned.range.new_is_zero && planned.range.copy_source_offset.is_none()
+}
+
 fn literal_file(path: &Path, index_path: &Path, limit: u64) -> Result<File> {
     ensure!(
         path.is_absolute()
@@ -924,7 +930,10 @@ fn capture_selected_inner(
                 if additional_rows != 0 {
                     index_growth_admissions = index_growth_admissions.saturating_add(1);
                 }
-                for planned in &batch {
+                // How many of the batch's granules have their literal bytes
+                // in the file already.
+                let mut written = 0;
+                for (position, planned) in batch.iter().enumerate() {
                     // Actual pending tokens and COPY checks remain ordered:
                     // earlier planned OLD rows must now be genuinely accepted.
                     let pending = index.reserve_next(planned.range, planned.may_extend_previous)?;
@@ -933,11 +942,29 @@ fn capture_selected_inner(
                             && pending.extends_previous() == planned.extends_previous,
                         "capture coalescing differs from its exact batch admission"
                     );
-                    if !planned.range.new_is_zero && planned.range.copy_source_offset.is_none() {
+                    if position >= written && is_literal(planned) {
+                        // The literal granules that follow this one without
+                        // a gap lie one after another in the chunk as they
+                        // do in the file: they are written, and hashed, as
+                        // one run at its first granule. One write and one
+                        // digest call for every 4 KiB was a system call
+                        // apiece for the three gigabytes a full Windows
+                        // volume changes. The bytes and their order in the
+                        // file are the same; each granule is still reserved
+                        // and accepted by itself.
+                        let mut run = 1;
+                        while batch.get(position + run).is_some_and(|next| {
+                            is_literal(next)
+                                && next.range.offset
+                                    == planned.range.offset + (run * GRANULE) as u64
+                        }) {
+                            run += 1;
+                        }
                         let local = usize::try_from(planned.range.offset - at)?;
-                        let bytes = &chunk.bytes()[local..local + GRANULE];
+                        let bytes = &chunk.bytes()[local..local + run * GRANULE];
                         literal.write_all(bytes)?;
                         packed_digest.update(bytes)?;
+                        written = position + run;
                     }
                     index.append_accepted(pending)?;
                 }

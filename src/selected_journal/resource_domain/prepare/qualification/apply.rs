@@ -537,6 +537,10 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         // above went through.
         target.set_read_ahead(false);
         n2r_win32::lab_hold::reached("apply-ranges-written");
+        // The writer's handle is unbuffered but not write-through: this
+        // flush is what makes every range above durable before the boot
+        // granule is written, and the one after the boot granule is what
+        // makes it durable before anything is read back or marked.
         target.sync_all()?;
         n2r_win32::lab_hold::reached("apply-before-boot-granule");
         // Preserve the existing selected-journal protocol: boot granule last,

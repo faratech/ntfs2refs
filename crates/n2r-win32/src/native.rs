@@ -884,6 +884,20 @@ fn control_admitted(
     Ok(output)
 }
 
+/// `FILE_FLAG_NO_BUFFERING` alone, for the handles a selected journal's
+/// changed ranges are written through: a fresh apply's gate
+/// (`begin_paged_fresh_apply`, which the shadow's trust-label repair also
+/// writes through) and a recovery's exclusive target
+/// (`activate_for_journal_exclusive`, `GeneralExclusiveRecoveryTarget::reopen`).
+/// Reads through them come from the device, as through every unbuffered
+/// handle, but a write does not wait for the disk: each pass that writes
+/// (the apply, the replay, `selected_journal::execute_loaded`) flushes
+/// (`sync_all`) after every changed range but the boot granule, writes the
+/// boot granule after that barrier, and flushes again before it reads
+/// anything back or writes the next marker. Every other raw handle keeps
+/// `FILE_FLAG_WRITE_THROUGH` as well (`device_file`).
+pub(crate) const UNBUFFERED_WRITER_FLAGS: u32 = 0x2000_0000;
+
 pub(crate) fn device_file(path: &str, writable: bool, unbuffered: bool) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(writable).share_mode(3);
@@ -2429,11 +2443,13 @@ impl GeneralExclusiveRecoveryTarget {
                 "exclusive recovery target is not persistently offline",
             ));
         }
+        // A recovery's replay writes through this handle; see
+        // `UNBUFFERED_WRITER_FLAGS` for its barriers.
         let opened = OpenOptions::new()
             .read(true)
             .write(true)
             .share_mode(1)
-            .custom_flags(0xa000_0000)
+            .custom_flags(UNBUFFERED_WRITER_FLAGS)
             .open(&path);
         events.push(NativeEvent {
             operation: "open-exclusive-recovery-primary-route".into(),
@@ -3850,7 +3866,9 @@ impl GeneralFrozenPartition {
             .read(true)
             .write(true)
             .share_mode(1) // FILE_SHARE_READ; existing/new write aliases must refuse.
-            .custom_flags(0xa000_0000) // NO_BUFFERING | WRITE_THROUGH, as the writer uses.
+            // NO_BUFFERING: a recovery's replay writes through this handle
+            // and flushes at its barriers (`UNBUFFERED_WRITER_FLAGS`).
+            .custom_flags(UNBUFFERED_WRITER_FLAGS)
             .open(&path);
         events.push(NativeEvent {
             operation: "open-exclusive-primary-raw-route-gate".into(),

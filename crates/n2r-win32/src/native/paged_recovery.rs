@@ -1800,11 +1800,19 @@ impl GeneralFrozenPartition {
             ));
         }
         let path = format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number);
+        // The apply writes through this handle. It is unbuffered, so every
+        // read comes from the device, but not write-through: durability is
+        // the apply's own barriers (`BorrowedPagedWriter::sync_all`), one
+        // after every changed range but the boot granule, which is written
+        // only after it, and one after the boot granule before anything is
+        // read back or any marker follows. A write-through write waited for
+        // the disk each time: 309,578 of them, 50 s on the full Windows
+        // volume (owner's decision, 2026-11-21, #249).
         let gate = OpenOptions::new()
             .read(true)
             .write(true)
             .share_mode(1)
-            .custom_flags(0xa000_0000)
+            .custom_flags(super::UNBUFFERED_WRITER_FLAGS)
             .open(&path)?;
         if general_disk_state(&gate, &self.binding, events)? != before {
             return Err(invalid(

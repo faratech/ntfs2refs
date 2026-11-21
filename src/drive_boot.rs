@@ -366,7 +366,11 @@ fn shrink_with_diskpart(
         &run.join("boot-geometry-diskpart-output.txt"),
         said.as_bytes(),
     )?;
-    let shrunk = output.status.success() && said.contains("successfully shrunk");
+    // Do not match localized English stdout ("successfully shrunk"): diskpart
+    // localizes its messages on non-English Windows/WinRE, and normalize_geometry
+    // independently verifies the post-resize partition length, GPT layout, and
+    // NTFS serial through Win32 APIs immediately after this returns.
+    let shrunk = output.status.success();
     let _reply = write_new(
         result,
         &serde_json::to_vec(&serde_json::json!({

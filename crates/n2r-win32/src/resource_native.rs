@@ -184,11 +184,12 @@ pub fn observe_available_resources(scratch_directory: &Path) -> io::Result<Avail
 ///
 /// For a caller that asks again and again while it writes (a run's ledger of
 /// working files, at every reservation and every growth of a file) and that
-/// resolved the directory itself, once, and has kept it and every directory
-/// above it open since. [`observe_available_resources`] resolves the
-/// directory and samples the memory on every call; such a caller paid for
-/// both every few megabytes it wrote, and used neither. What Windows answers
-/// about the volume is held to itself as it is there.
+/// resolved the directory itself, once, and gives the resolved path.
+/// [`observe_available_resources`] resolves the directory and samples the
+/// memory on every call; such a caller paid for both every few megabytes it
+/// wrote, and used neither. A directory that is no longer there is refused
+/// by the query itself. What Windows answers about the volume is held to
+/// itself as it is there.
 pub fn scratch_free_bytes(canonical_directory: &Path) -> io::Result<u64> {
     let mut wide: Vec<u16> = canonical_directory.as_os_str().encode_wide().collect();
     if wide.contains(&0) {

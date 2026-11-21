@@ -6,7 +6,8 @@ use crate::{
         PagedInputs,
         source_backed::{
             PagedSourceByteAdapter, PagedSourceByteAdapterWithScope, PagedStreamIdentity,
-            original_prefetch::{LaneReads, OriginalPrefetch},
+            TAIL_BATCH, TAIL_BATCH_BYTES, original_prefetch::OriginalPrefetch, tail_place,
+            tails_ahead,
         },
     },
     ntfs_inspect::{
@@ -235,63 +236,6 @@ struct SourceTailProvider {
     admission: n2r_win32::tree_resources::SourceResourceAdmission,
 }
 
-/// The most tails one batch of the tail capture has read ahead, and the
-/// most objects it holds.
-const TAIL_BATCH: usize = 1024;
-/// The most bytes of tails one batch has read ahead and holds.
-const TAIL_BATCH_BYTES: u64 = 16 * 1024 * 1024;
-/// What a batch's lists hold for each tail read ahead: its ticket, its
-/// place and length, and its slot.
-const TAIL_ASK_BYTES: u64 = 64;
-
-/// Where on the partition `count` bytes of `stream` at `offset` lie, where
-/// the stream's expected run list puts all of them in one run: the place the
-/// tail is read ahead from. Only a hint for the read ahead: what the tail's
-/// read takes is decided by the session, from the source's own record, and
-/// bytes read from another place are not used.
-fn tail_place(stream: &crate::shadow_tree::StreamRef<'_>, offset: u64, count: u64) -> Option<u64> {
-    if stream.sparse.is_some() {
-        return None;
-    }
-    let end = offset.checked_add(count)?;
-    if let Some(base) = stream.source_offset {
-        return base.checked_add(offset);
-    }
-    let run = stream.source_extents.iter().find(|run| {
-        run.logical_offset <= offset
-            && run
-                .logical_offset
-                .checked_add(run.length)
-                .is_some_and(|stop| end <= stop)
-    })?;
-    run.physical_offset?.checked_add(offset - run.logical_offset)
-}
-
-/// Lanes of the source for reading the tails ahead: as many as its device
-/// asks for and the ledger grants as spare memory (their buffers and
-/// stacks, and a batch's bytes and lists), down to one. None where the
-/// source is not read through lanes of its own, where there is no ledger,
-/// or nothing is granted; then every tail is read as before.
-fn tails_ahead(
-    bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
-    scratch: &SourceScratch,
-) -> Option<LaneReads> {
-    let wanted = LaneReads::lanes_for(bytes.read_lane_depth());
-    let group = scratch.artifact_group()?;
-    let (lanes, paid) = (1..=wanted).rev().find_map(|lanes| {
-        let workspace = LaneReads::workspace_bytes(lanes)?
-            .checked_add(TAIL_BATCH_BYTES)?
-            .checked_add((TAIL_BATCH as u64).checked_mul(TAIL_ASK_BYTES)?)?;
-        group
-            .arena()
-            .reserve_spare_ram(workspace)
-            .ok()
-            .map(|paid| (lanes, paid))
-    })?;
-    let lanes = bytes.read_lanes(lanes).ok().filter(|lanes| !lanes.is_empty())?;
-    LaneReads::start("n2r-source-tails-ahead", lanes, Some(Box::new(paid))).ok()
-}
-
 impl SourceTailProvider {
     /// Every stream's tail is read from the source again here and its digest
     /// is the expectation the shadow's tail is held to: for a stream whose
@@ -329,7 +273,7 @@ impl SourceTailProvider {
         // A tail is shorter than one target cluster.
         let cluster = n2r_win32::target_cluster::bytes();
         let mut buffer = vec![0; usize::try_from(cluster)?];
-        let mut ahead = tails_ahead(bytes, scratch);
+        let mut ahead = tails_ahead(bytes, scratch.artifact_group(), "n2r-source-tails-ahead");
         let mut first = 0usize;
         while first < expected.len() {
             let held = if ahead.is_some() {

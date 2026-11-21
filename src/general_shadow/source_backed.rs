@@ -373,7 +373,7 @@ const SELECTED_CHUNK_DIGEST: &str = "sha256-over-frames-and-xxh3-128-per-compare
 /// same frozen disk.
 #[path = "original_prefetch.rs"]
 pub(crate) mod original_prefetch;
-use original_prefetch::OriginalPrefetch;
+use original_prefetch::{LaneReads, OriginalPrefetch};
 
 /// Framed digest of the bytes one side of a capture compared. `Stream` and
 /// `Overlapped` are a SHA-256 of the framed byte stream (recomputed by the
@@ -1257,6 +1257,68 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
         self.source.validate(self.before.as_ref())?;
         Ok(self.logical_bytes)
     }
+}
+
+/// The most tails one batch of a pass that reads tails ahead has asked
+/// for, and the most objects it holds.
+pub(crate) const TAIL_BATCH: usize = 1024;
+/// The most bytes of tails one batch has read ahead and holds.
+pub(crate) const TAIL_BATCH_BYTES: u64 = 16 * 1024 * 1024;
+/// What a batch's lists hold for each tail read ahead: its ticket, its
+/// place and length, and its slot.
+const TAIL_ASK_BYTES: u64 = 64;
+
+/// Where on the partition `count` bytes of `stream` at `offset` lie, where
+/// the stream's expected run list puts all of them in one run: the place the
+/// tail is read ahead from. Only a hint for the read ahead: what the tail's
+/// read takes is decided by the session, from the source's own record, and
+/// bytes read from another place are not used.
+pub(crate) fn tail_place(
+    stream: &crate::shadow_tree::StreamRef<'_>,
+    offset: u64,
+    count: u64,
+) -> Option<u64> {
+    if stream.sparse.is_some() {
+        return None;
+    }
+    let end = offset.checked_add(count)?;
+    if let Some(base) = stream.source_offset {
+        return base.checked_add(offset);
+    }
+    let run = stream.source_extents.iter().find(|run| {
+        run.logical_offset <= offset
+            && run
+                .logical_offset
+                .checked_add(run.length)
+                .is_some_and(|stop| end <= stop)
+    })?;
+    run.physical_offset?.checked_add(offset - run.logical_offset)
+}
+
+/// Lanes of the source for reading tails ahead: as many as its device
+/// asks for and the ledger grants as spare memory (their buffers and
+/// stacks, and a batch's bytes and lists), down to one. None where the
+/// source is not read through lanes of its own, where there is no ledger,
+/// or nothing is granted; then every tail is read as before.
+pub(crate) fn tails_ahead(
+    bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
+    group: Option<crate::artifact_arena::ArtifactGroupPermit>,
+    name: &'static str,
+) -> Option<LaneReads> {
+    let wanted = LaneReads::lanes_for(bytes.read_lane_depth());
+    let group = group?;
+    let (lanes, paid) = (1..=wanted).rev().find_map(|lanes| {
+        let workspace = LaneReads::workspace_bytes(lanes)?
+            .checked_add(TAIL_BATCH_BYTES)?
+            .checked_add((TAIL_BATCH as u64).checked_mul(TAIL_ASK_BYTES)?)?;
+        group
+            .arena()
+            .reserve_spare_ram(workspace)
+            .ok()
+            .map(|paid| (lanes, paid))
+    })?;
+    let lanes = bytes.read_lanes(lanes).ok().filter(|lanes| !lanes.is_empty())?;
+    LaneReads::start(name, lanes, Some(Box::new(paid))).ok()
 }
 
 /// One read of a stream's session, through `reader`.

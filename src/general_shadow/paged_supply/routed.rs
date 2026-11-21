@@ -2,6 +2,7 @@
 //! clusters are routed from the frozen source later; their bytes are not copied
 //! into the private shadow. This stage issues no conversion authority.
 use super::*;
+use crate::general_shadow::source_backed::{TAIL_BATCH, TAIL_BATCH_BYTES, tail_place};
 use crate::shadow_tree::{SourceStreamEvidence, pages::LeasedExpectedObject};
 use n2r_win32::progress::{Counters, Phase, Reporter, Unit, Update};
 use n2r_win32::shadow_native::private_tree::{
@@ -987,8 +988,76 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
     let mut written = 0u64;
     let before_reads = bytes.logical_bytes_read();
     let failing_object = std::cell::Cell::new(0usize);
+    // What a run that verifies once materializes is, but for the streams
+    // whose routing is not supported, the tail of each stream beyond its
+    // routed prefix: some 97,000 reads of a few KiB of the source on the
+    // full Windows volume, one after another, each waited for in turn
+    // (17 s). Where the source is read through lanes of its own, the objects
+    // are taken in batches, and the tail of each stream of a batch that the
+    // plan materializes is asked of the lanes at once, in its order on the
+    // disk, from where the expected run list places it, and offered to the
+    // adapter's reads of that stream (`offer_read_ahead`). Those reads are
+    // otherwise what they were: the session maps every window from the
+    // source's own record and takes the bytes read ahead only for a read
+    // wholly inside them, a fresh read of the same frozen device at that
+    // place; every other read, a read ahead that failed among them, is made
+    // by the adapter as before. Without lanes, or memory to spare, an
+    // object is taken at a time as before.
+    let mut ahead = if at_once {
+        super::super::source_backed::tails_ahead(
+            bytes,
+            bytes.metadata_scratch().artifact_group(),
+            "n2r-supply-tails-ahead",
+        )
+    } else {
+        None
+    };
+    let cluster = n2r_win32::target_cluster::bytes();
     (|| -> Result<()> {
-        for index in 0..expected.len() {
+        let mut first = 0usize;
+        while first < expected.len() {
+            let held = if ahead.is_some() {
+                let (mut objects, mut streams) = (0usize, 0usize);
+                expected.objects_leased_at_once(first, |object| {
+                    objects += 1;
+                    streams += object.data_streams().count();
+                    objects < TAIL_BATCH && streams < TAIL_BATCH
+                })?
+            } else {
+                vec![expected.object_leased(first)?]
+            };
+            // For each stream of the batch whose tail was asked for: its
+            // ticket and the tail's place.
+            let mut tickets = std::collections::BTreeMap::new();
+            if let Some(reads) = ahead.as_mut() {
+                let mut asks = Vec::new();
+                let mut asked_bytes = 0u64;
+                for (index, object) in (first..).zip(&held) {
+                    if object.directory || system(object) {
+                        continue;
+                    }
+                    for (stream_ordinal, stream) in object.data_streams().enumerate() {
+                        let offset = stream.length / cluster * cluster;
+                        let count = stream.length - offset;
+                        if count == 0
+                            || !materialized_streams.contains(&(index, stream_ordinal))
+                            || asks.len() >= TAIL_BATCH
+                            || asked_bytes + count > TAIL_BATCH_BYTES
+                        {
+                            continue;
+                        }
+                        if let Some(place) = tail_place(&stream, offset, count) {
+                            asked_bytes += count;
+                            asks.push((place, count as usize, index, stream_ordinal));
+                        }
+                    }
+                }
+                asks.sort_unstable();
+                for (place, count, index, stream_ordinal) in asks {
+                    tickets.insert((index, stream_ordinal), (reads.ask(place, count), place));
+                }
+            }
+            for (index, object) in (first..).zip(&held) {
             failing_object.set(index);
             supply_progress(
                 progress,
@@ -999,19 +1068,26 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
                 bytes.logical_bytes_read() - before_reads,
                 Some(written),
             );
-            let object = expected.object_leased(index)?;
-            if object.directory || system(&object) {
+            if object.directory || system(object) {
                 continue;
             }
             for (stream_ordinal, stream) in object.data_streams().enumerate() {
                 if at_once && !materialized_streams.contains(&(index, stream_ordinal)) {
                     continue;
                 }
-                let id = identity(&object, stream);
+                // A read ahead that failed is left to the adapter to make
+                // again, and to report if it fails there too.
+                if let (Some(reads), Some((ticket, place))) =
+                    (ahead.as_mut(), tickets.remove(&(index, stream_ordinal)))
+                    && let Ok(read) = reads.take(ticket)
+                {
+                    bytes.offer_read_ahead(place, read);
+                }
+                let id = identity(object, stream);
                 let mut observed =
-                    leased_ranges(bytes, template, index, &object, stream, row_window, None)?;
+                    leased_ranges(bytes, template, index, object, stream, row_window, None)?;
                 let decision =
-                    route_decision(template, index, &object, stream, &observed.ranges, None)?;
+                    route_decision(template, index, object, stream, &observed.ranges, None)?;
                 drop(observed.native_ram.take());
                 let summary = &observed.summary;
                 let ranges = &observed.ranges;
@@ -1070,15 +1146,18 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
                         Ok(())
                     })?;
                 }
+                bytes.withdraw_read_ahead(drop);
                 bytes.finish_stream()?;
                 let _closing_native_ram = bytes.lease_working_ram(
                     template.supply_stream_workspace_bytes(index, stream.name_utf16)?,
                 )?;
                 ensure!(
-                    *summary == observe_stream(template, index, &object, stream)?,
+                    *summary == observe_stream(template, index, object, stream)?,
                     "native stream mapping changed during routed preparation"
                 );
             }
+            }
+            first += held.len();
         }
         Ok(())
     })()
@@ -1090,6 +1169,8 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
             error,
         )
     })?;
+    // The lanes are closed before the adapter's scope ends.
+    drop(ahead);
     ensure!(
         written == plan.materialized,
         "routed materialization byte count differs from preflight"

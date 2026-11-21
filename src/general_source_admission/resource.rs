@@ -2922,10 +2922,20 @@ impl ResourceSourceContext {
         // whole-inventory cache before paying for projection rows/sorters.
         // Authenticated readers, compact indexes and all proof owners remain.
         self.raw.release_inventory_resident_cache();
+        // A run that verifies once (`--verify fast`) takes what the
+        // comparison evaluated of each object (its user issues, metadata and
+        // security views and case mark) from the comparison's rows (owner's
+        // decision D2, #250); a thorough run, a diagnosis and
+        // `--recheck-everything` evaluate them again. The comparison held the
+        // metadata to the Windows rules exactly where this projection does.
+        let compared = (n2r_win32::verify_policy::verifies_once()
+            && self.windows_aliases.is_some() == self.raw.is_windows_conversion())
+        .then_some(&self.rows);
         if let Some(aliases) = &self.windows_aliases {
             crate::shadow_tree::source_pages::SourceExpectedDomain::derive_windows(
                 &self.raw,
                 self.native.domain(),
+                compared,
                 admission,
                 output,
                 scratch,
@@ -2935,6 +2945,7 @@ impl ResourceSourceContext {
             crate::shadow_tree::source_pages::SourceExpectedDomain::derive_data(
                 &self.raw,
                 self.native.domain(),
+                compared,
                 admission,
                 output,
                 scratch,

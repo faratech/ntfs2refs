@@ -126,18 +126,20 @@ pub(super) fn restore_acl_protection_with_limit(
             }
         }
         if expressible && information != 0 {
-            if let Some(maximum) = maximum {
-                descriptor_with_limit(item.security, maximum)?;
+            let mut request = if let Some(maximum) = maximum {
+                descriptor_with_limit(item.security, maximum)?
             } else {
-                descriptor(item.security)?;
-            }
-            let mut request = item.security.to_vec();
-            let control = u16::from_le_bytes([request[2], request[3]])
+                descriptor(item.security)?
+            };
+            let words = request.as_mut_ptr().cast::<u8>();
+            // SAFETY: `descriptor*` validated length >= 20 bytes inside 8-byte-aligned `Vec<u64>`.
+            let control_bytes = unsafe { std::slice::from_raw_parts_mut(words.add(2), 2) };
+            let control = u16::from_le_bytes([control_bytes[0], control_bytes[1]])
                 | SE_DACL_AUTO_INHERIT_REQ
                 | SE_SACL_AUTO_INHERIT_REQ;
-            request[2..4].copy_from_slice(&control.to_le_bytes());
-            // SAFETY: live authorized metadata handle; `request` is the validated
-            // self-relative source descriptor with only its control word changed.
+            control_bytes.copy_from_slice(&control.to_le_bytes());
+            // SAFETY: live authorized metadata handle; `request` is the 8-byte-aligned
+            // validated self-relative source descriptor with only its control word changed.
             check(unsafe {
                 SetKernelObjectSecurity(
                     file.as_raw_handle(),
@@ -272,14 +274,18 @@ pub(super) fn clear_acl_auto_inheritance(directory: &File) -> io::Result<bool> {
     if information == 0 {
         return Ok(false);
     }
-    let mut request = kernel.bytes.clone();
-    let control = (u16::from_le_bytes([request[2], request[3]])
+    let mut request = vec![0u64; kernel.bytes.len().div_ceil(8)];
+    // SAFETY: `request` holds at least `kernel.bytes.len()` bytes with 8-byte alignment.
+    let raw_request =
+        unsafe { std::slice::from_raw_parts_mut(request.as_mut_ptr().cast::<u8>(), kernel.bytes.len()) };
+    raw_request.copy_from_slice(&kernel.bytes);
+    let control = (u16::from_le_bytes([raw_request[2], raw_request[3]])
         & !(SE_DACL_AUTO_INHERITED | SE_SACL_AUTO_INHERITED))
         | SE_DACL_AUTO_INHERIT_REQ
         | SE_SACL_AUTO_INHERIT_REQ;
-    request[2..4].copy_from_slice(&control.to_le_bytes());
+    raw_request[2..4].copy_from_slice(&control.to_le_bytes());
     // SAFETY: live directory handle holding WRITE_DAC and ACCESS_SYSTEM_SECURITY;
-    // `request` is the descriptor the kernel just returned with only its
+    // `request` is the 8-byte-aligned descriptor the kernel just returned with only its
     // control word changed, and outlives the call.
     check(unsafe {
         SetKernelObjectSecurity(

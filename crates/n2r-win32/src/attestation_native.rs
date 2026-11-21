@@ -138,15 +138,30 @@ fn route(volume: &File, disk: &File, r: &Request) -> io::Result<Route> {
     Ok((ext, data, attrs, e))
 }
 fn query(file: &File, class: i32, count: usize) -> Query {
-    let mut bytes = vec![0; count];
-    // SAFETY: exact class-specific fixed buffer, synchronous query, live handle.
-    let ok = unsafe {
-        GetFileInformationByHandleEx(raw(file), class, bytes.as_mut_ptr().cast(), count as u32)
+    debug_assert!(count <= 40);
+    // GetFileInformationByHandleEx requires 8-byte alignment for FileBasicInfo,
+    // FileStandardInfo, FileIdInfo, etc.
+    let mut aligned = [0u64; 5];
+    let ok = if count <= std::mem::size_of_val(&aligned) {
+        // SAFETY: exact class-specific 8-byte-aligned fixed buffer, synchronous query, live handle.
+        unsafe {
+            GetFileInformationByHandleEx(
+                raw(file),
+                class,
+                aligned.as_mut_ptr().cast(),
+                count as u32,
+            )
+        }
+    } else {
+        0
     };
     let native_error = (ok == 0).then(|| io::Error::last_os_error().raw_os_error().unwrap_or(31));
-    if native_error.is_some() {
-        bytes.clear();
-    }
+    let bytes = if native_error.is_none() {
+        // SAFETY: `count <= size_of_val(&aligned)` and the call initialized `count` bytes.
+        unsafe { std::slice::from_raw_parts(aligned.as_ptr().cast::<u8>(), count) }.to_vec()
+    } else {
+        Vec::new()
+    };
     Query {
         class,
         bytes,

@@ -102,6 +102,43 @@ working set and private memory, which is what to compare with a machine
 (#167). Before 0.1.0 it read "peaked at 16,589 MiB of the 6,148 MiB it may
 hold" for `rc3-full-system`, which looked like an overrun and was not.
 
+## 0.0.2: same checks, less work
+
+Release 0.0.2 makes the same checks as before with less repeated work: rows
+decoded once, the observations of the payload supply and of the walk on
+helper threads, a capture compare that reads both disks ahead, and a
+recovery that makes each identical check once (#140, #215 to #226). Before
+is the build the pass started from (`b0-*`); after is the 0.0.2 candidate
+(`g2b-*`, `g2d-*`). Each pair is the same volume on the same VM with the same
+memory. Neither had the host to itself throughout (the host shares its
+memory with other work), so read the differences to about a tenth.
+
+| Run | Before | 0.0.2 | |
+|---|---|---|---|
+| The full Windows volume, converted and started from ReFS (VM with 12 GB) | 1,262 s | 1,127 s | 97.6 GB read before, 77.2 GB after; 13.2 GB written by both |
+| 100,000 files, `--memory-limit 1240` (`files-100k-mid`, VM with 8 GB) | 442 s (0.0.1's final round) | 387 s | |
+
+Where the full volume's time went:
+
+| Phase | Before | 0.0.2 | Largest changes |
+|---|---|---|---|
+| Reading the source | 273 | 179 | object ids and transactions 19 → 0.2, observe source through Windows 78 → 61, compare raw and Windows views 52 → 35 |
+| Capturing the result | 187 | 141 | compare shadow with source 93 → 60 |
+| Building the ReFS volume | 283 | 302 | metadata steps, which vary from run to run by a quarter (above) |
+| Applying | 197 | 191 | |
+
+C:, converted in the machine's own recovery environment (Windows 11 build
+26300, the same 22.9 GB volume, VM with 8 GB):
+
+| Run | Seconds | |
+|---|---|---|
+| Converted (`g2b-c-convert`) | 1,107 | 19.4 minutes from the restart until Windows was back, on ReFS |
+| Power cut halfway through the writes, recovered on the next start (`g2d-c-cut-apply-mid`) | 408 | the recovery alone. Before the pass the same cut took 1 h 51 min from the cut until Windows was back (`runc-cut-apply-10`), two starts included |
+
+The recovery and the rollback of the full volume after the same cut, in the
+boot harness, took 862 s and 1,182 s before the pass (`b0-cut-resume`,
+`b0-cut-rollback`); they are to be measured again on 0.0.2.
+
 ## A partition on the Windows disk, through a restart
 
 A 6 GiB partition of 505 objects beside C: on Windows Server 2025, working

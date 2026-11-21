@@ -409,24 +409,15 @@ fn reconcile_domains_with_link_counter_hint(
         id: u64,
     ) -> Result<(u64, crate::ntfs_inspect::SourceDirectoryHeader)> {
         let number = id & 0xffff_ffff_ffff;
-        let mut low = 0;
-        let mut high = directories.directory_count();
-        while low < high {
-            let middle = low + (high - low) / 2;
-            let candidate = directories.directory(middle)?;
-            match candidate.record_number.cmp(&number) {
-                Ordering::Less => low = middle + 1,
-                Ordering::Greater => high = middle,
-                Ordering::Equal => {
-                    ensure!(
-                        candidate.sequence_number == (id >> 48) as u16,
-                        "directory index sequence stale"
-                    );
-                    return Ok((middle, candidate));
-                }
-            }
-        }
-        anyhow::bail!("directory missing its complete I30 index")
+        let ordinal = directories
+            .find_directory_ordinal(number)?
+            .context("directory missing its complete I30 index")?;
+        let candidate = directories.directory(ordinal)?;
+        ensure!(
+            candidate.record_number == number && candidate.sequence_number == (id >> 48) as u16,
+            "directory index sequence stale"
+        );
+        Ok((ordinal, candidate))
     }
     let root = files
         .find_record(5, None)?

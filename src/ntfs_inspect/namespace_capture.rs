@@ -92,6 +92,10 @@ impl RootDirectoryDomain for PagedNamespaceDomain {
     fn directory(&self, ordinal: u64) -> Result<SourceDirectoryHeader> {
         self.directories.get(ordinal)
     }
+    fn find_directory_ordinal(&self, record_number: u64) -> Result<Option<u64>> {
+        self.directories
+            .find_ordinal(namespace_key(record_number, 0))
+    }
     fn entry(&self, directory: u64, entry: u64) -> Result<crate::ntfs_namespace::Link> {
         let header: SourceDirectoryHeader = self.directories.get(directory)?;
         ensure!(

@@ -649,8 +649,13 @@ impl Writer {
         let mut at = HEADER;
         let mut first = 0;
         let mut index_hash = Sha256::new();
-        // Build the index in the same file without retaining page descriptors.
-        for page in 0..self.pages {
+        // Build the index in the same file without retaining page descriptors,
+        // buffering 64-byte index rows into 64 KiB batches instead of issuing
+        // one unbuffered seek+write syscall per page.
+        const INDEX_BATCH: usize = 1024;
+        let mut index_batch = Vec::with_capacity((self.pages as usize).min(INDEX_BATCH) * INDEX as usize);
+        let mut batch_start = self.data_end;
+        for _ in 0..self.pages {
             let mut frame = [0; 64];
             read_at(&mut self.file, at, &mut frame)?;
             require(
@@ -661,12 +666,21 @@ impl Writer {
             first = add(first, u32_at(&frame, 12) as u64)?;
             frame[..8].copy_from_slice(&at.to_le_bytes());
             frame[8..12].copy_from_slice(&(encoded as u32).to_le_bytes());
-            self.file
-                .seek(SeekFrom::Start(add(self.data_end, page * INDEX)?))?;
-            self.file.write_all(&frame)?;
+            index_batch.extend_from_slice(&frame);
             index_hash.update(frame);
             running.update(&frame)?;
             at = add(at, encoded)?;
+            if index_batch.len() >= INDEX_BATCH * INDEX as usize {
+                self.file.seek(SeekFrom::Start(batch_start))?;
+                self.file.write_all(&index_batch)?;
+                batch_start = add(batch_start, index_batch.len() as u64)?;
+                index_batch.clear();
+            }
+        }
+        if !index_batch.is_empty() {
+            self.file.seek(SeekFrom::Start(batch_start))?;
+            self.file.write_all(&index_batch)?;
+            index_batch.clear();
         }
         require(
             at == self.data_end && first == self.records,

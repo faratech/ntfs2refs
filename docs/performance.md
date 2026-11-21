@@ -135,9 +135,16 @@ C:, converted in the machine's own recovery environment (Windows 11 build
 | Converted (`g2b-c-convert`) | 1,107 | 19.4 minutes from the restart until Windows was back, on ReFS |
 | Power cut halfway through the writes, recovered on the next start (`g2g-c-cut-apply-mid`) | 385 | the recovery alone; Windows was back, on ReFS, 7 min 8 s after the cut. Before the pass the same cut took 1 h 51 min from the cut until Windows was back (`runc-cut-apply-10`) |
 
-The recovery and the rollback of the full volume after the same cut, in the
-boot harness, took 862 s and 1,182 s before the pass (`b0-cut-resume`,
-`b0-cut-rollback`); they are to be measured again on 0.0.2.
+The full volume stopped halfway through the writes (`-InterruptAt
+apply-mid-ranges`, VM with 12 GB) and then recovered by `--recover`:
+
+| Recovery | Before | 0.0.2 | Largest changes |
+|---|---|---|---|
+| Forward, to ReFS (`b0-cut-resume`, `g2r-cut-resume`) | 862 s | 329 s | changed ranges read back 4 times in 370 s before, 3 times in 129 s after; journal scans 254 → 82 s |
+| Rollback, to NTFS (`b0-cut-rollback`, `g2r-cut-rollback`) | 1,182 s | 393 s | journal scans 501 → 81 s; changed-range checks 348 → 148 s |
+
+Both recovered volumes started Windows (`RESUMED-BOOTED-ON-REFS`,
+`ROLLED-BACK-BOOTED-ON-NTFS`).
 
 ## A partition on the Windows disk, through a restart
 

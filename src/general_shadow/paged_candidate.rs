@@ -800,7 +800,7 @@ impl<'source, 'observation, 'scope>
     /// the original reads, and where the ledger has the memory to spare
     /// (three chunks, the lane, the list of ranges and a stack). Otherwise
     /// nothing changes: the capture reads the source as it did. A lane that
-    /// cannot be opened is an error, as any failed read of the scope is.
+    /// cannot be opened changes nothing either: opening it reads nothing.
     pub(crate) fn read_originals_ahead(
         &mut self,
         ranges: u64,
@@ -831,10 +831,9 @@ impl<'source, 'observation, 'scope>
         for ordinal in 0..ranges {
             list.push(range(ordinal)?);
         }
-        self.poisoned = true;
-        let lane = self.bytes.original_owner().read_lane()?;
-        self.poisoned = false;
-        let Some(lane) = lane else {
+        // The lane only buys speed: one that cannot be opened leaves the
+        // capture reading through the owner, as it did, and fails nothing.
+        let Ok(Some(lane)) = self.bytes.original_owner().read_lane() else {
             return Ok(());
         };
         // A helper that cannot be started read nothing: no lane is left

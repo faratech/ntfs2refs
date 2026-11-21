@@ -670,11 +670,15 @@ impl<'a> PagedShadowClosing<'a> {
                 });
             }
         }
+        // The lane only buys speed: one that cannot be opened (its handle,
+        // its aligned buffer, the state query that binds it) leaves the
+        // pass reading through the target, as it did, with every check of
+        // its own.
         let ahead = match listed {
             Some((list, paid)) => target
                 .read_lanes(1, &mut Vec::new())
-                .context("open a read lane of the frozen shadow")?
-                .pop()
+                .ok()
+                .and_then(|mut lanes| lanes.pop())
                 .and_then(|lane| {
                     OriginalPrefetch::start(
                         "n2r-capture-shadow-ahead",

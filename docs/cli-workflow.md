@@ -393,7 +393,10 @@ keep memory for something else, or to see how a volume does with little. A
 run with less memory holds less in memory and takes longer. A limit is a
 ceiling: a run given one does not go beyond it, so a limit below what the
 volume needs is refused before anything is built, and the refusal says what
-the limit would have to be. A recovery takes the option too.
+the limit would have to be. A recovery takes the option too. The recovery
+that converting the running Windows starts by itself after a restart keeps
+to the limit the conversion was given; if it does not finish under it, it
+is made once more without it.
 
 ## A partition on the Windows disk
 
@@ -772,8 +775,17 @@ it to its run.
   The converted volume is verified in full after the changes are written, in
   both modes. A diagnosis (`--diagnose`) leaves nothing out: it stops before
   the new volume is examined, which is where a conversion makes the checks it
-  leaves out earlier. A recovery (`--recover`) and a partition on the disk of
-  the running Windows never leave anything out either. A fast run's
+  leaves out earlier. A partition on the disk of the running Windows never
+  leaves anything out either. A recovery (`--recover`) makes every check a
+  recovery makes, and makes an identical one once while it holds what it
+  checks: it hashes the journal and its working files in full once, reads
+  each changed range back once, and does not write again a range already
+  on the side it restores. The recovery of a run made with `--verify fast`
+  also writes a range that needs writing without reading it first (every
+  range was classified before the first write and everything written is
+  read back) and probes a converted Windows volume's short-name links once,
+  as the conversion did; the recovery of a thorough run makes both checks
+  as before. A fast run's
   preparation that was cut off is therefore not resumed: it is cancelled
   with the `--rollback` command the run printed at its start ([A run that
   is cut off while it prepares](#a-run-that-is-cut-off-while-it-prepares)),

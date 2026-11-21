@@ -1781,7 +1781,18 @@ impl StagedWindowsAliases {
         Ok(provisional_aliases)
     }
     pub(super) fn finish(mut self) -> io::Result<VerifiedWindowsAliases> {
-        let entries: Vec<_> = self.rows.into_values().map(|row| row.entry).collect();
+        // Each link's entry is kept, in the links' order, and the handle held
+        // on it is closed: on helper threads (`close_at_once`), which take
+        // the rows in order under a lock, so the entries are in the order
+        // they were in.
+        let mut entries = Vec::with_capacity(self.rows.len());
+        super::close_at_once(
+            Some(&*self.payer),
+            self.rows.into_values().map(|row| {
+                entries.push(row.entry);
+                row.file
+            }),
+        );
         let path_bytes = |path: &Vec<String>| -> io::Result<u64> {
             path.iter().try_fold(
                 (path.capacity() as u64)

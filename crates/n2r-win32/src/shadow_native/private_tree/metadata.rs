@@ -263,6 +263,16 @@ fn complete_domain_inner(
     } else {
         Ok(())
     };
+    // The handle held on every object closes with the tree, after the checks
+    // above, as before; now beside one another (`close_at_once`), and before
+    // the volume handle and the privileges the tree also holds, which no
+    // close needs.
+    crate::perf::step("metadata: close the objects' handles");
+    let payer = tree.memory.as_ref().map(|memory| memory.payer());
+    super::super::close_at_once(
+        payer.as_deref(),
+        std::mem::take(&mut tree.metadata_targets).into_values(),
+    );
     match (result, closing, finish) {
         (Ok(value), Ok(()), Ok(())) => Ok(value),
         (Err(error), closing, finish) => {
@@ -673,6 +683,8 @@ fn complete_domain_body(
     if let Some(stage) = alias_stage.as_ref() {
         report["derived_windows_aliases"] = stage.summary();
     }
+    // Taking the links' ledger closes the handle held on each link.
+    crate::perf::step("metadata: close the objects' handles");
     Ok((
         report,
         alias_stage

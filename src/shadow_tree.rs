@@ -399,7 +399,10 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
         );
         if let Some(api) = &object.api_security {
             if let Some(admission) = resource_admission {
-                ntfs_security::parse_descriptor_with_limit(api, admission.budget.max_row_bytes)?;
+                crate::ntfs_attestation::check_descriptor_with_limit(
+                    api,
+                    admission.budget.max_row_bytes,
+                )?;
             } else {
                 ensure!(api.len() <= 65536, "API descriptor exceeds bound");
                 ntfs_security::parse_descriptor(api)?;
@@ -434,7 +437,7 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
             );
         }
         if let Some(admission) = resource_admission {
-            ntfs_security::parse_descriptor_with_limit(
+            crate::ntfs_attestation::check_descriptor_with_limit(
                 &object.security,
                 admission.budget.max_row_bytes,
             )?;

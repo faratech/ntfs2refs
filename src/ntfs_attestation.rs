@@ -801,6 +801,50 @@ pub fn same_security_with_limit(a: &[u8], b: &[u8], maximum: u64) -> Result<bool
     })
 }
 
+/// That `bytes` parse as a relative security descriptor of at most `maximum`
+/// bytes ([`ntfs_security::parse_descriptor_with_limit`]), where the parsed
+/// form is not needed. The answer is remembered by the descriptor's exact
+/// bytes, as the comparisons are: most objects of a volume share a handful
+/// of descriptors, and each was parsed again for each object and view. A
+/// descriptor that does not parse is parsed again and refused the same way.
+pub fn check_descriptor_with_limit(bytes: &[u8], maximum: u64) -> Result<()> {
+    remembered_comparison(2, bytes, &[], maximum, || {
+        ntfs_security::parse_descriptor_with_limit(bytes, maximum).map(|_| true)
+    })
+    .map(|_| ())
+}
+
+#[cfg(test)]
+mod remembered_descriptor_tests {
+    use super::{check_descriptor_with_limit, ntfs_security};
+
+    #[test]
+    fn a_remembered_descriptor_check_answers_as_the_parser_does() {
+        // Revision 1, self-relative with a null DACL present: 20 bytes.
+        let mut valid = vec![0u8; 20];
+        valid[0] = 1;
+        valid[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
+        let mut absolute = valid.clone();
+        absolute[2..4].copy_from_slice(&0x0004u16.to_le_bytes());
+        let short = vec![1u8; 12];
+        for _ in 0..3 {
+            for (bytes, maximum) in [(&valid, 4096), (&absolute, 4096), (&short, 4096), (&valid, 16)]
+            {
+                let parsed = ntfs_security::parse_descriptor_with_limit(bytes, maximum);
+                let checked = check_descriptor_with_limit(bytes, maximum);
+                assert_eq!(parsed.is_ok(), checked.is_ok(), "{bytes:?} at {maximum}");
+                if let (Err(parsed), Err(checked)) = (parsed, checked) {
+                    assert_eq!(parsed.to_string(), checked.to_string());
+                }
+            }
+        }
+        assert!(check_descriptor_with_limit(&valid, 4096).is_ok());
+        // The bound is part of what is remembered: the same bytes over it
+        // are refused after they were admitted under a larger one.
+        assert!(check_descriptor_with_limit(&valid, 16).is_err());
+    }
+}
+
 /// The answer of a descriptor comparison for the same two byte strings.
 ///
 /// A volume has hundreds of thousands of objects and a few hundred distinct

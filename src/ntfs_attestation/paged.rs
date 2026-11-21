@@ -29,6 +29,27 @@ impl<'a> PagedObservationRequest<'a> {
         budget: ResourceBudget,
         policy: VerificationPolicy,
     ) -> Result<Self> {
+        Self::new_with_known(source, binding, budget, policy, None)
+    }
+    /// As [`new`](Self::new), for a caller that holds the admission an
+    /// earlier selector of this process counted for the same source.
+    ///
+    /// Counting the files, directories and streams goes through every row
+    /// and derives every path of every object; the selector is built for the
+    /// native collection and again for the comparison with what it
+    /// collected, over a source that is held and cannot change in between.
+    /// Under the check-once policy, outside its gate, the counts of `known`
+    /// are taken where everything else of it is what this constructor makes
+    /// of them now: the source's pin, its record and row counts, the budget
+    /// and the namespace policy. Anything else, and every other process
+    /// (`--recheck-everything`, inside the gate), counts again.
+    pub(crate) fn new_with_known(
+        source: &'a PagedInspection,
+        binding: &GeneralDiskBinding,
+        budget: ResourceBudget,
+        policy: VerificationPolicy,
+        known: Option<SourceResourceAdmission>,
+    ) -> Result<Self> {
         binding.validate()?;
         budget.validate()?;
         // Collection observes canonical native names. DOS alias preservation
@@ -59,44 +80,68 @@ impl<'a> PagedObservationRequest<'a> {
         let pin_bytes: [u8; 32] = hex::decode(&pin)?
             .try_into()
             .map_err(|_| anyhow::anyhow!("paged source pin length differs"))?;
-        let mut files = 0u64;
-        let mut directories = 0u64;
-        let mut streams = 0u64;
-        for ordinal in 0..source.file_count() {
-            let file = source.file(ordinal)?;
-            if crate::ntfs_admission::paged::internal_role(source, &file)?.is_some() {
-                continue;
-            }
-            if windows_paths {
-                crate::ntfs_admission::paged::canonical_paths_for_alias_preparation(source, &file)?;
-            } else {
-                crate::ntfs_admission::paged::user_paths(source, &file)?;
-            }
-            if file.is_directory {
-                directories = directories
-                    .checked_add(1)
-                    .context("directory count overflow")?;
-            } else {
-                files = files.checked_add(1).context("file count overflow")?;
-                streams = streams
-                    .checked_add(u64::try_from(file.streams.len())?)
-                    .context("stream count overflow")?;
-            }
-        }
         let admit = if windows_paths {
             SourceResourceAdmission::new_windows
         } else {
             SourceResourceAdmission::new
         };
-        let admission = admit(
-            pin_bytes,
-            header.mft_record_count,
-            source.file_count(),
-            files,
-            directories,
-            streams,
-            budget,
-        )?;
+        // The known counts stand only where this constructor makes the very
+        // same admission of them; a refusal here is no refusal of the run,
+        // the rows are counted as before.
+        let recounted = known
+            .filter(|_| !n2r_win32::verify_policy::full_unremembered())
+            .and_then(|known| {
+                admit(
+                    pin_bytes,
+                    header.mft_record_count,
+                    source.file_count(),
+                    known.files,
+                    known.directories,
+                    known.data_streams,
+                    budget,
+                )
+                .ok()
+                .filter(|admission| *admission == known)
+            });
+        let admission = if let Some(admission) = recounted {
+            admission
+        } else {
+            let mut files = 0u64;
+            let mut directories = 0u64;
+            let mut streams = 0u64;
+            for ordinal in 0..source.file_count() {
+                let file = source.file_shared(ordinal)?;
+                if crate::ntfs_admission::paged::internal_role(source, &file)?.is_some() {
+                    continue;
+                }
+                if windows_paths {
+                    crate::ntfs_admission::paged::canonical_paths_for_alias_preparation(
+                        source, &file,
+                    )?;
+                } else {
+                    crate::ntfs_admission::paged::user_paths(source, &file)?;
+                }
+                if file.is_directory {
+                    directories = directories
+                        .checked_add(1)
+                        .context("directory count overflow")?;
+                } else {
+                    files = files.checked_add(1).context("file count overflow")?;
+                    streams = streams
+                        .checked_add(u64::try_from(file.streams.len())?)
+                        .context("stream count overflow")?;
+                }
+            }
+            admit(
+                pin_bytes,
+                header.mft_record_count,
+                source.file_count(),
+                files,
+                directories,
+                streams,
+                budget,
+            )?
+        };
         source.require_paged_source(admission.source_pages, admission.semantic_byte_budget())?;
         let value = Self {
             source,
@@ -479,11 +524,16 @@ pub struct PagedComparisonSummary {
 /// object collection or selector list is reconstructed. Recognized filesystem
 /// internals retain their individual failures and replacement obligations;
 /// this diagnostic never supplies source admission or a conversion certificate.
+///
+/// `selected` is the admission of the selector this process collected
+/// `native` with, where the caller holds it: see
+/// [`PagedObservationRequest::new_with_known`].
 pub fn compare_domain(
     source: &PagedInspection,
     binding: &GeneralDiskBinding,
     budget: ResourceBudget,
     policy: VerificationPolicy,
+    selected: Option<SourceResourceAdmission>,
     native: &impl NativeObservationDomain,
     emit: impl FnMut(PagedFileComparison) -> Result<()>,
 ) -> Result<PagedComparisonSummary> {
@@ -492,6 +542,7 @@ pub fn compare_domain(
         binding,
         budget,
         policy,
+        selected,
         native,
         emit,
         super::check_header_geometry,
@@ -503,6 +554,7 @@ pub(crate) fn compare_partition_domain(
     binding: &GeneralDiskBinding,
     budget: ResourceBudget,
     policy: VerificationPolicy,
+    selected: Option<SourceResourceAdmission>,
     observed: &n2r_win32::attestation_partition::PartitionPagedNtfsObservation,
     phase: &mut n2r_win32::partition_lifecycle::PartitionReadonlyPhase<'_>,
     events: &mut Vec<n2r_win32::NativeEvent>,
@@ -514,6 +566,7 @@ pub(crate) fn compare_partition_domain(
         binding,
         budget,
         policy,
+        selected,
         observed.domain(),
         emit,
         |geometry, _| super::check_partition_header_geometry(geometry, observed),
@@ -526,6 +579,7 @@ fn compare_domain_with_header(
     binding: &GeneralDiskBinding,
     budget: ResourceBudget,
     policy: VerificationPolicy,
+    selected: Option<SourceResourceAdmission>,
     native: &impl NativeObservationDomain,
     mut emit: impl FnMut(PagedFileComparison) -> Result<()>,
     mut check_header: impl FnMut(
@@ -534,7 +588,11 @@ fn compare_domain_with_header(
     ) -> Result<()>,
 ) -> Result<PagedComparisonSummary> {
     use crate::ntfs_stream_attestation::Check;
-    let expected = PagedObservationRequest::new(source, binding, budget, policy)?;
+    // The selector is built again, for the request's header and every row
+    // of it that the native rows are held to below; only the count of what
+    // it selects is not made a second time where the caller holds it.
+    let expected =
+        PagedObservationRequest::new_with_known(source, binding, budget, policy, selected)?;
     let admission = expected.admission();
     let header = native.header();
     ensure!(
@@ -621,7 +679,10 @@ fn compare_domain_with_header(
         conversion_qualified: false,
     };
     for ordinal in 0..expected.len() {
-        let file = source.file(ordinal as u64)?;
+        // The row is read here and by the selector's row below, and changed
+        // by neither: both are handed the one the source holds, where it
+        // was decoded twice.
+        let file = source.file_shared(ordinal as u64)?;
         let native_row = native.row_view(ordinal)?;
         let selector = native_row.request();
         ensure!(

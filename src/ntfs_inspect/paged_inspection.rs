@@ -272,7 +272,7 @@ impl PagedInspection {
             "cached raw canonical source pin differs from actual byte-continuity proof"
         );
         for ordinal in 0..value.file_count() {
-            let file = value.file(ordinal)?;
+            let file = value.file_shared(ordinal)?;
             if (12..16).contains(&file.record_number)
                 && file.names.is_empty()
                 && file.attributes.is_empty()

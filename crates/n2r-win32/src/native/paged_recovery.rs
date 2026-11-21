@@ -1554,7 +1554,18 @@ impl GeneralFrozenPartition {
             return Err(invalid("protected recovery journal immutable body differs"));
         }
         verify_index_against_journal(journal, policy, pins)?;
-        let actual = selected_digest(&mut self, policy, pins.digest)?;
+        // The same ordered pass over the changed ranges as the one in front
+        // of a fresh apply (`begin_paged_fresh_apply`), read ahead the same
+        // way: the source is offline and read-only here, and nothing writes
+        // to it during the pass.
+        let actual = self.with_read_ahead(|source| {
+            selected_digest_reaching(
+                source,
+                policy,
+                pins.digest,
+                GeneralFrozenPartition::set_read_ahead_reach,
+            )
+        })?;
         if !accepted.admits(actual, pins) {
             return Err(invalid(match accepted {
                 FrozenSelected::Old => "actual excluded source selected bytes differ",
@@ -2007,6 +2018,8 @@ impl GeneralJournaledPartition {
             return Err(invalid("paged recovery source lost offline exclusion"));
         }
         self.paged_policy = None;
+        // A window a pass of the replay left on does not outlive the writer.
+        self.set_read_ahead(false);
         Ok(GeneralExclusiveRecoveryTarget { inner: self })
     }
 }

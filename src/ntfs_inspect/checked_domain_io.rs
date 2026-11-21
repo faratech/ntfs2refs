@@ -556,8 +556,10 @@ impl CheckedMftDomain {
                 _assembly_ram: None,
             });
         }
+        // Read, never changed: the row the source holds, not a copy of it
+        // for every stream that is opened.
         let file = source
-            .find_record(number, None)?
+            .find_record_shared(number, None)?
             .context("source FILE absent from complete domain")?;
         ensure!(
             file.base_file_reference == 0
@@ -722,7 +724,7 @@ pub(super) fn checked_data_attribute_domain<R: Read + Seek>(
         format!("FILE {number} checked DATA inventory requires {file_workspace} bytes")
     })?;
     let file = source
-        .find_record(number, None)?
+        .find_record_shared(number, None)?
         .context("source file absent from complete inventory")?;
     ensure!(
         !file.is_directory && file.base_file_reference == 0,

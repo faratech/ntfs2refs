@@ -1919,7 +1919,8 @@ impl Seek for GeneralLockedPartition {
 /// Persistently excluded general data partition. This handle has no Write
 /// implementation and cannot make the disk mountable.
 /// Read-ahead for a frozen partition, used only inside a scope the caller
-/// declares (`with_read_ahead`, or a fresh-apply writer's `set_read_ahead`).
+/// declares (`with_read_ahead`, or the `set_read_ahead` of a fresh-apply
+/// writer or of a recovery's journaled target).
 ///
 /// The passes that verify, write and read back the changed ranges read tens
 /// of thousands of small ranges in ascending order, a device read each. With
@@ -2508,6 +2509,16 @@ impl GeneralExclusiveRecoveryTarget {
     }
     pub fn byte_len(&self) -> u64 {
         self.inner.byte_len()
+    }
+    /// Read-ahead for a pass that reads the changed ranges in ascending
+    /// order; see [`GeneralFrozenPartition::with_read_ahead`]. The caller
+    /// turns it off when the pass ends.
+    pub fn set_read_ahead(&mut self, enabled: bool) {
+        self.inner.set_read_ahead(enabled);
+    }
+    /// See [`GeneralFrozenPartition::set_read_ahead_reach`].
+    pub fn set_read_ahead_reach(&mut self, end: u64) {
+        self.inner.set_read_ahead_reach(end);
     }
 }
 impl Read for GeneralExclusiveRecoveryTarget {
@@ -4100,6 +4111,21 @@ impl GeneralJournaledPartition {
         self.inner.state(events)
     }
 
+    /// Read-ahead for the passes of a replay that read the changed ranges in
+    /// ascending order; see [`GeneralFrozenPartition::with_read_ahead`].
+    /// Every write through this object is copied into the window, and a
+    /// write that fails drops it, so a read after a write never returns
+    /// bytes the device no longer has. The caller turns it off when the
+    /// pass ends.
+    pub fn set_read_ahead(&mut self, enabled: bool) {
+        self.inner.set_read_ahead(enabled);
+    }
+
+    /// See [`GeneralFrozenPartition::set_read_ahead_reach`].
+    pub fn set_read_ahead_reach(&mut self, end: u64) {
+        self.inner.set_read_ahead_reach(end);
+    }
+
     pub fn arm_writes(
         &mut self,
         policy: WritePolicy,
@@ -4363,16 +4389,24 @@ impl Write for GeneralJournaledPartition {
                 self.native_bytes_written += count as u64;
                 if count != input.len() {
                     self.write_poisoned = true;
+                    // What the device now holds of this range is unknown:
+                    // nothing read ahead of it stands.
+                    self.inner.ahead.clear();
                     return Err(io::Error::new(
                         io::ErrorKind::WriteZero,
                         "short general native write; reopen through recovery",
                     ));
                 }
+                // A read-ahead window stays equal to the device, as the
+                // fresh-apply writer keeps it (`BorrowedPagedWriter`).
+                let at = self.inner.position;
+                self.inner.ahead.written(at, input);
                 self.inner.position += count as u64;
                 Ok(count)
             }
             Err(error) => {
                 self.write_poisoned = true;
+                self.inner.ahead.clear();
                 Err(error)
             }
         }
@@ -5664,6 +5698,66 @@ mod tests {
                 read_at(&mut frozen, at, length),
                 bytes[at as usize..at as usize + length]
             );
+        }
+
+        // The journaled target a recovery replays through: a write through
+        // it is seen by a later read, where the window holds the range and
+        // where it does not.
+        let (inside, outside) = (8192u64, 2 * 1024 * 1024u64);
+        let mut journaled = GeneralJournaledPartition {
+            inner: frozen,
+            policy: Some(WritePolicy {
+                allowed: vec![(inside, 4096), (outside, 4096)],
+                retained: vec![],
+                maximum_bytes: 8192,
+                journal_profile: crate::journal_file::JournalProfile::LegacyV1,
+            }),
+            paged_policy: None,
+            write_poisoned: false,
+            native_bytes_written: 0,
+            native_write_bytes_requested: 0,
+        };
+        journaled.set_read_ahead(true);
+        let mut out = vec![0u8; 4096];
+        journaled.seek(SeekFrom::Start(0)).unwrap();
+        journaled.read_exact(&mut out).unwrap();
+        assert_eq!(out, bytes[..4096]);
+        let window = journaled.inner.ahead.start
+            ..journaled.inner.ahead.start + journaled.inner.ahead.length as u64;
+        assert!(
+            window.contains(&inside)
+                && window.contains(&(inside + 4095))
+                && !window.contains(&outside),
+            "one write lands in the window that was just read, the other past it: {window:?}"
+        );
+        for at in [inside, outside] {
+            let new = vec![0x3cu8; 4096];
+            journaled.seek(SeekFrom::Start(at)).unwrap();
+            journaled.write_all(&new).unwrap();
+            bytes[at as usize..at as usize + 4096].copy_from_slice(&new);
+            let device_reads = journaled.inner.native_bytes_read;
+            journaled.seek(SeekFrom::Start(at)).unwrap();
+            journaled.read_exact(&mut out).unwrap();
+            assert_eq!(
+                out, new,
+                "a read after a write at {at} returns what was written"
+            );
+            assert_eq!(
+                journaled.inner.native_bytes_read == device_reads,
+                at == inside,
+                "the range in the window is served from it, the other from the device"
+            );
+        }
+        journaled.set_read_ahead(false);
+        assert_eq!(
+            journaled.inner.ahead.length, 0,
+            "the window is dropped when the pass turns it off"
+        );
+        for (at, length) in ranges {
+            let mut out = vec![0u8; length];
+            journaled.seek(SeekFrom::Start(at)).unwrap();
+            journaled.read_exact(&mut out).unwrap();
+            assert_eq!(out, bytes[at as usize..at as usize + length]);
         }
     }
 

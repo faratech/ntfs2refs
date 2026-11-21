@@ -64,6 +64,67 @@ pub(super) fn validate_resource_domain(
 ) -> io::Result<()> {
     validate_domain_inner(input, maximum_names, Some(root), valid_component)
 }
+
+/// Which names the paths of a domain are held to. It decides the predicate,
+/// so a validation that is remembered is remembered for the predicate that
+/// made it and no other.
+#[derive(Clone, Copy)]
+pub(super) enum Names {
+    /// [`crate::shadow_names::valid_unicode_component`].
+    Unicode,
+    /// The names of the restricted lab profile (`valid_shadow_component`).
+    Shadow,
+}
+impl Names {
+    fn valid(self, part: &str) -> bool {
+        match self {
+            Self::Unicode => crate::shadow_names::valid_unicode_component(part),
+            Self::Shadow => valid_shadow_component(part),
+        }
+    }
+    /// Where a held input keeps that it passed under these names.
+    fn passed_key(self) -> &'static str {
+        match self {
+            Self::Unicode => "hard_links::validate_resource_domain/unicode-names",
+            Self::Shadow => "hard_links::validate_resource_domain/shadow-names",
+        }
+    }
+}
+
+/// [`validate_resource_domain`], made once for an input that is held.
+///
+/// The validation decodes every object of the domain two or three times,
+/// and a conversion asked for it when it allocated the shadow, when it made
+/// the hard links, when it completed the metadata and in every walk. What
+/// it answers depends on the input, the names limit, the root and the names
+/// the paths are held to, and on nothing else. A domain that is held and
+/// immutable keeps that it passed, and what for, where it keeps its input
+/// digest ([`InputDomain::input_digest_memo`]) and on the same terms:
+/// nothing is kept unless the route checks once, and inside a gate the
+/// validation is made again, once. Only a pass is kept, and only the pass
+/// of the same limit, root and names stands for another: a refusal is made
+/// again, so the same refusal is reported as before.
+pub(super) fn validate_resource_domain_once(
+    input: &impl InputDomain,
+    maximum_names: usize,
+    root: &str,
+    names: Names,
+) -> io::Result<()> {
+    let memo = input.input_digest_memo();
+    let passed_for = memo_scope(&[
+        b"hard-link-resource-domain",
+        &(maximum_names as u64).to_le_bytes(),
+        root.as_bytes(),
+    ]);
+    if memo.and_then(|memo| memo.get_keyed(names.passed_key())) == Some(passed_for) {
+        return Ok(());
+    }
+    validate_resource_domain(input, maximum_names, root, |part| names.valid(part))?;
+    if let Some(memo) = memo {
+        memo.set_keyed(names.passed_key(), passed_for);
+    }
+    Ok(())
+}
 fn validate_domain_inner(
     input: &impl InputDomain,
     maximum_names: usize,
@@ -320,12 +381,7 @@ fn create_owned_domain_inner(
         return Ok(Vec::new());
     }
     if let Some((maximum_names, root, _)) = resources {
-        validate_resource_domain(
-            input,
-            maximum_names,
-            root,
-            crate::shadow_names::valid_unicode_component,
-        )?;
+        validate_resource_domain_once(input, maximum_names, root, Names::Unicode)?;
     } else {
         validate_domain(
             input,

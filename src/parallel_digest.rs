@@ -39,11 +39,33 @@ pub(crate) fn digest_frozen_chunks(
     image: &mut n2r_win32::GeneralFrozenPartition,
     chunks: &[Chunk],
 ) -> Result<Vec<[u8; 16]>> {
-    let depth = image
-        .io_profile()
-        .queue_depth
-        .clamp(1, 8)
-        .min(chunks.len().max(1));
+    let depth = image.io_profile().queue_depth.clamp(1, 8);
+    digest_frozen_chunks_at_depth(image, chunks, depth)
+}
+
+/// A chunk at most this long is a small read: a lane reading such chunks
+/// waits on each read's latency more than on the device's bandwidth.
+pub(crate) const SMALL_READ_BYTES: usize = 256 * 1024;
+
+/// How many reads are kept outstanding for chunks that are all small reads,
+/// whatever queue depth the storage profile names for large ones: 20,000
+/// reads of about 23 KiB at the profile's depth of two took 7.4 s (#250).
+pub(crate) const SMALL_READ_DEPTH: usize = 8;
+
+/// Whether every chunk is a small read ([`SMALL_READ_BYTES`]).
+pub(crate) fn small_reads(chunks: &[Chunk]) -> bool {
+    chunks.iter().all(|chunk| chunk.length <= SMALL_READ_BYTES)
+}
+
+/// [`digest_frozen_chunks`] with up to `depth` reads outstanding (this
+/// thread and `depth - 1` read lanes), for a caller that has paid for that
+/// many lanes. The digests do not depend on the depth.
+pub(crate) fn digest_frozen_chunks_at_depth(
+    image: &mut n2r_win32::GeneralFrozenPartition,
+    chunks: &[Chunk],
+    depth: usize,
+) -> Result<Vec<[u8; 16]>> {
+    let depth = depth.clamp(1, 8).min(chunks.len().max(1));
     if depth <= 1 {
         return digest_chunks(image, chunks);
     }

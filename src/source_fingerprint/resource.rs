@@ -1123,13 +1123,39 @@ impl PagedSourceFingerprint {
             .and_then(|n| n.checked_add(batch as u64 * 256))
             .context("fingerprint worker RAM overflow")?;
         let _ram = self.scratch.lease_ram(ram)?;
+        // A batch of small reads only (most fingerprint ranges are a few
+        // dozen KiB) keeps more of them outstanding than the profile's depth
+        // where the memory for the further lanes (each its device buffer,
+        // its small-read buffer and its thread) is there to spare; without
+        // it the batch is read at the profile's depth, as before.
+        let small_depth = crate::parallel_digest::SMALL_READ_DEPTH.min(batch.max(1));
+        let small_lanes = small_depth.saturating_sub(depth.max(1)) as u64;
+        let small_ram = (small_lanes > 0)
+            .then(|| {
+                n2r_win32::GeneralFrozenPartition::read_buffer_memory_bytes()
+                    .checked_add(65536)
+                    .and_then(|n| n.checked_add(crate::parallel_digest::SMALL_READ_BYTES as u64))
+                    .and_then(|n| n.checked_add(2 * 1024 * 1024))
+                    .and_then(|n| n.checked_mul(small_lanes))
+            })
+            .flatten()
+            .and_then(|bytes| self.scratch.lease_ram_if_room(bytes).ok());
+        let small_depth = if small_ram.is_some() {
+            small_depth
+        } else {
+            depth
+        };
         let mut pieces = Vec::new();
         pieces.try_reserve_exact(batch)?;
         let mut frames = Vec::new();
         frames.try_reserve_exact(batch)?;
         let mut digest = n2r_win32::sha256_native::Sha256::new()?;
         let mut flush = |pieces: &mut Vec<Chunk>, frames: &mut Vec<Option<Range>>| -> Result<()> {
-            let digests = digest_frozen_chunks(source, pieces)?;
+            let digests = if crate::parallel_digest::small_reads(pieces) {
+                crate::parallel_digest::digest_frozen_chunks_at_depth(source, pieces, small_depth)?
+            } else {
+                digest_frozen_chunks(source, pieces)?
+            };
             ensure!(
                 digests.len() == frames.len(),
                 "fingerprint piece digest coverage differs"

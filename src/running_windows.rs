@@ -38,6 +38,13 @@ pub struct Session {
     pub scratch_disk_id: String,
     pub windows_disk_id: String,
     pub scratch_relative: String,
+    /// Where the Windows partition starts on its disk, in bytes. A recovery
+    /// that finishes the conversion leaves a ReFS volume with a serial
+    /// number of its own, so the volume is found again by its place, which
+    /// the conversion does not move. (A session an earlier version wrote
+    /// has none.)
+    #[serde(default)]
+    pub windows_partition_offset: Option<u64>,
 }
 
 /// What the user asked for that the converter in the recovery environment is
@@ -52,6 +59,8 @@ pub struct Request<'a> {
     pub boot_volume: char,
     pub scratch_disk_id: String,
     pub windows_disk_id: String,
+    /// Where the Windows partition starts on its disk, in bytes.
+    pub windows_partition_offset: Option<u64>,
     pub diagnose: bool,
     pub target_format: Option<&'a str>,
     /// `--verify thorough` in either spelling: the converter in the
@@ -415,6 +424,7 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
             scratch_disk_id: request.scratch_disk_id.clone(),
             windows_disk_id: request.windows_disk_id.clone(),
             scratch_relative: prefix(&relative),
+            windows_partition_offset: request.windows_partition_offset,
         };
         let session_json = serde_json::to_vec_pretty(&session)?;
         fs::write(directory.join(SESSION_FILE), &session_json)?;
@@ -986,7 +996,7 @@ fn run_or_recover(
                 // started writing, and cancels one cut off before that
                 // (runc-cut-apply-11: cut before apply, back to NTFS). What
                 // the volume is now says which.
-                Recovered::Forward => match find_windows(&session.volume_serial)
+                Recovered::Forward => match find_windows_after_recovery(session)
                     .and_then(file_system_of)
                     .as_deref()
                 {
@@ -1098,6 +1108,57 @@ fn find_windows(serial: &str) -> Option<char> {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
     None
+}
+
+/// The Windows volume after a recovery, once its letter is there. A recovery
+/// that finished the conversion leaves a ReFS volume with a serial number of
+/// its own, which `find_windows` (by the NTFS one) never finds: the session
+/// stopped for a person after a recovery that had worked
+/// (g2d-c-cut-apply-mid). It is found by its place instead: on the Windows
+/// disk, the partition the session recorded, or, in a session without that,
+/// the one partition of the disk with a Windows on it. None when that is not
+/// exactly one volume.
+fn find_windows_after_recovery(session: &Session) -> Option<char> {
+    for _ in 0..30 {
+        if let Some(letter) = windows_by_place(session) {
+            return Some(letter);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    None
+}
+
+fn windows_by_place(session: &Session) -> Option<char> {
+    let inventory = n2r_win32::drive_inventory::inventory_drives_readonly().ok()?;
+    let disk = inventory.disks.iter().find(|disk| {
+        disk_identity(disk).is_some_and(|id| id.eq_ignore_ascii_case(&session.windows_disk_id))
+    })?;
+    let mut letters: Vec<char> = disk
+        .partitions
+        .iter()
+        .filter(|partition| {
+            session
+                .windows_partition_offset
+                .is_none_or(|offset| partition.offset_bytes == Some(offset))
+        })
+        .flat_map(|partition| partition.mount_paths.iter())
+        .filter_map(|path| drive_letter_of(path))
+        .filter(|letter| Path::new(&format!("{letter}:\\Windows\\System32\\ntoskrnl.exe")).exists())
+        .collect();
+    letters.sort_unstable();
+    letters.dedup();
+    match letters.as_slice() {
+        [letter] => Some(*letter),
+        _ => None,
+    }
+}
+
+/// The letter of a mount path that is a drive's root (`E:\`).
+fn drive_letter_of(path: &str) -> Option<char> {
+    let mut chars = path.chars();
+    let letter = chars.next().filter(char::is_ascii_alphabetic)?;
+    (chars.next() == Some(':') && matches!(chars.as_str(), "" | "\\"))
+        .then(|| letter.to_ascii_uppercase())
 }
 
 /// In the recovery environment: runs the conversion of the Windows volume

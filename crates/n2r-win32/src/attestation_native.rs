@@ -1319,6 +1319,7 @@ pub(crate) fn collect_file_metadata_with_routes(
         read_budget,
         mut stream_bytes,
         skipped,
+        helper_workspaces,
         ..
     } = taken;
     sink = returned;
@@ -1348,12 +1349,16 @@ pub(crate) fn collect_file_metadata_with_routes(
     }
     let namespace = if let Some(sink) = sink.as_deref_mut() {
         let row_limit = usize::try_from(sink.maximum_row_bytes()).map_err(io::Error::other)?;
-        crate::namespace_native::collect_rows_domain(
+        // The helpers that observed the objects list the directories
+        // ahead the same way, where their workspaces are still held.
+        crate::namespace_native::collect_rows_domain_with_helpers(
             &volume,
             request,
             selectors,
             true,
             Some(row_limit),
+            row_payer,
+            helper_workspaces,
             |row| sink.namespace(&row),
         )?;
         NamespaceData { files: Vec::new() }

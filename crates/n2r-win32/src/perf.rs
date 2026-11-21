@@ -43,6 +43,7 @@ points! {
     DeviceReadServed => "device bytes served",
     DeviceWrite => "device write",
     SourceObject => "source object observation",
+    SourceNamespace => "source namespace observation",
     ShadowObject => "shadow object observation",
     JournalScan => "journal scan",
     TargetCheck => "changed-range check",

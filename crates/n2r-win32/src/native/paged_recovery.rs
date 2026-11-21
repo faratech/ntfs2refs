@@ -337,18 +337,36 @@ fn verify_restored_digest<R: Read + Seek>(
     policy: &HeldPagedWritePolicy,
     pins: &PagedRecoveryPins<'_>,
 ) -> io::Result<()> {
+    verify_restored_digest_reaching(source, policy, pins, |_, _| ())
+}
+
+fn verify_restored_digest_reaching<R: Read + Seek>(
+    source: &mut R,
+    policy: &HeldPagedWritePolicy,
+    pins: &PagedRecoveryPins<'_>,
+    mut reach: impl FnMut(&mut R, u64),
+) -> io::Result<()> {
     let Some(expected) = pins.old_restored_selected_sha256 else {
-        return verify_selected_digest(source, policy, pins.digest, pins.old_selected_sha256);
+        if selected_digest_reaching(source, policy, pins.digest, reach)? != pins.old_selected_sha256
+        {
+            return Err(invalid("actual excluded source selected bytes differ"));
+        }
+        return Ok(());
     };
     let previous = source.stream_position()?;
     let result = (|| {
         let facts = policy.facts()?;
         let mut hash = crate::bulk_digest::Hasher::new(pins.digest)?;
         let mut buffer = vec![0; MAX_IO];
-        for ordinal in 0..u64::from(facts.range_count) {
-            let row = policy.row(ordinal)?;
+        let mut rows = super::AscendingRanges::new(u64::from(facts.range_count));
+        while let Some((row, group_end)) =
+            rows.next(|ordinal| policy.row(ordinal).map(|row| (row, row.offset, row.length)))?
+        {
             if row.flags & 3 == 2 {
                 continue;
+            }
+            if let Some(end) = group_end {
+                reach(source, end);
             }
             hash.update(&row.offset.to_le_bytes())?;
             hash.update(&row.length.to_le_bytes())?;
@@ -848,6 +866,26 @@ fn verify_paged_abort<R: Read + Seek>(
     journal: &mut File,
     pins: &PagedRecoveryPins<'_>,
 ) -> io::Result<()> {
+    verify_paged_abort_reaching(
+        source,
+        source_length,
+        binding,
+        policy,
+        journal,
+        pins,
+        |_, _| (),
+    )
+}
+
+fn verify_paged_abort_reaching<R: Read + Seek>(
+    source: &mut R,
+    source_length: u64,
+    binding: &crate::general_layout::GeneralDiskBinding,
+    policy: &HeldPagedWritePolicy,
+    journal: &mut File,
+    pins: &PagedRecoveryPins<'_>,
+    reach: impl FnMut(&mut R, u64),
+) -> io::Result<()> {
     pins.journal_binding.validate()?;
     let facts = policy.facts()?;
     if binding.disk_number == pins.journal_binding.disk.disk_number
@@ -879,9 +917,12 @@ fn verify_paged_abort<R: Read + Seek>(
     }
     verify_index_against_journal(journal, policy, pins)?;
     if abandoned {
-        verify_selected_digest(source, policy, pins.digest, pins.old_selected_sha256)?;
+        if selected_digest_reaching(source, policy, pins.digest, reach)? != pins.old_selected_sha256
+        {
+            return Err(invalid("actual excluded source selected bytes differ"));
+        }
     } else {
-        verify_restored_digest(source, policy, pins)?;
+        verify_restored_digest_reaching(source, policy, pins, reach)?;
     }
     // The restored boot identity must itself still be NTFS. It is also covered
     // by the authenticated restored-range digest when selected for writing.
@@ -946,7 +987,17 @@ impl GeneralFrozenPartition {
         }
         let binding = self.binding.clone();
         let length = self.byte_len();
-        verify_paged_abort(&mut self, length, &binding, policy, journal, pins)?;
+        self.with_read_ahead(|source| {
+            verify_paged_abort_reaching(
+                source,
+                length,
+                &binding,
+                policy,
+                journal,
+                pins,
+                GeneralFrozenPartition::set_read_ahead_reach,
+            )
+        })?;
         if self.state(events)? != before {
             return Err(invalid("rollback source changed during verification"));
         }

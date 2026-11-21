@@ -1509,7 +1509,7 @@ fn validate_readback<J: ReadSeek>(
             finish(new)? == ticket.new_selected_sha256,
             "diagnostic NEW aggregate differs"
         );
-    } else {
+    } else if !n2r_win32::verify_policy::checks_once() {
         n2r_win32::perf::step("read journal back: resolve copied ranges");
         let mut aggregate = aggregate_pin_hash(algorithm)?;
         for ordinal in 0..u64::from(f.range_count) {

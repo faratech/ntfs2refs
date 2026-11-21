@@ -778,7 +778,8 @@ impl RowsAhead {
                 .spawn(move || {
                     let _sampled = n2r_win32::stack_sampler::helper();
                     for inventory in received {
-                        let json = serde_json::to_vec(&inventory).map_err(|error| error.to_string());
+                        let json =
+                            serde_json::to_vec(&inventory).map_err(|error| error.to_string());
                         drop(inventory);
                         if finished.send(json).is_err() {
                             break;

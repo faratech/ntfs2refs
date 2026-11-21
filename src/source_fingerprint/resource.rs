@@ -1292,7 +1292,12 @@ impl PagedSourceFingerprint {
     pub fn lane_reread(
         &self,
         source: &n2r_win32::GeneralFrozenPartition,
-    ) -> Result<Option<(LaneFingerprint, crate::ntfs_inspect::paged_storage::SourceRamLease)>> {
+    ) -> Result<
+        Option<(
+            LaneFingerprint,
+            crate::ntfs_inspect::paged_storage::SourceRamLease,
+        )>,
+    > {
         use crate::parallel_digest::{Chunk, MAX_CHUNK_BYTES};
         ensure!(
             source.byte_len() == self.pins.partition_bytes,
@@ -1310,7 +1315,9 @@ impl PagedSourceFingerprint {
                 .context("fingerprint chunk count overflow")?;
         }
         let Some(bytes) = chunks
-            .checked_mul((std::mem::size_of::<Chunk>() + std::mem::size_of::<Option<Range>>()) as u64)
+            .checked_mul(
+                (std::mem::size_of::<Chunk>() + std::mem::size_of::<Option<Range>>()) as u64,
+            )
             .and_then(|n| {
                 (lanes as u64)
                     .checked_mul(

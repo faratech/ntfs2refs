@@ -219,13 +219,9 @@ fn observe_object(
 /// The memory a namespace row holds until it is taken.
 fn held_bytes(row: &NamespaceFile) -> u64 {
     let mut bytes = std::mem::size_of::<NamespaceFile>();
-    for q in [
-        &row.identity_before,
-        &row.identity_after,
-        &row.standard,
-    ]
-    .into_iter()
-    .flatten()
+    for q in [&row.identity_before, &row.identity_after, &row.standard]
+        .into_iter()
+        .flatten()
     {
         bytes = bytes.saturating_add(q.bytes.capacity());
     }
@@ -303,8 +299,8 @@ pub(crate) fn collect_rows_domain_with_helpers(
             let row_budget = budget_for(pass.budget);
             // Where the run's remaining total bounds the row, every object
             // taken before it changes it: such an object waits for its turn.
-            let ahead = !pass.workspaces.is_empty()
-                && row_limit.is_some_and(|limit| row_budget == limit);
+            let ahead =
+                !pass.workspaces.is_empty() && row_limit.is_some_and(|limit| row_budget == limit);
             Ok(Some(Gathered {
                 id,
                 row_budget,

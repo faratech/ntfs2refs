@@ -504,7 +504,11 @@ fn build_object(
             after,
             admission.budget.max_row_bytes,
         )?;
-        (case_sensitive, timestamps.stored, SecurityFacts::from(views))
+        (
+            case_sensitive,
+            timestamps.stored,
+            SecurityFacts::from(views),
+        )
     };
     ensure!(
         views.api_stable

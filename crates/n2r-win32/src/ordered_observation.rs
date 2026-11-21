@@ -557,7 +557,11 @@ mod tests {
         assert!(at(('g', 2 * batch, false)).unwrap() < at(('t', batch, false)).unwrap());
         // Only the first object of the pass is gathered as a first.
         assert_eq!(
-            state.events.iter().filter(|(kind, _, first)| *kind == 'g' && *first).count(),
+            state
+                .events
+                .iter()
+                .filter(|(kind, _, first)| *kind == 'g' && *first)
+                .count(),
             1
         );
     }

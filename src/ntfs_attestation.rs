@@ -828,8 +828,12 @@ mod remembered_descriptor_tests {
         absolute[2..4].copy_from_slice(&0x0004u16.to_le_bytes());
         let short = vec![1u8; 12];
         for _ in 0..3 {
-            for (bytes, maximum) in [(&valid, 4096), (&absolute, 4096), (&short, 4096), (&valid, 16)]
-            {
+            for (bytes, maximum) in [
+                (&valid, 4096),
+                (&absolute, 4096),
+                (&short, 4096),
+                (&valid, 16),
+            ] {
                 let parsed = ntfs_security::parse_descriptor_with_limit(bytes, maximum);
                 let checked = check_descriptor_with_limit(bytes, maximum);
                 assert_eq!(parsed.is_ok(), checked.is_ok(), "{bytes:?} at {maximum}");

@@ -731,7 +731,10 @@ pub(crate) mod byte_text {
                 native_error: None,
             };
             let numbers = serde_json::to_string(&query).unwrap();
-            assert_eq!(numbers, r#"{"class":18,"bytes":[0,1,171,255],"native_error":null}"#);
+            assert_eq!(
+                numbers,
+                r#"{"class":18,"bytes":[0,1,171,255],"native_error":null}"#
+            );
             let hex = {
                 let _scope = super::hex_rows();
                 let nested = {
@@ -742,7 +745,10 @@ pub(crate) mod byte_text {
                 assert_eq!(serde_json::to_string(&query).unwrap(), nested);
                 nested
             };
-            assert_eq!(hex, r#"{"class":18,"bytes":"0001abff","native_error":null}"#);
+            assert_eq!(
+                hex,
+                r#"{"class":18,"bytes":"0001abff","native_error":null}"#
+            );
             // Outside every scope, as before.
             assert_eq!(serde_json::to_string(&query).unwrap(), numbers);
             for text in [&numbers, &hex] {
@@ -756,8 +762,14 @@ pub(crate) mod byte_text {
             let text = serde_json::to_string(&empty).unwrap();
             assert_eq!(text, r#"{"bytes":"","native_error":5}"#);
             assert_eq!(serde_json::from_str::<SecurityQuery>(&text).unwrap(), empty);
-            assert!(serde_json::from_str::<Query>(r#"{"class":1,"bytes":"0g","native_error":null}"#).is_err());
-            assert!(serde_json::from_str::<Query>(r#"{"class":1,"bytes":[256],"native_error":null}"#).is_err());
+            assert!(
+                serde_json::from_str::<Query>(r#"{"class":1,"bytes":"0g","native_error":null}"#)
+                    .is_err()
+            );
+            assert!(
+                serde_json::from_str::<Query>(r#"{"class":1,"bytes":[256],"native_error":null}"#)
+                    .is_err()
+            );
         }
     }
 }

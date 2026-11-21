@@ -196,6 +196,38 @@ impl Record {
     }
 }
 
+/// Whether an observation walks its index against the journal's descriptors
+/// once (`JournalObservation::revalidate_index`) and not again at every
+/// reading of the lifecycle: a recovery (`verify_policy::repeat_once`), as
+/// before, and a conversion that verifies each thing once
+/// (`verify_policy::verifies_once`, which also checks once) outside the gate
+/// in front of its first write to the source. Inside that gate, and under
+/// `--verify thorough` and `--recheck-everything`, every reading walks.
+fn walks_index_once() -> bool {
+    n2r_win32::verify_policy::repeats_once() || conversion_walks_index_once()
+}
+
+fn conversion_walks_index_once() -> bool {
+    conversion_walks_index_once_given(
+        n2r_win32::verify_policy::verifies_once(),
+        n2r_win32::verify_policy::checks_once(),
+        n2r_win32::verify_policy::open_gate().is_some(),
+    )
+}
+
+/// The rule of [`conversion_walks_index_once`], apart from the switches.
+fn conversion_walks_index_once_given(verifies_once: bool, checks_once: bool, gate: bool) -> bool {
+    verifies_once && checks_once && !gate
+}
+
+/// Whether the pass that builds an observation's index, which reads every
+/// descriptor through the held journal, stands for the observation's walk
+/// (`revalidate_index`): for a conversion that walks once
+/// ([`walks_index_once`]). A recovery walks once after the build, as before.
+fn walks_index_once_after_its_build() -> bool {
+    conversion_walks_index_once()
+}
+
 /// Only read-only inspection and lifecycle classification are exposed. The
 /// actual journal owner is retained; no raw handle or ticket getter exists.
 pub(crate) struct JournalObservation<'a> {
@@ -851,7 +883,13 @@ impl<'a> JournalObservation<'a> {
             index_lease,
             format: fmt,
             index_length: bytes,
-            index_walked: false,
+            // The pass above read every descriptor, in order, through the
+            // held journal and wrote the index from them, which its owner
+            // now holds to their digest. A conversion that checks each thing
+            // once does not walk them against the index again here, nor at
+            // each reading of the lifecycle (`walks_index_once`); the index's
+            // owner is still revalidated below.
+            index_walked: walks_index_once_after_its_build(),
             _memory: memory,
         };
         result.revalidate_index()?;
@@ -934,11 +972,10 @@ impl<'a> JournalObservation<'a> {
         // lifecycle; `record` still holds each row a step uses to its
         // descriptor. Only for the markerless journal, as the journal's
         // body (`envelope::hold_journal_body`); anything else walks every
-        // time, as before.
-        if self.index_walked
-            && self.ticket.marker_profile.is_none()
-            && n2r_win32::verify_policy::repeats_once()
-        {
+        // time, as before. A conversion that verifies each thing once makes
+        // it once for each observation as well, outside the gate in front
+        // of its first write to the source (`walks_index_once`).
+        if self.index_walked && self.ticket.marker_profile.is_none() && walks_index_once() {
             return Ok(());
         }
         let mut previous_end = 0u64;
@@ -1157,5 +1194,27 @@ impl<'a> BoundJournalObservation<'a> {
                 marker_native_qualified: None,
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_conversion_walks_its_index_once_only_outside_the_gate_and_when_it_verifies_once() {
+        assert!(conversion_walks_index_once_given(true, true, false));
+        assert!(
+            !conversion_walks_index_once_given(true, true, true),
+            "inside the gate every reading walks"
+        );
+        assert!(
+            !conversion_walks_index_once_given(false, true, false),
+            "--verify thorough walks at every reading"
+        );
+        assert!(
+            !conversion_walks_index_once_given(false, false, false),
+            "--recheck-everything walks at every reading"
+        );
     }
 }

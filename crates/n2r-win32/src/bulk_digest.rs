@@ -495,12 +495,26 @@ pub fn journal_body(
     length: u64,
     expected: &[u8; 32],
 ) -> io::Result<[u8; 32]> {
+    journal_body_reading(algorithm, reader, offset, length, expected).map(|(digest, _)| digest)
+}
+
+/// [`journal_body`], and whether the body was read in full this time:
+/// `false` where the read was left out and `expected` returned. A check of
+/// the journal's descriptors that follows the hash, which lie in the body,
+/// is left out on the same ground (see `paged_recovery`).
+pub fn journal_body_reading(
+    algorithm: Algorithm,
+    reader: &mut (impl Read + Seek),
+    offset: u64,
+    length: u64,
+    expected: &[u8; 32],
+) -> io::Result<([u8; 32], bool)> {
     if journal_body_already_verified(algorithm, expected, offset, length) {
-        return Ok(*expected);
+        return Ok((*expected, false));
     }
     let actual = hash_range(algorithm, reader, offset, length)?;
     if actual == *expected {
         note_journal_body_verified(algorithm, expected, offset, length);
     }
-    Ok(actual)
+    Ok((actual, true))
 }

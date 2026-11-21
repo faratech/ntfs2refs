@@ -636,6 +636,37 @@ fn verify_index_against_journal(
     policy.revalidate()
 }
 
+/// The walk of the held index against the journal's descriptors, made again
+/// right after the journal's body was hashed again (`body_read` says whether
+/// that hash read the body or left it out, `bulk_digest::journal_body_reading`).
+///
+/// The descriptors lie in the body. Where the body's read was left out,
+/// because it matched in this process and the route checks once
+/// (`bulk_digest::journal_body_already_verified`), a run that verifies each
+/// thing once (`verify_policy::verifies_once`) leaves out walking its
+/// descriptors again on the same ground: the walk reads the same bytes of
+/// the same held journal and holds them to the same held index, both
+/// unchanged. The index's own owner is still revalidated (its identity,
+/// timestamp and digest). `--verify thorough`, `--recheck-everything` and
+/// every recovery walk as before.
+fn verify_index_against_journal_again(
+    file: &mut File,
+    policy: &HeldPagedWritePolicy,
+    pins: &PagedRecoveryPins<'_>,
+    body_read: bool,
+) -> io::Result<()> {
+    if descriptors_walked_again(body_read, crate::verify_policy::verifies_once()) {
+        verify_index_against_journal(file, policy, pins)
+    } else {
+        policy.revalidate()
+    }
+}
+
+/// The rule of [`verify_index_against_journal_again`], apart from the switch.
+fn descriptors_walked_again(body_read: bool, verifies_once: bool) -> bool {
+    body_read || !verifies_once
+}
+
 type VerifiedNewBytes = ([u8; 32], [u8; 32]);
 static NEW_BYTES_VERIFIED: std::sync::Mutex<Vec<VerifiedNewBytes>> =
     std::sync::Mutex::new(Vec::new());
@@ -806,20 +837,20 @@ fn verify_paged_new_bytes<R: Read + Seek>(
     let before = verify_journal_owner(journal, pins, facts.journal_length)?;
     let modified = journal.metadata()?.modified()?;
     state.check(journal, pins)?;
-    if crate::bulk_digest::journal_body(
+    let (body, body_read) = crate::bulk_digest::journal_body_reading(
         pins.digest,
         journal,
         BODY,
         facts.journal_length - BODY,
         &pins.immutable_sha256,
-    )? != pins.immutable_sha256
-    {
+    )?;
+    if body != pins.immutable_sha256 {
         return Err(state.say(
             "handoff journal immutable body differs",
             "before the handoff: the journal immutable body differs",
         ));
     }
-    verify_index_against_journal(journal, policy, pins)?;
+    verify_index_against_journal_again(journal, policy, pins, body_read)?;
     let checked_now = !selected_new_bytes_already_verified(pins);
     if checked_now {
         verify_selected_digest(source, policy, pins.digest, pins.new_selected_sha256)?;
@@ -827,20 +858,20 @@ fn verify_paged_new_bytes<R: Read + Seek>(
     }
     state.check(journal, pins)?;
     if checked_now {
-        if crate::bulk_digest::journal_body(
+        let (body, body_read) = crate::bulk_digest::journal_body_reading(
             pins.digest,
             journal,
             BODY,
             facts.journal_length - BODY,
             &pins.immutable_sha256,
-        )? != pins.immutable_sha256
-        {
+        )?;
+        if body != pins.immutable_sha256 {
             return Err(state.say(
                 "handoff journal changed during selected-byte verification",
                 "before the handoff: the journal changed during selected-byte verification",
             ));
         }
-        verify_index_against_journal(journal, policy, pins)?;
+        verify_index_against_journal_again(journal, policy, pins, body_read)?;
         state.check(journal, pins)?;
     }
     let after = verify_journal_owner(journal, pins, facts.journal_length)?;
@@ -1774,20 +1805,23 @@ impl GeneralFrozenPartition {
         }
         check_clear_lifecycle(journal)?;
         // Ordinary sharing excludes new file writers, not privileged raw
-        // aliases. Preserve a complete closing body hash before publishing AP.
-        if crate::bulk_digest::journal_body(
+        // aliases. Preserve a complete closing body hash before publishing AP
+        // (left out under check-once, where the body matched in this gate a
+        // moment ago, and with it the second walk of its descriptors under
+        // `--verify fast`).
+        let (closing, body_read) = crate::bulk_digest::journal_body_reading(
             pins.digest,
             journal,
             BODY,
             facts.journal_length - BODY,
             &pins.immutable_sha256,
-        )? != pins.immutable_sha256
-        {
+        )?;
+        if closing != pins.immutable_sha256 {
             return Err(invalid(
                 "fresh held journal changed during OLD verification",
             ));
         }
-        verify_index_against_journal(journal, &policy, pins)?;
+        verify_index_against_journal_again(journal, &policy, pins, body_read)?;
         check_clear_lifecycle(journal)?;
         let journal_after = verify_journal_owner(journal, pins, facts.journal_length)?;
         if journal_before.identity != journal_after.identity
@@ -2317,6 +2351,18 @@ mod review_gate_tests {
                 );
             });
         }
+    }
+
+    #[test]
+    fn descriptors_are_walked_again_unless_the_body_read_was_left_out_of_a_fast_run() {
+        // A body read in full is followed by its walk, whatever the run.
+        assert!(descriptors_walked_again(true, true));
+        assert!(descriptors_walked_again(true, false));
+        // `--verify thorough`, `--recheck-everything` and a recovery walk
+        // again even where the body's read was left out.
+        assert!(descriptors_walked_again(false, false));
+        // Only a run that verifies once leaves the walk out, beside the read.
+        assert!(!descriptors_walked_again(false, true));
     }
 
     #[test]

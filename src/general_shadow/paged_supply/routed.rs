@@ -511,6 +511,15 @@ impl<'a> StreamsAtOnce<'a> {
 
     /// What a helper saw of the stream the pass comes to now, if a batch
     /// took it. Called once for every supplied stream, in order.
+    ///
+    /// A batch begins with the stream the pass comes to now, once every
+    /// entry of the one before has been taken. Every call moves `taken` on
+    /// by one, entry or not: where the batch could not take even its first
+    /// stream it is empty, that stream is taken by itself (`None`), and the
+    /// next call begins a batch with the stream after it. So no stream is
+    /// handed over more than twice (behind others, then first), and each is
+    /// observed once: by a helper where it has an entry, and otherwise by
+    /// the pass.
     fn next(&mut self, template: &PrivateTree, row_window: u64) -> Option<SupplyStreamSeen> {
         if self.taken >= self.requests.len() {
             return None;

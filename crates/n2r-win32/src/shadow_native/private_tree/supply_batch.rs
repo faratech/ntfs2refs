@@ -29,12 +29,22 @@
 //! it, and no longer around its own work on that stream. That work does not
 //! touch the shadow.
 //!
+//! Every workspace of a batch, its first stream's included, is memory for
+//! doing more at once (`reserve_spare`), which the ledger grants only while
+//! room stays for what the pass cannot do without. A stream a helper
+//! observes holds its workspaces together until the pass has taken it, more
+//! than the same stream taken by itself holds at once; paid from spare
+//! memory, that never leaves short a reservation that one stream at a time
+//! would have been granted.
+//!
 //! A stream that cannot be made ready (a workspace refused, or anything its
 //! own checks would report) ends the batch before it. The caller hands it
-//! over again as the first of its next batch, whose reservations are made as
-//! those of a stream taken by itself are; if it cannot be made ready then
-//! either, the caller takes it by itself, on the path that reports. A stage
-//! a helper did not come to is made by the calling thread.
+//! over again as the first of its next batch, once the streams before it
+//! have returned what was reserved for them; if it cannot be made ready
+//! then either, the batch is empty and the caller takes the stream by
+//! itself, under its own reservations and on the path that reports, and
+//! hands over the stream after it next. A stage a helper did not come to is
+//! made by the calling thread.
 use super::*;
 use crate::shadow_native::report_memory::{ReportMemoryAccountant, ReportMemoryLease};
 use std::collections::VecDeque;
@@ -161,26 +171,17 @@ pub(super) fn payer(tree: &PrivateTree) -> Option<Arc<dyn ReportMemoryAccountant
 /// Everything the calling thread does for one stream before a helper
 /// observes it. Any failure ends the batch before this stream: nothing is
 /// reported from here.
+///
+/// Every workspace is reserved as spare memory, the first stream's too;
+/// where the ledger refuses one, the stream is taken by itself.
 fn prepare<'tree>(
     tree: &'tree PrivateTree,
     payer: &dyn ReportMemoryAccountant,
     request: &SupplyStreamRequest<'_>,
     maximum_range_bytes: u64,
     closing: bool,
-    first: bool,
     wants_route: impl FnOnce(&[(SupplyKind, SupplyRange)]) -> Option<u64>,
 ) -> io::Result<Ready<'tree>> {
-    // The first stream of a batch is paid for as a stream taken by itself
-    // is; every further one is memory for doing more at once, which the
-    // ledger grants only while room stays for what the pass cannot do
-    // without.
-    let pay = |bytes: u64| {
-        if first {
-            payer.reserve(bytes)
-        } else {
-            payer.reserve_spare(bytes)
-        }
-    };
     // The fence every observation of a stream begins with: made at
     // intervals, here as there, and never left to a helper.
     tree.require_source_excluded()?;
@@ -192,13 +193,13 @@ fn prepare<'tree>(
     let primary = tree.files.get(&key);
     let sparse = tree.sparse_targets.get(&key);
     // The two reservations of the stream's snapshot, in its order.
-    let snapshot_memory = pay(add(
+    let snapshot_memory = payer.reserve_spare(add(
         supply::batch_workspace_bytes(tree, index, name)?,
         1024 * 1024,
     )?)?;
     let maximum = supply_snapshot::range_window(&admission, maximum_range_bytes)?;
     let (maximum_ranges, range_memory) = supply_snapshot::range_bound(tree, &key, name, maximum)?;
-    let ranges_memory = pay(range_memory)?;
+    let ranges_memory = payer.reserve_spare(range_memory)?;
     // Whether the pass observes the stream's prefix follows from its
     // ranges, so they are derived here once, for that question alone.
     let route = {
@@ -237,7 +238,7 @@ fn prepare<'tree>(
         // What an observation of the prefix keeps is held until the caller
         // takes the stream, so each has a workspace of its own.
         for _ in 0..1 + usize::from(closing) {
-            route_work.push(pay(plan.observation_bytes()?)?);
+            route_work.push(payer.reserve_spare(plan.observation_bytes()?)?);
         }
     }
     Ok(Ready {
@@ -248,7 +249,7 @@ fn prepare<'tree>(
         snapshot_memory,
         ranges_memory,
         route_work,
-        memory: pay(held)?,
+        memory: payer.reserve_spare(held)?,
     })
 }
 
@@ -318,7 +319,6 @@ pub(super) fn observe(
             request,
             maximum_range_bytes,
             closing,
-            ready.is_empty(),
             |ranges| wants_route(slot, ranges),
         ) {
             Ok(stream) => ready.push(stream),

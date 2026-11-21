@@ -2379,6 +2379,7 @@ impl PagedExpectedTree {
                 .get(index)
                 .and_then(Option::as_deref)
         {
+            self.decoded.1.set(n2r_win32::evict::now());
             return Ok(object.clone());
         }
         let object = self.decode_object_from_pages(index)?;

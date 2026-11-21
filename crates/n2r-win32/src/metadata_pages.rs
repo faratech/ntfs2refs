@@ -928,7 +928,7 @@ struct ResidentPage {
 /// freed before the payment is returned.
 struct ResidentPages {
     pages: Vec<ResidentPage>,
-    _paid: Option<Box<dyn std::any::Any>>,
+    _paid: Option<Box<dyn std::any::Any + Send>>,
 }
 
 thread_local! {
@@ -1209,10 +1209,16 @@ impl Reader {
     /// for the pages. They are a cache: when the run's memory is short they
     /// are given up, `paid` with them ([`crate::evict`]), and the reader
     /// reads from its file again.
-    pub fn install_resident_pages_paid(&mut self, paid: Box<dyn std::any::Any>) -> io::Result<()> {
+    pub fn install_resident_pages_paid(
+        &mut self,
+        paid: Box<dyn std::any::Any + Send>,
+    ) -> io::Result<()> {
         self.install_resident(Some(paid))
     }
-    fn install_resident(&mut self, paid: Option<Box<dyn std::any::Any>>) -> io::Result<()> {
+    fn install_resident(
+        &mut self,
+        paid: Option<Box<dyn std::any::Any + Send>>,
+    ) -> io::Result<()> {
         require(
             !self.pages_resident(),
             "metadata pages are already resident",

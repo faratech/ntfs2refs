@@ -163,7 +163,7 @@ impl n2r_win32::evict::CachePayer for ArenaCachePayer {
     fn limit(&self) -> Option<u64> {
         self.0.upgrade().map(|inner| inner.budget.ram_bytes)
     }
-    fn pay(&self, bytes: u64) -> Option<Box<dyn std::any::Any>> {
+    fn pay(&self, bytes: u64) -> Option<Box<dyn std::any::Any + Send>> {
         let arena = ArtifactArena(self.0.upgrade()?);
         let lease = arena.reserve_cache_ram(bytes).ok()?;
         Some(Box::new(lease))

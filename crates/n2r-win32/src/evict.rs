@@ -108,13 +108,13 @@ pub trait CachePayer {
     fn limit(&self) -> Option<u64>;
     /// A reservation for a cache of `bytes`, or `None` when the ledger has
     /// no room for a cache.
-    fn pay(&self, bytes: u64) -> Option<Box<dyn std::any::Any>>;
+    fn pay(&self, bytes: u64) -> Option<Box<dyn std::any::Any + Send>>;
 }
 
 /// What [`pay_for_cache`] found.
 pub enum CachePayment {
     /// Reserved: the cache holds this for as long as it lives.
-    Paid(Box<dyn std::any::Any>),
+    Paid(Box<dyn std::any::Any + Send>),
     /// The thread's ledger has no room for a cache.
     Refused,
     /// The thread has no ledger (a tool, a test).
@@ -344,10 +344,10 @@ mod tests {
             fn limit(&self) -> Option<u64> {
                 self.limit.get()
             }
-            fn pay(&self, bytes: u64) -> Option<Box<dyn std::any::Any>> {
+            fn pay(&self, bytes: u64) -> Option<Box<dyn std::any::Any + Send>> {
                 (bytes <= self.limit.get()?).then(|| {
                     self.paid.set(self.paid.get() + bytes);
-                    Box::new(bytes) as Box<dyn std::any::Any>
+                    Box::new(bytes) as Box<dyn std::any::Any + Send>
                 })
             }
         }

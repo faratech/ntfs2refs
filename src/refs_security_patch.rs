@@ -907,6 +907,9 @@ fn plan_profile<R: Read + Seek>(
         for page in &tree.pages {
             protected.extend(page.lcn_slots);
         }
+        if let Some(compact) = &tree.compact {
+            protected.extend(compact.page_lcns.iter().copied());
+        }
     }
     let virtual_roots = bootstrap
         .virtual_roots

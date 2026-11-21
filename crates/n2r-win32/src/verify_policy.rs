@@ -164,18 +164,22 @@ pub fn repeats_once_as_verified() -> bool {
 }
 
 /// The full verification that precedes the first write to the source. While
-/// one is alive, every full check runs for real, once.
-pub struct Gate(u64);
+/// one is alive, every full check runs for real, once. Nested gates restore
+/// the enclosing gate on drop so an inner gate never disables an outer gate.
+pub struct Gate {
+    id: u64,
+    previous: u64,
+}
 impl Gate {
     pub fn enter() -> Self {
         let id = NEXT_GATE.fetch_add(1, SeqCst);
-        GATE.store(id, SeqCst);
-        Self(id)
+        let previous = GATE.swap(id, SeqCst);
+        Self { id, previous }
     }
 }
 impl Drop for Gate {
     fn drop(&mut self) {
-        let _ = GATE.compare_exchange(self.0, 0, SeqCst, SeqCst);
+        let _ = GATE.compare_exchange(self.id, self.previous, SeqCst, SeqCst);
     }
 }
 
@@ -320,7 +324,12 @@ mod tests {
     #[test]
     fn a_gate_ends_when_it_is_dropped() {
         let first = Gate::enter();
-        let id = first.0;
+        let id = first.id;
+        assert_eq!(GATE.load(SeqCst), id);
+        let inner = Gate::enter();
+        let inner_id = inner.id;
+        assert_eq!(GATE.load(SeqCst), inner_id);
+        drop(inner);
         assert_eq!(GATE.load(SeqCst), id);
         drop(first);
         assert_ne!(GATE.load(SeqCst), id);

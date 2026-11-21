@@ -1502,7 +1502,7 @@ impl PagedMetadataRange {
             return Ok(());
         };
         cache.bytes.resize(cache.bytes.capacity(), 0);
-        self.read_through_pages(0, &mut cache.bytes)?;
+        self.read_through_pages_with(0, &mut cache.bytes, false)?;
         self.decodes.set(0);
         // The whole store is held: its chunks are not needed beside it.
         self.decoded.borrow_mut().kept.clear();
@@ -1642,7 +1642,15 @@ impl PagedMetadataRange {
         }
     }
     /// Reads from the store's pages, decoding the chunks the range lies in.
-    fn read_through_pages(&self, offset: u64, mut output: &mut [u8]) -> Result<()> {
+    fn read_through_pages(&self, offset: u64, output: &mut [u8]) -> Result<()> {
+        self.read_through_pages_with(offset, output, true)
+    }
+    fn read_through_pages_with(
+        &self,
+        offset: u64,
+        mut output: &mut [u8],
+        keep_chunks: bool,
+    ) -> Result<()> {
         let mut at = offset;
         while !output.is_empty() {
             let ordinal = at / u64::from(self.pin.chunk_bytes);
@@ -1700,7 +1708,9 @@ impl PagedMetadataRange {
                 );
                 self.decoded.borrow_mut().recent = Some((ordinal, chunk));
                 self.decodes.set(self.decodes.get().saturating_add(1));
-                self.keep_decoded(ordinal);
+                if keep_chunks {
+                    self.keep_decoded(ordinal);
+                }
             }
             let cached = self.decoded.borrow();
             let chunk = &cached

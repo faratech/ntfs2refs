@@ -39,6 +39,8 @@ pub struct CompactTreeIndex {
     #[serde(skip)]
     addresses: Vec<CompactAddress>,
     #[serde(skip)]
+    pub(crate) page_lcns: Vec<u64>,
+    #[serde(skip)]
     binding: Option<CompactBinding>,
 }
 

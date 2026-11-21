@@ -387,10 +387,9 @@ impl RowDigests {
     fn settle(&mut self) -> Result<()> {
         self.owed_bytes = 0;
         while let Some((digest, expected)) = self.owed.pop_front() {
-            ensure!(
-                self.records.settle(digest, &mut self.zeros)? == expected,
-                "selected journal payload digest differs"
-            );
+            if self.records.settle(digest, &mut self.zeros)? != expected {
+                return Err(PayloadDigestDiffers.into());
+            }
         }
         Ok(())
     }
@@ -401,6 +400,20 @@ impl RowDigests {
         self.records.finish()
     }
 }
+
+/// A payload of the journal whose bytes do not have the digest its row's
+/// descriptor gives for them: the refusal of a damaged journal, told apart
+/// from a digest that could not be computed.
+#[derive(Debug)]
+struct PayloadDigestDiffers;
+
+impl std::fmt::Display for PayloadDigestDiffers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("selected journal payload digest differs")
+    }
+}
+
+impl std::error::Error for PayloadDigestDiffers {}
 
 /// One side of a row, OLD or NEW: its `length` bytes, which follow in the
 /// journal where they are `stored` and are zero where they are not, hashed
@@ -717,7 +730,17 @@ impl<'a> JournalObservation<'a> {
         // Whatever stopped the pass over the rows came after every payload
         // whose digest is still owed, and each of those used to be held to
         // its digest as soon as it was read: they are first now as well.
-        row_digests.settle()?;
+        // Where the owed digests cannot be had at all (the worker that
+        // computed them stopped, and with it the digests it had sent), that
+        // says nothing of the payloads, and what stopped the pass is the
+        // error to report: a payload found to differ on this thread, or the
+        // worker's own failure.
+        if let Err(settled) = row_digests.settle() {
+            if settled.downcast_ref::<PayloadDigestDiffers>().is_none() {
+                rows?;
+            }
+            return Err(settled);
+        }
         rows?;
         row_digests.finish()?;
         let mut footer = [0u8; FOOTER];

@@ -1665,6 +1665,25 @@ pub fn rediscover_general_volume(
     binding: GeneralDiskBinding,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<GeneralDiskBinding> {
+    rediscover_general_volume_on(binding, events, false)
+}
+
+/// What [`rediscover_general_volume`] does, for a disk that is online and
+/// may be read-only: a run stopped for review (`--review`) puts the
+/// converted volume online read-only and then has to find it. A disk that
+/// is offline, or has any attribute besides read-only, is still refused.
+pub fn rediscover_general_volume_read_only(
+    binding: GeneralDiskBinding,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<GeneralDiskBinding> {
+    rediscover_general_volume_on(binding, events, true)
+}
+
+fn rediscover_general_volume_on(
+    binding: GeneralDiskBinding,
+    events: &mut Vec<NativeEvent>,
+    read_only_allowed: bool,
+) -> io::Result<GeneralDiskBinding> {
     binding.validate()?;
     if current_windows_disk(events)? == binding.disk_number {
         return Err(invalid("current Windows disk is excluded"));
@@ -1674,10 +1693,13 @@ pub fn rediscover_general_volume(
         false,
         false,
     )?;
-    if general_disk_state(&disk, &binding, events)?.disk_attributes != 0 {
-        return Err(invalid(
-            "general volume rediscovery requires online writable disk",
-        ));
+    let allowed = if read_only_allowed { READ_ONLY } else { 0 };
+    if general_disk_state(&disk, &binding, events)?.disk_attributes & !allowed != 0 {
+        return Err(invalid(if read_only_allowed {
+            "general volume rediscovery for review requires an online disk (read-only or writable)"
+        } else {
+            "general volume rediscovery requires online writable disk"
+        }));
     }
     let mut buffer = [0u16; 1024];
     // SAFETY: initialized writable UTF-16 buffer of the declared length.
@@ -1794,6 +1816,23 @@ pub fn rediscover_general_volume_wait(
     binding: GeneralDiskBinding,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<GeneralDiskBinding> {
+    rediscover_general_volume_wait_on(binding, events, false)
+}
+
+/// [`rediscover_general_volume_wait`] for a disk that is online read-only
+/// (see [`rediscover_general_volume_read_only`]).
+pub fn rediscover_general_volume_wait_read_only(
+    binding: GeneralDiskBinding,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<GeneralDiskBinding> {
+    rediscover_general_volume_wait_on(binding, events, true)
+}
+
+fn rediscover_general_volume_wait_on(
+    binding: GeneralDiskBinding,
+    events: &mut Vec<NativeEvent>,
+    read_only_allowed: bool,
+) -> io::Result<GeneralDiskBinding> {
     let _timed = crate::perf::scope(crate::perf::Point::VolumeWait);
     let mut wait = PublicationWait::begin();
     loop {
@@ -1803,7 +1842,7 @@ pub fn rediscover_general_volume_wait(
         // batch on a machine with many volumes, and a full batch refuses
         // every further query, so that no later try could find anything.
         let mut tried = Vec::new();
-        match rediscover_general_volume(binding.clone(), &mut tried) {
+        match rediscover_general_volume_on(binding.clone(), &mut tried, read_only_allowed) {
             Ok(found) => {
                 events.append(&mut tried);
                 return Ok(found);

@@ -164,8 +164,9 @@ pub use native::{
     capture_mount_paths_general, current_windows_directory, examine_shared_disk,
     mounted_filesystem_general, note_selected_new_bytes_verified,
     observe_general_disk_state_readonly, probe_general, rediscover_general_volume,
-    rediscover_general_volume_wait, restore_drive_letter_general, restore_drive_letter_general_on,
-    selected_new_bytes_verified, write_out_volume_cache,
+    rediscover_general_volume_read_only, rediscover_general_volume_wait,
+    rediscover_general_volume_wait_read_only, restore_drive_letter_general,
+    restore_drive_letter_general_on, selected_new_bytes_verified, write_out_volume_cache,
 };
 #[cfg(windows)]
 pub use native::{

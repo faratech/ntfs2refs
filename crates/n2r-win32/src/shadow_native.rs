@@ -1751,29 +1751,33 @@ fn metadata_snapshot(file: &File, input: &Input<'_>) -> Snapshot {
 }
 fn metadata_snapshot_with_limit(file: &File, input: &Input<'_>, maximum: Option<u64>) -> Snapshot {
     if let Some(maximum) = maximum {
-        let mut observed = crate::attestation_native::source_snapshot_paged(
+        // The extended attributes are asked for only where the object has
+        // some to compare, and the reparse point where it has one or has
+        // extended attributes (as `metadata_snapshot` does): what was asked
+        // for and then set aside is no longer asked for at all.
+        let observed = crate::attestation_native::source_snapshot_paged_scoped(
             file,
             false,
             usize::try_from(maximum).unwrap_or(usize::MAX),
+            input.extended_attributes.is_some(),
+            input.extended_attributes.is_some() || input.reparse.is_some(),
         );
-        if input.extended_attributes.is_none() {
-            observed.extended_attributes = None;
-            observed.extended_attributes_error = None;
-        }
-        if input.extended_attributes.is_none() && input.reparse.is_none() {
-            observed.reparse = None;
-        }
         with_directory_case(file, input, observed)
     } else {
         metadata_snapshot(file, input)
     }
 }
+/// An object's metadata as its security is checked: only its security views
+/// are read from it, so its extended attributes and reparse point are not
+/// asked for.
 fn security_snapshot_with_limit(file: &File, maximum: Option<u64>) -> Snapshot {
     if let Some(maximum) = maximum {
-        crate::attestation_native::source_snapshot_paged(
+        crate::attestation_native::source_snapshot_paged_scoped(
             file,
             false,
             usize::try_from(maximum).unwrap_or(usize::MAX),
+            false,
+            false,
         )
     } else {
         snapshot(file)
@@ -1787,7 +1791,13 @@ fn repeat_snapshot(file: &File, previous: &Snapshot) -> Snapshot {
             .map_or(0, |q| q.bytes.len()),
     );
     let mut observation = if maximum > crate::attestation::MAX_SECURITY_BYTES {
-        crate::attestation_native::source_snapshot_paged(file, false, maximum)
+        crate::attestation_native::source_snapshot_paged_scoped(
+            file,
+            false,
+            maximum,
+            previous.extended_attributes.is_some() || previous.extended_attributes_error.is_some(),
+            previous.reparse.is_some(),
+        )
     } else if previous.extended_attributes.is_some()
         || previous.extended_attributes_error.is_some()
         || previous.reparse.is_some()

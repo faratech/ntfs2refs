@@ -320,11 +320,62 @@ fn source_snapshot(file: &File, require_case: bool) -> Snapshot {
 /// length. Its explicit row budget replaces the old fixed output buffer; both
 /// independent security APIs still run on the same held metadata handle.
 pub(crate) fn source_snapshot_paged(file: &File, require_case: bool, maximum: usize) -> Snapshot {
+    source_snapshot_paged_scoped(file, require_case, maximum, true, true)
+}
+
+/// [`source_snapshot_paged`] that asks Windows for the extended attributes
+/// and the reparse point only where the caller keeps them. A caller that set
+/// them aside after every snapshot (the security checks, a link's metadata)
+/// made two or three calls an object for nothing. What is not asked for is
+/// left `None`, exactly as such a caller left it; what is asked for is
+/// observed as before.
+pub(crate) fn source_snapshot_paged_scoped(
+    file: &File,
+    require_case: bool,
+    maximum: usize,
+    extended_attributes: bool,
+    reparse: bool,
+) -> Snapshot {
     let queries = [(0, 40), (1, 24), (18, 24), (9, 8)]
         .into_iter()
         .map(|(class, bytes)| query(file, class, bytes))
         .collect();
     let (security, security_error) = security_with_limit(file, maximum);
+    let kernel_security = Some(kernel_security_paged(file, maximum));
+    let mut snapshot = Snapshot {
+        queries,
+        security,
+        security_error,
+        kernel_security,
+        extended_attributes: None,
+        extended_attributes_error: None,
+        reparse: None,
+        directory_case_sensitivity: None,
+    };
+    if extended_attributes {
+        match crate::extended_attributes_native::capture(file) {
+            Ok(set) => snapshot.extended_attributes = Some(set),
+            Err(error) => snapshot.extended_attributes_error = Some(error.to_string()),
+        }
+    }
+    if reparse {
+        snapshot.reparse = Some(match crate::reparse_native::capture(file) {
+            Ok(point) => ReparseObservation { point, error: None },
+            Err(error) => ReparseObservation {
+                point: None,
+                error: Some(error.to_string()),
+            },
+        });
+    }
+    if require_case {
+        snapshot.directory_case_sensitivity = source_directory_case(file, &snapshot.queries);
+    }
+    snapshot
+}
+
+/// The kernel's view of an object's descriptor, asked for with the row's
+/// bound: a failed query keeps Windows' error.
+fn kernel_security_paged(file: &File, maximum: usize) -> SecurityQuery {
     let kernel = (|| -> io::Result<Vec<u8>> {
         thread_local! {
             static PAGED_STORAGE: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -398,7 +449,7 @@ pub(crate) fn source_snapshot_paged(file: &File, require_case: bool, maximum: us
                 .to_vec(),
         )
     })();
-    let kernel_security = Some(match kernel {
+    match kernel {
         Ok(bytes) => SecurityQuery {
             bytes,
             native_error: None,
@@ -407,32 +458,7 @@ pub(crate) fn source_snapshot_paged(file: &File, require_case: bool, maximum: us
             bytes: Vec::new(),
             native_error: Some(error.raw_os_error().unwrap_or(13)),
         },
-    });
-    let mut snapshot = Snapshot {
-        queries,
-        security,
-        security_error,
-        kernel_security,
-        extended_attributes: None,
-        extended_attributes_error: None,
-        reparse: None,
-        directory_case_sensitivity: None,
-    };
-    match crate::extended_attributes_native::capture(file) {
-        Ok(set) => snapshot.extended_attributes = Some(set),
-        Err(error) => snapshot.extended_attributes_error = Some(error.to_string()),
     }
-    snapshot.reparse = Some(match crate::reparse_native::capture(file) {
-        Ok(point) => ReparseObservation { point, error: None },
-        Err(error) => ReparseObservation {
-            point: None,
-            error: Some(error.to_string()),
-        },
-    });
-    if require_case {
-        snapshot.directory_case_sensitivity = source_directory_case(file, &snapshot.queries);
-    }
-    snapshot
 }
 
 fn case_only_snapshot(file: &File) -> DirectoryCaseSnapshot {

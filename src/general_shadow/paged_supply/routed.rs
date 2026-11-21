@@ -1086,70 +1086,82 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
                     {
                         bytes.offer_read_ahead(place, read);
                     }
-                    let id = identity(object, stream);
-                    let mut observed =
-                        leased_ranges(bytes, template, index, object, stream, row_window, None)?;
-                    let decision =
-                        route_decision(template, index, object, stream, &observed.ranges, None)?;
-                    drop(observed.native_ram.take());
-                    let summary = &observed.summary;
-                    let ranges = &observed.ranges;
-                    let prefix = decision.as_ref().map(|(prefix, _)| *prefix);
-                    for (kind, range) in ranges {
-                        pieces(stream, *kind, range, prefix, |piece, offset, length| {
-                            if !matches!(piece, Piece::Materialize) {
-                                return Ok(());
-                            }
-                            let mut done = 0u64;
-                            while done < length {
-                                let n = usize::try_from((length - done).min(WINDOW as u64))?;
-                                let next_written = written
-                                    .checked_add(n as u64)
-                                    .context("routed materialization total overflow")?;
-                                ensure!(
-                                    next_written <= plan.materialized
-                                        && next_written <= maximum_materialized_bytes,
-                                    "routed materialization changed or exceeds its preflight budget"
-                                );
-                                let at = offset
-                                    .checked_add(done)
-                                    .context("routed materialization offset overflow")?;
-                                // The window is written from this very buffer and
-                                // read back and compared with it byte for byte.
-                                // Neither side keeps a record of the window: the
-                                // SHA-256 of the source read and that of the
-                                // bytes written were both taken of this buffer
-                                // and compared with each other, which could not
-                                // differ. They are no longer computed.
-                                bytes.read_range_checked(&id, at, &mut buffer[..n])?;
-                                // Sparse materialization can return an island/parts
-                                // receipt; retain the original complete-row allowance
-                                // only while that native proof is built and consumed.
-                                let _sparse_proof_ram = if stream.sparse.is_some() {
-                                    Some(bytes.lease_working_ram(admission.budget.max_row_bytes)?)
-                                } else {
-                                    None
-                                };
-                                let write = template.materialize_range_named_unhashed(
-                                    index,
-                                    stream.name_utf16,
-                                    &object.path,
-                                    stream.length,
-                                    at,
-                                    &buffer[..n],
-                                )?;
-                                ensure!(
-                                    write["readback_verified"] == true,
-                                    "routed remaining materialization readback differs"
-                                );
-                                bytes.validate_protection()?;
-                                written = next_written;
-                                done += n as u64;
-                            }
-                            Ok(())
-                        })?;
-                    }
+                    // What was offered is withdrawn once the stream's windows
+                    // are done, whether or not they were materialized.
+                    let materialized = (|| -> Result<LeasedRanges> {
+                        let id = identity(object, stream);
+                        let mut observed = leased_ranges(
+                            bytes, template, index, object, stream, row_window, None,
+                        )?;
+                        let decision = route_decision(
+                            template,
+                            index,
+                            object,
+                            stream,
+                            &observed.ranges,
+                            None,
+                        )?;
+                        drop(observed.native_ram.take());
+                        let prefix = decision.as_ref().map(|(prefix, _)| *prefix);
+                        for (kind, range) in &observed.ranges {
+                            pieces(stream, *kind, range, prefix, |piece, offset, length| {
+                                if !matches!(piece, Piece::Materialize) {
+                                    return Ok(());
+                                }
+                                let mut done = 0u64;
+                                while done < length {
+                                    let n = usize::try_from((length - done).min(WINDOW as u64))?;
+                                    let next_written = written
+                                        .checked_add(n as u64)
+                                        .context("routed materialization total overflow")?;
+                                    ensure!(
+                                        next_written <= plan.materialized
+                                            && next_written <= maximum_materialized_bytes,
+                                        "routed materialization changed or exceeds its preflight budget"
+                                    );
+                                    let at = offset
+                                        .checked_add(done)
+                                        .context("routed materialization offset overflow")?;
+                                    // The window is written from this very buffer and
+                                    // read back and compared with it byte for byte.
+                                    // Neither side keeps a record of the window: the
+                                    // SHA-256 of the source read and that of the
+                                    // bytes written were both taken of this buffer
+                                    // and compared with each other, which could not
+                                    // differ. They are no longer computed.
+                                    bytes.read_range_checked(&id, at, &mut buffer[..n])?;
+                                    // Sparse materialization can return an island/parts
+                                    // receipt; retain the original complete-row allowance
+                                    // only while that native proof is built and consumed.
+                                    let _sparse_proof_ram = if stream.sparse.is_some() {
+                                        Some(bytes.lease_working_ram(admission.budget.max_row_bytes)?)
+                                    } else {
+                                        None
+                                    };
+                                    let write = template.materialize_range_named_unhashed(
+                                        index,
+                                        stream.name_utf16,
+                                        &object.path,
+                                        stream.length,
+                                        at,
+                                        &buffer[..n],
+                                    )?;
+                                    ensure!(
+                                        write["readback_verified"] == true,
+                                        "routed remaining materialization readback differs"
+                                    );
+                                    bytes.validate_protection()?;
+                                    written = next_written;
+                                    done += n as u64;
+                                }
+                                Ok(())
+                            })?;
+                        }
+                        Ok(observed)
+                    })();
                     bytes.withdraw_read_ahead(drop);
+                    let observed = materialized?;
+                    let summary = &observed.summary;
                     bytes.finish_stream()?;
                     let _closing_native_ram = bytes.lease_working_ram(
                         template.supply_stream_workspace_bytes(index, stream.name_utf16)?,

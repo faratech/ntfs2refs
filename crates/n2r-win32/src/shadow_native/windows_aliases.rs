@@ -173,11 +173,15 @@ fn probe_alias_unnamed(
     let expected = probe.expected();
     // The verification above has just read the link's point through this
     // handle, on a volume that is read-only, and held it to the point its
-    // target's name makes. Under the check-once policy that reading stands
-    // for the snapshot's own: the snapshot does not ask for the point again
-    // and carries the one verified, which is then held to the point this
-    // probe expects, as before. Otherwise the snapshot reads it again.
-    let snapshot = if crate::verify_policy::checks_once() {
+    // target's name makes. In a run that verifies once, and in the recovery
+    // of one (`repeats_once_as_verified`), that reading stands for the
+    // snapshot's own: the snapshot does not ask for the point again and
+    // carries the one verified, which is then held to the point this probe
+    // expects, as before. A thorough run, the recovery of one and a run with
+    // `--recheck-everything` read it again, as before.
+    let snapshot = if crate::verify_policy::verifies_once()
+        || crate::verify_policy::repeats_once_as_verified()
+    {
         let mut snapshot = super::metadata_snapshot_with_limit(
             &alias,
             &Input {
@@ -1570,13 +1574,16 @@ impl StagedWindowsAliases {
         let maximum_row_bytes = self.maximum_row_bytes;
         let total = self.rows.len() as u64;
         let read_back = self.reads_back_restored_metadata();
-        // Under the check-once policy each parent directory of a batch is
-        // examined once, through the one handle held on it, by the first of
-        // its links to be installed, and the batch's other links in it are
-        // installed beneath that examination: installing a link's point
-        // changes the link, never its parent's identity, path, type or
-        // reparse point. Otherwise every installation examines its parent.
-        let parents_once = crate::verify_policy::checks_once();
+        // In a run that verifies once (`--verify fast` under the check-once
+        // policy) each parent directory of a batch is examined once, through
+        // the one handle held on it, by the first of its links to be
+        // installed, and the batch's other links in it are installed beneath
+        // that examination: installing a link's point changes the link,
+        // never its parent's identity, path, type or reparse point.
+        // Otherwise (thorough, `--recheck-everything`) every installation
+        // examines its parent, as before.
+        let parents_once =
+            crate::verify_policy::checks_once() && crate::verify_policy::verifies_once();
         let restore_one = |link: &Link<'_>| -> io::Result<Option<Snapshot>> {
             let entry = &link.staged.entry;
             let file = &link.staged.file;

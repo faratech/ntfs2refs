@@ -212,8 +212,9 @@ pub fn install_fresh_owned(
 /// ([`examine_parent`]) through this same held handle, once for the links of
 /// a batch that lie in it: installing a link's point changes the link, never
 /// its parent's identity, path, type or reparse point, which is what the
-/// examination holds. Only under the check-once policy; otherwise each
-/// installation examines the parent itself, as before.
+/// examination holds. Only in a run that verifies once (see
+/// `install_fresh_owned_under`); otherwise each installation examines the
+/// parent itself, as before.
 pub fn install_fresh_owned_in(
     parent: &File,
     examined: &ExaminedParent,
@@ -241,14 +242,15 @@ fn install_fresh_owned_under(
     relative_target_component: &[u16],
 ) -> io::Result<Observation> {
     let expected = Point::relative_component_alias(relative_target_component)?;
-    // Under the check-once policy what this call has read through one of
-    // its held handles is not asked of that handle again while nothing has
-    // changed the object: the parent (examined by the caller or here) and
-    // the target are not looked at again by the verification that follows
-    // the installation, and the link's point is the one the installation
-    // read back. Every distinct check is still made once. Otherwise each is
-    // asked again, as before.
-    let reuse = crate::verify_policy::checks_once();
+    // In a run that verifies once (`--verify fast` under the check-once
+    // policy) what this call has read through one of its held handles is
+    // not asked of that handle again while nothing has changed the object:
+    // the parent (examined by the caller or here) and the target are not
+    // looked at again by the verification that follows the installation,
+    // and the link's point is the one the installation read back. Every
+    // distinct check is still made once. A thorough run, a recovery and a
+    // run with `--recheck-everything` ask each again, as before.
+    let reuse = crate::verify_policy::checks_once() && crate::verify_policy::verifies_once();
     let examined_here;
     let parent_before = match examined.filter(|_| reuse) {
         Some(examined) => &examined.before,
@@ -317,7 +319,7 @@ fn install_fresh_owned_under(
     // before. Looking at the target and the parent yet again (two more
     // snapshots of five queries each, for every one of 112,000 links) is
     // left out under the check-once policy.
-    if !reuse
+    if !crate::verify_policy::checks_once()
         && (snapshot(canonical, directory)? != canonical_before
             || reparse_native::capture(canonical)? != canonical_point
             || !same_parent(parent_before, &snapshot(parent, true)?))

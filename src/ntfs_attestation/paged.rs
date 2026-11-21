@@ -480,11 +480,44 @@ pub struct PagedFileComparison {
     pub unread_plain_streams: u64,
     #[serde(skip_serializing_if = "is_zero")]
     pub unread_plain_logical_bytes: u64,
+    /// The source object compared, as the comparison read it: not written
+    /// with the row.
+    #[serde(skip)]
+    source_file: std::sync::Arc<crate::ntfs_inspect::FileInventory>,
 }
 fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 impl PagedFileComparison {
+    /// The source object this row compared and its internal role, for the
+    /// caller that takes the row. They are the ones the comparison read and
+    /// derived from the held source, where it was looked up and its role
+    /// derived once more, the same way, for each row. With
+    /// `--recheck-everything` (or inside a gate) they still are, and held to
+    /// the row's.
+    pub(crate) fn source_file_and_role(
+        &self,
+        source: &PagedInspection,
+    ) -> Result<(
+        std::sync::Arc<crate::ntfs_inspect::FileInventory>,
+        Option<String>,
+    )> {
+        if !n2r_win32::verify_policy::full_unremembered() {
+            return Ok((
+                std::sync::Arc::clone(&self.source_file),
+                self.internal_replacement_role.clone(),
+            ));
+        }
+        let file = source
+            .find_record_shared(self.record_number, Some(self.sequence_number))?
+            .context("compared source identity absent")?;
+        let role = crate::ntfs_admission::paged::internal_role(source, &file)?;
+        ensure!(
+            role == self.internal_replacement_role,
+            "source replacement role changed"
+        );
+        Ok((file, role))
+    }
     /// The views of this object that Windows does not show as the raw volume
     /// holds them, each with what was found: empty when all of them match.
     pub(crate) fn differences(&self) -> Vec<String> {
@@ -797,7 +830,17 @@ fn compare_domain_with_header(
                 observation.open_error.is_none(),
                 "native stream metadata open refused"
             );
-            for capture in [&observation.streams_before, &observation.streams_after] {
+            // Both captures are held to the raw model, and to each other.
+            // Where they are equal (a single content pass mirrors the first
+            // into the second) the check of the second is the check of the
+            // first on the same input: it is not made twice.
+            let same = observation.streams_before == observation.streams_after;
+            let captures: &[&Option<n2r_win32::attestation::StreamCapture>] = if same {
+                &[&observation.streams_before]
+            } else {
+                &[&observation.streams_before, &observation.streams_after]
+            };
+            for capture in captures {
                 crate::ntfs_stream_attestation::check_file_with_resources(
                     &file,
                     capture
@@ -809,7 +852,7 @@ fn compare_domain_with_header(
                 )?;
             }
             ensure!(
-                observation.streams_before == observation.streams_after,
+                same,
                 "native complete stream observations changed between passes"
             );
             Ok(())
@@ -921,6 +964,7 @@ fn compare_domain_with_header(
             extent_identity_logical_bytes: evidence.extent_identity_bytes,
             unread_plain_streams: u64::try_from(evidence.unread_plain_streams.len())?,
             unread_plain_logical_bytes: evidence.unread_plain_bytes,
+            source_file: file,
         })?;
     }
     expected.revalidate()?;

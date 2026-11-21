@@ -1690,9 +1690,7 @@ impl ResourceSourceContext {
                 Some(admission),
                 native.domain(),
                 |row| {
-                    let file = raw
-                        .find_record_shared(row.record_number, Some(row.sequence_number))?
-                        .context("compared source identity absent")?;
+                    let (file, role) = row.source_file_and_role(&raw)?;
                     if let Some(proof) = &storage_hint_normalization {
                         if let Some(normalization) =
                             crate::ntfs_storage_class::normalize(&file, proof)?
@@ -1727,11 +1725,6 @@ impl ResourceSourceContext {
                             .checked_add(1)
                             .context("short-name count overflow")?;
                     }
-                    let role = ntfs_admission::paged::internal_role(&raw, &file)?;
-                    ensure!(
-                        role == row.internal_replacement_role,
-                        "source replacement role changed"
-                    );
                     let issues = if let Some(role) = &role {
                         let action = match role.as_str() {
                             "$Volume" if indexes.covers_volume_object_id_domain(&raw, 3) => {

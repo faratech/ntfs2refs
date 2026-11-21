@@ -253,15 +253,8 @@ impl ResourceSourceContext {
         )?;
         // The selector above counted this same held source for the admission.
         let comparison = crate::ntfs_attestation::paged::compare_partition_domain(&raw, &binding.storage, budget, policy, Some(admission), &native, phase, events, |row| {
-            let file = raw
-                .find_record_shared(row.record_number, Some(row.sequence_number))?
-                .context("compared source identity absent")?;
+            let (file, role) = row.source_file_and_role(&raw)?;
             no_dos &= file.names.iter().all(|name| name.namespace != 2);
-            let role = ntfs_admission::paged::internal_role(&raw, &file)?;
-            ensure!(
-                role == row.internal_replacement_role,
-                "source replacement role changed"
-            );
             let issues = if let Some(role) = &role {
                 let action = match role.as_str() {
                     "$Volume" if indexes.covers_volume_object_id_domain(&raw, 3) => {

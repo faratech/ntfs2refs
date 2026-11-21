@@ -713,7 +713,7 @@ impl<'a> JournalObservation<'a> {
         };
         result.revalidate_index()?;
         if copy_seen && !descriptors_only {
-            result.validate_resolved_new()?;
+            result.validate_resolved_new(group)?;
         }
         // Enforce all ordinary lifecycle and torn-marker refusals, but do not
         // expose replay authority or mutate any marker.
@@ -731,13 +731,23 @@ impl<'a> JournalObservation<'a> {
     }
 
     fn record(&mut self, ordinal: u64) -> Result<Record> {
+        self.record_through(None, ordinal)
+    }
+
+    /// The row `ordinal` of the index, held to its descriptor in the
+    /// journal: read there by itself, or through the reader of a pass that
+    /// comes to the rows in the order of the file.
+    fn record_through(&mut self, reader: Option<&mut InOrder>, ordinal: u64) -> Result<Record> {
         let (offset, length, descriptor_at, flags) = self.index_entry(ordinal)?;
         let mut descriptor = [0u8; OLD_ZERO_RECORD];
-        at(
-            self.journal,
-            descriptor_at,
-            &mut descriptor[..self.format.record_size],
-        )?;
+        let bytes = &mut descriptor[..self.format.record_size];
+        match reader {
+            Some(reader) => {
+                reader.seek_to(descriptor_at);
+                reader.read_exact(self.journal, bytes)?;
+            }
+            None => at(self.journal, descriptor_at, bytes)?,
+        }
         let row = Record::decode(
             &descriptor,
             descriptor_at,
@@ -867,40 +877,66 @@ impl<'a> JournalObservation<'a> {
         Ok(())
     }
 
-    fn validate_resolved_new(&mut self) -> Result<()> {
+    /// The NEW bytes of every row, with those of a COPY row taken from the
+    /// OLD payloads it names: each row's held to its digest, all of them to
+    /// the ticket's.
+    ///
+    /// The rows are taken in the order of the file, so their descriptors
+    /// and stored NEW payloads are read through a window, megabytes to a
+    /// request, where each was a request of its own (two to a row over the
+    /// 284,000 rows of the Windows volume). The OLD payloads between them
+    /// are passed over. What a window holds of them is read with it, which
+    /// this pass did not read before: megabytes to a request, and never
+    /// more than one pass over the file. Behind more than an eighth of a
+    /// window of them the bytes that are wanted are read alone, as before.
+    /// A COPY row's sources lie anywhere before it and are read where they
+    /// lie, as before.
+    fn validate_resolved_new(&mut self, group: &ArtifactGroupPermit) -> Result<()> {
         let algorithm = self.ticket.digest_algorithm();
         let mut selected = aggregate_pin_hash(algorithm)?;
         let mut buffer = vec![0u8; BUFFER];
+        let (window, _spare_window) = scan_window(group);
+        let mut reader = InOrder::through(
+            window,
+            add(self.format.body, HEADER as u64)?,
+            self.ticket.journal_length,
+        );
         for ordinal in 0..u64::from(self.ticket.range_count) {
-            let row = self.record(ordinal)?;
+            let row = self.record_through(Some(&mut reader), ordinal)?;
             frame(&mut selected, &row.range())?;
             let mut hash = pin_hash(algorithm)?;
             let mut done = 0u64;
             while done < row.length {
                 let count = usize::try_from((row.length - done).min(BUFFER as u64))?;
-                match row.new_kind {
-                    0 => at(
-                        self.journal,
-                        add(row.new_payload, done)?,
-                        &mut buffer[..count],
-                    )?,
-                    1 => buffer[..count].fill(0),
-                    2 => self.read_prior_old(
-                        add(row.copy_source, done)?,
-                        ordinal,
-                        &mut buffer[..count],
-                    )?,
+                let piece: &[u8] = match row.new_kind {
+                    0 => {
+                        reader.seek_to(add(row.new_payload, done)?);
+                        reader.next(self.journal, &mut buffer[..count])?
+                    }
+                    1 => {
+                        buffer[..count].fill(0);
+                        &buffer[..count]
+                    }
+                    2 => {
+                        self.read_prior_old(
+                            add(row.copy_source, done)?,
+                            ordinal,
+                            &mut buffer[..count],
+                        )?;
+                        &buffer[..count]
+                    }
                     _ => unreachable!(),
-                }
-                hash.update(&buffer[..count])?;
-                selected.update(&buffer[..count])?;
-                done = add(done, count as u64)?;
+                };
+                hash.update(piece)?;
+                selected.update(piece)?;
+                done = add(done, piece.len() as u64)?;
             }
             ensure!(
                 finish(hash)? == row.new_hash,
                 "recovery resolved NEW row digest differs"
             );
         }
+        n2r_win32::perf::add_bytes(n2r_win32::perf::Point::JournalScan, reader.bytes_read());
         ensure!(
             finish(selected)? == self.ticket.new_selected_sha256,
             "recovery resolved NEW aggregate differs"

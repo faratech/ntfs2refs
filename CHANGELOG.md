@@ -40,6 +40,10 @@ entry are in the pull request named beside it and in `docs/performance.md`.
   `fast`, the default, proves data that stays in place by its extents.
   `thorough` reads every byte, as `--verify-full-content` did; that spelling
   still works (#148).
+- **`--verify thorough` converts again**. On the default route it stopped
+  before publication on every volume, with the NTFS volume given back: the
+  payload supply accepted only the fast verification, as it had since the
+  earlier spelling `--verify-full-content` (#212).
 - **With `--verify fast` a rollback stays open until the converted volume has
   passed its verification.** Every new sector is written and read back, the
   disk is sealed again, the converted volume is mounted read-only and
@@ -90,6 +94,13 @@ entry are in the pull request named beside it and in `docs/performance.md`.
 - **In the recovery environment**, a rollback finds the source's fingerprint
   wherever the working volume is mounted now, and a marker torn there is
   settled although every disk comes up offline and read-only (#148).
+- **A recovery that finds the conversion already online** detaches the
+  run's working volume, as every other completed recovery does (#216).
+- **Cancelling a preparation that had already published its records** says
+  which command puts NTFS back now, instead of only the one that finishes.
+- **The recovery the running Windows starts by itself** keeps to the memory
+  limit the conversion was given, and is made once more without it if it
+  does not finish under it.
 
 ### Speed and memory
 
@@ -111,6 +122,22 @@ entry are in the pull request named beside it and in `docs/performance.md`.
 - **Memory follows the volume, not the budget**. The sorts, the MFT
   bootstrap, placement and the recovery audit reserve what the volume needs.
   Caches are given back before a run goes beyond its budget (#129).
+- **A recovery makes each identical check once** while it holds what it
+  checks: the journal and the working files are hashed once, each changed
+  range is read back once, ranges already on the side being restored are
+  not written again, and every pass over the changed ranges reads ahead as
+  the apply does. For a run made with `--verify fast` it also writes without
+  reading each range first and probes short-name links once. The journal is
+  scanned in order through one buffer. A recovery of the full Windows volume
+  read the changed ranges four times and scanned its 13 GB journal two to
+  three times, one row at a time (#140).
+- **Less work in the conversion**: a row of the source's file store is
+  decoded once and lent where it was decoded at every pass; the expected
+  tree is built in one pass; the payload supply's and the metadata passes'
+  read-only questions to Windows are asked on several threads; the capture
+  decodes a route once for its neighbours, writes the new bytes in runs and
+  reads the source and the new volume ahead; the waits for the working
+  volume back off. Every check is the same (#140).
 
 ### What it says
 

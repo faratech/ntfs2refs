@@ -190,6 +190,179 @@ fn at<R: Read + Seek>(io: &mut R, offset: u64, bytes: &mut [u8]) -> Result<()> {
     Ok(())
 }
 
+/// A journal read in the order of its bytes, through a window.
+///
+/// A pass over a journal's rows read each descriptor (a hundred bytes) and
+/// each stored payload (a few tens of kilobytes on average) with a request
+/// of its own to the file, and asked the file for its position after every
+/// payload: five requests a row or more. On the full Windows volume that
+/// is 284,000 rows over 13 GB, and a recovery's scan of them read 100 MB a
+/// second where hashing the same bytes four megabytes at a time takes under
+/// twenty seconds. Through this the file is asked for a window at a time and
+/// the rows are handed out of the window; the position is counted here.
+///
+/// Only the size of a request changes. Every byte handed out is the byte of
+/// the file at its offset: each request names its offset, as [`at`] does, so
+/// the file's own position is never relied on and other reads of the same
+/// file may come between two of these. Nothing beyond `limit` (the
+/// journal's length) is asked for ahead of its use. A request for a window
+/// that fails is forgotten, and from there on only what is asked for is
+/// read, by itself, as before there was a window: an error is raised by
+/// the read that would have raised it, and after everything that read used
+/// to follow.
+///
+/// A pass may leave bytes out ([`Self::seek_to`]): the payloads, in a pass
+/// over the descriptors alone. A window is asked for only where no more
+/// than an eighth of one was passed over to reach the bytes that are
+/// wanted; after a longer jump those bytes are read alone, as before. Rows
+/// that store little or nothing follow each other closely and come many to
+/// a request, with what lies between them; a row behind a long payload
+/// comes with a request of its own. Such a pass reads bytes it has no use
+/// for, which it did not before: at most one window of them for each read
+/// it makes, and, going forward, never a byte of the file twice.
+///
+/// It holds no reference to the file, which each call is given, so that the
+/// file's owner can read elsewhere in it between two calls.
+pub(crate) struct InOrder {
+    // What one request may read; empty where each read is its own request.
+    window: Vec<u8>,
+    // The bytes of the window not handed out yet.
+    from: usize,
+    to: usize,
+    // Where in the file the next byte handed out lies.
+    position: u64,
+    limit: u64,
+    // The bytes passed over since a byte was last handed out.
+    gap: u64,
+    // The bytes the file was asked for.
+    read: u64,
+}
+
+impl InOrder {
+    /// A reader at `position` of a file of `limit` bytes. With an empty
+    /// window every read is a request for exactly its bytes, as it was
+    /// before there were windows.
+    pub(crate) fn through(window: Vec<u8>, position: u64, limit: u64) -> Self {
+        Self {
+            window,
+            from: 0,
+            to: 0,
+            position,
+            limit,
+            gap: 0,
+            read: 0,
+        }
+    }
+
+    /// Where in the file the next byte handed out lies.
+    pub(crate) fn position(&self) -> u64 {
+        self.position
+    }
+
+    /// How many bytes the file was asked for.
+    pub(crate) fn bytes_read(&self) -> u64 {
+        self.read
+    }
+
+    /// The next byte handed out is the one at `offset`. Costs nothing: what
+    /// the window already holds of it is kept.
+    pub(crate) fn seek_to(&mut self, offset: u64) {
+        match offset.checked_sub(self.position) {
+            Some(forward) if forward <= (self.to - self.from) as u64 => {
+                self.from += forward as usize;
+            }
+            _ => (self.from, self.to) = (0, 0),
+        }
+        self.gap = self.gap.saturating_add(offset.abs_diff(self.position));
+        self.position = offset;
+    }
+
+    /// The next `bytes.len()` bytes of the file.
+    pub(crate) fn read_exact<R: Read + Seek>(
+        &mut self,
+        io: &mut R,
+        bytes: &mut [u8],
+    ) -> Result<()> {
+        let mut done = 0;
+        while done < bytes.len() {
+            if self.from == self.to && !self.fill(io, bytes.len() - done) {
+                at(io, self.position, &mut bytes[done..])?;
+                self.handed_out_from_the_file(bytes.len() - done);
+                return Ok(());
+            }
+            let count = (self.to - self.from).min(bytes.len() - done);
+            bytes[done..done + count].copy_from_slice(&self.window[self.from..self.from + count]);
+            self.handed_out_from_the_window(count);
+            done += count;
+        }
+        Ok(())
+    }
+
+    /// The next bytes of the file, at most `scratch.len()` of them and at
+    /// least one: out of the window where it holds any, and otherwise read
+    /// into `scratch`, all of it.
+    pub(crate) fn next<'a, R: Read + Seek>(
+        &'a mut self,
+        io: &mut R,
+        scratch: &'a mut [u8],
+    ) -> Result<&'a [u8]> {
+        if scratch.is_empty() {
+            return Ok(scratch);
+        }
+        if self.from == self.to && !self.fill(io, scratch.len()) {
+            at(io, self.position, scratch)?;
+            self.handed_out_from_the_file(scratch.len());
+            return Ok(scratch);
+        }
+        let from = self.from;
+        let count = (self.to - from).min(scratch.len());
+        self.handed_out_from_the_window(count);
+        Ok(&self.window[from..from + count])
+    }
+
+    fn handed_out_from_the_window(&mut self, count: usize) {
+        self.from += count;
+        self.position += count as u64;
+        self.gap = 0;
+    }
+
+    fn handed_out_from_the_file(&mut self, count: usize) {
+        self.position += count as u64;
+        self.read += count as u64;
+        self.gap = 0;
+    }
+
+    /// Asks the file for a window at the position, where the window holds
+    /// nothing, would then hold more than the `asked` bytes that are
+    /// wanted, and no long stretch was passed over to come here. False
+    /// where it does not: the caller reads those bytes alone.
+    fn fill<R: Read + Seek>(&mut self, io: &mut R, asked: usize) -> bool {
+        if self.gap > (self.window.len() / 8) as u64 {
+            return false;
+        }
+        let left = self.limit.saturating_sub(self.position);
+        let count = self
+            .window
+            .len()
+            .min(usize::try_from(left).unwrap_or(usize::MAX));
+        if count <= asked {
+            return false;
+        }
+        if at(io, self.position, &mut self.window[..count]).is_err() {
+            // Whatever failed lies somewhere in the window, perhaps beyond
+            // everything this pass will come to use before it stops for
+            // another reason. The read of the bytes that are asked for
+            // decides, now and from here on.
+            self.window = Vec::new();
+            (self.from, self.to) = (0, 0);
+            return false;
+        }
+        (self.from, self.to) = (0, count);
+        self.read += count as u64;
+        true
+    }
+}
+
 fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }

@@ -1562,15 +1562,26 @@ impl ResourceSourceContext {
                 &mut reservations,
             )?;
             *phase = "source-admission";
-            n2r_win32::perf::step("re-read source fingerprint");
-            let after_hash = fingerprint.hash(&mut source)?;
-            let after = native_batch(events, |batch| source.state(batch))?;
-            ensure!(
-                before == after
-                    && source_sha == after_hash
-                    && raw.canonical_sha256()? == inspection_sha,
-                "frozen source changed across actual native observation"
-            );
+            // That the read-only mount changed nothing is proved by reading
+            // the fingerprint again. A run that verifies once reads it on
+            // read lanes beside the comparison below (which does not read
+            // the source) and holds the source to it before anything that
+            // depends on it; every other run, and one without the memory for
+            // the lanes, reads it here, as before.
+            let reread_beside_comparison = n2r_win32::verify_policy::verifies_once();
+            let mut reread_done = None;
+            if !reread_beside_comparison {
+                n2r_win32::perf::step("re-read source fingerprint");
+                let after_hash = fingerprint.hash(&mut source)?;
+                let after = native_batch(events, |batch| source.state(batch))?;
+                ensure!(
+                    before == after
+                        && source_sha == after_hash
+                        && raw.canonical_sha256()? == inspection_sha,
+                    "frozen source changed across actual native observation"
+                );
+                reread_done = Some((after, after_hash));
+            }
             n2r_win32::perf::step("object ids and transactions");
             let mut indexes = if let Some(proof) = native.windows_object_ids_owned() {
                 ensure!(
@@ -1678,6 +1689,26 @@ impl ResourceSourceContext {
                 })
                 .transpose()?;
             let mut storage_hint_count = 0u64;
+            let reread = if reread_beside_comparison {
+                n2r_win32::perf::step("re-read source fingerprint");
+                match fingerprint.lane_reread(&source)? {
+                    Some((lanes, ram)) => Some((lanes.start()?, ram)),
+                    None => {
+                        let after_hash = fingerprint.hash(&mut source)?;
+                        let after = native_batch(events, |batch| source.state(batch))?;
+                        ensure!(
+                            before == after
+                                && source_sha == after_hash
+                                && raw.canonical_sha256()? == inspection_sha,
+                            "frozen source changed across actual native observation"
+                        );
+                        reread_done = Some((after, after_hash));
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             n2r_win32::perf::step("compare raw and Windows views");
             // The selector above counted this same held source for the
             // admission; the comparison builds its own selector and is
@@ -1851,6 +1882,22 @@ impl ResourceSourceContext {
                     Ok(())
                 },
             )?;
+            if let Some((read, _ram)) = reread {
+                n2r_win32::perf::step("join source fingerprint re-read");
+                let after_hash = read.finish()?;
+                // As `hash` ends: its range stores are still as written.
+                fingerprint.revalidate()?;
+                let after = native_batch(events, |batch| source.state(batch))?;
+                ensure!(
+                    before == after
+                        && source_sha == after_hash
+                        && raw.canonical_sha256()? == inspection_sha,
+                    "frozen source changed across actual native observation"
+                );
+                reread_done = Some((after, after_hash));
+            }
+            let (after, after_hash) =
+                reread_done.context("the source fingerprint was not read again")?;
             let rows_pin = rows_writer.finish()?;
             let replacements_pin = replacements_writer.finish()?;
             let case_marks_pin = case_marks_writer.finish()?;

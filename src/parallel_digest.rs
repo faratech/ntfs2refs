@@ -74,7 +74,7 @@ pub(crate) fn digest_frozen_chunks_at_depth(
     digest_chunks_lanes(image, &mut lanes, chunks)
 }
 
-fn digest_chunks_lanes<R: Read + Seek, L: Read + Seek + Send>(
+pub(crate) fn digest_chunks_lanes<R: Read + Seek, L: Read + Seek + Send>(
     image: &mut R,
     lanes: &mut [L],
     chunks: &[Chunk],

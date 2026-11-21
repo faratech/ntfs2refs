@@ -22,6 +22,79 @@ use std::{
 pub const FULL_KIND: &str = "ntfs_resource_allocated_ranges_xxh3_128_4mib_pieces_v1";
 pub const EXTENT_KIND: &str = "ntfs_resource_metadata_and_extent_fingerprint_v1";
 const DOMAIN: &[u8] = b"ntfs2refs/source/resource-metadata-and-extents/v1\0";
+
+/// A fingerprint read on read lanes of the frozen source
+/// ([`PagedSourceFingerprint::lane_reread`]): its ranges, the envelope up to
+/// the inner digest and the lanes, owned, so that it reads on a thread of
+/// its own. It is the fingerprint [`PagedSourceFingerprint::hash`] reads:
+/// the same chunks digested in the same order into the same envelope.
+pub struct LaneFingerprint {
+    lanes: Vec<n2r_win32::GeneralFrozenLane>,
+    pieces: Vec<crate::parallel_digest::Chunk>,
+    frames: Vec<Option<Range>>,
+    envelope: Sha256,
+    batch: usize,
+}
+impl LaneFingerprint {
+    /// Reads it on a thread of its own; the result is joined with
+    /// [`LaneFingerprintRead::finish`] (or waited for when dropped).
+    pub fn start(self) -> Result<LaneFingerprintRead> {
+        let handle = std::thread::Builder::new()
+            .name("fingerprint-reread".into())
+            .spawn(move || {
+                let _sampled = n2r_win32::stack_sampler::helper();
+                let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::SourceFingerprint);
+                self.read()
+            })?;
+        Ok(LaneFingerprintRead(Some(handle)))
+    }
+    fn read(mut self) -> Result<String> {
+        let (first, others) = self
+            .lanes
+            .split_first_mut()
+            .context("fingerprint read lane absent")?;
+        let mut inner = Sha256::new();
+        for (pieces, frames) in self
+            .pieces
+            .chunks(self.batch.max(1))
+            .zip(self.frames.chunks(self.batch.max(1)))
+        {
+            let digests = crate::parallel_digest::digest_chunks_lanes(first, others, pieces)?;
+            ensure!(
+                digests.len() == frames.len(),
+                "fingerprint piece digest coverage differs"
+            );
+            for (frame, hash) in frames.iter().zip(digests) {
+                if let Some(row) = frame {
+                    inner.update(row.offset.to_le_bytes());
+                    inner.update(row.length.to_le_bytes());
+                }
+                inner.update(hash);
+            }
+        }
+        self.envelope.update(inner.finalize());
+        Ok(hex::encode(self.envelope.finalize()))
+    }
+}
+/// A [`LaneFingerprint`] being read.
+pub struct LaneFingerprintRead(Option<std::thread::JoinHandle<Result<String>>>);
+impl LaneFingerprintRead {
+    pub fn finish(mut self) -> Result<String> {
+        self.0
+            .take()
+            .context("fingerprint re-read already joined")?
+            .join()
+            .map_err(|_| anyhow::anyhow!("the fingerprint re-read thread panicked"))?
+    }
+}
+impl Drop for LaneFingerprintRead {
+    fn drop(&mut self) {
+        // Not left reading the source behind a caller that failed.
+        if let Some(handle) = self.0.take() {
+            let _ = handle.join();
+        }
+    }
+}
 const GRANULE: u64 = 4096;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -1208,6 +1281,96 @@ impl PagedSourceFingerprint {
         envelope.update(inner);
         self.revalidate()?;
         Ok(hex::encode(envelope.finalize()))
+    }
+    /// The same fingerprint as [`Self::hash`], read on read lanes of the
+    /// frozen source by a thread of its own ([`LaneFingerprint::start`]),
+    /// for a caller that goes on meanwhile with work that does not read the
+    /// source. The ranges are copied out of their stores here, on this
+    /// thread; the lanes are opened here (each checks the disk is still in
+    /// its frozen state). `None` where the memory for the copy and the lanes
+    /// is not there to spare: the caller then reads it with `hash`.
+    pub fn lane_reread(
+        &self,
+        source: &n2r_win32::GeneralFrozenPartition,
+    ) -> Result<Option<(LaneFingerprint, crate::ntfs_inspect::paged_storage::SourceRamLease)>> {
+        use crate::parallel_digest::{Chunk, MAX_CHUNK_BYTES};
+        ensure!(
+            source.byte_len() == self.pins.partition_bytes,
+            "fingerprint source length differs"
+        );
+        self.revalidate()?;
+        let lanes = crate::parallel_digest::SMALL_READ_DEPTH
+            .max(source.io_profile().queue_depth.clamp(1, 8))
+            .clamp(1, 8);
+        let mut chunks = 0u64;
+        for ordinal in 0..self.covered.len() {
+            let row: Range = self.covered.get(ordinal)?;
+            chunks = chunks
+                .checked_add(row.length.div_ceil(MAX_CHUNK_BYTES as u64).max(1))
+                .context("fingerprint chunk count overflow")?;
+        }
+        let Some(bytes) = chunks
+            .checked_mul((std::mem::size_of::<Chunk>() + std::mem::size_of::<Option<Range>>()) as u64)
+            .and_then(|n| {
+                (lanes as u64)
+                    .checked_mul(
+                        n2r_win32::GeneralFrozenPartition::read_buffer_memory_bytes()
+                            + 65536
+                            + MAX_CHUNK_BYTES as u64
+                            + 2 * 1024 * 1024,
+                    )
+                    .and_then(|lanes| n.checked_add(lanes))
+            })
+        else {
+            return Ok(None);
+        };
+        let Ok(ram) = self.scratch.lease_ram_if_room(bytes) else {
+            return Ok(None);
+        };
+        let mut pieces = Vec::new();
+        let mut frames = Vec::new();
+        pieces.try_reserve_exact(usize::try_from(chunks)?)?;
+        frames.try_reserve_exact(usize::try_from(chunks)?)?;
+        for ordinal in 0..self.covered.len() {
+            let row: Range = self.covered.get(ordinal)?;
+            let mut done = 0;
+            while done < row.length {
+                let length = (row.length - done).min(MAX_CHUNK_BYTES as u64) as usize;
+                pieces.push(Chunk {
+                    offset: row.offset + done,
+                    length,
+                });
+                frames.push((done == 0).then_some(row));
+                done += length as u64;
+            }
+        }
+        // Everything the envelope holds before the inner digest.
+        let mut envelope = Sha256::new();
+        envelope.update(DOMAIN);
+        envelope.update(self.pins.partition_bytes.to_le_bytes());
+        envelope.update(hex::decode(&self.pins.source_inspection_sha256)?);
+        envelope.update([u8::from(self.pins.policy.is_fast())]);
+        for ranges in [&self.covered, &self.omitted] {
+            envelope.update(ranges.len().to_le_bytes());
+            for ordinal in 0..ranges.len() {
+                let row: Range = ranges.get(ordinal)?;
+                envelope.update(row.offset.to_le_bytes());
+                envelope.update(row.length.to_le_bytes());
+            }
+        }
+        let mut events = Vec::new();
+        let lanes = source.read_lanes(lanes, &mut events)?;
+        let batch = usize::try_from((u64::from(self.scratch.budget().page_bytes) / 128).max(1))?;
+        Ok(Some((
+            LaneFingerprint {
+                lanes,
+                pieces,
+                frames,
+                envelope,
+                batch,
+            },
+            ram,
+        )))
     }
     /// Same canonical fingerprint with a bounded partition reader. Its caller
     /// brackets the actual phase/owner; generic bytes cannot issue admission.

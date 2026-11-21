@@ -306,8 +306,10 @@ $runningCases = @(
     # verification before the handoff (#148). In the recovery environment the
     # disk comes up offline and read-only; the run's seal record keeps it so,
     # and the next start verifies and hands off: ReFS, healthy. The hold
-    # comes after the writes, so later than the one above.
-    @{ Name = 'c-cut-verify'; Expected = 'CUT-RECOVERED-TO-REFS'; Arguments = @{ HoldAt = 'verify-source-readonly'; HoldAfterMinutes = 20; CutAfterMinutes = 75; AwayMinutes = 180 } }
+    # comes after the writes, so later than the one above: at 20 minutes the
+    # screen stood still for two while the changed ranges were written, and
+    # the power went there, not at the hold (g2i-c-cut-verify).
+    @{ Name = 'c-cut-verify'; Expected = 'CUT-RECOVERED-TO-REFS'; Arguments = @{ HoldAt = 'verify-source-readonly'; HoldAfterMinutes = 25; CutAfterMinutes = 75; AwayMinutes = 180 } }
 )
 
 if ($Only) {

@@ -6456,7 +6456,8 @@ mod tests {
     }
     impl Drop for Held {
         fn drop(&mut self) {
-            self.0.fetch_sub(self.1, std::sync::atomic::Ordering::SeqCst);
+            self.0
+                .fetch_sub(self.1, std::sync::atomic::Ordering::SeqCst);
         }
     }
     impl report_memory::ReportMemoryAccountant for Granting {
@@ -6489,10 +6490,14 @@ mod tests {
         };
         let held = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let payer = Granting(std::sync::Arc::clone(&held));
-        for payer in [Some(&payer as &dyn report_memory::ReportMemoryAccountant), None] {
+        for payer in [
+            Some(&payer as &dyn report_memory::ReportMemoryAccountant),
+            None,
+        ] {
             let count = 3 * CLOSING_RUN + 7;
-            let handles: Vec<(usize, File)> =
-                (0..count).map(|index| (index, open_alone(index).unwrap())).collect();
+            let handles: Vec<(usize, File)> = (0..count)
+                .map(|index| (index, open_alone(index).unwrap()))
+                .collect();
             assert!(open_alone(0).is_err(), "a held file cannot be opened again");
             let mut yielded = Vec::with_capacity(count);
             close_at_once(

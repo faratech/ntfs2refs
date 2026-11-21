@@ -1021,7 +1021,10 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
 
     /// `count` read lanes of the source, where [`Self::read_lane_depth`] is
     /// not zero; none otherwise. They are to be dropped before the adapter.
-    pub(crate) fn read_lanes(&mut self, count: usize) -> io::Result<Vec<n2r_win32::GeneralFrozenLane>> {
+    pub(crate) fn read_lanes(
+        &mut self,
+        count: usize,
+    ) -> io::Result<Vec<n2r_win32::GeneralFrozenLane>> {
         self.source.read_lanes(count)
     }
 
@@ -1292,7 +1295,8 @@ pub(crate) fn tail_place(
                 .checked_add(run.length)
                 .is_some_and(|stop| end <= stop)
     })?;
-    run.physical_offset?.checked_add(offset - run.logical_offset)
+    run.physical_offset?
+        .checked_add(offset - run.logical_offset)
 }
 
 /// Lanes of the source for reading tails ahead: as many as its device
@@ -1317,7 +1321,10 @@ pub(crate) fn tails_ahead(
             .ok()
             .map(|paid| (lanes, paid))
     })?;
-    let lanes = bytes.read_lanes(lanes).ok().filter(|lanes| !lanes.is_empty())?;
+    let lanes = bytes
+        .read_lanes(lanes)
+        .ok()
+        .filter(|lanes| !lanes.is_empty())?;
     LaneReads::start(name, lanes, Some(Box::new(paid))).ok()
 }
 
@@ -2636,7 +2643,11 @@ mod ahead_reader_tests {
         assert_eq!(output, [0xAA; 1024], "inside: taken from the read ahead");
         reader.seek(SeekFrom::Start(12_000)).unwrap();
         reader.read_exact(&mut output).unwrap();
-        assert_eq!(&output[..], &disk[12_000..13_024], "across its end: the source");
+        assert_eq!(
+            &output[..],
+            &disk[12_000..13_024],
+            "across its end: the source"
+        );
         reader.seek(SeekFrom::Start(100)).unwrap();
         reader.read_exact(&mut output).unwrap();
         assert_eq!(&output[..], &disk[100..1124], "outside: the source");

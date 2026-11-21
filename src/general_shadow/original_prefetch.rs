@@ -298,10 +298,7 @@ impl OriginalPrefetch {
     /// The comparison is over: the helpers must have read exactly its
     /// chunks.
     pub(crate) fn finish(mut self) -> Result<()> {
-        let beyond = self
-            .lanes
-            .iter()
-            .any(|lane| lane.filled.try_recv().is_ok());
+        let beyond = self.lanes.iter().any(|lane| lane.filled.try_recv().is_ok());
         let ended = self.stop();
         ensure!(!beyond, "prefetch read beyond the comparison");
         ended
@@ -438,10 +435,8 @@ impl LaneReads {
             .as_ref()
             .is_some_and(|asks| asks.send((ticket, offset, length)).is_ok());
         if !asked {
-            self.arrived.insert(
-                ticket,
-                Err(io::Error::other("lane reads have ended")),
-            );
+            self.arrived
+                .insert(ticket, Err(io::Error::other("lane reads have ended")));
         }
         ticket
     }

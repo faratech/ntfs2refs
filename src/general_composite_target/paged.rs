@@ -366,9 +366,15 @@ impl SourceTailProvider {
                         .data_streams()
                         .filter(|s| s.tail_requires_materialization()),
                 );
-                ensure!(tails.len() == count && (tails.capacity() as u64)
-                    .checked_mul(std::mem::size_of::<crate::shadow_tree::StreamRef<'_>>() as u64)
-                    .is_some_and(|n| n <= admitted), "source tail reference allocation differs");
+                ensure!(
+                    tails.len() == count
+                        && (tails.capacity() as u64)
+                            .checked_mul(
+                                std::mem::size_of::<crate::shadow_tree::StreamRef<'_>>() as u64
+                            )
+                            .is_some_and(|n| n <= admitted),
+                    "source tail reference allocation differs"
+                );
                 tails.sort_unstable_by(|a, b| a.name_utf16.cmp(b.name_utf16));
                 for (ordinal, stream) in tails.into_iter().enumerate() {
                     let offset = stream.length / cluster * cluster;

@@ -1833,7 +1833,13 @@ impl StagedWindowsAliases {
                     Some(maximum_row_bytes),
                 )?;
             }
-            super::backup_security_with_limit(file, expected.security, Some(maximum_row_bytes))?;
+            // The write alone: the digest of the stream written was made and
+            // set aside for each link.
+            super::backup_security_write_with_limit(
+                file,
+                expected.security,
+                Some(maximum_row_bytes),
+            )?;
             if fast_alias_install {
                 super::basic_without_reparse_check(file, &expected)?;
             } else {

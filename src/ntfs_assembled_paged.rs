@@ -173,6 +173,37 @@ impl PagedMftResolver {
         output.copy_from_slice(&self.record_window[start..start + output.len()]);
         Ok(())
     }
+
+    /// Reads an `ATTRIBUTE_LIST` extension record without clobbering the
+    /// sequential scan's multi-MiB `record_window`. If the extension record
+    /// already lies inside `record_window` it is copied directly; otherwise
+    /// only the single `file_record_size` record is read from `$MFT`.
+    fn read_extension_record<R: Read + Seek>(
+        &self,
+        reader: &mut R,
+        number: u64,
+        output: &mut [u8],
+    ) -> Result<()> {
+        ensure!(
+            number < self.record_count && output.len() == self.geometry.file_record_size as usize,
+            "MFT extension record read escapes its complete mapping"
+        );
+        let at = number
+            .checked_mul(u64::from(self.geometry.file_record_size))
+            .context("MFT extension address overflow")?;
+        let end = at
+            .checked_add(output.len() as u64)
+            .context("MFT extension end overflow")?;
+        if self.window_valid != 0
+            && at >= self.window_start
+            && end <= self.window_start + self.window_valid as u64
+        {
+            let start = usize::try_from(at - self.window_start)?;
+            output.copy_from_slice(&self.record_window[start..start + output.len()]);
+            return Ok(());
+        }
+        read_attribute_range(reader, &self.data, at, output, &self.geometry)
+    }
     pub(in crate::ntfs_inspect) fn allocated(&self, number: u64) -> Result<bool> {
         if number >= self.record_count || number / 8 >= self.bitmap.byte_len() {
             return Ok(false);
@@ -324,7 +355,7 @@ impl PagedMftResolver {
                 "list references an unallocated/out-of-range extension"
             );
             let mut bytes = vec![0; self.geometry.file_record_size as usize];
-            self.read_physical_record(reader, extension, &mut bytes)?;
+            self.read_extension_record(reader, extension, &mut bytes)?;
             let parsed = parse_record(bytes.clone(), &self.geometry)?;
             ensure!(
                 (parsed.flags == 1 || !ordinary_base && matches!(parsed.flags, 3 | 9))

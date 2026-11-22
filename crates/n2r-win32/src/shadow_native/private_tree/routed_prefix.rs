@@ -19,6 +19,11 @@ pub struct RoutedPrefixReady {
     file: Option<File>,
     // That revalidation, taken by the one `revalidate` the owner makes.
     seen_revalidation: std::cell::Cell<Option<io::Result<()>>>,
+    // Whether the capture this owner holds was just made on its duplicate
+    // and nothing has been asked of the file since: in a run that verifies
+    // each thing once, the `revalidate` that follows it at once is that
+    // capture (see `Plan::observe`).
+    just_captured: std::cell::Cell<bool>,
     expected_path: String,
     logical_length: u64,
     prefix: u64,
@@ -41,6 +46,9 @@ pub(super) struct Plan<'tree> {
     prefix: u64,
     partition: u64,
     row: usize,
+    // The shadow's root the tree holds, where the run verifies each thing
+    // once ([`PrivateTree::shadow_root`]); `None` opens it for every query.
+    root: Option<&'tree crate::file_storage::HeldVolumeRoot>,
 }
 /// What a helper thread saw for one `observe` of a prefix and the
 /// `revalidate` that follows it, in their order.
@@ -135,6 +143,41 @@ pub(super) fn security(file: &File) -> io::Result<Vec<u8>> {
     crate::security_descriptor::validate(&bytes)?;
     Ok(bytes)
 }
+/// Whether `file` is the object `path` names: through the shadow's held
+/// root where one is given, otherwise by opening the root for the query.
+fn held_at(
+    file: &File,
+    path: &str,
+    root: Option<&crate::file_storage::HeldVolumeRoot>,
+) -> io::Result<bool> {
+    match root {
+        Some(root) => root.held_at_guid_path(file, path),
+        None => crate::file_storage::held_at_guid_path(file, path),
+    }
+}
+impl PrivateTree {
+    /// The shadow's root, opened once and held with the tree's files: an
+    /// observation of a routed prefix asked for it on every capture, opening
+    /// and closing it each time (`file_storage::held_at_guid_path`).
+    pub(super) fn shadow_root(&self) -> io::Result<&crate::file_storage::HeldVolumeRoot> {
+        if let Some(root) = self.shadow_root.get() {
+            return Ok(root);
+        }
+        let root = crate::file_storage::HeldVolumeRoot::open(&format!(
+            "{}\\",
+            self.pair.shadow.volume_path()?
+        ))?;
+        // Where two threads opened it at once, one of the two is kept.
+        Ok(self.shadow_root.get_or_init(|| root))
+    }
+    /// The shadow's held root for a run that verifies each thing once; a
+    /// thorough run opens the root for every query, as before.
+    fn shadow_root_once(&self) -> Option<&crate::file_storage::HeldVolumeRoot> {
+        crate::verify_policy::verifies_once()
+            .then(|| self.shadow_root().ok())
+            .flatten()
+    }
+}
 fn capture(
     file: &File,
     path: &str,
@@ -142,6 +185,7 @@ fn capture(
     prefix: u64,
     partition: u64,
     row: usize,
+    root: Option<&crate::file_storage::HeldVolumeRoot>,
 ) -> io::Result<Evidence> {
     let before = snapshot(file);
     for (class, length) in [(0, 40), (1, 24), (18, 24), (9, 8)] {
@@ -157,7 +201,7 @@ fn capture(
         || standard[21] != 0
         || id[8..24] == [0; 16]
         || attrs & (0x10 | 0x200 | 0x400 | 0x800 | 0x4000) != 0
-        || !crate::file_storage::held_at_guid_path(file, path)?
+        || !held_at(file, path, root)?
     {
         return Err(bad(
             "private routed prefix native identity/EOF/type differs",
@@ -249,7 +293,7 @@ fn capture(
             || sd != after_sd
             || mapping.canonical != after_mapping.canonical
             || !storage.same_transcript(&after_storage)
-            || !crate::file_storage::held_at_guid_path(file, path)?
+            || !held_at(file, path, root)?
         {
             return Err(bad(
                 "private routed prefix metadata/security/mapping/validity changed during observation",
@@ -313,6 +357,9 @@ impl RoutedPrefixReady {
         if let Some(seen) = self.seen_revalidation.take() {
             return seen;
         }
+        if self.just_captured.replace(false) && crate::verify_policy::verifies_once() {
+            return Ok(());
+        }
         let file = self.file.as_ref().ok_or_else(|| {
             bad("a routed prefix that a helper thread observed is revalidated once, by that thread")
         })?;
@@ -328,10 +375,12 @@ impl RoutedPrefixReady {
             self.partition,
             self.row_bytes,
             &self.evidence.digest,
+            None,
         )
     }
 }
 /// The observation made again, held to the digest of the first.
+#[allow(clippy::too_many_arguments)]
 fn revalidate(
     file: &File,
     path: &str,
@@ -340,8 +389,9 @@ fn revalidate(
     partition: u64,
     row: usize,
     digest: &str,
+    root: Option<&crate::file_storage::HeldVolumeRoot>,
 ) -> io::Result<()> {
-    let current = capture(file, path, logical, prefix, partition, row)?;
+    let current = capture(file, path, logical, prefix, partition, row, root)?;
     if current.digest != digest {
         return Err(bad(
             "private routed prefix identity/mapping/storage proof changed",
@@ -383,6 +433,7 @@ pub(super) fn plan<'tree>(
         prefix,
         partition: tree.pair.shadow.identity.partition_bytes,
         row,
+        root: tree.shadow_root_once(),
     })
 }
 impl Plan<'_> {
@@ -399,6 +450,15 @@ impl Plan<'_> {
     /// duplicate that is closed before this returns. Every workspace is the
     /// caller's ([`Self::observation_bytes`], [`Self::revalidation_bytes`]
     /// and the file's mapping workspace).
+    ///
+    /// In a run that verifies each thing once the `revalidate` is not made:
+    /// it was the same capture again on the same duplicate, at once, with
+    /// nothing asked of the file between the two. The file is held by this
+    /// process and nothing else writes to the shadow; the planning pass
+    /// keeps the capture's digest in its plan, the mapping of every stream
+    /// is compared with its tracked pieces when the capture begins, and the
+    /// walk of the frozen shadow captures every stream's mapping, initialized
+    /// regions and integrity again. A thorough run makes it as before.
     pub(super) fn observe(&self) -> PrefixSeen {
         let placements = self.file.check_placements_prepaid();
         if placements.is_err() || !self.prepared {
@@ -417,16 +477,22 @@ impl Plan<'_> {
                 self.prefix,
                 self.partition,
                 self.row,
+                self.root,
             )?;
-            let revalidated = revalidate(
-                &duplicate,
-                &self.path,
-                self.logical,
-                self.prefix,
-                self.partition,
-                self.row,
-                &evidence.digest,
-            );
+            let revalidated = if crate::verify_policy::verifies_once() {
+                Ok(())
+            } else {
+                revalidate(
+                    &duplicate,
+                    &self.path,
+                    self.logical,
+                    self.prefix,
+                    self.partition,
+                    self.row,
+                    &evidence.digest,
+                    self.root,
+                )
+            };
             Ok((evidence, revalidated))
         })();
         PrefixSeen {
@@ -516,6 +582,7 @@ pub(super) fn observe(
                 prefix,
                 tree.pair.shadow.identity.partition_bytes,
                 row,
+                tree.shadow_root_once(),
             )?;
             (Some(duplicate), evidence, None)
         }
@@ -523,6 +590,7 @@ pub(super) fn observe(
     tree.require_source_excluded()?;
     work.shrink_to(retained_bytes(&evidence, &path)?)?;
     Ok(RoutedPrefixReady {
+        just_captured: std::cell::Cell::new(duplicate.is_some()),
         file: duplicate,
         seen_revalidation: std::cell::Cell::new(seen_revalidation),
         expected_path: path,

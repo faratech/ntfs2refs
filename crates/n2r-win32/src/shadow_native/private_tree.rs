@@ -133,6 +133,9 @@ pub struct PrivateTree {
     stream_slots: BTreeMap<usize, StreamKey>,
     sparse_targets: BTreeMap<StreamKey, sparse_stream::Target>,
     carrier_directory: Option<sparse_stream::CarrierDirectory>,
+    // The shadow's root, held open from the first observation of a routed
+    // prefix that asks for it (`routed_prefix`), and closed with the files.
+    shadow_root: std::sync::OnceLock<crate::file_storage::HeldVolumeRoot>,
     volume: File,
     pair: GeneralSourceShadowBinding,
     backing_guard: Option<std::sync::Arc<crate::managed_shadow::BackingResourceGuard>>,
@@ -672,6 +675,28 @@ impl PrivateTree {
         wants_route: impl Fn(usize, &[(SupplyKind, SupplyRange)]) -> Option<u64>,
     ) -> Vec<SupplyStreamSeen> {
         supply_batch::observe(self, streams, maximum_range_bytes, closing, wants_route)
+    }
+    /// [`Self::observe_supply_streams_at_once`], with the helpers' part on a
+    /// thread of `scope` whose result the caller takes later: the batch is
+    /// made ready on the calling thread here, as there, and the caller goes
+    /// on with other work while its helpers observe. `None` where nothing
+    /// was handed over.
+    pub fn observe_supply_streams_ahead<'scope, 'tree: 'scope>(
+        &'tree self,
+        scope: &'scope std::thread::Scope<'scope, '_>,
+        streams: &[SupplyStreamRequest<'_>],
+        maximum_range_bytes: u64,
+        closing: bool,
+        wants_route: impl Fn(usize, &[(SupplyKind, SupplyRange)]) -> Option<u64>,
+    ) -> Option<std::thread::ScopedJoinHandle<'scope, Vec<SupplyStreamSeen>>> {
+        supply_batch::observe_ahead(
+            scope,
+            self,
+            streams,
+            maximum_range_bytes,
+            closing,
+            wants_route,
+        )
     }
     /// Whether [`Self::observe_supply_streams_at_once`] can take a batch of
     /// this tree's streams at all.
@@ -2886,6 +2911,7 @@ fn allocate_domain_with_memory(
         stream_slots,
         sparse_targets,
         carrier_directory,
+        shadow_root: std::sync::OnceLock::new(),
         volume,
         pair: pair.clone(),
         backing_guard: None,

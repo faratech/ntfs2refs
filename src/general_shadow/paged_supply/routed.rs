@@ -546,6 +546,98 @@ impl<'a> StreamsAtOnce<'a> {
         self.taken += 1;
         self.seen.pop_front()
     }
+
+    /// Takes what a helper already saw of this batch's first streams
+    /// ([`ObservedAhead`]), as the first observation [`Self::next`] makes
+    /// would have returned it. Nothing is taken where this batch hands no
+    /// stream over, or has begun: the streams are then taken as before.
+    fn seen_ahead(&mut self, seen: Vec<SupplyStreamSeen>) {
+        if self.taken == 0 && self.seen.is_empty() && seen.len() <= self.requests.len() {
+            self.seen = seen.into();
+        }
+    }
+}
+
+/// The observations of the next batch's first streams, made by the tree's
+/// helpers while the planning pass takes the batch before it.
+///
+/// The planning pass handed a batch's streams to the tree's helpers
+/// ([`StreamsAtOnce`]) and waited for them, and the helpers then waited
+/// while the pass took the batch's streams one by one (the source's side of
+/// each, its frames and its counts). Here the pass makes the next batch
+/// ready before it takes this one, exactly as [`StreamsAtOnce::next`] does
+/// when it comes to that batch (the same streams in the same order, the same
+/// reservations of spare memory, the same function), and the helpers
+/// observe while the pass takes this batch. The pass then takes their
+/// results as it takes what it asked for itself
+/// ([`StreamsAtOnce::seen_ahead`]); every check is made where it was, in the
+/// same order. The planning pass only observes: it writes nothing to the
+/// shadow, so what a helper sees of a stream before the pass comes to it is
+/// what the pass would have seen. Where the next objects cannot be held now,
+/// or nothing is handed over, the next batch is taken as before.
+struct ObservedAhead<'scope> {
+    objects: Vec<LeasedExpectedObject>,
+    seen: Option<std::thread::ScopedJoinHandle<'scope, Vec<SupplyStreamSeen>>>,
+}
+impl<'scope> ObservedAhead<'scope> {
+    /// Makes the first streams of `objects` (the first of which is object
+    /// `first`) ready and starts their observation on a thread of `scope`.
+    fn start<'tree: 'scope>(
+        scope: &'scope std::thread::Scope<'scope, '_>,
+        template: &'tree PrivateTree,
+        objects: Vec<LeasedExpectedObject>,
+        first: usize,
+        row_window: u64,
+    ) -> Self {
+        let mut requests = Vec::new();
+        let mut streams = Vec::new();
+        'objects: for (offset, object) in objects.iter().enumerate() {
+            if object.directory || system(object) {
+                continue;
+            }
+            for stream in object.data_streams() {
+                if requests.len() == SUPPLY_BATCH_STREAMS {
+                    break 'objects;
+                }
+                requests.push(SupplyStreamRequest {
+                    object_index: first + offset,
+                    name_utf16: stream.name_utf16,
+                    components: &object.path,
+                    logical_length: stream.length,
+                });
+                streams.push(stream);
+            }
+        }
+        // A prefix is observed for exactly the streams `StreamsAtOnce::next`
+        // observes one for.
+        let seen = if requests.is_empty() {
+            None
+        } else {
+            template.observe_supply_streams_ahead(
+                scope,
+                &requests,
+                row_window,
+                false,
+                |slot, ranges| {
+                    let prefix = eligible_prefix(streams[slot]).ok().flatten();
+                    prefix.filter(|_| routed_in(ranges, prefix))
+                },
+            )
+        };
+        drop(requests);
+        drop(streams);
+        Self { objects, seen }
+    }
+
+    /// The objects and what the helpers saw of their first streams (nothing
+    /// where nothing was handed over, or a helper failed).
+    fn finish(self) -> (Vec<LeasedExpectedObject>, Vec<SupplyStreamSeen>) {
+        let seen = self
+            .seen
+            .and_then(|helpers| helpers.join().ok())
+            .unwrap_or_default();
+        (self.objects, seen)
+    }
 }
 
 /// Names the object a supply pass stopped on. The loops that use this run
@@ -816,122 +908,148 @@ fn scan_plan(
         );
     };
     let mut materialized_streams: MaterializedPlan = std::collections::BTreeMap::new();
-    (|| -> Result<()> {
-        let mut first = 0usize;
-        while first < expected.len() {
-            announce(first);
-            let held = objects_from(expected, first, arena.is_some())?;
-            let mut batch = StreamsAtOnce::new(&held, first, false, arena.as_ref());
-            for (index, object) in (first..).zip(&held) {
-                if index > first {
-                    announce(index);
+    std::thread::scope(|scope| -> Result<()> {
+        // The next batch, observed by the tree's helpers while this one is
+        // taken.
+        let mut ahead: Option<ObservedAhead<'_>> = None;
+        let planned = (|| -> Result<()> {
+            let mut first = 0usize;
+            while first < expected.len() {
+                announce(first);
+                let (held, seen) = match ahead.take() {
+                    Some(ahead) => ahead.finish(),
+                    None => (objects_from(expected, first, arena.is_some())?, Vec::new()),
+                };
+                let mut batch = StreamsAtOnce::new(&held, first, false, arena.as_ref());
+                batch.seen_ahead(seen);
+                let after = first + held.len();
+                // What the next batch's first object fails with is reported when
+                // the pass comes to it.
+                if arena.is_some()
+                    && after < expected.len()
+                    && let Ok(next) = objects_from(expected, after, true)
+                {
+                    ahead = Some(ObservedAhead::start(
+                        scope, template, next, after, row_window,
+                    ));
                 }
-                if object.directory || system(object) {
-                    continue;
-                }
-                for (stream_ordinal, stream) in object.data_streams().enumerate() {
-                    let mut seen = batch.next(template, row_window);
-                    require_policy_evidence(policy, stream)?;
-                    // The verification's own check of the stream's evidence,
-                    // made here where that pass no longer takes the stream.
-                    ensure!(
-                        receipt_hash.is_none()
-                            || stream.sha256.is_some()
-                            || stream.source_evidence.is_some(),
-                        "routed verification lacks source content or extent evidence"
-                    );
-                    let id = identity(object, stream);
-                    bytes.check_stream(&id)?;
-                    let mut observed = leased_ranges(
-                        bytes,
-                        template,
-                        index,
-                        object,
-                        stream,
-                        row_window,
-                        seen.as_mut(),
-                    )?;
-                    let decision = route_decision(
-                        template,
-                        index,
-                        object,
-                        stream,
-                        &observed.ranges,
-                        seen.as_mut(),
-                    )?;
-                    // The native observations and route proof own their temporary
-                    // allocations; only the separate range vector remains live.
-                    drop(observed.native_ram.take());
-                    let summary = &observed.summary;
-                    let ranges = &observed.ranges;
-                    let prefix = decision.as_ref().map(|(prefix, _)| *prefix);
-                    let target_pin = decision.as_ref().map(|(_, pin)| pin);
-                    let _frame_ram = frame_ram(bytes, stream.name_utf16.len())?;
-                    frame(
-                        &mut hash,
-                        &serde_json::json!({"object_index":index,
-                    "record_number":object.record_number,
-                    "sequence_number":object.sequence_number,"stream_name_utf16":stream.name_utf16,
-                    "summary":summary,"target_readiness_sha256":target_pin}),
-                    )?;
-                    if let Some(receipt) = receipt_hash.as_mut() {
-                        // The frame `verify` makes of the stream, field for field.
-                        frame(
-                            receipt,
-                            &receipt_frame(index, object, stream, None, summary),
+                for (index, object) in (first..).zip(&held) {
+                    if index > first {
+                        announce(index);
+                    }
+                    if object.directory || system(object) {
+                        continue;
+                    }
+                    for (stream_ordinal, stream) in object.data_streams().enumerate() {
+                        let mut seen = batch.next(template, row_window);
+                        require_policy_evidence(policy, stream)?;
+                        // The verification's own check of the stream's evidence,
+                        // made here where that pass no longer takes the stream.
+                        ensure!(
+                            receipt_hash.is_none()
+                                || stream.sha256.is_some()
+                                || stream.source_evidence.is_some(),
+                            "routed verification lacks source content or extent evidence"
+                        );
+                        let id = identity(object, stream);
+                        bytes.check_stream(&id)?;
+                        let mut observed = leased_ranges(
+                            bytes,
+                            template,
+                            index,
+                            object,
+                            stream,
+                            row_window,
+                            seen.as_mut(),
                         )?;
+                        let decision = route_decision(
+                            template,
+                            index,
+                            object,
+                            stream,
+                            &observed.ranges,
+                            seen.as_mut(),
+                        )?;
+                        // The native observations and route proof own their temporary
+                        // allocations; only the separate range vector remains live.
+                        drop(observed.native_ram.take());
+                        let summary = &observed.summary;
+                        let ranges = &observed.ranges;
+                        let prefix = decision.as_ref().map(|(prefix, _)| *prefix);
+                        let target_pin = decision.as_ref().map(|(_, pin)| pin);
+                        let _frame_ram = frame_ram(bytes, stream.name_utf16.len())?;
+                        frame(
+                            &mut hash,
+                            &serde_json::json!({"object_index":index,
+                        "record_number":object.record_number,
+                        "sequence_number":object.sequence_number,"stream_name_utf16":stream.name_utf16,
+                        "summary":summary,"target_readiness_sha256":target_pin}),
+                        )?;
+                        if let Some(receipt) = receipt_hash.as_mut() {
+                            // The frame `verify` makes of the stream, field for field.
+                            frame(
+                                receipt,
+                                &receipt_frame(index, object, stream, None, summary),
+                            )?;
+                        }
+                        drop(_frame_ram);
+                        logical = logical
+                            .checked_add(summary.logical_bytes)
+                            .context("routed logical total overflow")?;
+                        for (kind, range) in ranges {
+                            pieces(stream, *kind, range, prefix, |piece, offset, length| {
+                                match piece {
+                                    Piece::Reference(physical) => {
+                                        bytes.require_reference(&id, offset, physical, length)?;
+                                        referenced = referenced
+                                            .checked_add(length)
+                                            .context("reference total overflow")?;
+                                    }
+                                    Piece::Routed(physical) => {
+                                        ensure!(
+                                            receipt_hash.is_none()
+                                                || (stream.sha256.is_none()
+                                                    && stream.source_evidence.is_some()),
+                                            "routed prefix cannot claim an unmeasured content digest"
+                                        );
+                                        bytes.require_reference(&id, offset, physical, length)?;
+                                        routed = routed
+                                            .checked_add(length)
+                                            .context("routed total overflow")?;
+                                    }
+                                    Piece::Materialize => {
+                                        materialized_streams
+                                            .entry((index, stream_ordinal))
+                                            .or_insert_with(|| (summary.clone(), Vec::new()))
+                                            .1
+                                            .push((offset, length));
+                                        materialized = materialized
+                                            .checked_add(length)
+                                            .context("materialized total overflow")?
+                                    }
+                                    Piece::Hole => {
+                                        bytes.require_hole(&id, offset, length)?;
+                                        holes =
+                                            holes.checked_add(length).context("hole total overflow")?;
+                                    }
+                                }
+                                Ok(())
+                            })?;
+                        }
+                        bytes.finish_stream()?;
                     }
-                    drop(_frame_ram);
-                    logical = logical
-                        .checked_add(summary.logical_bytes)
-                        .context("routed logical total overflow")?;
-                    for (kind, range) in ranges {
-                        pieces(stream, *kind, range, prefix, |piece, offset, length| {
-                            match piece {
-                                Piece::Reference(physical) => {
-                                    bytes.require_reference(&id, offset, physical, length)?;
-                                    referenced = referenced
-                                        .checked_add(length)
-                                        .context("reference total overflow")?;
-                                }
-                                Piece::Routed(physical) => {
-                                    ensure!(
-                                        receipt_hash.is_none()
-                                            || (stream.sha256.is_none()
-                                                && stream.source_evidence.is_some()),
-                                        "routed prefix cannot claim an unmeasured content digest"
-                                    );
-                                    bytes.require_reference(&id, offset, physical, length)?;
-                                    routed = routed
-                                        .checked_add(length)
-                                        .context("routed total overflow")?;
-                                }
-                                Piece::Materialize => {
-                                    materialized_streams
-                                        .entry((index, stream_ordinal))
-                                        .or_insert_with(|| (summary.clone(), Vec::new()))
-                                        .1
-                                        .push((offset, length));
-                                    materialized = materialized
-                                        .checked_add(length)
-                                        .context("materialized total overflow")?
-                                }
-                                Piece::Hole => {
-                                    bytes.require_hole(&id, offset, length)?;
-                                    holes =
-                                        holes.checked_add(length).context("hole total overflow")?;
-                                }
-                            }
-                            Ok(())
-                        })?;
-                    }
-                    bytes.finish_stream()?;
                 }
+                first = after;
             }
-            first += held.len();
+            Ok(())
+        })();
+        // Where the pass stops early, the helpers still observing are waited
+        // for and what they saw is let go before the pass reports.
+        if let Some(ahead) = ahead.take() {
+            drop(ahead.finish());
         }
-        Ok(())
-    })()
+        planned
+    })
     .map_err(|error| {
         at_object(
             expected,

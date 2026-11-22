@@ -749,6 +749,22 @@ pub(crate) fn preflight_source_references(
     Ok(())
 }
 
+/// One stream's frame of the ordered receipt of the supply's verification
+/// ([`RoutedSupplyOwner::verify`]); the planning pass of a run that
+/// verifies each thing once makes the same frames ([`scan_plan`]).
+fn receipt_frame(
+    index: usize,
+    object: &Object,
+    stream: StreamRef<'_>,
+    complete_content_digest: Option<String>,
+    summary: &StreamSupplySummary,
+) -> serde_json::Value {
+    serde_json::json!({"object_index":index,
+        "record_number":object.record_number,"stream_name_utf16":stream.name_utf16,
+        "logical_bytes":stream.length,"complete_content_digest":complete_content_digest,
+        "supply":summary})
+}
+
 type MaterializedPlan = std::collections::BTreeMap<
     (usize, usize),
     (
@@ -766,9 +782,20 @@ fn scan_plan(
     policy: VerificationPolicy,
     at_once: bool,
     progress: &Reporter,
-) -> Result<(RoutedPlan, MaterializedPlan)> {
+) -> Result<(RoutedPlan, MaterializedPlan, Option<String>)> {
     let mut hash = Sha256::new();
     hash.update(b"n2r-private-routed-prefix-plan-v1\0");
+    // A run that verifies each thing once (`at_once`) does not observe the
+    // shadow's streams again when it verifies the supply
+    // ([`RoutedSupplyOwner::verify`]): the frames of that pass's ordered
+    // receipt are made here instead, from this pass's observation of each
+    // stream, which is what that pass held its own to. Nothing was read
+    // there in such a run, so no stream's frame claims a content digest.
+    let mut receipt_hash = at_once.then(|| {
+        let mut receipt = Sha256::new();
+        receipt.update(b"n2r-private-routed-prefix-verification-v1\0");
+        receipt
+    });
     let (mut logical, mut referenced, mut routed, mut materialized, mut holes) =
         (0u64, 0u64, 0u64, 0u64, 0u64);
     let failing_object = std::cell::Cell::new(0usize);
@@ -805,6 +832,14 @@ fn scan_plan(
                 for (stream_ordinal, stream) in object.data_streams().enumerate() {
                     let mut seen = batch.next(template, row_window);
                     require_policy_evidence(policy, stream)?;
+                    // The verification's own check of the stream's evidence,
+                    // made here where that pass no longer takes the stream.
+                    ensure!(
+                        receipt_hash.is_none()
+                            || stream.sha256.is_some()
+                            || stream.source_evidence.is_some(),
+                        "routed verification lacks source content or extent evidence"
+                    );
                     let id = identity(object, stream);
                     bytes.check_stream(&id)?;
                     let mut observed = leased_ranges(
@@ -839,6 +874,13 @@ fn scan_plan(
                     "sequence_number":object.sequence_number,"stream_name_utf16":stream.name_utf16,
                     "summary":summary,"target_readiness_sha256":target_pin}),
                     )?;
+                    if let Some(receipt) = receipt_hash.as_mut() {
+                        // The frame `verify` makes of the stream, field for field.
+                        frame(
+                            receipt,
+                            &receipt_frame(index, object, stream, None, summary),
+                        )?;
+                    }
                     drop(_frame_ram);
                     logical = logical
                         .checked_add(summary.logical_bytes)
@@ -853,6 +895,12 @@ fn scan_plan(
                                         .context("reference total overflow")?;
                                 }
                                 Piece::Routed(physical) => {
+                                    ensure!(
+                                        receipt_hash.is_none()
+                                            || (stream.sha256.is_none()
+                                                && stream.source_evidence.is_some()),
+                                        "routed prefix cannot claim an unmeasured content digest"
+                                    );
                                     bytes.require_reference(&id, offset, physical, length)?;
                                     routed = routed
                                         .checked_add(length)
@@ -919,6 +967,7 @@ fn scan_plan(
             holes,
         },
         materialized_streams,
+        receipt_hash.map(|receipt| hex::encode(receipt.finalize())),
     ))
 }
 
@@ -940,6 +989,10 @@ pub(crate) struct RoutedSupplyOwner<'a, 'source, 'scope> {
     /// recovered owner, a thorough run and a diagnosis take one stream at a
     /// time.
     at_once: bool,
+    /// The ordered receipt digest of `verify`, made by the planning pass of
+    /// a run that verifies each thing once: such a run's `verify` observes
+    /// no stream of the shadow again.
+    planned_receipt: Option<String>,
     progress: Reporter,
     supplied_tails: Option<crate::ntfs_inspect::record_store::SortedRecordStore>,
     _ram: crate::ntfs_inspect::paged_storage::SourceRamLease,
@@ -1277,7 +1330,7 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
     // what a helper would have seen before. The budget refusal still stands
     // between the plan and the first write.
     let at_once = policy.verifies_once();
-    let (plan, materialized_streams) = scan_plan(
+    let (plan, materialized_streams, planned_receipt) = scan_plan(
         bytes, expected, template, row_window, policy, at_once, progress,
     )?;
     ensure!(
@@ -1666,6 +1719,7 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
         recovered: false,
         reread: !policy.verifies_once(),
         at_once,
+        planned_receipt,
         progress: progress.clone(),
         supplied_tails,
         _ram: ram,
@@ -1705,7 +1759,7 @@ pub(crate) fn prepare_recovered<'a, 'source, 'scope>(
             .context("recovered routed supply RAM overflow")?,
     )?;
     // A recovered supply takes one stream at a time, as before.
-    let (plan, _) = scan_plan(
+    let (plan, _, _) = scan_plan(
         bytes, expected, template, row_window, policy, false, progress,
     )?;
     ensure!(
@@ -1722,6 +1776,7 @@ pub(crate) fn prepare_recovered<'a, 'source, 'scope>(
         recovered: true,
         reread: true,
         at_once: false,
+        planned_receipt: None,
         progress: progress.clone(),
         supplied_tails: None,
         _ram: ram,
@@ -1757,9 +1812,7 @@ impl RoutedSupplyOwner<'_, '_, '_> {
         // Every byte materialized on the shadow was read back and held to
         // the source's when it was written (`prepare`), and a stream with a
         // digest is read in full on the converted volume after the apply.
-        // Under "verify once" this pass therefore reads no payload: it still
-        // walks every stream's mapping on both sides, which is what the plan
-        // digest in its receipt is made from.
+        // Under "verify once" this pass therefore reads no payload.
         let reread = self.reread;
         // Nor, under "verify once" (owner decision D2, #251), does it walk
         // the source's side of each stream again: opening the stream's
@@ -1774,11 +1827,73 @@ impl RoutedSupplyOwner<'_, '_, '_> {
         // reads every metadata range and extent the inspection read again and
         // holds them to the source fingerprint pinned at inspection
         // (`recheck_source`), so a changed file record or run list stops the
-        // run before it writes. Every observation of the shadow's side, and
-        // the plan digest and counts they make, are still taken and compared
-        // with the plan. A run that reads the payloads again (thorough,
-        // `--recheck-everything`, a recovered supply) walks both sides.
+        // run before it writes. A run that reads the payloads again
+        // (thorough, `--recheck-everything`, a recovered supply) walks both
+        // sides.
         let walk_source = reread;
+        // Nor, in a run that verifies each thing once, does it observe the
+        // shadow's side of each stream again (#140: 8.9 s of the full
+        // Windows volume): a duplicate of each stream's file, its metadata,
+        // security and complete mapping, and for a stream proven by its
+        // extents the comparison of its tracked pieces, the observation of
+        // its prefix (identity, security, mapping, initialized regions and
+        // integrity) and that again, all held to what the planning pass of
+        // this process had observed of the same held file. Every stream's
+        // file stays held by this process and nothing else can write to the
+        // shadow; what this process wrote since the plan (the materialized
+        // ranges) was read back as it was written; and the walk of the
+        // frozen shadow (`walk shadow (closing)`) captures every stream's
+        // complete mapping, both initialized-region views and its integrity
+        // again, holds each mapping to its expected allocation and reads
+        // every materialized tail back against its digest, before the
+        // capture is compared with the source and the gate re-reads the
+        // source's mappings against its fingerprint. The counts and the plan
+        // digest are then the plan's, and the ordered receipt digest is the
+        // one the planning pass framed of the same streams with the same
+        // fields ([`scan_plan`]); the receipt is the one this pass made.
+        // Nothing reads what the observations made here: each was compared
+        // and let go. A thorough run, a diagnosis, `--recheck-everything`
+        // and a recovered supply observe every stream as before.
+        if let Some(ordered_receipt_sha256) = self
+            .planned_receipt
+            .take()
+            .filter(|_| !reread && !self.recovered && n2r_win32::verify_policy::verifies_once())
+        {
+            supply_progress(
+                &self.progress,
+                Phase::PayloadVerification,
+                0,
+                0,
+                self.expected.len(),
+                0,
+                None,
+            );
+            let plan = &self.plan;
+            ensure!(
+                plan.referenced
+                    .checked_add(plan.routed)
+                    .and_then(|n| n.checked_add(plan.materialized))
+                    .and_then(|n| n.checked_add(plan.holes))
+                    == Some(plan.logical),
+                "routed verification counts differ from the complete preflight"
+            );
+            supply_progress(
+                &self.progress,
+                Phase::PayloadVerification,
+                0,
+                self.expected.len(),
+                self.expected.len(),
+                self.bytes.logical_bytes_read() - before_reads,
+                None,
+            );
+            phase(self.bytes, self.expected, self.template)?;
+            return Ok(self.receipt(
+                ordered_receipt_sha256,
+                self.bytes.logical_bytes_read() - before_reads,
+                reread,
+                walk_source,
+            ));
+        }
         let (mut logical, mut referenced, mut routed, mut materialized, mut holes) =
             (0u64, 0u64, 0u64, 0u64, 0u64);
         let mut source_buffer = vec![0u8; WINDOW];
@@ -1994,10 +2109,7 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                     let _frame_ram = frame_ram(self.bytes, stream.name_utf16.len())?;
                     frame(
                         &mut receipt_hash,
-                        &serde_json::json!({"object_index":index,
-                        "record_number":object.record_number,"stream_name_utf16":stream.name_utf16,
-                        "logical_bytes":stream.length,"complete_content_digest":digest,
-                        "supply":summary}),
+                        &receipt_frame(index, object, stream, digest, summary),
                     )?;
                 }
             }
@@ -2036,11 +2148,37 @@ impl RoutedSupplyOwner<'_, '_, '_> {
             None,
         );
         phase(self.bytes, self.expected, self.template)?;
+        Ok(self.receipt(
+            hex::encode(receipt_hash.finalize()),
+            self.bytes.logical_bytes_read() - before_reads,
+            reread,
+            walk_source,
+        ))
+    }
+
+    /// The receipt of [`Self::verify`]. Its counts are the plan's, which
+    /// the verification either held its own to or, in a run that verifies
+    /// each thing once, took.
+    fn receipt(
+        &self,
+        ordered_receipt_sha256: String,
+        source_bytes_read: u64,
+        reread: bool,
+        walk_source: bool,
+    ) -> serde_json::Value {
+        let plan = &self.plan;
+        let (logical, referenced, routed, materialized, holes) = (
+            plan.logical,
+            plan.referenced,
+            plan.routed,
+            plan.materialized,
+            plan.holes,
+        );
         let mut receipt = serde_json::json!({"kind":"private-routed-prefix-verification", "success":true,
             "logical_bytes":logical,"same_coordinate_reference_bytes":referenced,
             "relocated_prefix_routed_bytes":routed,"shadow_materialized_bytes":materialized,
-            "hole_bytes":holes,"actual_source_logical_bytes_read":self.bytes.logical_bytes_read()-before_reads,
-            "ordered_receipt_sha256":hex::encode(receipt_hash.finalize()),"routed_plan_sha256":self.plan.sha256,
+            "hole_bytes":holes,"actual_source_logical_bytes_read":source_bytes_read,
+            "ordered_receipt_sha256":ordered_receipt_sha256,"routed_plan_sha256":self.plan.sha256,
             "target_route_capture_pending":true,"journal_copy_literal_split_pending":true,
             "source_payload_writes":0,"source_admitted":false,"execution_authorized":false,
             "completed_payloads_reused":self.recovered,"payload_bytes_rematerialized":if self.recovered {Some(0u64)}else{None},
@@ -2056,7 +2194,7 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                 "the planning pass; the source fingerprint at the gate before the first source write"
                     .into();
         }
-        Ok(receipt)
+        receipt
     }
 }
 

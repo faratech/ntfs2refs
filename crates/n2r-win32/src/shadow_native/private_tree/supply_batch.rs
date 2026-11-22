@@ -377,7 +377,8 @@ pub(super) fn observe(
 /// caller joins later: the calling thread makes the batch ready here, as
 /// `observe` does, and goes on with its own work while the helpers make the
 /// observations. `None` where the tree takes its streams one at a time, or
-/// no thread could be started (the batch's reservations are then returned).
+/// no thread could be started or its stack was not granted as spare memory
+/// (the batch's reservations are then returned).
 ///
 /// The caller may meanwhile hand a batch of its own to helpers
 /// ([`observe`]), so this batch is handed over only where the tree's handle
@@ -391,10 +392,17 @@ pub(super) fn observe_ahead<'scope, 'tree: 'scope>(
     wants_route: impl Fn(usize, &[(SupplyKind, SupplyRange)]) -> Option<u64>,
 ) -> Option<std::thread::ScopedJoinHandle<'scope, Vec<SupplyStreamSeen>>> {
     let prepared = prepare_batch(tree, 2, streams, maximum_range_bytes, closing, wants_route)?;
+    // The thread's stack, and the query buffer it keeps where it works on
+    // streams itself (`each_at_once` without helpers), as a helper's are.
+    let thread = prepared
+        .payer
+        .reserve_spare(crate::shadow_native::HELPER_THREAD_BYTES)
+        .ok()?;
     std::thread::Builder::new()
         .name("n2r-supply-observe-ahead".into())
         .spawn_scoped(scope, move || {
             let _sampled = crate::stack_sampler::helper();
+            let _thread = thread;
             observe_prepared(prepared)
         })
         .ok()

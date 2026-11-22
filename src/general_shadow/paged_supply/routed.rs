@@ -582,15 +582,42 @@ struct ObservedAhead<'scope> {
 impl<'scope> ObservedAhead<'scope> {
     /// Makes the first streams of `objects` (the first of which is object
     /// `first`) ready and starts their observation on a thread of `scope`.
+    /// The lists handed over are paid for as [`StreamsAtOnce::new`] pays for
+    /// its own, as spare memory of `arena`; where it is refused nothing is
+    /// observed ahead.
     fn start<'tree: 'scope>(
         scope: &'scope std::thread::Scope<'scope, '_>,
         template: &'tree PrivateTree,
         objects: Vec<LeasedExpectedObject>,
         first: usize,
         row_window: u64,
+        arena: &crate::artifact_arena::ArtifactArena,
     ) -> Self {
+        let supplied = objects
+            .iter()
+            .filter(|object| !(object.directory || system(object)))
+            .map(|object| object.data_streams().count())
+            .sum::<usize>()
+            .min(SUPPLY_BATCH_STREAMS);
+        let entry =
+            std::mem::size_of::<SupplyStreamRequest<'_>>() + std::mem::size_of::<StreamRef<'_>>();
+        let Ok(_lists) = arena.reserve_spare_ram((supplied * entry) as u64 + 4096) else {
+            return Self {
+                objects,
+                seen: None,
+            };
+        };
         let mut requests = Vec::new();
         let mut streams = Vec::new();
+        if requests.try_reserve_exact(supplied).is_err()
+            || streams.try_reserve_exact(supplied).is_err()
+        {
+            drop((requests, streams));
+            return Self {
+                objects,
+                seen: None,
+            };
+        }
         'objects: for (offset, object) in objects.iter().enumerate() {
             if object.directory || system(object) {
                 continue;
@@ -982,12 +1009,12 @@ fn scan_plan(
                 let after = first + held.len();
                 // What the next batch's first object fails with is reported when
                 // the pass comes to it.
-                if arena.is_some()
+                if let Some(arena) = arena.as_ref()
                     && after < expected.len()
                     && let Ok(next) = objects_from(expected, after, true)
                 {
                     ahead = Some(ObservedAhead::start(
-                        scope, template, next, after, row_window,
+                        scope, template, next, after, row_window, arena,
                     ));
                 }
                 for (index, object) in (first..).zip(&held) {
@@ -1641,12 +1668,19 @@ impl<'o> PendingTails<'o> {
     }
 
     /// Adds the record of a stream whose tail was written by itself: at
-    /// once where no record waits before it, otherwise behind them.
+    /// once where no record waits before it, otherwise behind them. Where it
+    /// would pass what is paid for, what waits is written first, and the
+    /// record then goes at once.
     fn record(
         &mut self,
+        template: &mut PrivateTree,
         writer: &mut crate::ntfs_inspect::record_store::SortedRecordWriter,
         record: PendingRecord<'o>,
     ) -> Result<()> {
+        if !self.records.is_empty() && self.held.saturating_add(PENDING_RECORD_BYTES) > self.budget
+        {
+            self.flush(template, Some(&mut *writer))?;
+        }
         if self.records.is_empty() {
             return push_supplied_tail(writer, record);
         }
@@ -2113,6 +2147,7 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                         (tail_writer.as_mut(), this_tail_ordinal, recorded_tail_sha)
                     {
                         pending.record(
+                            template,
                             writer,
                             PendingRecord {
                                 key: supplied_tail_key(index as u64, ordinal),

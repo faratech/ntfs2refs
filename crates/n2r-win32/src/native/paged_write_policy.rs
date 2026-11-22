@@ -4,10 +4,12 @@
 use crate::{file_storage, reference_file};
 use sha2::{Digest, Sha256};
 use std::{
+    cell::RefCell,
     fs::{File, OpenOptions},
     io::{self, BufReader, Read, Seek, SeekFrom, Write},
     os::windows::fs::OpenOptionsExt,
     path::Path,
+    rc::Rc,
     sync::{Arc, Mutex, MutexGuard},
     time::SystemTime,
 };
@@ -204,18 +206,23 @@ impl PagedPolicyIndexBuilder {
                 "closed policy index changed during readonly validation",
             ));
         }
-        Ok(HeldPagedWritePolicy(Arc::new(Mutex::new(PolicyOwner {
-            reader: BufReader::with_capacity(256 * 1024, readonly),
-            facts,
-            snapshot,
-            modified,
-            cursor: u64::MAX,
-            cached: None,
-            lease_issued: false,
-            rows: None,
-            rows_lease: None,
-            rows_refused: false,
-        }))))
+        Ok(HeldPagedWritePolicy(Arc::new_cyclic(|shared| {
+            Mutex::new(PolicyOwner {
+                reader: BufReader::with_capacity(256 * 1024, readonly),
+                facts,
+                snapshot,
+                modified,
+                cursor: u64::MAX,
+                cached: None,
+                lease_issued: false,
+                rows: None,
+                rows_lease: None,
+                rows_refused: false,
+                rows_used: 0,
+                rows_wait: 0,
+                shared: shared.clone(),
+            })
+        })))
     }
 }
 impl Write for PagedPolicyIndexBuilder {
@@ -235,16 +242,60 @@ struct PolicyOwner {
     cursor: u64,
     cached: Option<(u64, PagedPolicyIndexRow)>,
     lease_issued: bool,
-    // Every row of the validated index, once any row has been asked for.
-    // `None` until then, and for good if the rows could not be held.
+    // Every row of the validated index, once any row has been asked for: a
+    // cache, paid for by `rows_lease` and given up like the thread's other
+    // caches when a reservation the run needs has no room (`RowCache`).
+    // `None` until then, while it is given up, and for good if the rows
+    // could not be held.
     rows: Option<Vec<PagedPolicyIndexRow>>,
     rows_lease: Option<Box<dyn std::any::Any + Send>>,
     rows_refused: bool,
+    // When the rows were last used, on the thread's clock of cache uses.
+    rows_used: u64,
+    // Rows still to be read from the file before rows that were given up
+    // are asked to be held again: as many as the index has.
+    rows_wait: u64,
+    // This owner as its clones share it, for the cache of its rows.
+    shared: std::sync::Weak<Mutex<PolicyOwner>>,
 }
 /// Clones share the same readonly file, buffered cursor and cache. No clone
 /// grants target access or permits any writer alias to the original file.
 #[derive(Clone)]
 pub struct HeldPagedWritePolicy(Arc<Mutex<PolicyOwner>>);
+
+thread_local! {
+    // The rows of the policies this thread loaded, as caches it can be asked
+    // to give up. The registry of caches holds them weakly; this list is
+    // what keeps them.
+    static ROW_CACHES: RefCell<Vec<Rc<RowCache>>> = const { RefCell::new(Vec::new()) };
+}
+/// The rows one policy holds in memory, as a cache of the thread that loaded
+/// them ([`crate::evict`]).
+struct RowCache(std::sync::Weak<Mutex<PolicyOwner>>);
+/// Rows given up and their reservation, dropped in that order.
+type GivenUpRows = (
+    Vec<PagedPolicyIndexRow>,
+    Option<Box<dyn std::any::Any + Send>>,
+);
+impl crate::evict::Evict for RowCache {
+    fn evict(&self) -> bool {
+        let Some(shared) = self.0.upgrade() else {
+            return false;
+        };
+        // A policy that is locked is in use at this moment and stays.
+        let given_up = match shared.try_lock() {
+            Ok(mut owner) => owner.give_up_rows(),
+            Err(_) => None,
+        };
+        // The rows, then their reservation, go after the lock is released.
+        given_up.is_some()
+    }
+    fn last_used(&self) -> u64 {
+        self.0.upgrade().map_or(0, |shared| {
+            shared.try_lock().map_or(u64::MAX, |owner| owner.rows_used)
+        })
+    }
+}
 
 fn validate_index(file: &mut File, facts: PagedPolicyIndexFacts) -> io::Result<()> {
     if facts.range_count == 0
@@ -405,21 +456,43 @@ impl PolicyOwner {
         }
         self.rows = Some(rows);
         self.rows_lease = lease;
+        self.rows_used = crate::evict::now();
+        // A cache of this thread from now on, which it gives up when memory
+        // is short; one cache however often the rows are loaded again.
+        ROW_CACHES.with(|kept| {
+            let mut kept = kept.borrow_mut();
+            kept.retain(|cache| cache.0.strong_count() != 0);
+            if !kept.iter().any(|cache| cache.0.ptr_eq(&self.shared)) {
+                let cache = Rc::new(RowCache(self.shared.clone()));
+                crate::evict::register(&cache);
+                kept.push(cache);
+            }
+        });
         Ok(())
+    }
+    /// Gives the rows up, with what they reserved, for the caller to drop
+    /// once the lock is released. Lookups read the file until it has been
+    /// read through once more; the rows are then asked to be held again.
+    fn give_up_rows(&mut self) -> Option<GivenUpRows> {
+        let rows = self.rows.take()?;
+        self.rows_wait = u64::from(self.facts.range_count);
+        Some((rows, self.rows_lease.take()))
     }
     fn row(&mut self, ordinal: u64) -> io::Result<PagedPolicyIndexRow> {
         if ordinal >= u64::from(self.facts.range_count) {
             return Err(invalid("paged policy row outside index"));
         }
-        if self.rows.is_none() && !self.rows_refused {
+        if self.rows.is_none() && !self.rows_refused && self.rows_wait == 0 {
             self.load_rows()?;
         }
         if let Some(rows) = &self.rows {
+            self.rows_used = crate::evict::now();
             return rows
                 .get(ordinal as usize)
                 .copied()
                 .ok_or_else(|| invalid("paged policy row outside index"));
         }
+        self.rows_wait = self.rows_wait.saturating_sub(1);
         let at = HEADER
             .checked_add(
                 ordinal
@@ -542,4 +615,111 @@ fn find_row(owner: &mut PolicyOwner, offset: u64) -> io::Result<u64> {
         }
     }
     Ok(low)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A format-1 policy of `rows` (offset, length), every byte journaled
+    /// with its old and new contents.
+    fn policy(directory: &Path, rows: &[(u64, u64)]) -> HeldPagedWritePolicy {
+        let image_length = 64 * GRANULE;
+        let journal_immutable_sha256 = [7u8; 32];
+        let mut index = vec![0u8; HEADER as usize];
+        index[..8].copy_from_slice(MAGIC);
+        index[8..12].copy_from_slice(&(rows.len() as u32).to_le_bytes());
+        index[12..16].copy_from_slice(&1u32.to_le_bytes());
+        index[16..24].copy_from_slice(&image_length.to_le_bytes());
+        let mut descriptor = 2 * GRANULE + 80;
+        let mut selected = 0;
+        for &(offset, length) in rows {
+            for field in [offset, length, descriptor, 0] {
+                index.extend_from_slice(&field.to_le_bytes());
+            }
+            descriptor += 80 + 2 * length;
+            selected += length;
+        }
+        let journal_length = descriptor + 80;
+        index[24..32].copy_from_slice(&journal_length.to_le_bytes());
+        index[32..64].copy_from_slice(&journal_immutable_sha256);
+        let body: [u8; 32] = Sha256::digest(&index).into();
+        let mut footer = [0u8; FOOTER as usize];
+        footer[..8].copy_from_slice(END);
+        footer[8..16].copy_from_slice(&(rows.len() as u64).to_le_bytes());
+        footer[16..24].copy_from_slice(&descriptor.to_le_bytes());
+        footer[24..56].copy_from_slice(&body);
+        index.extend_from_slice(&footer);
+        let mut builder =
+            PagedPolicyIndexBuilder::create_new(&directory.join("policy.idx")).unwrap();
+        builder.write_all(&index).unwrap();
+        builder
+            .finish(PagedPolicyIndexFacts {
+                image_length,
+                selected_bytes: selected,
+                old_zero_bytes: 0,
+                source_free_bytes: 0,
+                journal_length,
+                range_count: rows.len() as u32,
+                format_version: 1,
+                journal_immutable_sha256,
+                index_sha256: Sha256::digest(&index).into(),
+                max_index_bytes: 1 << 20,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn held_rows_are_a_cache_given_up_when_memory_is_short_and_held_again_after_a_pass() {
+        let directory = tempfile::tempdir().unwrap();
+        let rows = [
+            (GRANULE, GRANULE),
+            (3 * GRANULE, 2 * GRANULE),
+            (8 * GRANULE, GRANULE),
+        ];
+        let policy = policy(directory.path(), &rows);
+        let held = |policy: &HeldPagedWritePolicy| policy.0.lock().unwrap().rows.is_some();
+        let permits = |policy: &HeldPagedWritePolicy| {
+            [
+                policy.permits(GRANULE, GRANULE).unwrap(),
+                policy.permits(3 * GRANULE, 2 * GRANULE).unwrap(),
+                policy.permits(4 * GRANULE, GRANULE).unwrap(),
+                policy.permits(2 * GRANULE, GRANULE).unwrap(),
+                policy.permits(8 * GRANULE, 2 * GRANULE).unwrap(),
+            ]
+        };
+        let expected = [true, true, true, false, false];
+        assert_eq!(policy.row(1).unwrap().offset, 3 * GRANULE);
+        assert!(held(&policy));
+        assert_eq!(permits(&policy), expected);
+        // Given up with the thread's other caches, when memory is short.
+        assert!(crate::evict::evict_all());
+        assert!(!held(&policy));
+        // Lookups read the file until it has been read through once more.
+        for ordinal in 0..rows.len() as u64 {
+            assert_eq!(
+                policy.row(ordinal).unwrap().offset,
+                rows[ordinal as usize].0
+            );
+            assert!(!held(&policy));
+        }
+        assert_eq!(policy.row(2).unwrap().offset, 8 * GRANULE);
+        assert!(held(&policy));
+        assert_eq!(permits(&policy), expected);
+        // However often its rows are loaded, a policy is one cache.
+        let shared = Arc::downgrade(&policy.0);
+        let caches = ROW_CACHES.with(|kept| {
+            kept.borrow()
+                .iter()
+                .filter(|cache| cache.0.ptr_eq(&shared))
+                .count()
+        });
+        assert_eq!(caches, 1);
+        assert!(policy.0.lock().unwrap().shared.ptr_eq(&shared));
+        // A policy that is in use at the moment keeps its rows.
+        let owner = policy.0.lock().unwrap();
+        assert!(!crate::evict::evict_all());
+        drop(owner);
+        assert!(held(&policy));
+    }
 }

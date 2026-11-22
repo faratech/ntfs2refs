@@ -1125,6 +1125,21 @@ pub trait NativeObservationDomain {
     fn resources_validated(&self) -> Option<&std::cell::Cell<bool>> {
         None
     }
+    /// Whether the check of every row was left, when the domain was opened,
+    /// to the comparison that decodes each row next and makes it there
+    /// (`validate_domain_resources_with_rows`), and has not been made since.
+    /// Only a run that verifies once leaves it; nothing may read a row of
+    /// such a domain before that comparison but the comparison.
+    fn validation_deferred(&self) -> bool {
+        false
+    }
+    /// What the domain checks of each row besides the resource rules, where
+    /// it left that check to the validation of its rows
+    /// ([`Self::validation_deferred`]): made on each row before the caller's
+    /// own check of it, with the message the domain's opening gives it.
+    fn check_deferred_row(&self, _index: usize, _row: &NativeObservationRow<'_>) -> io::Result<()> {
+        Ok(())
+    }
     fn header(&self) -> &Report;
     fn len(&self) -> usize;
     fn logical_len(&self) -> usize;
@@ -1668,6 +1683,13 @@ fn validate_domain_resources_now(
     domain: &impl NativeObservationDomain,
     each_row: &mut EachValidatedRow<'_>,
 ) -> io::Result<()> {
+    // A domain that left the check of its rows to this validation makes it
+    // on each row before the caller sees the row, as its opening did.
+    let mut checked = |index: usize, row: &NativeObservationRow<'_>| -> io::Result<()> {
+        domain.check_deferred_row(index, row)?;
+        each_row(index, row)
+    };
+    let each_row: &mut EachValidatedRow<'_> = &mut checked;
     let h = domain.header();
     if domain.is_paged()
         && h.schema_version == 16

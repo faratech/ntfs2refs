@@ -750,12 +750,15 @@ pub fn collect_file_metadata_single_content_pass(request: &Request) -> io::Resul
     collect_file_metadata_with_passes(request, request, true, None)
 }
 
+/// `for_comparison`: the caller compares every row with the raw reading next
+/// (`PagedNativeObservation::open_with_memory_for_comparison`).
 pub(crate) fn collect_file_metadata_paged_domain_with_memory(
     selectors: &impl NativeRequestDomain,
     path: &std::path::Path,
     budget: crate::observation_pages::NativeObservationBudget,
     single_content_pass: bool,
     accountant: std::sync::Arc<dyn crate::shadow_native::report_memory::ReportMemoryAccountant>,
+    for_comparison: bool,
 ) -> io::Result<crate::observation_pages::PagedNativeObservation> {
     let admission = selectors
         .header()
@@ -780,12 +783,21 @@ pub(crate) fn collect_file_metadata_paged_domain_with_memory(
     )?;
     let receipt = sink.finish(&header)?;
     drop(header);
-    crate::observation_pages::PagedNativeObservation::open_with_memory(
-        path,
-        &receipt.sha256,
-        budget,
-        memory,
-    )
+    if for_comparison {
+        crate::observation_pages::PagedNativeObservation::open_with_memory_for_comparison(
+            path,
+            &receipt.sha256,
+            budget,
+            memory,
+        )
+    } else {
+        crate::observation_pages::PagedNativeObservation::open_with_memory(
+            path,
+            &receipt.sha256,
+            budget,
+            memory,
+        )
+    }
 }
 
 pub(crate) fn collect_file_metadata_paged_domain(

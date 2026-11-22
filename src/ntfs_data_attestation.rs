@@ -245,15 +245,12 @@ pub(crate) fn check_file_with_extent_evidence_domain_scoped(
         native,
         &selector.extent_identity_streams,
         |stream| {
-            if windows_paths {
-                crate::ntfs_attestation::extent_identity_stream_request_windows_domain(
-                    source, file, stream,
-                )
-            } else {
-                crate::ntfs_attestation::extent_identity_stream_request_domain(
-                    source, file, stream, true, true,
-                )
-            }
+            crate::ntfs_attestation::extent_identity_stream_request_observed(
+                source,
+                file,
+                stream,
+                windows_paths,
+            )
         },
         Some(resources),
         plain,

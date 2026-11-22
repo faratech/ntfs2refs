@@ -3173,6 +3173,8 @@ impl GeneralFrozenPartition {
                 } else {
                     None
                 };
+                // Its one caller, the source preparation, compares every row
+                // with the raw reading next.
                 let collected =
                     crate::attestation_native::collect_file_metadata_paged_domain_with_memory(
                         selectors,
@@ -3180,6 +3182,7 @@ impl GeneralFrozenPartition {
                         budget,
                         single_content_pass,
                         Arc::clone(&memory),
+                        true,
                     );
                 let domain = match collected {
                     Ok(domain) => domain,
@@ -3382,7 +3385,10 @@ impl GeneralFrozenPartition {
         {
             return Err(invalid("general native source report profile differs"));
         }
-        if request.schema_version >= 3 {
+        // A domain whose opening left the check of its rows to the
+        // comparison that follows is checked there, on that comparison's
+        // decoding of each row.
+        if request.schema_version >= 3 && !domain.validation_deferred() {
             crate::attestation::validate_domain_resources(&domain)?;
         }
         Ok(CollectedGeneralNtfs {

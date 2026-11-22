@@ -184,21 +184,12 @@ impl<'a> PagedObservationRequest<'a> {
             let mut plain_streams = Vec::new();
             if self.policy.is_fast() {
                 for stream in &file.streams {
-                    let selector = if self.windows_paths {
-                        super::extent_identity_stream_request_windows_domain(
-                            self.source,
-                            file,
-                            stream,
-                        )?
-                    } else {
-                        super::extent_identity_stream_request_domain(
-                            self.source,
-                            file,
-                            stream,
-                            true,
-                            true,
-                        )?
-                    };
+                    let selector = super::extent_identity_stream_request_observed(
+                        self.source,
+                        file,
+                        stream,
+                        self.windows_paths,
+                    )?;
                     if let Some(selector) = selector {
                         row.extent_identity_streams.push(selector);
                     }
@@ -742,7 +733,8 @@ fn compare_domain_with_header(
         file: std::sync::Arc<crate::ntfs_inspect::FileInventory>,
         role: Option<String>,
         descriptor: Result<std::sync::Arc<[u8]>>,
-        observation: n2r_win32::attestation::Observation,
+        // A share of the row's decoded observation, not a copy of it.
+        observation: std::sync::Arc<n2r_win32::attestation::Observation>,
         logical_data: Check,
         evidence: crate::ntfs_data_attestation::LogicalEvidence,
         namespace: Option<Check>,
@@ -1066,7 +1058,7 @@ fn compare_domain_with_header(
                     file,
                     role,
                     descriptor,
-                    observation: observation.clone(),
+                    observation: native_row.observation_shared(),
                     logical_data,
                     evidence,
                     namespace,

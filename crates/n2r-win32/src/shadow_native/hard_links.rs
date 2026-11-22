@@ -214,7 +214,14 @@ pub(super) fn observe(
         // Only the name's metadata is read through this handle.
         let file = open_input_metadata(&name, item, protected)?;
         let before = repeat_snapshot(&file, canonical);
-        let after = repeat_snapshot(&file, canonical);
+        // On a volume held read-only (`protected`), in a run that verifies
+        // once, the name is read once, as the walk reads its object once:
+        // nothing can change it between two reads back to back.
+        let after = if protected && crate::verify_policy::verifies_once() {
+            before.clone()
+        } else {
+            repeat_snapshot(&file, canonical)
+        };
         let same_file_id = query_bytes(&before, 18, 24)? == canonical_id
             && query_bytes(&after, 18, 24)? == canonical_id;
         let link_count_matches = layout::u32_at(query_bytes(&before, 1, 24)?, 16)? == expected

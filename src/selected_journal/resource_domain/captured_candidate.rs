@@ -12,11 +12,186 @@ use crate::{
     lab_reconstruct::ReadSeek,
 };
 use anyhow::{Context, Result, ensure};
-use n2r_win32::{GeneralDiskState, GeneralFrozenPartition, NativeEvent};
-use std::io::{self, Read, Seek, SeekFrom};
+use n2r_win32::{GeneralDiskState, GeneralFrozenLane, GeneralFrozenPartition, NativeEvent};
+use std::{
+    collections::VecDeque,
+    io::{self, Read, Seek, SeekFrom},
+};
+
+/// Multi-lane sorted, coalesced prefetcher for non-monotonic COPY source reads
+/// during journal preparation. Opened with spare RAM; on refusal or read error
+/// the caller falls back cleanly to `source_lane`.
+struct CopyPrefetch {
+    lanes: Vec<GeneralFrozenLane>,
+    cache: VecDeque<(u64, Vec<u8>)>,
+    _ram: crate::artifact_arena::ArenaRamLease,
+}
+
+const COPY_PREFETCH_MAX_LANES: usize = 4;
+const COPY_PREFETCH_MAX_ROWS: usize = 256;
+const COPY_PREFETCH_MAX_SCAN: u64 = 1024;
+const COPY_PREFETCH_MAX_BATCH_BYTES: u64 = 16 * 1024 * 1024;
+const COPY_PREFETCH_MAX_GAP: u64 = 64 * 1024;
+const COPY_PREFETCH_MAX_SPAN: u64 = 4 * 1024 * 1024;
+
+#[derive(Debug, PartialEq, Eq)]
+struct CopySpan {
+    start: u64,
+    length: usize,
+    members: Vec<(u64, usize, usize)>,
+}
+
+fn coalesce_copy_spans(mut items: Vec<(u64, u64, u64)>) -> Vec<CopySpan> {
+    // items: (copy_source_offset, length, row_ordinal)
+    items.sort_unstable_by_key(|&(offset, _, ordinal)| (offset, ordinal));
+    let mut spans: Vec<CopySpan> = Vec::new();
+    for (offset, length, ordinal) in items {
+        let Ok(len) = usize::try_from(length) else {
+            continue;
+        };
+        if len == 0 || len as u64 > COPY_PREFETCH_MAX_SPAN {
+            continue;
+        }
+        if let Some(last) = spans.last_mut() {
+            let last_end = last.start + last.length as u64;
+            if offset >= last.start {
+                let new_end = (offset + length).max(last_end);
+                let gap = offset.saturating_sub(last_end);
+                if gap <= COPY_PREFETCH_MAX_GAP && new_end - last.start <= COPY_PREFETCH_MAX_SPAN {
+                    let within = (offset - last.start) as usize;
+                    last.length = (new_end - last.start) as usize;
+                    last.members.push((ordinal, within, len));
+                    continue;
+                }
+            }
+        }
+        spans.push(CopySpan {
+            start: offset,
+            length: len,
+            members: vec![(ordinal, 0, len)],
+        });
+    }
+    spans
+}
+
+impl CopyPrefetch {
+    fn open(
+        source: &GeneralFrozenPartition,
+        arena: &crate::artifact_arena::ArtifactArena,
+        events: &mut Vec<NativeEvent>,
+    ) -> Option<Self> {
+        let depth = source.io_profile().queue_depth;
+        if depth < 2 {
+            return None;
+        }
+        let wanted = depth.min(COPY_PREFETCH_MAX_LANES);
+        let per_lane = GeneralFrozenPartition::read_buffer_memory_bytes()
+            .saturating_add(COPY_PREFETCH_MAX_SPAN)
+            .saturating_add(2 * 1024 * 1024);
+        let (lanes_count, ram) = (2..=wanted).rev().find_map(|n| {
+            let bytes = (n as u64)
+                .checked_mul(per_lane)?
+                .checked_add(COPY_PREFETCH_MAX_BATCH_BYTES)?;
+            arena.reserve_spare_ram(bytes).ok().map(|lease| (n, lease))
+        })?;
+        let lanes = source.read_lanes(lanes_count, events).ok()?;
+        if lanes.len() < 2 {
+            return None;
+        }
+        Some(Self {
+            lanes,
+            cache: VecDeque::new(),
+            _ram: ram,
+        })
+    }
+
+    fn refill(
+        &mut self,
+        index: &crate::general_shadow::capture_index::ClosedCaptureIndex,
+        start_ordinal: u64,
+    ) {
+        self.cache.clear();
+        let mut items: Vec<(u64, u64, u64)> = Vec::new();
+        let mut total_bytes = 0u64;
+        let scan_end = start_ordinal
+            .saturating_add(COPY_PREFETCH_MAX_SCAN)
+            .min(index.len());
+        for ordinal in start_ordinal..scan_end {
+            let Ok(row) = index.range(ordinal) else {
+                break;
+            };
+            if let Some(source_offset) = row.copy_source_offset {
+                if row.length > COPY_PREFETCH_MAX_SPAN {
+                    if items.is_empty() {
+                        return;
+                    }
+                    break;
+                }
+                if total_bytes.saturating_add(row.length) > COPY_PREFETCH_MAX_BATCH_BYTES
+                    && !items.is_empty()
+                {
+                    break;
+                }
+                total_bytes = total_bytes.saturating_add(row.length);
+                items.push((source_offset, row.length, ordinal));
+                if items.len() >= COPY_PREFETCH_MAX_ROWS {
+                    break;
+                }
+            }
+        }
+        if items.len() < 2 {
+            return;
+        }
+        let spans = coalesce_copy_spans(items);
+        if spans.is_empty() {
+            return;
+        }
+        let lane_count = self.lanes.len();
+        let mut results: Vec<io::Result<Vec<(u64, Vec<u8>)>>> =
+            (0..lane_count).map(|_| Ok(Vec::new())).collect();
+        std::thread::scope(|scope| {
+            for ((lane_idx, lane), slot) in
+                self.lanes.iter_mut().enumerate().zip(results.iter_mut())
+            {
+                let spans = &spans;
+                scope.spawn(move || {
+                    let mut buf = Vec::new();
+                    let mut out = Vec::new();
+                    for (span_idx, span) in spans.iter().enumerate() {
+                        if span_idx % lane_count != lane_idx {
+                            continue;
+                        }
+                        buf.resize(span.length, 0);
+                        if let Err(err) = lane
+                            .seek(SeekFrom::Start(span.start))
+                            .and_then(|_| lane.read_exact(&mut buf))
+                        {
+                            *slot = Err(err);
+                            return;
+                        }
+                        for &(ordinal, within, len) in &span.members {
+                            out.push((ordinal, buf[within..within + len].to_vec()));
+                        }
+                    }
+                    *slot = Ok(out);
+                });
+            }
+        });
+        let mut combined = Vec::new();
+        for res in results {
+            match res {
+                Ok(mut part) => combined.append(&mut part),
+                Err(_) => return,
+            }
+        }
+        combined.sort_unstable_by_key(|(ordinal, _)| *ordinal);
+        self.cache.extend(combined);
+    }
+}
 
 pub(crate) struct ProtectedCapturedCandidate<'a> {
     proof: &'a ProtectedPagedTargetSelection,
+    copy_prefetch: Option<CopyPrefetch>,
     source_lane: ResourceSourceReadLane,
     source_before: Option<GeneralDiskState>,
     partition_owner: Option<n2r_win32::PartitionOwnerToken>,
@@ -59,10 +234,11 @@ impl<'a> ProtectedCapturedCandidate<'a> {
         let lane_ram = GeneralFrozenPartition::read_buffer_memory_bytes()
             .checked_add(64 * 1024)
             .context("source lane RAM overflow")?;
-        let lane_memory = context
+        let arena = context
             .arena()
             .context("source lane needs the actual shared arena")?
-            .reserve_ram(lane_ram)?;
+            .clone();
+        let lane_memory = arena.reserve_ram(lane_ram)?;
         let (source, _) = context.scoped_source_and_inspection();
         ensure!(
             source.binding() == &proof.scope().pair().source
@@ -84,6 +260,10 @@ impl<'a> ProtectedCapturedCandidate<'a> {
             "captured-candidate source lane differs from the real frozen source"
         );
         source_lane.set_read_ahead(true);
+        let copy_prefetch = source
+            .require_dedicated()
+            .ok()
+            .and_then(|dedicated| CopyPrefetch::open(dedicated, &arena, events));
         let image_length = domain.facts().image_length;
         ensure!(
             source.byte_len() == image_length
@@ -93,6 +273,7 @@ impl<'a> ProtectedCapturedCandidate<'a> {
         );
         Ok(Self {
             proof,
+            copy_prefetch,
             source_lane,
             _lane_memory: lane_memory,
             source_before: Some(source_before),
@@ -202,11 +383,43 @@ impl Read for ProtectedCapturedCandidate<'_> {
         if row.new_is_zero {
             output[..count].fill(0);
         } else if let Some(source) = row.copy_source_offset {
-            let offset = source
-                .checked_add(within)
-                .ok_or_else(|| io::Error::other("captured COPY offset overflow"))?;
-            self.source_lane.seek(SeekFrom::Start(offset))?;
-            self.source_lane.read_exact(&mut output[..count])?;
+            let current_ordinal = self.cached.map(|(ord, _)| ord);
+            let mut served = false;
+            if let (Some(ordinal), Some(prefetch)) = (current_ordinal, self.copy_prefetch.as_mut())
+            {
+                while prefetch
+                    .cache
+                    .front()
+                    .is_some_and(|(ord, _)| *ord < ordinal)
+                {
+                    prefetch.cache.pop_front();
+                }
+                if prefetch
+                    .cache
+                    .front()
+                    .is_none_or(|(ord, _)| *ord != ordinal)
+                    && within == 0
+                {
+                    prefetch.refill(self.proof.captured().index(), ordinal);
+                }
+                if let Some((ord, bytes)) = prefetch.cache.front()
+                    && *ord == ordinal
+                    && let Some(slice) = bytes.get(within as usize..within as usize + count)
+                {
+                    output[..count].copy_from_slice(slice);
+                    if within as usize + count == bytes.len() {
+                        prefetch.cache.pop_front();
+                    }
+                    served = true;
+                }
+            }
+            if !served {
+                let offset = source
+                    .checked_add(within)
+                    .ok_or_else(|| io::Error::other("captured COPY offset overflow"))?;
+                self.source_lane.seek(SeekFrom::Start(offset))?;
+                self.source_lane.read_exact(&mut output[..count])?;
+            }
         } else {
             let offset = row
                 .packed_offset
@@ -306,6 +519,7 @@ impl<'a> ProtectedCapturedCandidate<'a> {
         );
         Ok(Self {
             proof,
+            copy_prefetch: None,
             source_lane,
             source_before: None,
             partition_owner: Some(token),
@@ -370,5 +584,37 @@ impl<'a> ProtectedCapturedCandidate<'a> {
         }
         self.proof
             .recheck_frozen_target_with_capture_witness(shadow, events, witness)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_span_coalescing_sorts_bridges_small_gaps_and_respects_span_cap() {
+        let items = vec![
+            // Out of physical order, with a 16 KiB gap that should bridge.
+            (100 * 1024, 8 * 1024, 5),
+            (64 * 1024, 20 * 1024, 2),
+            // Far away (> 64 KiB gap): separate span.
+            (512 * 1024, 4 * 1024, 9),
+            // Adjacent to the 512 KiB entry: bridges into the same span.
+            (516 * 1024, 12 * 1024, 1),
+        ];
+        let spans = coalesce_copy_spans(items);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].start, 64 * 1024);
+        assert_eq!(spans[0].length, 44 * 1024);
+        assert_eq!(
+            spans[0].members,
+            vec![(2, 0, 20 * 1024), (5, 36 * 1024, 8 * 1024)]
+        );
+        assert_eq!(spans[1].start, 512 * 1024);
+        assert_eq!(spans[1].length, 16 * 1024);
+        assert_eq!(
+            spans[1].members,
+            vec![(9, 0, 4 * 1024), (1, 4 * 1024, 12 * 1024)]
+        );
     }
 }

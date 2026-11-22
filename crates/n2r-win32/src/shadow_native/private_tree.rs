@@ -94,6 +94,15 @@ impl Receipts {
     }
 }
 
+pub struct TailBatchItem<'a> {
+    pub object_index: usize,
+    pub name: &'a [u16],
+    pub components: &'a [String],
+    pub logical_length: u64,
+    pub offset: u64,
+    pub bytes: &'a [u8],
+}
+
 pub struct PrivateTree {
     // Files close before the volume and privilege lease on drop. No drop path
     // restores public permissions over uninitialized scratch contents.
@@ -1181,6 +1190,145 @@ impl PrivateTree {
             bytes,
             false,
         )
+    }
+
+    /// Materializes a batch of disjoint non-sparse `<= 64 KiB` ranges across
+    /// available cores on their already-open handles in `self.files`. Every
+    /// safety check (exclusion, backing quota, original-coordinate non-overlap,
+    /// path/length binding, and `record_materialized_tail`) runs on the calling
+    /// thread; only the independent `WriteFile` + `FileIdInfo` syscalls run in
+    /// parallel.
+    pub fn materialize_tails_batch_unhashed(
+        &mut self,
+        items: &[TailBatchItem<'_>],
+    ) -> io::Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        if items.len() == 1 {
+            let item = &items[0];
+            let write = self.materialize_range_named_unhashed(
+                item.object_index,
+                item.name,
+                item.components,
+                item.logical_length,
+                item.offset,
+                item.bytes,
+            )?;
+            if write["readback_verified"] != true {
+                return Err(invalid("routed remaining materialization readback differs"));
+            }
+            return Ok(());
+        }
+        self.require_source_excluded()?;
+        let volume_path = self.pair.shadow.volume_path()?;
+        let mut total_bytes = 0u64;
+        let mut ordered: Vec<(StreamKey, usize, String)> = Vec::with_capacity(items.len());
+        for (idx, item) in items.iter().enumerate() {
+            let key = StreamKey::named(item.object_index, item.name);
+            if self.sparse_targets.contains_key(&key) {
+                return Err(invalid(
+                    "sparse target must use single-stream materialization",
+                ));
+            }
+            let write_end = item
+                .offset
+                .checked_add(item.bytes.len() as u64)
+                .ok_or_else(|| invalid("materialization range overflow"))?;
+            if self.materialized_tails.get(&key).is_some_and(|proof| {
+                item.offset < proof.offset + proof.bytes && proof.offset < write_end
+            }) {
+                self.materialized_tails.remove(&key);
+            }
+            if !item.bytes.is_empty()
+                && self.placement_complete
+                && self.original_coordinates.get(&key).is_some_and(|ranges| {
+                    ranges
+                        .iter()
+                        .any(|(start, _, len)| item.offset < *start + *len && *start < write_end)
+                })
+            {
+                return Err(invalid(
+                    "materialization overlaps an original-coordinate source reference",
+                ));
+            }
+            total_bytes = total_bytes
+                .checked_add(item.bytes.len() as u64)
+                .ok_or_else(|| invalid("materialization batch byte overflow"))?;
+            let expected_path = streams::path(&volume_path, item.components, item.name)?;
+            ordered.push((key, idx, expected_path));
+        }
+        self.before_backing_mutation(total_bytes)?;
+        ordered.sort_by(|a, b| a.0.cmp(&b.0));
+        for pair in ordered.windows(2) {
+            if pair[0].0 == pair[1].0 {
+                return Err(invalid("duplicate stream in parallel tail batch"));
+            }
+        }
+        let first_key = ordered[0].0.clone();
+        let last_key = ordered[ordered.len() - 1].0.clone();
+        let mut work = Vec::with_capacity(ordered.len());
+        let mut cursor = 0usize;
+        for (key, file) in self.files.range_mut(first_key..=last_key) {
+            if cursor >= ordered.len() {
+                break;
+            }
+            if *key == ordered[cursor].0 {
+                let item = &items[ordered[cursor].1];
+                if file.path != ordered[cursor].2 || file.logical_length() != item.logical_length {
+                    return Err(invalid("private materialization object binding differs"));
+                }
+                work.push((ordered[cursor].1, file));
+                cursor += 1;
+            }
+        }
+        if work.len() != ordered.len() {
+            return Err(invalid("private materialization file absent"));
+        }
+        let workers = std::thread::available_parallelism()
+            .map_or(1, |cores| cores.get())
+            .min(work.len());
+        let chunk_size = work.len().div_ceil(workers);
+        let mut results: Vec<Option<io::Result<Vec<u8>>>> =
+            (0..items.len()).map(|_| None).collect();
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(workers);
+            for chunk in work.chunks_mut(chunk_size) {
+                handles.push(scope.spawn(move || {
+                    let mut out = Vec::with_capacity(chunk.len());
+                    for (idx, file) in chunk.iter_mut() {
+                        let item = &items[*idx];
+                        let res = file
+                            .initialize_at_unhashed(item.offset, item.bytes)
+                            .and_then(|_| info(file.metadata_handle(), 18, 24));
+                        out.push((*idx, res));
+                    }
+                    out
+                }));
+            }
+            for handle in handles {
+                if let Ok(part) = handle.join() {
+                    for (idx, res) in part {
+                        results[idx] = Some(res);
+                    }
+                }
+            }
+        });
+        for (idx, item) in items.iter().enumerate() {
+            let native_file_id = results[idx]
+                .take()
+                .ok_or_else(|| invalid("parallel tail materialization worker panicked"))??;
+            let key = StreamKey::named(item.object_index, item.name);
+            self.record_materialized_tail(
+                &key,
+                item.logical_length,
+                item.offset,
+                item.bytes,
+                native_file_id,
+            )?;
+        }
+        self.require_source_excluded()?;
+        Ok(())
     }
     #[allow(clippy::too_many_arguments)]
     fn materialize_range_with(

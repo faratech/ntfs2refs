@@ -941,7 +941,15 @@ pub(crate) struct RoutedSupplyOwner<'a, 'source, 'scope> {
     /// time.
     at_once: bool,
     progress: Reporter,
+    supplied_tails: Option<crate::ntfs_inspect::record_store::SortedRecordStore>,
     _ram: crate::ntfs_inspect::paged_storage::SourceRamLease,
+}
+
+fn supplied_tail_key(object: u64, stream: u64) -> [u8; 16] {
+    let mut out = [0; 16];
+    out[..8].copy_from_slice(&object.to_be_bytes());
+    out[8..].copy_from_slice(&stream.to_be_bytes());
+    out
 }
 
 pub(crate) fn prepare<'a, 'source, 'scope>(
@@ -951,6 +959,29 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
     maximum_materialized_bytes: u64,
     policy: VerificationPolicy,
     progress: &Reporter,
+) -> Result<RoutedSupplyOwner<'a, 'source, 'scope>> {
+    prepare_recording_tails(
+        bytes,
+        expected,
+        template,
+        maximum_materialized_bytes,
+        policy,
+        progress,
+        None,
+    )
+}
+
+pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
+    bytes: &'a mut PagedSourceByteAdapterWithScope<'source, 'scope>,
+    expected: &'a PagedExpectedTree,
+    template: &'a mut PrivateTree,
+    maximum_materialized_bytes: u64,
+    policy: VerificationPolicy,
+    progress: &Reporter,
+    tail_output: Option<(
+        &std::path::Path,
+        &crate::ntfs_inspect::paged_storage::SourceScratch,
+    )>,
 ) -> Result<RoutedSupplyOwner<'a, 'source, 'scope>> {
     // Both verifications are supplied here: the conversion routes have no
     // other supply. What is routed follows each stream's evidence, not the
@@ -1025,6 +1056,21 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
     } else {
         None
     };
+    let mut tail_writer = if at_once
+        && n2r_win32::verify_policy::checks_once()
+        && let Some((tail_path, tail_scratch)) = tail_output
+    {
+        Some((
+            crate::ntfs_inspect::record_store::SortedRecordWriter::new(
+                tail_path,
+                *b"N2RSRTL1",
+                tail_scratch,
+            )?,
+            tail_scratch,
+        ))
+    } else {
+        None
+    };
     let cluster = n2r_win32::target_cluster::bytes();
     (|| -> Result<()> {
         let mut first = 0usize;
@@ -1073,6 +1119,37 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
                     tickets.insert((index, stream_ordinal), (reads.ask(place, count), place));
                 }
             }
+            struct PendingTailWrite<'o> {
+                object_index: usize,
+                name: &'o [u16],
+                components: &'o [String],
+                logical_length: u64,
+                offset: u64,
+                bytes: Vec<u8>,
+            }
+            let mut pending_tails: Vec<PendingTailWrite<'_>> = Vec::new();
+            let flush_pending = |template: &mut PrivateTree,
+                                 pending: &mut Vec<PendingTailWrite<'_>>|
+             -> Result<()> {
+                if pending.is_empty() {
+                    return Ok(());
+                }
+                let batch_items: Vec<n2r_win32::shadow_native::private_tree::TailBatchItem<'_>> =
+                    pending
+                        .iter()
+                        .map(|item| n2r_win32::shadow_native::private_tree::TailBatchItem {
+                            object_index: item.object_index,
+                            name: item.name,
+                            components: item.components,
+                            logical_length: item.logical_length,
+                            offset: item.offset,
+                            bytes: item.bytes.as_slice(),
+                        })
+                        .collect();
+                template.materialize_tails_batch_unhashed(&batch_items)?;
+                pending.clear();
+                Ok(())
+            };
             for (index, object) in (first..).zip(&held) {
                 failing_object.set(index);
                 supply_progress(
@@ -1087,7 +1164,16 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
                 if object.directory || system(object) {
                     continue;
                 }
+                let mut tail_ordinal = 0u64;
                 for (stream_ordinal, stream) in object.data_streams().enumerate() {
+                    let needs_tail = stream.tail_requires_materialization();
+                    let this_tail_ordinal = if needs_tail {
+                        let o = tail_ordinal;
+                        tail_ordinal += 1;
+                        Some(o)
+                    } else {
+                        None
+                    };
                     let planned = materialized_streams.get(&(index, stream_ordinal));
                     if at_once && planned.is_none() {
                         continue;
@@ -1102,6 +1188,9 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
                     }
                     // What was offered is withdrawn once the stream's windows
                     // are done, whether or not they were materialized.
+                    let mut recorded_tail_sha: Option<String> = None;
+                    let tail_offset = stream.length / cluster * cluster;
+                    let tail_len = stream.length - tail_offset;
                     let materialized = (|| -> Result<n2r_win32::shadow_native::private_tree::StreamSupplySummary> {
                         let id = identity(object, stream);
                         let (summary, intervals) = if let (true, Some((summary, intervals))) =
@@ -1133,58 +1222,130 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
                             }
                             (observed.summary, intervals)
                         };
-                        for (offset, length) in intervals {
-                            let mut done = 0u64;
-                            while done < length {
-                                let n = usize::try_from((length - done).min(WINDOW as u64))?;
-                                let next_written = written
-                                    .checked_add(n as u64)
-                                    .context("routed materialization total overflow")?;
-                                ensure!(
-                                    next_written <= plan.materialized
-                                        && next_written <= maximum_materialized_bytes,
-                                    "routed materialization changed or exceeds its preflight budget"
-                                );
-                                let at = offset
-                                    .checked_add(done)
-                                    .context("routed materialization offset overflow")?;
-                                // The window is written from this very buffer and
-                                // read back and compared with it byte for byte.
-                                // Neither side keeps a record of the window: the
-                                // SHA-256 of the source read and that of the
-                                // bytes written were both taken of this buffer
-                                // and compared with each other, which could not
-                                // differ. They are no longer computed.
-                                bytes.read_range_checked(&id, at, &mut buffer[..n])?;
-                                // Sparse materialization can return an island/parts
-                                // receipt; retain the original complete-row allowance
-                                // only while that native proof is built and consumed.
-                                let _sparse_proof_ram = if stream.sparse.is_some() {
-                                    Some(bytes.lease_working_ram(admission.budget.max_row_bytes)?)
-                                } else {
-                                    None
-                                };
-                                let write = template.materialize_range_named_unhashed(
-                                    index,
-                                    stream.name_utf16,
-                                    &object.path,
-                                    stream.length,
-                                    at,
-                                    &buffer[..n],
-                                )?;
-                                ensure!(
-                                    write["readback_verified"] == true,
-                                    "routed remaining materialization readback differs"
-                                );
-                                bytes.validate_protection()?;
-                                written = next_written;
-                                done += n as u64;
+                        let batchable = at_once
+                            && stream.sparse.is_none()
+                            && intervals.len() == 1
+                            && intervals[0].1 > 0
+                            && intervals[0].1 <= WINDOW as u64;
+                        if batchable {
+                            let (at, length) = intervals[0];
+                            let n = usize::try_from(length)?;
+                            let next_written = written
+                                .checked_add(n as u64)
+                                .context("routed materialization total overflow")?;
+                            ensure!(
+                                next_written <= plan.materialized
+                                    && next_written <= maximum_materialized_bytes,
+                                "routed materialization changed or exceeds its preflight budget"
+                            );
+                            bytes.read_range_checked(&id, at, &mut buffer[..n])?;
+                            if tail_writer.is_some()
+                                && needs_tail
+                                && recorded_tail_sha.is_none()
+                                && at <= tail_offset
+                                && at + n as u64 == stream.length
+                            {
+                                let start = (tail_offset - at) as usize;
+                                if n - start == tail_len as usize {
+                                    recorded_tail_sha =
+                                        Some(hex::encode(Sha256::digest(&buffer[start..n])));
+                                }
+                            }
+                            pending_tails.push(PendingTailWrite {
+                                object_index: index,
+                                name: stream.name_utf16,
+                                components: &object.path,
+                                logical_length: stream.length,
+                                offset: at,
+                                bytes: buffer[..n].to_vec(),
+                            });
+                            bytes.validate_protection()?;
+                            written = next_written;
+                        } else {
+                            flush_pending(template, &mut pending_tails)?;
+                            for (offset, length) in intervals {
+                                let mut done = 0u64;
+                                while done < length {
+                                    let n = usize::try_from((length - done).min(WINDOW as u64))?;
+                                    let next_written = written
+                                        .checked_add(n as u64)
+                                        .context("routed materialization total overflow")?;
+                                    ensure!(
+                                        next_written <= plan.materialized
+                                            && next_written <= maximum_materialized_bytes,
+                                        "routed materialization changed or exceeds its preflight budget"
+                                    );
+                                    let at = offset
+                                        .checked_add(done)
+                                        .context("routed materialization offset overflow")?;
+                                    // The window is written from this very buffer and
+                                    // read back and compared with it byte for byte.
+                                    // Neither side keeps a record of the window: the
+                                    // SHA-256 of the source read and that of the
+                                    // bytes written were both taken of this buffer
+                                    // and compared with each other, which could not
+                                    // differ. They are no longer computed.
+                                    bytes.read_range_checked(&id, at, &mut buffer[..n])?;
+                                    if tail_writer.is_some()
+                                        && needs_tail
+                                        && recorded_tail_sha.is_none()
+                                        && at <= tail_offset
+                                        && at + n as u64 == stream.length
+                                    {
+                                        let start = (tail_offset - at) as usize;
+                                        if n - start == tail_len as usize {
+                                            recorded_tail_sha = Some(hex::encode(Sha256::digest(
+                                                &buffer[start..n],
+                                            )));
+                                        }
+                                    }
+                                    // Sparse materialization can return an island/parts
+                                    // receipt; retain the original complete-row allowance
+                                    // only while that native proof is built and consumed.
+                                    let _sparse_proof_ram = if stream.sparse.is_some() {
+                                        Some(
+                                            bytes
+                                                .lease_working_ram(admission.budget.max_row_bytes)?,
+                                        )
+                                    } else {
+                                        None
+                                    };
+                                    let write = template.materialize_range_named_unhashed(
+                                        index,
+                                        stream.name_utf16,
+                                        &object.path,
+                                        stream.length,
+                                        at,
+                                        &buffer[..n],
+                                    )?;
+                                    ensure!(
+                                        write["readback_verified"] == true,
+                                        "routed remaining materialization readback differs"
+                                    );
+                                    bytes.validate_protection()?;
+                                    written = next_written;
+                                    done += n as u64;
+                                }
                             }
                         }
                         Ok(summary)
                     })();
                     bytes.withdraw_read_ahead(drop);
                     let summary = materialized?;
+                    if let (Some((writer, _)), Some(ordinal), Some(sha256)) =
+                        (tail_writer.as_mut(), this_tail_ordinal, recorded_tail_sha)
+                    {
+                        writer.push(
+                            supplied_tail_key(index as u64, ordinal),
+                            &n2r_win32::shadow_native::LayoutResidualExpectation {
+                                object_index: index,
+                                stream_name_utf16: stream.name_utf16.to_vec(),
+                                logical_offset: tail_offset,
+                                length: tail_len,
+                                sha256,
+                            },
+                        )?;
+                    }
                     bytes.finish_stream()?;
                     if !at_once {
                         let _closing_native_ram = bytes.lease_working_ram(
@@ -1197,6 +1358,7 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
                     }
                 }
             }
+            flush_pending(template, &mut pending_tails)?;
             // Every tail asked for was taken by its stream; should one not
             // have been, its bytes are not kept past its batch.
             if let Some(reads) = ahead.as_mut() {
@@ -1231,6 +1393,16 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
         bytes.logical_bytes_read() - before_reads,
         Some(written),
     );
+    let supplied_tails = match tail_writer {
+        Some((writer, tail_scratch)) => {
+            let pin = writer.finish()?;
+            Some(crate::ntfs_inspect::record_store::SortedRecordStore::open(
+                &pin,
+                tail_scratch,
+            )?)
+        }
+        None => None,
+    };
     phase(bytes, expected, template)?;
     Ok(RoutedSupplyOwner {
         bytes,
@@ -1242,6 +1414,7 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
         reread: !policy.verifies_once(),
         at_once,
         progress: progress.clone(),
+        supplied_tails,
         _ram: ram,
     })
 }
@@ -1297,11 +1470,17 @@ pub(crate) fn prepare_recovered<'a, 'source, 'scope>(
         reread: true,
         at_once: false,
         progress: progress.clone(),
+        supplied_tails: None,
         _ram: ram,
     })
 }
 
 impl RoutedSupplyOwner<'_, '_, '_> {
+    pub(crate) fn take_supplied_tails(
+        &mut self,
+    ) -> Option<crate::ntfs_inspect::record_store::SortedRecordStore> {
+        self.supplied_tails.take()
+    }
     /// System data remains on the existing checked/materialized path.
     pub(crate) fn materialize_system_payloads(&mut self) -> Result<(serde_json::Value, Vec<u8>)> {
         ensure!(

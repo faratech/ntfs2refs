@@ -36,6 +36,7 @@ struct AliasProbe<'a> {
     attributes: u32,
     point: &'a crate::reparse_layout::Point,
     canonical: &'a Input<'a>,
+    known_canonical_id: Option<[u8; 24]>,
 }
 impl<'a> AliasProbe<'a> {
     /// The link as an object: the canonical object's times and security,
@@ -154,22 +155,34 @@ fn probe_alias_unnamed(
     maximum_row_bytes: u64,
     differs: &'static str,
 ) -> io::Result<AliasNative> {
-    let target = open_readonly(root, probe.canonical_components)?;
-    super::validate_bound_type(&target, probe.canonical)?;
+    let relative: Vec<u16> = probe
+        .canonical_components
+        .last()
+        .unwrap()
+        .encode_utf16()
+        .collect();
     let alias = open_readonly(root, probe.components)?;
-    let observed = crate::windows_alias_native::verify_owned_in(
-        &parent.file,
-        &parent.examined,
-        &target,
-        &alias,
-        probe.directory,
-        &probe
-            .canonical_components
-            .last()
-            .unwrap()
-            .encode_utf16()
-            .collect::<Vec<_>>(),
-    )?;
+    let observed = if let Some(canonical_id) = probe.known_canonical_id {
+        crate::windows_alias_native::verify_owned_in_with_known_canonical(
+            &parent.file,
+            &parent.examined,
+            canonical_id,
+            &alias,
+            probe.directory,
+            &relative,
+        )?
+    } else {
+        let target = open_readonly(root, probe.canonical_components)?;
+        super::validate_bound_type(&target, probe.canonical)?;
+        crate::windows_alias_native::verify_owned_in(
+            &parent.file,
+            &parent.examined,
+            &target,
+            &alias,
+            probe.directory,
+            &relative,
+        )?
+    };
     let expected = probe.expected();
     // The verification above has just checked the link's FileIdInfo,
     // FileStandardInfo (link count == 1, delete pending == 0, directory flag,
@@ -331,6 +344,21 @@ impl VerifiedWindowsAliases {
         payer: &dyn report_memory::ReportMemoryAccountant,
         same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     ) -> io::Result<Self> {
+        Self::from_recovered_expectations_readonly_with_known_canonicals(
+            pair, input, aliases, admission, protected, payer, same, None,
+        )
+    }
+
+    pub(crate) fn from_recovered_expectations_readonly_with_known_canonicals(
+        pair: &GeneralSourceShadowBinding,
+        input: &impl InputDomain,
+        aliases: &impl WindowsAliasInputDomain,
+        admission: SourceResourceAdmission,
+        protected: &native::GeneralReadonlyRefsVolume<'_>,
+        payer: &dyn report_memory::ReportMemoryAccountant,
+        same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        known_canonicals: Option<&dyn Fn(usize) -> io::Result<[u8; 24]>>,
+    ) -> io::Result<Self> {
         admission.validate()?;
         if pair.source.layout_profile
             != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
@@ -439,17 +467,24 @@ impl VerifiedWindowsAliases {
             let probes: Vec<_> = rows
                 .iter()
                 .zip(canonicals.iter().zip(&points))
-                .map(|(row, (canonical, point))| AliasProbe {
-                    components: &row.components,
-                    canonical_components: &row.canonical_components,
-                    directory: row.directory,
-                    attributes: (canonical.attributes & 0x2027)
-                        | 0x400
-                        | if row.directory { 16 } else { 0 },
-                    point,
-                    canonical,
+                .map(|(row, (canonical, point))| -> io::Result<AliasProbe<'_>> {
+                    let known_canonical_id = match known_canonicals {
+                        Some(lookup) => Some(lookup(row.canonical_object_index)?),
+                        None => None,
+                    };
+                    Ok(AliasProbe {
+                        components: &row.components,
+                        canonical_components: &row.canonical_components,
+                        directory: row.directory,
+                        attributes: (canonical.attributes & 0x2027)
+                            | 0x400
+                            | if row.directory { 16 } else { 0 },
+                        point,
+                        canonical,
+                        known_canonical_id,
+                    })
                 })
-                .collect();
+                .collect::<io::Result<Vec<_>>>()?;
             let natives = probe_aliases(
                 &root,
                 &probes,
@@ -692,6 +727,7 @@ impl VerifiedWindowsAliases {
                     attributes: entry.attributes,
                     point: &entry.point,
                     canonical,
+                    known_canonical_id: None,
                 })
                 .collect();
             let natives = probe_aliases(&root, &probes, self.maximum_row_bytes, payer, DIFFERS)?;

@@ -263,6 +263,16 @@ impl SourceTailProvider {
         path: &Path,
         scratch: &SourceScratch,
     ) -> Result<Self> {
+        Self::capture_reusing(bytes, expected, path, scratch, None)
+    }
+
+    fn capture_reusing(
+        bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
+        expected: &PagedExpectedTree,
+        path: &Path,
+        scratch: &SourceScratch,
+        supplied: Option<&SortedRecordStore>,
+    ) -> Result<Self> {
         let admission = expected
             .header()
             .resource_admission
@@ -273,7 +283,17 @@ impl SourceTailProvider {
         // A tail is shorter than one target cluster.
         let cluster = n2r_win32::target_cluster::bytes();
         let mut buffer = vec![0; usize::try_from(cluster)?];
-        let mut ahead = tails_ahead(bytes, scratch.artifact_group(), "n2r-source-tails-ahead")?;
+        let supplied = supplied.filter(|_| n2r_win32::verify_policy::checks_once());
+        let mut supplied_cursor = 0u64;
+        let mut next_supplied: Option<LayoutResidualExpectation> = match supplied {
+            Some(store) if store.len() > 0 => Some(store.get(0)?),
+            _ => None,
+        };
+        let mut ahead = if supplied.is_some() {
+            None
+        } else {
+            tails_ahead(bytes, scratch.artifact_group(), "n2r-source-tails-ahead")?
+        };
         let mut first = 0usize;
         while first < expected.len() {
             let held = if ahead.is_some() {
@@ -383,6 +403,38 @@ impl SourceTailProvider {
                         (1..buffer.len()).contains(&count),
                         "source tail width differs"
                     );
+                    if let Some(store) = supplied {
+                        while let Some(candidate) = next_supplied.as_ref() {
+                            if candidate.object_index < index
+                                || (candidate.object_index == index
+                                    && candidate.stream_name_utf16.as_slice() < stream.name_utf16)
+                            {
+                                supplied_cursor += 1;
+                                next_supplied = if supplied_cursor < store.len() {
+                                    Some(store.get(supplied_cursor)?)
+                                } else {
+                                    None
+                                };
+                            } else {
+                                break;
+                            }
+                        }
+                        if let Some(candidate) = next_supplied.as_ref()
+                            && candidate.object_index == index
+                            && candidate.stream_name_utf16.as_slice() == stream.name_utf16
+                            && candidate.logical_offset == offset
+                            && candidate.length == count as u64
+                        {
+                            writer.push(key(index as u64, ordinal as u64), candidate)?;
+                            supplied_cursor += 1;
+                            next_supplied = if supplied_cursor < store.len() {
+                                Some(store.get(supplied_cursor)?)
+                            } else {
+                                None
+                            };
+                            continue;
+                        }
+                    }
                     let identity = PagedStreamIdentity {
                         record_number: object.record_number,
                         sequence_number: object.sequence_number,
@@ -1274,6 +1326,7 @@ pub(crate) fn observe_and_select_paged(
         output,
         events,
         None,
+        None,
         |scoped, target, expected, routes, scope, closing, native_events| match scoped {
             ScopedSourceContext::Dedicated(context) => consume(
                 context,
@@ -1339,6 +1392,7 @@ pub(crate) fn observe_and_select_paged_windows_aliases(
         output,
         events,
         Some(aliases),
+        None,
         |scoped, target, expected, routes, scope, closing, native_events| match scoped {
             ScopedSourceContext::Dedicated(context) => consume(
                 context,
@@ -1411,6 +1465,79 @@ pub(crate) fn observe_and_select_paged_optional_windows_aliases(
     }
 }
 
+pub(crate) fn observe_and_select_paged_optional_windows_aliases_with_tails(
+    context: &mut crate::general_source_admission::resource::ResourceSourceContext,
+    target: &mut n2r_win32::GeneralFrozenPartition,
+    pair: n2r_win32::general_layout::GeneralSourceShadowBinding,
+    expected: &PagedExpectedTree,
+    capture_group: &ArtifactGroupPermit,
+    output: &Path,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+    aliases: Option<(
+        &Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>,
+        &crate::boot_alias::WindowsAliasNativeDomain<'_>,
+    )>,
+    supplied_tails: Option<&SortedRecordStore>,
+    consume: impl FnOnce(
+        &mut crate::general_source_admission::resource::ResourceSourceContext,
+        &mut n2r_win32::GeneralFrozenPartition,
+        &PagedExpectedTree,
+        crate::general_shadow::paged_candidate::PagedPayloadRoutes<'_>,
+        &PagedTargetScope,
+        &mut dyn crate::general_shadow::source_backed::ClosingShadowBytes,
+        &mut Vec<n2r_win32::NativeEvent>,
+    ) -> Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
+) -> Result<ProtectedPagedTargetSelection> {
+    let selection = if let Some((verified, mapped)) = aliases {
+        let owner = context
+            .windows_aliases()
+            .context("actual Windows source alias owner absent")?;
+        ensure!(
+            mapped.uses_alias_owner(&owner) && verified.len() as u64 == owner.len(),
+            "alias constructor does not cover the original Windows source plan"
+        );
+        let digest = mapped.semantic_digest();
+        verified.require_scope(
+            &pair,
+            context.resource_admission().source_inspection_sha256,
+            digest,
+        )?;
+        Some(WindowsAliasSelection {
+            constructor: verified,
+            owner,
+            digest,
+        })
+    } else {
+        None
+    };
+    let mut scoped = ScopedSourceContext::Dedicated(context);
+    observe_and_select_scoped(
+        &mut scoped,
+        target,
+        pair,
+        expected,
+        capture_group,
+        output,
+        events,
+        selection,
+        supplied_tails,
+        |scoped, target, expected, routes, scope, closing, native_events| match scoped {
+            ScopedSourceContext::Dedicated(context) => consume(
+                context,
+                target,
+                expected,
+                routes,
+                scope,
+                closing,
+                native_events,
+            ),
+            ScopedSourceContext::Partition(_) => {
+                anyhow::bail!("dedicated target callback received partition source")
+            }
+        },
+    )
+}
+
 pub(crate) fn observe_and_select_partition_paged(
     context: &mut crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
     target: &mut n2r_win32::GeneralFrozenPartition,
@@ -1439,6 +1566,7 @@ pub(crate) fn observe_and_select_partition_paged(
         output,
         events,
         None,
+        None,
         |scoped, target, expected, routes, scope, closing, native_events| match scoped {
             ScopedSourceContext::Partition(context) => consume(
                 context,
@@ -1456,6 +1584,7 @@ pub(crate) fn observe_and_select_partition_paged(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn observe_and_select_scoped(
     context: &mut ScopedSourceContext<'_>,
     target: &mut n2r_win32::GeneralFrozenPartition,
@@ -1465,6 +1594,7 @@ fn observe_and_select_scoped(
     output: &Path,
     events: &mut Vec<n2r_win32::NativeEvent>,
     aliases: Option<WindowsAliasSelection<'_>>,
+    supplied_tails: Option<&SortedRecordStore>,
     consume: impl FnOnce(
         &mut ScopedSourceContext<'_>,
         &mut n2r_win32::GeneralFrozenPartition,
@@ -1553,7 +1683,13 @@ fn observe_and_select_scoped(
         expected.logical_bytes().max(1),
         events,
         |bytes| {
-            SourceTailProvider::capture(bytes, expected, &output.join("source-tails"), &scratch)
+            SourceTailProvider::capture_reusing(
+                bytes,
+                expected,
+                &output.join("source-tails"),
+                &scratch,
+                supplied_tails,
+            )
         },
     )?;
     // Source projection and tail capture carry their own row/name/writer

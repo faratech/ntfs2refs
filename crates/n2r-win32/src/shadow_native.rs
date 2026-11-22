@@ -4545,6 +4545,137 @@ fn observe_general_converted_metadata_domain_accounted(
     )
 }
 
+/// Observe a converted Windows partition under the actual readonly lease when
+/// `verifies_once()` or `repeats_once_as_verified()` is active: walks the
+/// converted canonical metadata first so that recovered alias verification can
+/// reuse the canonical objects' already-verified 24-byte `FileIdInfo` on this
+/// same held READ_ONLY volume instead of reopening all 112k canonical targets.
+pub(crate) fn observe_general_converted_metadata_and_recovered_aliases_readonly(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    expectations: &impl windows_aliases::WindowsAliasInputDomain,
+    admission: crate::tree_resources::SourceResourceAdmission,
+    plan_digest: [u8; 32],
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: crate::attestation::ResourceProfile,
+    memory: &dyn report_memory::ReportMemoryAccountant,
+    protected: &native::GeneralReadonlyRefsVolume<'_>,
+) -> io::Result<(
+    GeneralConvertedReport,
+    windows_aliases::ObservedWindowsAliases,
+    windows_aliases::VerifiedWindowsAliases,
+)> {
+    let admitted = resource_profile
+        .resource_admission()?
+        .ok_or_else(|| invalid("converted Windows aliases require actual resource admission"))?;
+    if pair.source.layout_profile != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+        || protected.binding() != &pair.source
+        || admitted != admission
+    {
+        return Err(invalid("converted Windows alias readonly binding differs"));
+    }
+    pair.validate_with_resource_profile(Some(resource_profile))?;
+    if let Some(label) = expected_label {
+        label.validate()?;
+    }
+    let binding = DiskBinding {
+        disk_number: pair.source.disk_number,
+        volume_guid: pair.source.volume_guid.clone(),
+        identity: pair.source.identity.clone(),
+    };
+    crate::perf::step("walk converted metadata");
+    let native = run_role_content_domain_accounted(
+        binding,
+        pair.source.disk_number,
+        input,
+        Mode::Verify,
+        &same_security,
+        true,
+        true,
+        None,
+        Some(&pair.source),
+        expected_label,
+        Some(protected),
+        Some(resource_profile),
+        false,
+        None,
+        Some(memory),
+        None,
+    )?;
+    crate::perf::step("check recovered alias links");
+    let lookup = |index: usize| native.objects.identity(index);
+    let aliases =
+        windows_aliases::VerifiedWindowsAliases::from_recovered_expectations_readonly_with_known_canonicals(
+            &pair,
+            input,
+            expectations,
+            admission,
+            protected,
+            memory,
+            &same_security,
+            Some(&lookup),
+        )?;
+    aliases.require_scope(&pair, admission.source_inspection_sha256, plan_digest)?;
+    validate_existing_content_domain_with_memory_and_windows_aliases(
+        &native,
+        input,
+        &same_security,
+        false,
+        None,
+        false,
+        true,
+        Some(memory),
+        Some(&aliases),
+    )?;
+    native.objects.for_each(|_, object| {
+        if object.logical_sha256.is_some()
+            || object
+                .named_streams
+                .iter()
+                .any(|stream| stream.logical_sha256.is_some())
+        {
+            return Err(invalid(
+                "metadata observation unexpectedly reports an admitted content hash",
+            ));
+        }
+        Ok(())
+    })?;
+    let mut default_streams_observed = 0usize;
+    let mut named_streams_observed = 0usize;
+    input.for_each(|_, item| {
+        default_streams_observed += usize::from(!item.directory);
+        named_streams_observed = named_streams_observed
+            .checked_add(item.named_streams.len())
+            .ok_or_else(|| invalid("metadata-observed stream count overflow"))?;
+        Ok(())
+    })?;
+    let report = GeneralConvertedReport {
+        pair,
+        native,
+        content_observation: Some(ConvertedContentObservation {
+            scope: "converted-metadata-and-complete-stream-maps-v1",
+            default_streams_observed,
+            named_streams_observed,
+            admitted_payload_bytes_read: 0,
+            full_file_hashes: false,
+            content_equality_verified: false,
+            metadata_and_namespace_verified: true,
+            complete_stream_mappings_observed: true,
+            data_storage_validity_checked: true,
+            known_content: None,
+        }),
+        conversion_qualified: false,
+    };
+    let observed = aliases.observe_converted_readonly_volume(
+        input,
+        protected.volume(),
+        memory,
+        &same_security,
+    )?;
+    Ok((report, observed, aliases))
+}
+
 /// Observe a converted Windows partition under the actual readonly lease,
 /// preserving canonical source rows and refreshing derived alias points.
 pub(crate) fn observe_general_converted_metadata_domain_readonly_with_windows_aliases(

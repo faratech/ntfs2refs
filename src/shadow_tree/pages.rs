@@ -658,56 +658,108 @@ fn record(value: &impl Serialize, budget: PageBudget) -> Result<Vec<u8>> {
 }
 
 /// The digest of the expected tree's legacy JSON. The JSON writer hands it
-/// over a token at a time; it is hashed a block at a time, by Windows'
-/// SHA-256 where there is one (the full Windows volume's is 1.5 GB, taken
-/// twice in a conversion).
+/// over a token at a time; blocks of 64 KiB are hashed on a background worker
+/// thread (overlapping the 1.5 GB SHA-256 with JSON formatting and page writes).
 struct SemanticHash {
-    sha256: crate::retained_compare::stream_digest::StreamDigest,
+    sender: Option<std::sync::mpsc::SyncSender<Vec<u8>>>,
+    recycle: std::sync::mpsc::Receiver<Vec<u8>>,
+    worker: Option<std::thread::JoinHandle<Result<[u8; 32]>>>,
     pending: Vec<u8>,
     bytes: u64,
     maximum: u64,
 }
 impl SemanticHash {
     const BLOCK: usize = 64 * 1024;
+    const SLOTS: usize = 8;
     fn new(maximum: u64) -> Result<Self> {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(Self::SLOTS);
+        let (rtx, rrx) = std::sync::mpsc::sync_channel::<Vec<u8>>(Self::SLOTS);
+        for _ in 0..Self::SLOTS {
+            let mut buf = Vec::new();
+            buf.try_reserve_exact(Self::BLOCK)?;
+            let _ = rtx.send(buf);
+        }
+        let worker = std::thread::Builder::new()
+            .name("expected-semantic-sha256".into())
+            .spawn(move || -> Result<[u8; 32]> {
+                let mut sha256 =
+                    crate::retained_compare::stream_digest::StreamDigest::new(cfg!(windows))?;
+                for mut block in rx {
+                    sha256.update(&block)?;
+                    block.clear();
+                    let _ = rtx.send(block);
+                }
+                sha256.finish()
+            })
+            .context("spawning expected-tree semantic SHA-256 worker")?;
         let mut pending = Vec::new();
         pending.try_reserve_exact(Self::BLOCK)?;
         Ok(Self {
-            sha256: crate::retained_compare::stream_digest::StreamDigest::new(cfg!(windows))?,
+            sender: Some(tx),
+            recycle: rrx,
+            worker: Some(worker),
             pending,
             bytes: 0,
             maximum,
         })
     }
+    fn flush_pending(&mut self) -> io::Result<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let next_buf = self
+            .recycle
+            .recv()
+            .map_err(|_| io::Error::other("expected-tree semantic SHA-256 worker stopped"))?;
+        let full = std::mem::replace(&mut self.pending, next_buf);
+        self.sender
+            .as_ref()
+            .ok_or_else(|| io::Error::other("expected-tree semantic SHA-256 channel closed"))?
+            .send(full)
+            .map_err(|_| io::Error::other("expected-tree semantic SHA-256 worker stopped"))
+    }
     fn finish(mut self) -> Result<String> {
-        self.sha256.update(&self.pending)?;
-        Ok(hex::encode(self.sha256.finish()?))
+        self.flush_pending()?;
+        self.sender.take();
+        let digest = self
+            .worker
+            .take()
+            .context("expected-tree semantic SHA-256 worker absent")?
+            .join()
+            .map_err(|_| anyhow::anyhow!("expected-tree semantic SHA-256 worker panicked"))??;
+        Ok(hex::encode(digest))
+    }
+}
+impl Drop for SemanticHash {
+    fn drop(&mut self) {
+        self.sender.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 impl Write for SemanticHash {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+    fn write(&mut self, mut bytes: &[u8]) -> io::Result<usize> {
+        let total = bytes.len();
         let next = self
             .bytes
-            .checked_add(bytes.len() as u64)
+            .checked_add(total as u64)
             .filter(|n| *n <= self.maximum)
             .ok_or_else(|| {
                 io::Error::other("legacy expected-tree JSON exceeds pinned byte budget")
             })?;
-        // The bytes reach the digest in the order they were written: what
-        // is pending first, whenever these do not fit behind it.
-        if self.pending.len() + bytes.len() > Self::BLOCK {
-            self.sha256
-                .update(&self.pending)
-                .map_err(io::Error::other)?;
-            self.pending.clear();
-        }
-        if bytes.len() >= Self::BLOCK {
-            self.sha256.update(bytes).map_err(io::Error::other)?;
-        } else {
-            self.pending.extend_from_slice(bytes);
+        while !bytes.is_empty() {
+            let room = Self::BLOCK - self.pending.len();
+            if room == 0 {
+                self.flush_pending()?;
+                continue;
+            }
+            let take = bytes.len().min(room);
+            self.pending.extend_from_slice(&bytes[..take]);
+            bytes = &bytes[take..];
         }
         self.bytes = next;
-        Ok(bytes.len())
+        Ok(total)
     }
     fn flush(&mut self) -> io::Result<()> {
         Ok(())

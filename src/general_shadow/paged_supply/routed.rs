@@ -1273,6 +1273,276 @@ impl TailBatchReads {
     }
 }
 
+/// The one range of a stream a run that verifies once writes together with
+/// other streams' ([`PendingTails`]): a single materialized interval of at
+/// most one window, of a stream that is not sparse.
+fn batchable(at_once: bool, stream: StreamRef<'_>, intervals: &[(u64, u64)]) -> Option<(u64, u64)> {
+    match intervals {
+        [(at, length)]
+            if at_once && stream.sparse.is_none() && *length > 0 && *length <= WINDOW as u64 =>
+        {
+            Some((*at, *length))
+        }
+        _ => None,
+    }
+}
+
+/// What one tail waiting to be written holds beside its bytes: its entry
+/// here, the item its batch's write is handed, and that write's own lists
+/// of it (its key, its path on the shadow and its results).
+fn pending_overhead(object: &Object, stream: StreamRef<'_>) -> u64 {
+    let path = object
+        .path
+        .iter()
+        .map(|component| component.len() as u64 + 1)
+        .sum::<u64>()
+        + 2 * stream.name_utf16.len() as u64
+        + 64;
+    1024 + 4 * path
+}
+
+/// What a stream's record for the supplied tails holds while it waits.
+const PENDING_RECORD_BYTES: u64 = 256;
+/// What the tails waiting to be written are held to where the ledger has
+/// no spare room for all of a batch's.
+const PENDING_FALLBACK_BYTES: u64 = 4 * 1024 * 1024;
+
+/// What the tails of `held` (the first of which is object `first`) that
+/// wait to be written with their batch hold at most, with their records
+/// where the supplied tails are `recorded`. Nothing waits in a run that
+/// does not verify once.
+fn pending_need(
+    held: &[LeasedExpectedObject],
+    first: usize,
+    planned: &MaterializedPlan,
+    at_once: bool,
+    recorded: bool,
+) -> u64 {
+    let mut need = 0u64;
+    if !at_once {
+        return need;
+    }
+    for (index, object) in (first..).zip(held) {
+        if object.directory || system(object) {
+            continue;
+        }
+        for (ordinal, stream) in object.data_streams().enumerate() {
+            let Some((_, intervals)) = planned.get(&(index, ordinal)) else {
+                continue;
+            };
+            if let Some((_, length)) = batchable(at_once, stream, intervals) {
+                need = need
+                    .saturating_add(length)
+                    .saturating_add(pending_overhead(object, stream));
+            }
+            if recorded && stream.tail_requires_materialization() {
+                need = need.saturating_add(PENDING_RECORD_BYTES);
+            }
+        }
+    }
+    need
+}
+
+/// A tail read from the source that waits to be written with its batch.
+struct PendingTailWrite<'o> {
+    object_index: usize,
+    name: &'o [u16],
+    components: &'o [String],
+    logical_length: u64,
+    offset: u64,
+    bytes: Vec<u8>,
+    /// Where its record's digest begins in `bytes`.
+    digest_from: Option<usize>,
+    /// Its record in [`PendingTails::records`].
+    record: Option<usize>,
+}
+
+/// A stream's record for the supplied tails, waiting for the writes before
+/// it (the records are kept in the order of their keys) or for its digest.
+struct PendingRecord<'o> {
+    key: [u8; 16],
+    object_index: usize,
+    name: &'o [u16],
+    logical_offset: u64,
+    length: u64,
+    sha256: Option<String>,
+}
+
+/// The tails of a batch waiting to be written together
+/// (`PrivateTree::materialize_tails_batch_unhashed`), and the records of
+/// the supplied tails behind them.
+///
+/// They were held without a lease, up to a window for every stream of a
+/// batch of 8,192 objects. What they hold is now paid for as spare memory:
+/// what all of the batch's need where the ledger grants it, otherwise a few
+/// MiB, and the tails waiting are written whenever the next would pass what
+/// is paid for. Where nothing is granted each tail is written by itself, as
+/// a stream is that does not wait.
+///
+/// A stream whose range does not wait (several intervals, a longer one, a
+/// sparse stream) is written while the tails before it wait: each stream is
+/// written to its own file, a tail into the clusters its file was given
+/// when it was made, so the order of the writes to different files does not
+/// change what any of them holds; a batch's writes were made at once on
+/// helper threads, in no order, before.
+struct PendingTails<'o> {
+    writes: Vec<PendingTailWrite<'o>>,
+    records: Vec<PendingRecord<'o>>,
+    held: u64,
+    budget: u64,
+    _lease: Option<crate::artifact_arena::ArenaRamLease>,
+}
+impl<'o> PendingTails<'o> {
+    fn new(arena: Option<&crate::artifact_arena::ArtifactArena>, need: u64) -> Self {
+        let mut pending = Self {
+            writes: Vec::new(),
+            records: Vec::new(),
+            held: 0,
+            budget: 0,
+            _lease: None,
+        };
+        if need == 0 {
+            return pending;
+        }
+        let Some(arena) = arena else {
+            return pending;
+        };
+        for budget in [need, need.min(PENDING_FALLBACK_BYTES)] {
+            if let Ok(lease) = arena.reserve_spare_ram(budget) {
+                pending.budget = budget;
+                pending._lease = Some(lease);
+                break;
+            }
+        }
+        pending
+    }
+
+    fn has_writes(&self) -> bool {
+        !self.writes.is_empty()
+    }
+
+    /// Leaves `write` to be written with the tails waiting, with its
+    /// `record` for the supplied tails, if it has one. What waits is written
+    /// first where `write` would pass what is paid for, and `write` itself
+    /// at once where it passes it alone.
+    fn write(
+        &mut self,
+        template: &mut PrivateTree,
+        mut writer: Option<&mut crate::ntfs_inspect::record_store::SortedRecordWriter>,
+        mut write: PendingTailWrite<'o>,
+        record: Option<PendingRecord<'o>>,
+        overhead: u64,
+    ) -> Result<()> {
+        let cost = (write.bytes.len() as u64)
+            .saturating_add(overhead)
+            .saturating_add(if record.is_some() {
+                PENDING_RECORD_BYTES
+            } else {
+                0
+            });
+        if self.held.saturating_add(cost) > self.budget {
+            self.flush(template, writer.as_deref_mut())?;
+        }
+        if let Some(record) = record {
+            write.record = Some(self.records.len());
+            self.records.push(record);
+        }
+        self.writes.push(write);
+        self.held = self.held.saturating_add(cost);
+        if self.held > self.budget {
+            self.flush(template, writer)?;
+        }
+        Ok(())
+    }
+
+    /// Adds the record of a stream whose tail was written by itself: at
+    /// once where no record waits before it, otherwise behind them.
+    fn record(
+        &mut self,
+        writer: &mut crate::ntfs_inspect::record_store::SortedRecordWriter,
+        record: PendingRecord<'o>,
+    ) -> Result<()> {
+        if self.records.is_empty() {
+            return push_supplied_tail(writer, record);
+        }
+        self.records.push(record);
+        self.held = self.held.saturating_add(PENDING_RECORD_BYTES);
+        Ok(())
+    }
+
+    /// Writes every tail waiting, at once on helper threads, and then the
+    /// records waiting, in their order, each with the digest of its tail
+    /// taken as the tail was written.
+    fn flush(
+        &mut self,
+        template: &mut PrivateTree,
+        writer: Option<&mut crate::ntfs_inspect::record_store::SortedRecordWriter>,
+    ) -> Result<()> {
+        if !self.writes.is_empty() {
+            let items: Vec<n2r_win32::shadow_native::private_tree::TailBatchItem<'_>> = self
+                .writes
+                .iter()
+                .map(
+                    |item| n2r_win32::shadow_native::private_tree::TailBatchItem {
+                        object_index: item.object_index,
+                        name: item.name,
+                        components: item.components,
+                        logical_length: item.logical_length,
+                        offset: item.offset,
+                        bytes: item.bytes.as_slice(),
+                        digest_from: item.digest_from,
+                    },
+                )
+                .collect();
+            let digests = template.materialize_tails_batch_unhashed(&items)?;
+            drop(items);
+            ensure!(
+                digests.len() == self.writes.len(),
+                "parallel tail materialization returned a digest for another count of tails"
+            );
+            for (write, digest) in self.writes.iter().zip(digests) {
+                if let Some(record) = write.record {
+                    self.records[record].sha256 = digest;
+                }
+            }
+            self.writes.clear();
+        }
+        match writer {
+            Some(writer) => {
+                for record in self.records.drain(..) {
+                    push_supplied_tail(writer, record)?;
+                }
+            }
+            None => self.records.clear(),
+        }
+        self.held = 0;
+        Ok(())
+    }
+}
+
+fn push_supplied_tail(
+    writer: &mut crate::ntfs_inspect::record_store::SortedRecordWriter,
+    record: PendingRecord<'_>,
+) -> Result<()> {
+    let sha256 = record.sha256.with_context(|| {
+        format!(
+            "supplied tail of object {} stream {:?} has no digest",
+            record.object_index,
+            String::from_utf16_lossy(record.name)
+        )
+    })?;
+    writer.push(
+        record.key,
+        &n2r_win32::shadow_native::LayoutResidualExpectation {
+            object_index: record.object_index,
+            stream_name_utf16: record.name.to_vec(),
+            logical_offset: record.logical_offset,
+            length: record.length,
+            sha256,
+        },
+    )
+}
+
 pub(crate) fn prepare<'a, 'source, 'scope>(
     bytes: &'a mut PagedSourceByteAdapterWithScope<'source, 'scope>,
     expected: &'a PagedExpectedTree,
@@ -1393,74 +1663,67 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
         None
     };
     let cluster = n2r_win32::target_cluster::bytes();
-    // What the spans of a batch need beyond what `tails_ahead` reserved is
-    // asked of this ledger as spare memory.
-    let tail_arena = ahead.as_ref().and_then(|_| {
-        bytes
-            .metadata_scratch()
-            .artifact_group()
-            .map(|group| group.arena().clone())
-    });
+    // The ledger that pays, as spare memory, for what a batch holds beside
+    // the lanes: the spans of its tails beyond what `tails_ahead` reserved,
+    // and its tails waiting to be written.
+    let supply_arena = bytes
+        .metadata_scratch()
+        .artifact_group()
+        .map(|group| group.arena().clone());
+    let tail_arena = ahead.as_ref().and(supply_arena.as_ref());
+    // One batch of objects from `first` on: as many as one batch of tails
+    // takes where the tails are read ahead, one otherwise.
+    let lease_batch = |first: usize, lanes: bool| -> Result<Vec<LeasedExpectedObject>> {
+        if lanes {
+            let mut objects = 0usize;
+            expected.objects_leased_at_once(first, |_object| {
+                objects += 1;
+                objects < TAIL_BATCH
+            })
+        } else {
+            Ok(vec![expected.object_leased(first)?])
+        }
+    };
     (|| -> Result<()> {
         let mut first = 0usize;
+        // The batch after the one being written, where its tails were asked
+        // of the lanes before that batch's tails were written.
+        let mut asked_next: Option<(Vec<LeasedExpectedObject>, Option<TailBatchReads>)> = None;
         while first < expected.len() {
             // An object that does not decode is reported as itself: a batch
             // ends before it, and it is the first of the next.
             failing_object.set(first);
-            let held = if ahead.is_some() {
-                let mut objects = 0usize;
-                expected.objects_leased_at_once(first, |_object| {
-                    objects += 1;
-                    objects < TAIL_BATCH
-                })?
-            } else {
-                vec![expected.object_leased(first)?]
+            let (held, mut tail_reads) = match asked_next.take() {
+                Some(next) => next,
+                None => {
+                    let held = lease_batch(first, ahead.is_some())?;
+                    // The tails of the batch's materialized streams are asked
+                    // of the lanes at once, in their order on the disk,
+                    // coalesced into spans whose bytes, gaps included, stay
+                    // within what is leased for them.
+                    let reads = ahead.as_mut().map(|reads| {
+                        TailBatchReads::ask(
+                            reads,
+                            tail_arena,
+                            bytes,
+                            &held,
+                            first,
+                            &materialized_streams,
+                        )
+                    });
+                    (held, reads)
+                }
             };
-            // The tails of the batch's materialized streams are asked of the
-            // lanes at once, in their order on the disk, coalesced into spans
-            // whose bytes, gaps included, stay within what is leased for them.
-            let mut tail_reads = match ahead.as_mut() {
-                Some(reads) => Some(TailBatchReads::ask(
-                    reads,
-                    tail_arena.as_ref(),
-                    bytes,
+            let mut pending = PendingTails::new(
+                supply_arena.as_ref(),
+                pending_need(
                     &held,
                     first,
                     &materialized_streams,
-                )),
-                None => None,
-            };
-            struct PendingTailWrite<'o> {
-                object_index: usize,
-                name: &'o [u16],
-                components: &'o [String],
-                logical_length: u64,
-                offset: u64,
-                bytes: Vec<u8>,
-            }
-            let mut pending_tails: Vec<PendingTailWrite<'_>> = Vec::new();
-            let flush_pending = |template: &mut PrivateTree,
-                                 pending: &mut Vec<PendingTailWrite<'_>>|
-             -> Result<()> {
-                if pending.is_empty() {
-                    return Ok(());
-                }
-                let batch_items: Vec<n2r_win32::shadow_native::private_tree::TailBatchItem<'_>> =
-                    pending
-                        .iter()
-                        .map(|item| n2r_win32::shadow_native::private_tree::TailBatchItem {
-                            object_index: item.object_index,
-                            name: item.name,
-                            components: item.components,
-                            logical_length: item.logical_length,
-                            offset: item.offset,
-                            bytes: item.bytes.as_slice(),
-                        })
-                        .collect();
-                template.materialize_tails_batch_unhashed(&batch_items)?;
-                pending.clear();
-                Ok(())
-            };
+                    at_once,
+                    tail_writer.is_some(),
+                ),
+            );
             for (index, object) in (first..).zip(&held) {
                 failing_object.set(index);
                 supply_progress(
@@ -1499,6 +1762,10 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                     // What was offered is withdrawn once the stream's windows
                     // are done, whether or not they were materialized.
                     let mut recorded_tail_sha: Option<String> = None;
+                    // Where the stream's tail was left to wait with its
+                    // batch: the digest of its bytes from there on is taken
+                    // as it is written.
+                    let mut waits_from: Option<usize> = None;
                     let tail_offset = stream.length / cluster * cluster;
                     let tail_len = stream.length - tail_offset;
                     let materialized = (|| -> Result<n2r_win32::shadow_native::private_tree::StreamSupplySummary> {
@@ -1532,13 +1799,7 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                             }
                             (observed.summary, intervals)
                         };
-                        let batchable = at_once
-                            && stream.sparse.is_none()
-                            && intervals.len() == 1
-                            && intervals[0].1 > 0
-                            && intervals[0].1 <= WINDOW as u64;
-                        if batchable {
-                            let (at, length) = intervals[0];
+                        if let Some((at, length)) = batchable(at_once, stream, &intervals) {
                             let n = usize::try_from(length)?;
                             let next_written = written
                                 .checked_add(n as u64)
@@ -1551,28 +1812,49 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                             bytes.read_range_checked(&id, at, &mut buffer[..n])?;
                             if tail_writer.is_some()
                                 && needs_tail
-                                && recorded_tail_sha.is_none()
                                 && at <= tail_offset
                                 && at + n as u64 == stream.length
                             {
                                 let start = (tail_offset - at) as usize;
                                 if n - start == tail_len as usize {
-                                    recorded_tail_sha =
-                                        Some(hex::encode(Sha256::digest(&buffer[start..n])));
+                                    waits_from = Some(start);
                                 }
                             }
-                            pending_tails.push(PendingTailWrite {
-                                object_index: index,
-                                name: stream.name_utf16,
-                                components: &object.path,
-                                logical_length: stream.length,
-                                offset: at,
-                                bytes: buffer[..n].to_vec(),
+                            // Its record for the supplied tails waits with it
+                            // for the digest taken as it is written.
+                            let record = waits_from.zip(this_tail_ordinal).map(|(_, ordinal)| {
+                                PendingRecord {
+                                    key: supplied_tail_key(index as u64, ordinal),
+                                    object_index: index,
+                                    name: stream.name_utf16,
+                                    logical_offset: tail_offset,
+                                    length: tail_len,
+                                    sha256: None,
+                                }
                             });
+                            pending.write(
+                                template,
+                                tail_writer.as_mut().map(|(writer, _)| writer),
+                                PendingTailWrite {
+                                    object_index: index,
+                                    name: stream.name_utf16,
+                                    components: &object.path,
+                                    logical_length: stream.length,
+                                    offset: at,
+                                    bytes: buffer[..n].to_vec(),
+                                    digest_from: waits_from,
+                                    record: None,
+                                },
+                                record,
+                                pending_overhead(object, stream),
+                            )?;
                             bytes.validate_protection()?;
                             written = next_written;
                         } else {
-                            flush_pending(template, &mut pending_tails)?;
+                            // The tails waiting with the batch are written
+                            // with it: they are other streams' and are written
+                            // to their own files, so this stream's windows do
+                            // not wait for them.
                             for (offset, length) in intervals {
                                 let mut done = 0u64;
                                 while done < length {
@@ -1645,14 +1927,15 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                     if let (Some((writer, _)), Some(ordinal), Some(sha256)) =
                         (tail_writer.as_mut(), this_tail_ordinal, recorded_tail_sha)
                     {
-                        writer.push(
-                            supplied_tail_key(index as u64, ordinal),
-                            &n2r_win32::shadow_native::LayoutResidualExpectation {
+                        pending.record(
+                            writer,
+                            PendingRecord {
+                                key: supplied_tail_key(index as u64, ordinal),
                                 object_index: index,
-                                stream_name_utf16: stream.name_utf16.to_vec(),
+                                name: stream.name_utf16,
                                 logical_offset: tail_offset,
                                 length: tail_len,
-                                sha256,
+                                sha256: Some(sha256),
                             },
                         )?;
                     }
@@ -1668,11 +1951,38 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                     }
                 }
             }
-            flush_pending(template, &mut pending_tails)?;
+            // Every tail of the batch has been taken: its lane reads are let
+            // go before the next batch's are asked.
             if let (Some(reads), Some(batch)) = (ahead.as_mut(), tail_reads.take()) {
                 batch.finish(reads);
             }
-            first += held.len();
+            let after = first + held.len();
+            // The next batch's tails are asked of the lanes before this
+            // batch's tails are written, so that the lanes read while the
+            // tails are written. Its spans are held to what `tails_ahead`
+            // reserved, which this batch's spans no longer hold, and to
+            // spare memory beyond it; the tails waiting here hold a lease of
+            // their own. Where the next batch's objects cannot be held now,
+            // they are taken in turn once this batch is written, and what
+            // the first of them fails with is reported then.
+            if pending.has_writes()
+                && after < expected.len()
+                && let Some(reads) = ahead.as_mut()
+                && let Ok(next) = lease_batch(after, true)
+            {
+                let next_reads = TailBatchReads::ask(
+                    reads,
+                    tail_arena,
+                    bytes,
+                    &next,
+                    after,
+                    &materialized_streams,
+                );
+                asked_next = Some((next, Some(next_reads)));
+            }
+            pending.flush(template, tail_writer.as_mut().map(|(writer, _)| writer))?;
+            drop(pending);
+            first = after;
         }
         Ok(())
     })()
@@ -2239,6 +2549,21 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(refusal.contains("--verify thorough"), "{refusal}");
+    }
+
+    #[test]
+    fn only_one_short_range_of_a_plain_stream_waits_with_its_batch() {
+        let plain = stream(None, Some(SourceStreamEvidence::ExtentIdentityV1));
+        let window = WINDOW as u64;
+        assert_eq!(batchable(true, plain, &[(4096, 100)]), Some((4096, 100)));
+        assert_eq!(batchable(true, plain, &[(0, window)]), Some((0, window)));
+        // Not in a run that does not verify once, not an empty, a longer or
+        // a second range.
+        assert_eq!(batchable(false, plain, &[(4096, 100)]), None);
+        assert_eq!(batchable(true, plain, &[(4096, 0)]), None);
+        assert_eq!(batchable(true, plain, &[(0, window + 1)]), None);
+        assert_eq!(batchable(true, plain, &[(0, 100), (8192, 100)]), None);
+        assert_eq!(batchable(true, plain, &[]), None);
     }
 
     fn span_bytes(spans: &[(u64, u64, usize)]) -> u64 {

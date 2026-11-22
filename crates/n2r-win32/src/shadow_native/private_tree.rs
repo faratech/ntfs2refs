@@ -101,6 +101,29 @@ pub struct TailBatchItem<'a> {
     pub logical_length: u64,
     pub offset: u64,
     pub bytes: &'a [u8],
+    /// Where the caller wants the SHA-256 of `bytes` from this offset on:
+    /// taken beside the write, on the helper that writes it.
+    pub digest_from: Option<usize>,
+}
+
+/// The part of a write of `length` bytes at `offset` that is recorded as a
+/// stream's materialized tail (its bytes beyond the last whole target
+/// cluster), as offsets into the write; `None` where the write records no
+/// tail: the stream is shorter than a cluster or ends on one, or the write
+/// does not cover the tail to its end.
+fn recorded_tail_range(logical_length: u64, offset: u64, length: usize) -> Option<(usize, usize)> {
+    let prefix = crate::target_cluster::floor(logical_length);
+    if prefix == 0 || prefix == logical_length || offset > prefix {
+        return None;
+    }
+    let end = offset.checked_add(length as u64)?;
+    if end < logical_length {
+        return None;
+    }
+    Some((
+        (prefix - offset) as usize,
+        (logical_length - offset) as usize,
+    ))
 }
 
 pub struct PrivateTree {
@@ -250,18 +273,27 @@ impl PrivateTree {
         bytes: &[u8],
         native_file_id: Vec<u8>,
     ) -> io::Result<()> {
-        let prefix = crate::target_cluster::floor(logical_length);
-        if prefix == 0 || prefix == logical_length || offset > prefix {
-            return Ok(());
-        }
-        let Some(end) = offset.checked_add(bytes.len() as u64) else {
+        let Some((start, stop)) = recorded_tail_range(logical_length, offset, bytes.len()) else {
             return Ok(());
         };
-        if end < logical_length {
-            return Ok(());
-        }
-        let start = (prefix - offset) as usize;
-        let stop = (logical_length - offset) as usize;
+        self.record_materialized_tail_digest(
+            key,
+            logical_length,
+            hex::encode(Sha256::digest(&bytes[start..stop])),
+            native_file_id,
+        )
+    }
+
+    /// [`Self::record_materialized_tail`] where the digest of the tail, the
+    /// bytes [`recorded_tail_range`] names, was taken beside the write.
+    fn record_materialized_tail_digest(
+        &mut self,
+        key: &StreamKey,
+        logical_length: u64,
+        sha256: String,
+        native_file_id: Vec<u8>,
+    ) -> io::Result<()> {
+        let prefix = crate::target_cluster::floor(logical_length);
         if let Some(memory) = &self.memory {
             memory.tail(key)?;
         }
@@ -274,7 +306,7 @@ impl PrivateTree {
                 logical_length,
                 offset: prefix,
                 bytes: logical_length - prefix,
-                sha256: hex::encode(Sha256::digest(&bytes[start..stop])),
+                sha256,
                 readback_verified: true,
                 native_file_id,
                 source_prefix_contents_verified: false,
@@ -1196,14 +1228,20 @@ impl PrivateTree {
     /// available cores on their already-open handles in `self.files`. Every
     /// safety check (exclusion, backing quota, original-coordinate non-overlap,
     /// path/length binding, and `record_materialized_tail`) runs on the calling
-    /// thread; only the independent `WriteFile` + `FileIdInfo` syscalls run in
-    /// parallel.
+    /// thread; only the independent `WriteFile` + `FileIdInfo` syscalls, and
+    /// the SHA-256 of each tail that is recorded and of what the caller asks
+    /// for (`TailBatchItem::digest_from`), run in parallel. A tail's digest
+    /// was taken on the calling thread, twice over with the caller's: some
+    /// 340 MB of tails hashed one after the other on the full Windows volume,
+    /// on a processor without SHA instructions.
+    ///
+    /// Returns, for each item, the digest the caller asked for.
     pub fn materialize_tails_batch_unhashed(
         &mut self,
         items: &[TailBatchItem<'_>],
-    ) -> io::Result<()> {
+    ) -> io::Result<Vec<Option<String>>> {
         if items.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         if items.len() == 1 {
             let item = &items[0];
@@ -1218,7 +1256,11 @@ impl PrivateTree {
             if write["readback_verified"] != true {
                 return Err(invalid("routed remaining materialization readback differs"));
             }
-            return Ok(());
+            return Ok(vec![
+                item.digest_from
+                    .and_then(|from| item.bytes.get(from..))
+                    .map(|bytes| hex::encode(Sha256::digest(bytes))),
+            ]);
         }
         self.require_source_excluded()?;
         let volume_path = self.pair.shadow.volume_path()?;
@@ -1289,7 +1331,10 @@ impl PrivateTree {
             .map_or(1, |cores| cores.get())
             .min(work.len());
         let chunk_size = work.len().div_ceil(workers);
-        let mut results: Vec<Option<io::Result<Vec<u8>>>> =
+        // For each item: its native file identity, the digest of its
+        // recorded tail and the digest its caller asked for.
+        type Written = (Vec<u8>, Option<String>, Option<String>);
+        let mut results: Vec<Option<io::Result<Written>>> =
             (0..items.len()).map(|_| None).collect();
         std::thread::scope(|scope| {
             let mut handles = Vec::with_capacity(workers);
@@ -1300,7 +1345,31 @@ impl PrivateTree {
                         let item = &items[*idx];
                         let res = file
                             .initialize_at_unhashed(item.offset, item.bytes)
-                            .and_then(|_| info(file.metadata_handle(), 18, 24));
+                            .and_then(|_| info(file.metadata_handle(), 18, 24))
+                            .map(|native_file_id| {
+                                let tail = recorded_tail_range(
+                                    item.logical_length,
+                                    item.offset,
+                                    item.bytes.len(),
+                                );
+                                let recorded = tail.map(|(start, stop)| {
+                                    hex::encode(Sha256::digest(&item.bytes[start..stop]))
+                                });
+                                // The same bytes are hashed once.
+                                let asked = match (item.digest_from, tail, &recorded) {
+                                    (Some(from), Some((start, stop)), Some(digest))
+                                        if from == start && stop == item.bytes.len() =>
+                                    {
+                                        Some(digest.clone())
+                                    }
+                                    (Some(from), _, _) => item
+                                        .bytes
+                                        .get(from..)
+                                        .map(|bytes| hex::encode(Sha256::digest(bytes))),
+                                    (None, _, _) => None,
+                                };
+                                (native_file_id, recorded, asked)
+                            });
                         out.push((*idx, res));
                     }
                     out
@@ -1314,21 +1383,24 @@ impl PrivateTree {
                 }
             }
         });
+        let mut asked = Vec::with_capacity(items.len());
         for (idx, item) in items.iter().enumerate() {
-            let native_file_id = results[idx]
+            let (native_file_id, recorded, digest) = results[idx]
                 .take()
                 .ok_or_else(|| invalid("parallel tail materialization worker panicked"))??;
             let key = StreamKey::named(item.object_index, item.name);
-            self.record_materialized_tail(
-                &key,
-                item.logical_length,
-                item.offset,
-                item.bytes,
-                native_file_id,
-            )?;
+            if let Some(sha256) = recorded {
+                self.record_materialized_tail_digest(
+                    &key,
+                    item.logical_length,
+                    sha256,
+                    native_file_id,
+                )?;
+            }
+            asked.push(digest);
         }
         self.require_source_excluded()?;
-        Ok(())
+        Ok(asked)
     }
     #[allow(clippy::too_many_arguments)]
     fn materialize_range_with(
@@ -2881,4 +2953,35 @@ pub(super) fn private_descriptor() -> io::Result<Vec<u8>> {
         LocalFree(sd);
     }
     result
+}
+
+#[cfg(test)]
+mod tail_record_tests {
+    use super::*;
+
+    /// The digest a batch's helper takes of a tail is of the bytes the
+    /// tail's record was always taken of.
+    #[test]
+    fn a_write_records_the_tail_it_covers_to_its_end() {
+        let cluster = crate::target_cluster::bytes();
+        let length = 2 * cluster + 100;
+        // The tail written alone, and a window that ends at the stream's end.
+        assert_eq!(
+            recorded_tail_range(length, 2 * cluster, 100),
+            Some((0, 100))
+        );
+        assert_eq!(
+            recorded_tail_range(length, cluster, cluster as usize + 100),
+            Some((cluster as usize, cluster as usize + 100))
+        );
+        // No tail: a stream shorter than a cluster or ending on one, or a
+        // write that does not reach the end or begins inside the tail.
+        assert_eq!(recorded_tail_range(100, 0, 100), None);
+        assert_eq!(
+            recorded_tail_range(2 * cluster, cluster, cluster as usize),
+            None
+        );
+        assert_eq!(recorded_tail_range(length, 2 * cluster, 99), None);
+        assert_eq!(recorded_tail_range(length, 2 * cluster + 1, 99), None);
+    }
 }

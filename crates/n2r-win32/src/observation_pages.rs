@@ -101,7 +101,23 @@ const HEX_VALUES: [u8; 256] = {
     }
     values
 };
+/// Tag byte prefixing raw (non-hex) observation chunks. Legacy chunks are
+/// JSON strings and therefore always start with `b'"'` (`0x22`), never `0x00`.
+const RAW_CHUNK_TAG: u8 = 0x00;
+
 fn decode_chunk(payload: &[u8], maximum: usize) -> io::Result<Vec<u8>> {
+    if let Some((&RAW_CHUNK_TAG, raw)) = payload.split_first() {
+        require(
+            raw.len() <= maximum,
+            "noncanonical native observation chunk",
+        )?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(raw.len())
+            .map_err(io::Error::other)?;
+        bytes.extend_from_slice(raw);
+        return Ok(bytes);
+    }
     let text: &str = serde_json::from_slice(payload).map_err(io::Error::other)?;
     let input = text.as_bytes();
     require(
@@ -317,7 +333,9 @@ struct ChunkSink<'a> {
 }
 impl ChunkSink<'_> {
     fn emit(&mut self) -> io::Result<()> {
-        let payload = serde_json::to_vec(&hex::encode(&self.buffer)).map_err(io::Error::other)?;
+        let mut payload = Vec::with_capacity(1 + self.buffer.len());
+        payload.push(RAW_CHUNK_TAG);
+        payload.extend_from_slice(&self.buffer);
         self.writer
             .push(&key(self.phase, self.ordinal, self.chunk), &payload)?;
         self.chunk = add(self.chunk, 1)?;

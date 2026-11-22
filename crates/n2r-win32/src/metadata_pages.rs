@@ -108,6 +108,11 @@ fn read_at(file: &mut File, at: u64, bytes: &mut [u8]) -> io::Result<()> {
     file.read_exact(bytes)
 }
 fn valid_json(bytes: &[u8]) -> io::Result<()> {
+    // A leading 0x00 byte marks a raw binary chunk (e.g. observation_pages);
+    // valid JSON never starts with NUL.
+    if bytes.first() == Some(&0) {
+        return Ok(());
+    }
     let mut parser = serde_json::Deserializer::from_slice(bytes);
     serde::de::IgnoredAny::deserialize(&mut parser).map_err(io::Error::other)?;
     parser.end().map_err(io::Error::other)

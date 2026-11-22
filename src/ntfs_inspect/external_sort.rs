@@ -285,7 +285,6 @@ impl ExternalSort {
 
     pub fn push(&mut self, key: [u8; 16], value: &impl Serialize) -> Result<()> {
         ensure!(!self.poisoned, "source sort is poisoned");
-        self.poisoned = true;
         let limit = self.scratch.budget().record_bytes;
         let mut json = Vec::new();
         serde_json::to_writer(
@@ -295,6 +294,15 @@ impl ExternalSort {
             },
             value,
         )?;
+        self.push_json(key, json)
+    }
+
+    /// Push a pre-serialized JSON row into the sort. Enforces the same
+    /// record-size limit, spill, and RAM-lease admission rules as [`Self::push`].
+    pub fn push_json(&mut self, key: [u8; 16], mut json: Vec<u8>) -> Result<()> {
+        ensure!(!self.poisoned, "source sort is poisoned");
+        self.poisoned = true;
+        let limit = self.scratch.budget().record_bytes;
         json.shrink_to_fit();
         let len = json.len() as u64;
         ensure!(

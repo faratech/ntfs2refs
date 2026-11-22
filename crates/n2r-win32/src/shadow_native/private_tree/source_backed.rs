@@ -164,6 +164,7 @@ impl SourceBackedRoutes {
             false,
             memory,
             aliases,
+            crate::verify_policy::verifies_once(),
         )?;
         if input.len() != observed.expected_stream_sha256.len() {
             return Err(invalid("protected route input coverage differs"));

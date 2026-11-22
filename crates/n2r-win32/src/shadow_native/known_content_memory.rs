@@ -621,6 +621,7 @@ fn verify_known_contents_in_accounted_report_with_aliases(
         true,
         Some(payer),
         aliases,
+        false,
     )?;
     let observation = report
         .content_observation

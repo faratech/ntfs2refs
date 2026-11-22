@@ -1878,13 +1878,23 @@ fn security_snapshot_with_limit(file: &File, maximum: Option<u64>) -> Snapshot {
     }
 }
 fn repeat_snapshot(file: &File, previous: &Snapshot) -> Snapshot {
+    let layout_only = previous.kernel_security.is_none()
+        && previous.security.is_empty()
+        && previous.security_error.is_none();
     let maximum = previous.security.len().max(
         previous
             .kernel_security
             .as_ref()
             .map_or(0, |q| q.bytes.len()),
     );
-    let mut observation = if maximum > crate::attestation::MAX_SECURITY_BYTES {
+    let mut observation = if layout_only {
+        crate::attestation_native::source_snapshot_paged_layout_only(
+            file,
+            false,
+            previous.extended_attributes.is_some() || previous.extended_attributes_error.is_some(),
+            previous.reparse.is_some(),
+        )
+    } else if maximum > crate::attestation::MAX_SECURITY_BYTES {
         crate::attestation_native::source_snapshot_paged_scoped(
             file,
             false,
@@ -2045,6 +2055,7 @@ fn validate_existing_content_domain_with_memory(
         allow_post_mount_svi,
         memory,
         None,
+        false,
     )
 }
 
@@ -2073,6 +2084,7 @@ pub fn validate_existing_windows_aliases_content_domain_with_memory(
         allow_post_mount_svi,
         memory,
         Some(aliases),
+        false,
     )
 }
 
@@ -2086,6 +2098,7 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
     allow_post_mount_svi: bool,
     memory: Option<&dyn report_memory::ReportMemoryAccountant>,
     aliases: Option<&windows_aliases::VerifiedWindowsAliases>,
+    allow_layout_only_security: bool,
 ) -> io::Result<()> {
     use std::collections::{BTreeMap, BTreeSet};
     if report.objects.len() != input.len() {
@@ -2314,30 +2327,36 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
         if !i.directory {
             streams::verify(i, o, verify_contents)?;
         }
-        let kernel = o
-            .before
-            .kernel_security
-            .as_ref()
-            .ok_or_else(|| invalid("existing shadow security missing"))?;
-        if o.before.security_error.is_some() || kernel.native_error.is_some() {
-            return Err(invalid("existing shadow security query failed"));
-        }
-        for (expected, actual) in [
-            (
-                i.expected_api_security.unwrap_or(i.security),
-                o.before.security.as_slice(),
-            ),
-            (i.security, kernel.bytes.as_slice()),
-        ] {
-            let matched = if before_restore {
-                creation_loss_only(expected, actual, same)?
-            } else {
-                same(expected, actual)?
-            };
-            if !matched {
-                return Err(invalid(
-                    "existing shadow security differs beyond the recorded creation control-bit loss",
-                ));
+        let skip_security = allow_layout_only_security
+            && o.before.security.is_empty()
+            && o.before.security_error.is_none()
+            && o.before.kernel_security.is_none();
+        if !skip_security {
+            let kernel = o
+                .before
+                .kernel_security
+                .as_ref()
+                .ok_or_else(|| invalid("existing shadow security missing"))?;
+            if o.before.security_error.is_some() || kernel.native_error.is_some() {
+                return Err(invalid("existing shadow security query failed"));
+            }
+            for (expected, actual) in [
+                (
+                    i.expected_api_security.unwrap_or(i.security),
+                    o.before.security.as_slice(),
+                ),
+                (i.security, kernel.bytes.as_slice()),
+            ] {
+                let matched = if before_restore {
+                    creation_loss_only(expected, actual, same)?
+                } else {
+                    same(expected, actual)?
+                };
+                if !matched {
+                    return Err(invalid(
+                        "existing shadow security differs beyond the recorded creation control-bit loss",
+                    ));
+                }
             }
         }
         Ok(())
@@ -3584,6 +3603,7 @@ fn observe_general_layout_readonly_domain_accounted_with_alias_overlay(
         false,
         memory,
         aliases,
+        crate::verify_policy::verifies_once(),
     )?;
     if native.payload_bytes_written != 0 || native.conversion_qualified {
         return Err(invalid(
@@ -4659,6 +4679,7 @@ pub(crate) fn observe_general_converted_metadata_and_recovered_aliases_readonly(
         true,
         Some(memory),
         Some(&aliases),
+        false,
     )?;
     native.objects.for_each(|_, object| {
         if object.logical_sha256.is_some()
@@ -4805,6 +4826,7 @@ fn observe_general_converted_metadata_domain_accounted_with_alias_overlay(
         true,
         memory,
         aliases,
+        false,
     )?;
     native.objects.for_each(|_, object| {
         if object.logical_sha256.is_some()
@@ -5345,8 +5367,21 @@ fn run_role_content_domain_accounted(
             snapshot(file)
         }
     };
-    let capture_metadata =
-        |file: &File, input: &Input<'_>| metadata_snapshot_with_limit(file, input, sd_limit);
+    let skip_layout_security =
+        mode == Mode::ObserveLayout && !converted && crate::verify_policy::verifies_once();
+    let capture_metadata = |file: &File, input: &Input<'_>| {
+        if skip_layout_security && sd_limit.is_some() {
+            let observed = crate::attestation_native::source_snapshot_paged_layout_only(
+                file,
+                false,
+                input.extended_attributes.is_some(),
+                input.extended_attributes.is_some() || input.reparse.is_some(),
+            );
+            with_directory_case(file, input, observed)
+        } else {
+            metadata_snapshot_with_limit(file, input, sd_limit)
+        }
+    };
     let capture_backup = |file: &File, sd: &[u8]| backup_security_with_limit(file, sd, sd_limit);
     let (maximum_objects, maximum_logical_bytes) = match resource_profile {
         None => (160usize, 256u64 * 1024 * 1024),

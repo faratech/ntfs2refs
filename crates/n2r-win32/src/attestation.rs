@@ -1637,8 +1637,7 @@ pub fn validate_domain_resources(domain: &impl NativeObservationDomain) -> io::R
 
 /// What a check of each row hands the caller: the row's ordinal and the row
 /// as it was decoded for the check.
-pub type EachValidatedRow<'f> =
-    dyn FnMut(usize, &NativeObservationRow<'_>) -> io::Result<()> + 'f;
+pub type EachValidatedRow<'f> = dyn FnMut(usize, &NativeObservationRow<'_>) -> io::Result<()> + 'f;
 
 /// [`validate_domain_resources`] that also hands every row it decodes to
 /// `each_row`, for a caller that checks something more of every row and

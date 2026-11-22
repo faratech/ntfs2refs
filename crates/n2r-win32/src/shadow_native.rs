@@ -6101,15 +6101,12 @@ fn run_role_content_domain_accounted(
         // file's contents are compared when this walk verifies contents,
         // a sparse file is asked for its allocated ranges, or this closing
         // walk reads the file's `< target_cluster` residual tail inline.
-        let mut h = if i.directory
-            || verify_file_contents
-            || i.sparse.is_some()
-            || has_unnamed_residual
-        {
-            open_input(&path, i, readonly_object_access)?
-        } else {
-            open_input_metadata(&path, i, readonly_object_access)?
-        };
+        let mut h =
+            if i.directory || verify_file_contents || i.sparse.is_some() || has_unnamed_residual {
+                open_input(&path, i, readonly_object_access)?
+            } else {
+                open_input_metadata(&path, i, readonly_object_access)?
+            };
         let before = capture_metadata(&h, i);
         let expected_allocation = layout::u64_at(query_bytes(&before, 1, 24)?, 0)?;
         let mut resident_data = false;
@@ -6356,8 +6353,7 @@ fn run_role_content_domain_accounted(
                 let id: [u8; 16] = query_bytes(&stream.before, 18, 24)?[8..24]
                     .try_into()
                     .map_err(|_| invalid("paged residual file identity length differs"))?;
-                let stream_path =
-                    streams::path(&root, i.components, &expected.stream_name_utf16)?;
+                let stream_path = streams::path(&root, i.components, &expected.stream_name_utf16)?;
                 let mut file = open_protected_readonly(&stream_path, false)?;
                 if info(&file, 18, 24)? != query_bytes(&stream.before, 18, 24)? {
                     return Err(invalid(
@@ -6415,8 +6411,7 @@ fn run_role_content_domain_accounted(
                             .ok_or_else(|| invalid("candidate bitmap views missing"))?;
                         Ok(CandidateReport {
                             legacy: legacy_view.candidate(offset, candidate_bytes)?,
-                            metadata_inclusive: metadata_view
-                                .candidate(offset, candidate_bytes)?,
+                            metadata_inclusive: metadata_view.candidate(offset, candidate_bytes)?,
                             legacy_page_proof: bitmaps
                                 .as_ref()
                                 .ok_or_else(|| invalid("candidate legacy bitmap missing"))?
@@ -6528,10 +6523,8 @@ fn run_role_content_domain_accounted(
             };
             let batch_len = batch_items.len();
             drop(batch_items);
-            for (((mut row, residual_results), res_expected), (lease, peak)) in rows
-                .into_iter()
-                .zip(batch_residuals)
-                .zip(leases)
+            for (((mut row, residual_results), res_expected), (lease, peak)) in
+                rows.into_iter().zip(batch_residuals).zip(leases)
             {
                 if let Some(inline) = inline_residuals.as_deref_mut()
                     && !res_expected.is_empty()

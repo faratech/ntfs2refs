@@ -721,162 +721,163 @@ fn compare_domain_with_header(
         native,
         &mut |ordinal, native_row| {
             let result: Result<()> = (|| {
-        // The row is read here and by the selector's row below, and changed
-        // by neither: both are handed the one the source holds, where it
-        // was decoded twice.
-        let file = source.file_shared(ordinal as u64)?;
-        let selector = native_row.request();
-        ensure!(
-            selector == expected.row(ordinal)?.as_ref(),
-            "native selector row differs from independently decoded source"
-        );
-        let observation = native_row.observation();
-        let logical = native_row.logical()?;
-        ensure!(
-            observation.identity == selector.identity && logical.identity == selector.identity,
-            "native row identity differs from selected source record"
-        );
-        let role = crate::ntfs_admission::paged::internal_role(source, &file)?;
-        let mut timestamps = None;
-        let mut security_view = None;
-        let mut metadata = Check::from((|| {
-            ensure!(
-                observation.open_error.is_none(),
-                "native metadata open refused: {:?}",
-                observation.open_error
-            );
-            let binding = source
-                .security()
-                .find_binding(file.record_number)?
-                .context("source security binding absent")?;
-            ensure!(
-                binding.sequence_number == file.sequence_number,
-                "source security binding sequence differs"
-            );
-            let descriptor: std::sync::Arc<[u8]> = if let Some(id) = binding.security_id {
-                if let Some((sha, bytes)) = security_cache.get(&id) {
-                    ensure!(
-                        *sha == binding.descriptor_sha256,
-                        "source security descriptor binding differs"
-                    );
-                    std::sync::Arc::clone(bytes)
-                } else {
-                    let record = source
-                        .security()
-                        .find_id(id)?
-                        .context("source security descriptor absent")?;
-                    ensure!(
-                        record.descriptor.sha256 == binding.descriptor_sha256,
-                        "source security descriptor binding differs"
-                    );
-                    let bytes: std::sync::Arc<[u8]> =
-                        hex::decode(&record.descriptor.relative_hex)?.into();
-                    if security_cache.len() < MAX_SECURITY_CACHE {
-                        security_cache.insert(
-                            id,
-                            (record.descriptor.sha256, std::sync::Arc::clone(&bytes)),
-                        );
-                    }
-                    bytes
-                }
-            } else {
-                let record = source
-                    .security()
-                    .find_legacy(file.record_number)?
-                    .context("source security descriptor absent")?;
+                // The row is read here and by the selector's row below, and changed
+                // by neither: both are handed the one the source holds, where it
+                // was decoded twice.
+                let file = source.file_shared(ordinal as u64)?;
+                let selector = native_row.request();
                 ensure!(
-                    record.descriptor.sha256 == binding.descriptor_sha256,
-                    "source security descriptor binding differs"
+                    selector == expected.row(ordinal)?.as_ref(),
+                    "native selector row differs from independently decoded source"
                 );
-                hex::decode(&record.descriptor.relative_hex)?.into()
-            };
-            let before = observation
-                .before
-                .as_ref()
-                .context("native metadata before absent")?;
-            let after = observation
-                .after
-                .as_ref()
-                .context("native metadata after absent")?;
-            let check_metadata = if expected.windows_paths {
-                crate::ntfs_source_view::check_metadata_windows_with_limit
-            } else {
-                crate::ntfs_source_view::check_metadata_with_limit
-            };
-            timestamps = Some(check_metadata(
-                &file,
-                source.header().geometry.serial_number,
-                &descriptor,
-                before,
-                after,
-                admission.budget.max_row_bytes,
-            )?);
-            security_view = Some(crate::ntfs_source_view::check_security_views_with_limit(
-                &descriptor,
-                before,
-                after,
-                admission.budget.max_row_bytes,
-            )?);
-            Ok(())
-        })());
-        if expected.windows_paths
-            && metadata.matched
-            && usize::from(file.hard_link_count) != file.names.len()
-        {
-            metadata.detail = format!(
-                "raw FILE header link-counter hint preserved: raw={}, FILE_NAME={}, canonical={}; native before/after canonical counts match; complete native namespace coverage remains required",
-                file.hard_link_count,
-                file.names.len(),
-                file.names.iter().filter(|name| name.namespace != 2).count()
-            );
-        }
-        let streams = Check::from((|| {
-            ensure!(
-                observation.open_error.is_none(),
-                "native stream metadata open refused"
-            );
-            // Both captures are held to the raw model, and to each other.
-            // In a run that verifies once, where they are equal (a single
-            // content pass mirrors the first into the second) the check of
-            // the second is the check of the first on the same input: it is
-            // not made twice. Every other run checks both.
-            let same = observation.streams_before == observation.streams_after;
-            let once = same && policy.verifies_once();
-            let captures: &[&Option<n2r_win32::attestation::StreamCapture>] = if once {
-                &[&observation.streams_before]
-            } else {
-                &[&observation.streams_before, &observation.streams_after]
-            };
-            for capture in captures {
-                crate::ntfs_stream_attestation::check_file_with_resources(
-                    &file,
-                    capture
+                let observation = native_row.observation();
+                let logical = native_row.logical()?;
+                ensure!(
+                    observation.identity == selector.identity
+                        && logical.identity == selector.identity,
+                    "native row identity differs from selected source record"
+                );
+                let role = crate::ntfs_admission::paged::internal_role(source, &file)?;
+                let mut timestamps = None;
+                let mut security_view = None;
+                let mut metadata = Check::from((|| {
+                    ensure!(
+                        observation.open_error.is_none(),
+                        "native metadata open refused: {:?}",
+                        observation.open_error
+                    );
+                    let binding = source
+                        .security()
+                        .find_binding(file.record_number)?
+                        .context("source security binding absent")?;
+                    ensure!(
+                        binding.sequence_number == file.sequence_number,
+                        "source security binding sequence differs"
+                    );
+                    let descriptor: std::sync::Arc<[u8]> = if let Some(id) = binding.security_id {
+                        if let Some((sha, bytes)) = security_cache.get(&id) {
+                            ensure!(
+                                *sha == binding.descriptor_sha256,
+                                "source security descriptor binding differs"
+                            );
+                            std::sync::Arc::clone(bytes)
+                        } else {
+                            let record = source
+                                .security()
+                                .find_id(id)?
+                                .context("source security descriptor absent")?;
+                            ensure!(
+                                record.descriptor.sha256 == binding.descriptor_sha256,
+                                "source security descriptor binding differs"
+                            );
+                            let bytes: std::sync::Arc<[u8]> =
+                                hex::decode(&record.descriptor.relative_hex)?.into();
+                            if security_cache.len() < MAX_SECURITY_CACHE {
+                                security_cache.insert(
+                                    id,
+                                    (record.descriptor.sha256, std::sync::Arc::clone(&bytes)),
+                                );
+                            }
+                            bytes
+                        }
+                    } else {
+                        let record = source
+                            .security()
+                            .find_legacy(file.record_number)?
+                            .context("source security descriptor absent")?;
+                        ensure!(
+                            record.descriptor.sha256 == binding.descriptor_sha256,
+                            "source security descriptor binding differs"
+                        );
+                        hex::decode(&record.descriptor.relative_hex)?.into()
+                    };
+                    let before = observation
+                        .before
                         .as_ref()
-                        .context("native complete stream mapping absent")?,
-                    base,
-                    &source.header().geometry,
-                    admission,
-                )?;
-            }
-            ensure!(
-                same,
-                "native complete stream observations changed between passes"
-            );
-            Ok(())
-        })());
-        let mut evidence = crate::ntfs_data_attestation::LogicalEvidence::default();
-        let mut logical_data = Check::from((|| {
-            ensure!(
-                observation.open_error.is_none(),
-                "native logical file open refused"
-            );
-            // Only where the process verifies once may a stream whose
-            // contents Windows did not read be admitted, and only one that
-            // the raw reading holds as plain.
-            let mut plain = |stream: &crate::ntfs_inspect::StreamInventory| {
-                plain_content_stream(source, &file, stream)
-            };
-            evidence = crate::ntfs_data_attestation::check_file_with_extent_evidence_domain_scoped(
+                        .context("native metadata before absent")?;
+                    let after = observation
+                        .after
+                        .as_ref()
+                        .context("native metadata after absent")?;
+                    let check_metadata = if expected.windows_paths {
+                        crate::ntfs_source_view::check_metadata_windows_with_limit
+                    } else {
+                        crate::ntfs_source_view::check_metadata_with_limit
+                    };
+                    timestamps = Some(check_metadata(
+                        &file,
+                        source.header().geometry.serial_number,
+                        &descriptor,
+                        before,
+                        after,
+                        admission.budget.max_row_bytes,
+                    )?);
+                    security_view = Some(crate::ntfs_source_view::check_security_views_with_limit(
+                        &descriptor,
+                        before,
+                        after,
+                        admission.budget.max_row_bytes,
+                    )?);
+                    Ok(())
+                })());
+                if expected.windows_paths
+                    && metadata.matched
+                    && usize::from(file.hard_link_count) != file.names.len()
+                {
+                    metadata.detail = format!(
+                        "raw FILE header link-counter hint preserved: raw={}, FILE_NAME={}, canonical={}; native before/after canonical counts match; complete native namespace coverage remains required",
+                        file.hard_link_count,
+                        file.names.len(),
+                        file.names.iter().filter(|name| name.namespace != 2).count()
+                    );
+                }
+                let streams = Check::from((|| {
+                    ensure!(
+                        observation.open_error.is_none(),
+                        "native stream metadata open refused"
+                    );
+                    // Both captures are held to the raw model, and to each other.
+                    // In a run that verifies once, where they are equal (a single
+                    // content pass mirrors the first into the second) the check of
+                    // the second is the check of the first on the same input: it is
+                    // not made twice. Every other run checks both.
+                    let same = observation.streams_before == observation.streams_after;
+                    let once = same && policy.verifies_once();
+                    let captures: &[&Option<n2r_win32::attestation::StreamCapture>] = if once {
+                        &[&observation.streams_before]
+                    } else {
+                        &[&observation.streams_before, &observation.streams_after]
+                    };
+                    for capture in captures {
+                        crate::ntfs_stream_attestation::check_file_with_resources(
+                            &file,
+                            capture
+                                .as_ref()
+                                .context("native complete stream mapping absent")?,
+                            base,
+                            &source.header().geometry,
+                            admission,
+                        )?;
+                    }
+                    ensure!(
+                        same,
+                        "native complete stream observations changed between passes"
+                    );
+                    Ok(())
+                })());
+                let mut evidence = crate::ntfs_data_attestation::LogicalEvidence::default();
+                let mut logical_data = Check::from((|| {
+                    ensure!(
+                        observation.open_error.is_none(),
+                        "native logical file open refused"
+                    );
+                    // Only where the process verifies once may a stream whose
+                    // contents Windows did not read be admitted, and only one that
+                    // the raw reading holds as plain.
+                    let mut plain = |stream: &crate::ntfs_inspect::StreamInventory| {
+                        plain_content_stream(source, &file, stream)
+                    };
+                    evidence = crate::ntfs_data_attestation::check_file_with_extent_evidence_domain_scoped(
                 source,
                 &file,
                 &logical,
@@ -890,90 +891,90 @@ fn compare_domain_with_header(
                         as &mut dyn FnMut(&crate::ntfs_inspect::StreamInventory) -> Result<bool>,
                 ),
             )?;
-            Ok(())
-        })());
-        if logical_data.matched && !evidence.unread_plain_streams.is_empty() {
-            logical_data.detail = format!(
-                "native observations match the supplied raw model; Windows did not read the contents of {} plain stream(s) ({} bytes), as a run that verifies once does: their run lists are held to Windows' retrieval pointers, Windows confirmed that their valid data runs to their end, and their raw digests stand: {}",
-                evidence.unread_plain_streams.len(),
-                evidence.unread_plain_bytes,
-                evidence
-                    .unread_plain_streams
-                    .iter()
-                    .map(|name| format!("\"{}\"", String::from_utf16_lossy(name)))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-        }
-        let directory = native_row.namespace()?;
-        ensure!(
-            directory.identity == selector.identity,
-            "native namespace row coverage/order differs"
-        );
-        let mut case_sensitive_mark = false;
-        let (namespace, directory_case) = if file.is_directory {
-            ensure!(
-                directory.identity == selector.identity,
-                "native directory coverage/order differs"
-            );
-            (
-                Some(Check::from(
-                    crate::ntfs_namespace_attestation::check_projected_directory_domain(
-                        source,
-                        source.directories(),
-                        &file,
-                        &directory,
-                        admission,
+                    Ok(())
+                })());
+                if logical_data.matched && !evidence.unread_plain_streams.is_empty() {
+                    logical_data.detail = format!(
+                        "native observations match the supplied raw model; Windows did not read the contents of {} plain stream(s) ({} bytes), as a run that verifies once does: their run lists are held to Windows' retrieval pointers, Windows confirmed that their valid data runs to their end, and their raw digests stand: {}",
+                        evidence.unread_plain_streams.len(),
+                        evidence.unread_plain_bytes,
+                        evidence
+                            .unread_plain_streams
+                            .iter()
+                            .map(|name| format!("\"{}\"", String::from_utf16_lossy(name)))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+                let directory = native_row.namespace()?;
+                ensure!(
+                    directory.identity == selector.identity,
+                    "native namespace row coverage/order differs"
+                );
+                let mut case_sensitive_mark = false;
+                let (namespace, directory_case) = if file.is_directory {
+                    ensure!(
+                        directory.identity == selector.identity,
+                        "native directory coverage/order differs"
+                    );
+                    (
+                        Some(Check::from(
+                            crate::ntfs_namespace_attestation::check_projected_directory_domain(
+                                source,
+                                source.directories(),
+                                &file,
+                                &directory,
+                                admission,
+                            )
+                            .map(|_| ()),
+                        )),
+                        Some(Check::from(
+                            super::check_directory_case_observation(
+                                &file,
+                                source.header().geometry.serial_number,
+                                &observation,
+                            )
+                            .map(|marked| case_sensitive_mark = marked),
+                        )),
                     )
-                    .map(|_| ()),
-                )),
-                Some(Check::from(
-                    super::check_directory_case_observation(
-                        &file,
-                        source.header().geometry.serial_number,
-                        &observation,
-                    )
-                    .map(|marked| case_sensitive_mark = marked),
-                )),
-            )
-        } else {
-            ensure!(
-                directory.before.is_none() && directory.after.is_none(),
-                "native non-directory carries directory enumeration"
-            );
-            (None, None)
-        };
-        let matched = metadata.matched
-            && streams.matched
-            && logical_data.matched
-            && namespace.as_ref().is_none_or(|c| c.matched)
-            && directory_case.as_ref().is_none_or(|c| c.matched);
-        if role.is_some() {
-            summary.recognized_internal_objects += 1;
-        } else {
-            summary.user_objects += 1;
-            summary.matched_user_objects += u64::from(matched);
-        }
-        emit(PagedFileComparison {
-            record_number: file.record_number,
-            sequence_number: file.sequence_number,
-            internal_replacement_role: role,
-            metadata,
-            streams,
-            logical_data,
-            namespace,
-            directory_case,
-            case_sensitive_mark,
-            timestamps,
-            security: security_view,
-            complete_logical_bytes: evidence.full_bytes,
-            extent_identity_streams: u64::try_from(evidence.extent_identity_streams)?,
-            extent_identity_logical_bytes: evidence.extent_identity_bytes,
-            unread_plain_streams: u64::try_from(evidence.unread_plain_streams.len())?,
-            unread_plain_logical_bytes: evidence.unread_plain_bytes,
-            source_file: file,
-        })?;
-        Ok(())
+                } else {
+                    ensure!(
+                        directory.before.is_none() && directory.after.is_none(),
+                        "native non-directory carries directory enumeration"
+                    );
+                    (None, None)
+                };
+                let matched = metadata.matched
+                    && streams.matched
+                    && logical_data.matched
+                    && namespace.as_ref().is_none_or(|c| c.matched)
+                    && directory_case.as_ref().is_none_or(|c| c.matched);
+                if role.is_some() {
+                    summary.recognized_internal_objects += 1;
+                } else {
+                    summary.user_objects += 1;
+                    summary.matched_user_objects += u64::from(matched);
+                }
+                emit(PagedFileComparison {
+                    record_number: file.record_number,
+                    sequence_number: file.sequence_number,
+                    internal_replacement_role: role,
+                    metadata,
+                    streams,
+                    logical_data,
+                    namespace,
+                    directory_case,
+                    case_sensitive_mark,
+                    timestamps,
+                    security: security_view,
+                    complete_logical_bytes: evidence.full_bytes,
+                    extent_identity_streams: u64::try_from(evidence.extent_identity_streams)?,
+                    extent_identity_logical_bytes: evidence.extent_identity_bytes,
+                    unread_plain_streams: u64::try_from(evidence.unread_plain_streams.len())?,
+                    unread_plain_logical_bytes: evidence.unread_plain_bytes,
+                    source_file: file,
+                })?;
+                Ok(())
             })();
             if let Err(err) = result {
                 row_error = Some(err);

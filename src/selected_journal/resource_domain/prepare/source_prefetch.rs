@@ -45,6 +45,8 @@ struct PrefetchedSource<'a, R: ReadSeek> {
     domain: &'a ResourceJournalDomain<'a>,
     range_count: u64,
     next_ordinal: u64,
+    /// Unqueued tail `(start, end)` of a range larger than `SPAN`.
+    remainder: Option<(u64, u64)>,
     next_lane: usize,
     lanes: Vec<LaneHandle>,
     pending: VecDeque<PendingSpan>,
@@ -66,6 +68,7 @@ impl<'a, R: ReadSeek> PrefetchedSource<'a, R> {
             domain,
             range_count,
             next_ordinal: 0,
+            remainder: None,
             next_lane: 0,
             lanes,
             pending: VecDeque::new(),
@@ -81,26 +84,28 @@ impl<'a, R: ReadSeek> PrefetchedSource<'a, R> {
     fn pump(&mut self) {
         let limit = self.lanes.len() * AHEAD_PER_LANE;
         let index = self.domain.capture().index();
-        while self.pending.len() < limit && self.next_ordinal < self.range_count {
-            let Ok(first) = index.range(self.next_ordinal) else {
-                break;
+        while self.pending.len() < limit {
+            let (mut start, mut end) = if let Some((rem_start, rem_end)) = self.remainder.take() {
+                (rem_start, rem_end)
+            } else {
+                if self.next_ordinal >= self.range_count {
+                    break;
+                }
+                let Ok(first) = index.range(self.next_ordinal) else {
+                    break;
+                };
+                self.next_ordinal += 1;
+                (first.offset, first.offset.saturating_add(first.length))
             };
-            self.next_ordinal += 1;
-            let mut start = first.offset;
-            let mut end = first.offset.saturating_add(first.length);
-            // If a single range is larger than SPAN, submit it in SPAN-sized slices
-            // by pushing the first SPAN and leaving remaining slices to be queued.
-            while end - start > SPAN as u64 {
+            if end - start > SPAN as u64 {
                 if !self.submit_span(start, SPAN) {
                     return;
                 }
                 start += SPAN as u64;
-                if self.pending.len() >= limit {
-                    // Queue any remainder of this large range immediately on next pump;
-                    // for simplicity submit all slices of a >4 MiB range up to limit,
-                    // and if we hit limit mid-range, break (the remainder falls back cleanly).
-                    return;
+                if start < end {
+                    self.remainder = Some((start, end));
                 }
+                continue;
             }
             while self.next_ordinal < self.range_count {
                 let Ok(next) = index.range(self.next_ordinal) else {

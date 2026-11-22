@@ -344,7 +344,6 @@ impl PrivateTree {
     )> {
         let mut result = BTreeMap::new();
         let mut tails = Vec::new();
-        let had_work = !self.sparse_targets.is_empty() || self.carrier_directory.is_some();
         for (key, target) in std::mem::take(&mut self.sparse_targets) {
             self.before_backing_mutation(crate::target_cluster::bytes())?;
             let (file, tail) = target.finish(self.files.remove(&key))?;
@@ -357,7 +356,7 @@ impl PrivateTree {
             self.before_backing_mutation(0)?;
             directory.retire()?;
         }
-        if had_work || !crate::verify_policy::checks_once() {
+        if !crate::verify_policy::checks_once() {
             self.before_backing_mutation(0)?;
             crate::perf::flush(crate::perf::Point::VolumeFlush, &self.volume)?;
         }

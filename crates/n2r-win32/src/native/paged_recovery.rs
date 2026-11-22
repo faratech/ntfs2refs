@@ -375,6 +375,209 @@ fn selected_digest_reaching<R: Read + Seek>(
     result
 }
 
+/// Reads and hashes the source's selected ranges across two handles (`source`
+/// and one `GeneralFrozenLane`) in ≤4 MiB spans (bridging gaps ≤64 KiB),
+/// feeding a 4 MiB `HashedBehind` worker in exact range order. Returns
+/// `Ok(None)` if two-lane buffers cannot be allocated so the caller falls back
+/// to [`selected_digest_reaching`].
+fn selected_digest_two_lanes(
+    source: &mut GeneralFrozenPartition,
+    lane: &mut super::GeneralFrozenLane,
+    policy: &HeldPagedWritePolicy,
+    algorithm: crate::bulk_digest::Algorithm,
+) -> io::Result<Option<[u8; 32]>> {
+    use std::collections::VecDeque;
+    use std::sync::mpsc;
+
+    const SPAN: usize = MAX_IO;
+    const BRIDGE: u64 = 64 * 1024;
+    const AHEAD: usize = 2;
+
+    let facts = policy.facts()?;
+    let range_count = u64::from(facts.range_count);
+    if range_count < 4 {
+        return Ok(None);
+    }
+    let mut buffers = Vec::with_capacity(2 * AHEAD);
+    for _ in 0..2 * AHEAD {
+        let mut buf = Vec::new();
+        if buf.try_reserve_exact(SPAN).is_err() {
+            return Ok(None);
+        }
+        buf.resize(SPAN, 0);
+        buffers.push(buf);
+    }
+    let Ok(mut hash) = crate::bulk_digest::HashedBehind::new(algorithm, SPAN) else {
+        return Ok(None);
+    };
+
+    #[derive(Clone, Copy)]
+    struct Piece {
+        offset: u64,
+        length: u64,
+        frame: Option<(u64, u64)>,
+    }
+    struct Span {
+        start: u64,
+        length: usize,
+        pieces: Vec<Piece>,
+    }
+
+    let previous = source.stream_position()?;
+    let result = std::thread::scope(|scope| -> io::Result<[u8; 32]> {
+        let mut bufs = buffers.into_iter();
+        let (jobs_a_tx, jobs_a_rx) = mpsc::sync_channel::<(u64, usize)>(AHEAD);
+        let (res_a_tx, res_a_rx) = mpsc::sync_channel::<io::Result<Vec<u8>>>(AHEAD);
+        let (free_a_tx, free_a_rx) = mpsc::sync_channel::<Vec<u8>>(AHEAD);
+        for _ in 0..AHEAD {
+            let _ = free_a_tx.send(bufs.next().unwrap());
+        }
+        let (jobs_b_tx, jobs_b_rx) = mpsc::sync_channel::<(u64, usize)>(AHEAD);
+        let (res_b_tx, res_b_rx) = mpsc::sync_channel::<io::Result<Vec<u8>>>(AHEAD);
+        let (free_b_tx, free_b_rx) = mpsc::sync_channel::<Vec<u8>>(AHEAD);
+        for _ in 0..AHEAD {
+            let _ = free_b_tx.send(bufs.next().unwrap());
+        }
+
+        fn reader_loop<R: Read + Seek>(
+            reader: &mut R,
+            jobs: mpsc::Receiver<(u64, usize)>,
+            results: mpsc::SyncSender<io::Result<Vec<u8>>>,
+            free: mpsc::Receiver<Vec<u8>>,
+        ) {
+            let _sampled = crate::stack_sampler::helper();
+            while let Ok((offset, length)) = jobs.recv() {
+                let Ok(mut buf) = free.recv() else { return };
+                let r = reader
+                    .seek(SeekFrom::Start(offset))
+                    .and_then(|_| reader.read_exact(&mut buf[..length]))
+                    .map(|()| buf);
+                let failed = r.is_err();
+                if results.send(r).is_err() || failed {
+                    return;
+                }
+            }
+        }
+
+        scope.spawn(|| reader_loop(source, jobs_a_rx, res_a_tx, free_a_rx));
+        scope.spawn(|| reader_loop(lane, jobs_b_rx, res_b_tx, free_b_rx));
+
+        let jobs = [jobs_a_tx, jobs_b_tx];
+        let results = [res_a_rx, res_b_rx];
+        let free = [free_a_tx, free_b_tx];
+
+        let mut pending: VecDeque<Span> = VecDeque::with_capacity(2 * AHEAD);
+        let mut submitted = 0u64;
+        let mut consumed = 0u64;
+
+        let mut drain_one = |pending: &mut VecDeque<Span>,
+                             hash: &mut crate::bulk_digest::HashedBehind,
+                             consumed: &mut u64|
+         -> io::Result<()> {
+            let span = pending.pop_front().unwrap();
+            let side = usize::from(*consumed % 2 == 1);
+            let buf = results[side]
+                .recv()
+                .map_err(|_| io::Error::other("OLD verification reader thread stopped"))??;
+            for piece in &span.pieces {
+                if let Some((offset, length)) = piece.frame {
+                    hash.update(&offset.to_le_bytes())?;
+                    hash.update(&length.to_le_bytes())?;
+                }
+                let from = (piece.offset - span.start) as usize;
+                hash.update(&buf[from..from + piece.length as usize])?;
+            }
+            let _ = free[side].send(buf);
+            *consumed += 1;
+            Ok(())
+        };
+
+        let mut open: Option<Span> = None;
+        let mut flush_open = |open: &mut Option<Span>,
+                              pending: &mut VecDeque<Span>,
+                              hash: &mut crate::bulk_digest::HashedBehind,
+                              submitted: &mut u64,
+                              consumed: &mut u64|
+         -> io::Result<()> {
+            let Some(span) = open.take() else {
+                return Ok(());
+            };
+            if pending.len() == 2 * AHEAD {
+                drain_one(pending, hash, consumed)?;
+            }
+            let side = usize::from(*submitted % 2 == 1);
+            jobs[side]
+                .send((span.start, span.length))
+                .map_err(|_| io::Error::other("OLD verification reader thread stopped"))?;
+            pending.push_back(span);
+            *submitted += 1;
+            Ok(())
+        };
+
+        for ordinal in 0..range_count {
+            let row = policy.row(ordinal)?;
+            let mut done = 0u64;
+            while done < row.length {
+                let offset = row.offset + done;
+                let part = (row.length - done).min(SPAN as u64);
+                let frame = (done == 0).then_some((row.offset, row.length));
+                let fits = open.as_ref().is_some_and(|span| {
+                    let end = span.start + span.length as u64;
+                    offset >= end
+                        && offset - end <= BRIDGE
+                        && (offset + part) - span.start <= SPAN as u64
+                });
+                if !fits {
+                    flush_open(
+                        &mut open,
+                        &mut pending,
+                        &mut hash,
+                        &mut submitted,
+                        &mut consumed,
+                    )?;
+                }
+                match open.as_mut() {
+                    Some(span) => {
+                        span.length = ((offset + part) - span.start) as usize;
+                        span.pieces.push(Piece {
+                            offset,
+                            length: part,
+                            frame,
+                        });
+                    }
+                    None => {
+                        open = Some(Span {
+                            start: offset,
+                            length: part as usize,
+                            pieces: vec![Piece {
+                                offset,
+                                length: part,
+                                frame,
+                            }],
+                        });
+                    }
+                }
+                done += part;
+            }
+        }
+        flush_open(
+            &mut open,
+            &mut pending,
+            &mut hash,
+            &mut submitted,
+            &mut consumed,
+        )?;
+        while !pending.is_empty() {
+            drain_one(&mut pending, &mut hash, &mut consumed)?;
+        }
+        drop(jobs);
+        drop(free);
+        hash.finish()
+    });
+    let _ = source.seek(SeekFrom::Start(previous));
+    result.map(Some)
+}
+
 fn verify_restored_digest<R: Read + Seek>(
     source: &mut R,
     policy: &HeldPagedWritePolicy,
@@ -1832,6 +2035,14 @@ impl GeneralFrozenPartition {
         let journal_before = verify_journal_owner(journal, pins, facts.journal_length)?;
         let modified = journal.metadata()?.modified()?;
         check_clear_lifecycle(journal)?;
+        // Open a second read lane before the parallel scope if the disk
+        // supports concurrent reads so OLD verification runs at QD=2.
+        let mut extra_lane = if hashed_behind && self.io_profile().queue_depth >= 2 {
+            self.read_lanes_if_available(1, events)?
+                .and_then(|mut lanes| lanes.pop())
+        } else {
+            None
+        };
         // The journal's body and the source's OLD bytes are on different
         // disks and are both gigabytes: hash the journal body and verify its
         // descriptor index on a second thread while this one reads and hashes
@@ -1854,22 +2065,40 @@ impl GeneralFrozenPartition {
                     verify_index_against_journal(journal, policy_ref, pins)?;
                     Ok(body)
                 });
-                let old_bytes = self.with_read_ahead(|source| {
-                    let actual = selected_digest_reaching(
-                        source,
-                        &policy,
-                        algorithm,
-                        hashed_behind,
-                        GeneralFrozenPartition::set_read_ahead_reach,
-                    )?;
+                let old_bytes = (|| -> io::Result<()> {
+                    let actual = if let Some(lane) = extra_lane.as_mut() {
+                        match selected_digest_two_lanes(self, lane, &policy, algorithm)? {
+                            Some(digest) => digest,
+                            None => self.with_read_ahead(|source| {
+                                selected_digest_reaching(
+                                    source,
+                                    &policy,
+                                    algorithm,
+                                    hashed_behind,
+                                    GeneralFrozenPartition::set_read_ahead_reach,
+                                )
+                            })?,
+                        }
+                    } else {
+                        self.with_read_ahead(|source| {
+                            selected_digest_reaching(
+                                source,
+                                &policy,
+                                algorithm,
+                                hashed_behind,
+                                GeneralFrozenPartition::set_read_ahead_reach,
+                            )
+                        })?
+                    };
                     if actual != pins.old_selected_sha256 {
                         return Err(invalid("actual excluded source selected bytes differ"));
                     }
                     Ok(())
-                });
+                })();
                 (body.join(), old_bytes)
             })
         };
+        drop(extra_lane);
         let _body = body.map_err(|_| io::Error::other("journal hashing thread panicked"))??;
         old_bytes?;
         if self.state(events)? != before {

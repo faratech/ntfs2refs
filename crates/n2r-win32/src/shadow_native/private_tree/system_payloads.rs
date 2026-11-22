@@ -396,7 +396,7 @@ pub(super) fn run_domain(
         );
         written_bytes = written_bytes.saturating_add(item.logical_length());
     }
-    if !receipts.is_empty() || !crate::verify_policy::checks_once() {
+    if !crate::verify_policy::checks_once() {
         tree.before_backing_mutation(0)?;
         crate::perf::flush(crate::perf::Point::VolumeFlush, &tree.volume)?;
     }

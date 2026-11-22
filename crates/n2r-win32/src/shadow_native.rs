@@ -4189,14 +4189,20 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
             };
             let path = streams::path(&root, &object.components, name)?;
             let mut file = open_protected_readonly(&path, false)?;
-            if repeat_snapshot(&file, before_stream) != *before_stream {
+            let id: [u8; 16] = query_bytes(before_stream, 18, 24)?[8..24]
+                .try_into()
+                .map_err(|_| invalid("paged residual file identity length differs"))?;
+            if crate::verify_policy::verifies_once() {
+                if info(&file, 18, 24)? != query_bytes(before_stream, 18, 24)? {
+                    return Err(invalid(
+                        "paged residual identity/metadata changed before read",
+                    ));
+                }
+            } else if repeat_snapshot(&file, before_stream) != *before_stream {
                 return Err(invalid(
                     "paged residual identity/metadata changed before read",
                 ));
             }
-            let id: [u8; 16] = query_bytes(before_stream, 18, 24)?[8..24]
-                .try_into()
-                .map_err(|_| invalid("paged residual file identity length differs"))?;
             file.seek(SeekFrom::Start(expected.logical_offset))?;
             // A residual is shorter than one target cluster.
             let mut buffer = vec![0u8; expected.length as usize];

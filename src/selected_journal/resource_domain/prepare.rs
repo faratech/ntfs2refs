@@ -298,6 +298,7 @@ pub(crate) fn prepare_native_partition_from_protected_capture<
             journal,
             facts.native.path,
             true,
+            false,
             None,
             read_back_buffers,
             false,
@@ -646,6 +647,56 @@ fn copy_candidate_checked<S: ReadSeek, R: ReadSeek, J: Write>(
     hash.finish(None)
 }
 
+/// Zero bytes for [`old_zero_unread_selected`] to give the digests: part of
+/// the program's image, not memory a run holds.
+static ZERO_CHUNK: [u8; 64 * 1024] = [0; 64 * 1024];
+
+/// `verify_zero_selected_with` for an OLD-zero row that is not read again
+/// (`old_zero_unread` in [`prepare_inner`]): as many zero bytes as the row
+/// has go to the OLD aggregates and to the row's own digest, framed and in
+/// the order that reading the row gives them, so every digest is the one a
+/// read of the row's zero bytes makes. A digest already known for the row's
+/// length is used, as there; one computed here is of zero bytes this
+/// program made, which the cache of zero digests admits.
+fn old_zero_unread_selected(
+    range: &SelectedRange,
+    selected: &mut PinHash,
+    zero_digests: &mut ZeroDigests,
+    mut restored: Option<&mut PinHash>,
+    records: &mut RecordHashes,
+) -> Result<RowDigest> {
+    frame(selected, range)?;
+    if let Some(restored) = restored.as_deref_mut() {
+        frame(restored, range)?;
+    }
+    let cached = zero_digests.get(range.length);
+    let mut hash = if cached.is_some() {
+        None
+    } else {
+        Some(records.begin()?)
+    };
+    let mut remaining = range.length;
+    while remaining > 0 {
+        let count = usize::try_from(remaining.min(ZERO_CHUNK.len() as u64))?;
+        selected.update(&ZERO_CHUNK[..count])?;
+        if let Some(restored) = restored.as_deref_mut() {
+            restored.update(&ZERO_CHUNK[..count])?;
+        }
+        if let Some(hash) = hash.as_mut() {
+            hash.update(&ZERO_CHUNK[..count])?;
+        }
+        remaining -= count as u64;
+    }
+    let digest = match hash {
+        Some(hash) => hash.finish(Some(range.length))?,
+        None => RowDigest::Known(cached.context("verified zero digest absent")?),
+    };
+    if let RowDigest::Known(digest) = &digest {
+        zero_digests.remember_verified(range.length, *digest);
+    }
+    Ok(digest)
+}
+
 /// The workspace of a journal's preparation, in buffers of [`BUFFER`] bytes:
 /// the read and compare buffers, two for each of the five file-wide digests'
 /// workers, two for each of the two workers of the rows' own digests, and one
@@ -965,6 +1016,7 @@ pub(crate) fn prepare_diagnostic<'domain, 'capture, R: ReadSeek, S: ReadSeek>(
         &mut file,
         permit.path(),
         false,
+        false,
         None,
         read_back_buffers,
         true,
@@ -1136,10 +1188,23 @@ fn prepare_native_inner<'journal, 'domain, 'capture, S: ReadSeek>(
     // the apply's passes read them (`AscendingRanges`): a window that ran a
     // megabyte past the first range of a group read 5.8 GB on the full
     // Windows volume that no range used.
+    //
+    // A run that verifies each thing once does not read the OLD-zero ranges
+    // of a markerless journal made from this run's own capture: the capture's
+    // comparison read every one of their bytes from this held source and
+    // found them zero, and the gate before the first write to the source
+    // reads every selected range again against the OLD aggregate these zero
+    // bytes go into (`begin_paged_fresh_apply`). Their bytes in the journal
+    // (none), their digests and the aggregates are the same. About half the
+    // full Windows volume's selected bytes (6.8 of 14.2 GB).
+    let old_zero_unread = n2r_win32::verify_policy::verifies_once()
+        && same_captured_source
+        && f.marker_profile.is_none();
     let (ticket, _whole) = source_prefetch::with_prefetched_source(
         source,
         domain,
         capture_group.arena(),
+        old_zero_unread,
         events,
         |prefetched| {
             prepare_inner(
@@ -1149,6 +1214,7 @@ fn prepare_native_inner<'journal, 'domain, 'capture, S: ReadSeek>(
                 journal,
                 facts.path,
                 same_captured_source,
+                old_zero_unread,
                 capture_witness,
                 read_back_buffers,
                 false,
@@ -1233,6 +1299,12 @@ fn hashed_as_written(f: JournalLayoutFacts) -> Option<bool> {
 /// source that reads ahead reads the group and not the megabyte after its
 /// first range. The rows are taken in the same order and each read as
 /// before; only the index is looked at a few rows ahead.
+///
+/// With `old_zero_unread`, an OLD-zero row is not read from `source`: its
+/// zero bytes are given to the OLD aggregates and its digest from memory
+/// ([`old_zero_unread_selected`]). Only for a run that verifies each thing
+/// once, from its own capture, which read those bytes and found them zero,
+/// before a gate that reads them again against the OLD aggregate.
 #[allow(clippy::too_many_arguments)]
 fn prepare_inner<R: ReadSeek, S: ReadSeek, J: PreparedJournal>(
     domain: &ResourceJournalDomain<'_>,
@@ -1241,6 +1313,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: PreparedJournal>(
     file: &mut J,
     journal_path: &Path,
     same_captured_source: bool,
+    old_zero_unread: bool,
     capture_witness: Option<&CaptureRevalidation<'_>>,
     read_back_buffers: usize,
     need_whole: bool,
@@ -1278,6 +1351,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: PreparedJournal>(
             candidate,
             file,
             same_captured_source,
+            old_zero_unread,
             capture_witness,
             read_back_buffers,
             need_whole,
@@ -1308,6 +1382,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: PreparedJournal>(
             candidate,
             &mut shared,
             same_captured_source,
+            old_zero_unread,
             capture_witness,
             read_back_buffers,
             need_whole,
@@ -1365,6 +1440,7 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     candidate: &mut S,
     mut file: &mut J,
     same_captured_source: bool,
+    old_zero_unread: bool,
     capture_witness: Option<&CaptureRevalidation<'_>>,
     read_back_buffers: usize,
     need_whole: bool,
@@ -1521,6 +1597,14 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                     &mut old_selected,
                     &mut buffer,
                 )?)
+            } else if row.capture.old_is_zero && old_zero_unread {
+                old_zero_unread_selected(
+                    &range,
+                    &mut old_selected,
+                    &mut zeros,
+                    old_restored.as_mut(),
+                    &mut old_records,
+                )?
             } else if row.capture.old_is_zero {
                 verify_zero_selected_with(
                     source,
@@ -1627,6 +1711,14 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 &mut old_selected,
                 &mut buffer,
             )?)
+        } else if row.capture.old_is_zero && old_zero_unread {
+            old_zero_unread_selected(
+                &range,
+                &mut old_selected,
+                &mut zeros,
+                old_restored.as_mut(),
+                &mut old_records,
+            )?
         } else if row.capture.old_is_zero {
             verify_zero_selected_with(
                 source,
@@ -2320,6 +2412,74 @@ mod tests {
         file.seek(SeekFrom::Start(0)).unwrap();
         file.read_to_end(&mut stored).unwrap();
         (written.immutable.finish().unwrap(), stored, at)
+    }
+
+    #[test]
+    fn an_old_zero_row_left_unread_gives_the_digests_reading_it_gives() {
+        let algorithm = Algorithm::WRITTEN;
+        let lengths = [4096u64, 64 * 1024, 3 * 1024 * 1024 + 4096, 4096];
+        let mut source = Cursor::new(vec![0u8; 8 << 20]);
+        for overlapped in [false, true] {
+            let records = || {
+                if overlapped {
+                    RecordHashes::overlapped(algorithm).unwrap()
+                } else {
+                    RecordHashes::here(algorithm)
+                }
+            };
+            let (mut read, mut unread) = (
+                aggregate_pin_hash(algorithm).unwrap(),
+                aggregate_pin_hash(algorithm).unwrap(),
+            );
+            let (mut read_restored, mut unread_restored) = (
+                aggregate_pin_hash(algorithm).unwrap(),
+                aggregate_pin_hash(algorithm).unwrap(),
+            );
+            let (mut read_records, mut unread_records) = (records(), records());
+            let (mut read_zeros, mut unread_zeros) = (ZeroDigests::new(), ZeroDigests::new());
+            let mut buffer = vec![0xa5u8; BUFFER];
+            // The last row has a length seen before: its digest is the one
+            // remembered for that length, either way.
+            for (ordinal, &length) in lengths.iter().enumerate() {
+                let range = SelectedRange {
+                    offset: (ordinal as u64 + 1) * 4096,
+                    length,
+                };
+                let by_reading = verify_zero_selected_with(
+                    &mut source,
+                    &range,
+                    &mut read,
+                    &mut buffer,
+                    &mut read_zeros,
+                    "source OLD-zero row is nonzero",
+                    Some(&mut read_restored),
+                    &mut read_records,
+                )
+                .unwrap();
+                let unread_digest = old_zero_unread_selected(
+                    &range,
+                    &mut unread,
+                    &mut unread_zeros,
+                    Some(&mut unread_restored),
+                    &mut unread_records,
+                )
+                .unwrap();
+                assert_eq!(
+                    read_records.settle(by_reading, &mut read_zeros).unwrap(),
+                    unread_records
+                        .settle(unread_digest, &mut unread_zeros)
+                        .unwrap(),
+                    "row {ordinal} of {length} bytes, overlapped: {overlapped}"
+                );
+            }
+            read_records.finish().unwrap();
+            unread_records.finish().unwrap();
+            assert_eq!(finish(read).unwrap(), finish(unread).unwrap());
+            assert_eq!(
+                finish(read_restored).unwrap(),
+                finish(unread_restored).unwrap()
+            );
+        }
     }
 
     #[test]

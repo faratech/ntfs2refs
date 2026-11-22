@@ -8,7 +8,9 @@
 //! (bridging gaps ≤64 KiB) ahead of `prepare_inner`, paid for as spare memory.
 //! Any out-of-order read (e.g. a backward COPY reference) falls back directly
 //! to the primary handle, and if lanes or spare memory are unavailable the
-//! caller falls back to `source.with_read_ahead`.
+//! caller falls back to `source.with_read_ahead`. A run that verifies each
+//! thing once does not read the OLD-zero ranges here (`old_zero_unread` in
+//! `prepare_inner`), and they are not read ahead.
 use super::*;
 use std::{
     collections::VecDeque,
@@ -44,6 +46,9 @@ struct PrefetchedSource<'a, R: ReadSeek> {
     image_length: u64,
     domain: &'a ResourceJournalDomain<'a>,
     range_count: u64,
+    /// The OLD-zero ranges are not read by the preparation
+    /// (`old_zero_unread` in `prepare_inner`): none is read ahead either.
+    old_zero_unread: bool,
     next_ordinal: u64,
     /// Unqueued tail `(start, end)` of a range larger than `SPAN`.
     remainder: Option<(u64, u64)>,
@@ -60,6 +65,7 @@ impl<'a, R: ReadSeek> PrefetchedSource<'a, R> {
         image_length: u64,
         domain: &'a ResourceJournalDomain<'a>,
         range_count: u64,
+        old_zero_unread: bool,
         lanes: Vec<LaneHandle>,
     ) -> Self {
         let mut this = Self {
@@ -67,6 +73,7 @@ impl<'a, R: ReadSeek> PrefetchedSource<'a, R> {
             image_length,
             domain,
             range_count,
+            old_zero_unread,
             next_ordinal: 0,
             remainder: None,
             next_lane: 0,
@@ -81,6 +88,7 @@ impl<'a, R: ReadSeek> PrefetchedSource<'a, R> {
 
     /// Groups upcoming ranges into ≤4 MiB spans (bridging gaps ≤64 KiB) and
     /// submits them round-robin to the lane threads up to `lanes * AHEAD_PER_LANE`.
+    /// Where the OLD-zero ranges are not read, they are passed over: a gap.
     fn pump(&mut self) {
         let limit = self.lanes.len() * AHEAD_PER_LANE;
         let index = self.domain.capture().index();
@@ -88,13 +96,21 @@ impl<'a, R: ReadSeek> PrefetchedSource<'a, R> {
             let (mut start, mut end) = if let Some((rem_start, rem_end)) = self.remainder.take() {
                 (rem_start, rem_end)
             } else {
-                if self.next_ordinal >= self.range_count {
-                    break;
-                }
-                let Ok(first) = index.range(self.next_ordinal) else {
+                let first = loop {
+                    if self.next_ordinal >= self.range_count {
+                        break None;
+                    }
+                    let Ok(first) = index.range(self.next_ordinal) else {
+                        break None;
+                    };
+                    self.next_ordinal += 1;
+                    if !(self.old_zero_unread && first.old_is_zero) {
+                        break Some(first);
+                    }
+                };
+                let Some(first) = first else {
                     break;
                 };
-                self.next_ordinal += 1;
                 (first.offset, first.offset.saturating_add(first.length))
             };
             if end - start > SPAN as u64 {
@@ -111,6 +127,10 @@ impl<'a, R: ReadSeek> PrefetchedSource<'a, R> {
                 let Ok(next) = index.range(self.next_ordinal) else {
                     break;
                 };
+                if self.old_zero_unread && next.old_is_zero {
+                    self.next_ordinal += 1;
+                    continue;
+                }
                 if next.offset < end || next.offset - end > BRIDGE {
                     break;
                 }
@@ -314,11 +334,13 @@ impl ReadSeek for SourceReader<'_> {
 
 /// Runs `operation` with a multi-lane prefetched source if the disk supports
 /// concurrent reads and spare memory / read lanes are available; otherwise
-/// falls back to `source.with_read_ahead`.
+/// falls back to `source.with_read_ahead`. With `old_zero_unread`, the
+/// OLD-zero ranges, which the preparation does not read, are not read ahead.
 pub(super) fn with_prefetched_source<T>(
     source: &mut n2r_win32::GeneralFrozenPartition,
     domain: &ResourceJournalDomain<'_>,
     arena: &crate::artifact_arena::ArtifactArena,
+    old_zero_unread: bool,
     events: &mut Vec<n2r_win32::NativeEvent>,
     mut operation: impl FnMut(&mut SourceReader<'_>) -> Result<T>,
 ) -> Result<T> {
@@ -365,6 +387,7 @@ pub(super) fn with_prefetched_source<T>(
             image_length,
             domain,
             range_count,
+            old_zero_unread,
             handles,
         ));
         operation(&mut reader)

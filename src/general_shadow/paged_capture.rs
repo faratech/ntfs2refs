@@ -718,8 +718,15 @@ fn capture_selected_inner(
     // From here the source's chunks of this selection may be read ahead of
     // the comparison, on a lane of their own; the same chunks, in this order.
     candidate.read_originals_ahead(selection.store.len(), |ordinal| selection.range(ordinal))?;
+    candidate.set_shadow_read_ahead(true);
     for ordinal in 0..selection.store.len() {
         let selected = selection.range(ordinal)?;
+        candidate.set_shadow_read_ahead_reach(
+            selected
+                .offset
+                .checked_add(selected.length)
+                .context("capture shadow reach overflow")?,
+        );
         source_digest.update(selected.offset.to_le_bytes());
         source_digest.update(selected.length.to_le_bytes());
         candidate_digest.update(selected.offset.to_le_bytes());

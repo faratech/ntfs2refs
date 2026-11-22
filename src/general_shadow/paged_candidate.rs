@@ -510,6 +510,16 @@ impl<'source, 'observation, 'scope>
         self.closing_source = Some(observer);
         self
     }
+    pub(crate) fn set_shadow_read_ahead(&mut self, enabled: bool) {
+        if self.closing_shadow.is_none() {
+            self.shadow.set_read_ahead(enabled);
+        }
+    }
+    pub(crate) fn set_shadow_read_ahead_reach(&mut self, end: u64) {
+        if self.closing_shadow.is_none() {
+            self.shadow.set_read_ahead_reach(end);
+        }
+    }
     pub fn byte_len(&self) -> u64 {
         self.length
     }
@@ -923,6 +933,7 @@ impl<'source, 'observation, 'scope>
     }
     pub fn finish(mut self) -> Result<ReadCounts> {
         ensure!(!self.poisoned, "failed paged candidate cannot finish");
+        self.shadow.set_read_ahead(false);
         // The helper that read the originals ahead has read exactly the
         // capture's chunks and ends here, its lane with it, before the
         // source and its scope are closed.

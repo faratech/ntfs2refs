@@ -511,14 +511,10 @@ impl<'source, 'observation, 'scope>
         self
     }
     pub(crate) fn set_shadow_read_ahead(&mut self, enabled: bool) {
-        if self.closing_shadow.is_none() {
-            self.shadow.set_read_ahead(enabled);
-        }
+        self.shadow.set_read_ahead(enabled);
     }
     pub(crate) fn set_shadow_read_ahead_reach(&mut self, end: u64) {
-        if self.closing_shadow.is_none() {
-            self.shadow.set_read_ahead_reach(end);
-        }
+        self.shadow.set_read_ahead_reach(end);
     }
     pub fn byte_len(&self) -> u64 {
         self.length

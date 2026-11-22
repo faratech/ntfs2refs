@@ -1112,7 +1112,7 @@ where
         } else {
             None
         };
-        let verified_aliases = if let Some(pending) = pending_metadata {
+        let (verified_aliases, supplied_tails) = if let Some(pending) = pending_metadata {
             let aliases = alias_inputs
                 .as_ref()
                 .context("metadata recovery aliases absent")?;
@@ -1209,7 +1209,7 @@ where
                     "expected_sha256":expected.file_sha256(),"objects":expected.len(),"aliases":aliases.len(),
                     "original_security_native_verification_pending":true,"protected_target_capture_required":true}))?;
             }
-            Some(Arc::new(aliases))
+            (Some(Arc::new(aliases)), None)
         } else {
             // Recovery acquires fresh native ownership of the existing tree. It
             // never calls the allocator or recreates the shadow's files.
@@ -1389,13 +1389,28 @@ where
                     .prepare_source_backed_prefixes()
                     .context("prepare source-backed shadow prefixes")?;
             }
-            {
+            let supplied_tails: Option<crate::ntfs_inspect::record_store::SortedRecordStore> = {
                 let supply_progress = events.observer.progress_reporter();
+                let tail_scratch = if completed_payloads.is_none()
+                    && n2r_win32::verify_policy::checks_once()
+                    && n2r_win32::verify_policy::verifies_once()
+                {
+                    Some(SourceScratch::new_auxiliary_in_arena(
+                        context.inspection().budget(),
+                        capture_group.clone(),
+                    )?)
+                } else {
+                    None
+                };
+                let supplied_tails_path = output.join("supplied-tails");
                 let (source, raw) = context.source_and_inspection()?;
                 let scope_memory = ArenaReportMemory(arena.clone());
-                let supply_receipt = source
+                let (supply_receipt, recorded_tails) = source
                     .with_readonly_source_bytes(&scope_memory, &mut events, |scope| {
-                        (|| -> Result<serde_json::Value> {
+                        (|| -> Result<(
+                            serde_json::Value,
+                            Option<crate::ntfs_inspect::record_store::SortedRecordStore>,
+                        )> {
                             let mut bytes = PagedSourceByteAdapterWithScope::new_scoped(
                                 scope,
                                 raw,
@@ -1403,39 +1418,47 @@ where
                                 maximum_source_read_bytes,
                             )?;
                             n2r_win32::perf::step("plan and supply payloads");
-                            let routed = if let Some(proof) = completed_payloads {
-                                general_shadow::paged_supply::routed::prepare_recovered(
-                                    &mut bytes,
-                                    &expected,
-                                    &mut private,
-                                    request.maximum_materialized_bytes,
-                                    request.verification_policy,
-                                    proof.routed_plan_sha256(),
-                                    &supply_progress,
+                            let (routed, tails) = if let Some(proof) = completed_payloads {
+                                (
+                                    general_shadow::paged_supply::routed::prepare_recovered(
+                                        &mut bytes,
+                                        &expected,
+                                        &mut private,
+                                        request.maximum_materialized_bytes,
+                                        request.verification_policy,
+                                        proof.routed_plan_sha256(),
+                                        &supply_progress,
+                                    )
+                                    .context("revalidate completed routed payload supply")?,
+                                    None,
                                 )
-                                .context("revalidate completed routed payload supply")?
                             } else {
-                                let mut routed = general_shadow::paged_supply::routed::prepare(
-                                    &mut bytes,
-                                    &expected,
-                                    &mut private,
-                                    request.maximum_materialized_bytes,
-                                    request.verification_policy,
-                                    &supply_progress,
-                                )
-                                .context("prepare routed shadow payload materialization")?;
+                                let mut routed =
+                                    general_shadow::paged_supply::routed::prepare_recording_tails(
+                                        &mut bytes,
+                                        &expected,
+                                        &mut private,
+                                        request.maximum_materialized_bytes,
+                                        request.verification_policy,
+                                        &supply_progress,
+                                        tail_scratch
+                                            .as_ref()
+                                            .map(|s| (supplied_tails_path.as_path(), s)),
+                                    )
+                                    .context("prepare routed shadow payload materialization")?;
                                 let (_system, indexer) = routed
                                     .materialize_system_payloads()
                                     .context("materialize routed system payloads")?;
                                 drop(indexer);
-                                routed
+                                let tails = routed.take_supplied_tails();
+                                (routed, tails)
                             };
                             n2r_win32::perf::step("verify payloads");
                             let receipt = routed
                                 .verify()
                                 .context("verify routed shadow payload supply")?;
                             bytes.finish()?;
-                            Ok(receipt)
+                            Ok((receipt, tails))
                         })()
                         .map_err(std::io::Error::other)
                     })
@@ -1450,7 +1473,8 @@ where
                         &supply_receipt,
                     )?;
                 }
-            }
+                recorded_tails
+            };
             let metadata_batch = resume_checkpoints
                 .as_mut()
                 .map(resume_checkpoint::Checkpoints::begin_metadata)
@@ -1493,7 +1517,7 @@ where
                 "aliases":verified_aliases.as_ref().map_or(0,|aliases|aliases.len()),
                 "original_security_native_verification_pending":true,"protected_target_capture_required":true}))?;
             }
-            verified_aliases
+            (verified_aliases, supplied_tails)
         };
         events.observer.note(
             &serde_json::json!({"kind":"expected-metadata-work-counters-v1",
@@ -1555,7 +1579,7 @@ where
         let journal_root = format!("{}\\", request.journal.disk.volume_path()?);
         events.phase("protected-target-capture");
         let capture_progress = events.observer.progress_reporter();
-        let proof = crate::general_composite_target::paged::observe_and_select_paged_optional_windows_aliases(
+        let proof = crate::general_composite_target::paged::observe_and_select_paged_optional_windows_aliases_with_tails(
             &mut context,
             &mut shadow,
             request.pair.clone(),
@@ -1564,6 +1588,7 @@ where
             &output.join("target"),
             &mut events,
             verified_aliases.as_ref().zip(alias_inputs.as_ref()),
+            supplied_tails.as_ref(),
             |context, target, expected, routes, scope, closing, native_events| {
                 let (source, raw) = context.source_and_inspection()?;
                 let memory = ArenaReportMemory(arena.clone());

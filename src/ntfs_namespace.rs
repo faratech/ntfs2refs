@@ -367,10 +367,44 @@ pub(crate) fn reconcile_windows_domains(
     reconcile_domains_with_link_counter_hint(files, directories, true)
 }
 
+/// Where each thing is verified once (`--verify fast`), every MFT name is
+/// matched to its index entry by counting, not by a search of its parent's
+/// index: the search decoded an index entry at every step of it, for each
+/// of the volume's names.
+///
+/// The ordered walk of every index, which is made either way, holds each
+/// entry but the root's own to exactly one MFT name of its child: the name
+/// in the entry's directory with the entry's name and namespace. Two
+/// entries are never held to one name: in one directory their names differ
+/// (they are strictly ordered), in two their parents do. So when there are
+/// as many entries as names (the root's own name and entry left out), every
+/// name is held by an entry, which is the entry the search would have found
+/// for it, and the join is the one the search makes. Where the counts
+/// differ, or anything else fails, the reconciliation is made again with
+/// the search, and its answer, a refusal or an error with its message,
+/// is the answer: the same, in the same order, as without the counting.
+/// `--verify thorough` searches, as before.
 fn reconcile_domains_with_link_counter_hint(
     files: &impl crate::ntfs_inspect::RootFileDomain,
     directories: &impl crate::ntfs_inspect::RootDirectoryDomain,
     header_is_hint: bool,
+) -> Result<u64> {
+    if n2r_win32::verify_policy::verifies_once()
+        && let Ok(count) = reconcile_joined(files, directories, header_is_hint, false)
+    {
+        return Ok(count);
+    }
+    reconcile_joined(files, directories, header_is_hint, true)
+}
+
+/// The reconciliation of the two domains. With `search`, each MFT name is
+/// looked up in its parent's index; without, the names and the entries of
+/// the ordered walk are counted, and must be as many.
+fn reconcile_joined(
+    files: &impl crate::ntfs_inspect::RootFileDomain,
+    directories: &impl crate::ntfs_inspect::RootDirectoryDomain,
+    header_is_hint: bool,
+    search: bool,
 ) -> Result<u64> {
     use crate::ntfs_inspect::{RootDirectoryDomain, RootFileDomain};
     files.revalidate()?;
@@ -453,6 +487,10 @@ fn reconcile_domains_with_link_counter_hint(
     let mut prior_file = None;
     let mut file_directories = 0u64;
     let mut reserved_nameless = 0u64;
+    // Without the search: the names an index entry must hold, and the
+    // entries that held one.
+    let mut names_to_join = 0u64;
+    let mut entries_joined = 0u64;
     for ordinal in 0..files.file_count() {
         let file = files.file_shared(ordinal)?;
         let id = reference(&file)?;
@@ -502,6 +540,10 @@ fn reconcile_domains_with_link_counter_hint(
                 "invalid MFT namespace name"
             );
             if root_dot {
+                continue;
+            }
+            if !search {
+                names_to_join += 1;
                 continue;
             }
             let (parent_ordinal, parent_header) = directory(directories, parent)?;
@@ -599,6 +641,7 @@ fn reconcile_domains_with_link_counter_hint(
                         == 1,
                     "index child name missing or ambiguous in MFT"
                 );
+                entries_joined += 1;
             }
         }
         // Directories have one canonical parent. Check that every such chain
@@ -621,6 +664,10 @@ fn reconcile_domains_with_link_counter_hint(
             hops += 1;
         }
     }
+    ensure!(
+        search || names_to_join == entries_joined,
+        "MFT names and directory index entries differ in number: {names_to_join} names, {entries_joined} entries"
+    );
     upcase_range.revalidate()?;
     directories.revalidate()?;
     files.revalidate()?;
@@ -628,4 +675,253 @@ fn reconcile_domains_with_link_counter_hint(
         .file_count()
         .checked_sub(reserved_nameless)
         .context("namespace count underflow")
+}
+
+#[cfg(test)]
+mod domain_join_tests {
+    use super::*;
+    use crate::ntfs_inspect::{
+        FileInventory, MetadataRole, NameInventory, NtfsGeometry, RootDirectoryDomain,
+        RootFileDomain, SourceDirectoryHeader, SourceHeader, SourceMetadataRange,
+    };
+
+    struct Files {
+        header: SourceHeader,
+        rows: Vec<FileInventory>,
+    }
+    impl RootFileDomain for Files {
+        fn header(&self) -> &SourceHeader {
+            &self.header
+        }
+        fn file_count(&self) -> u64 {
+            self.rows.len() as u64
+        }
+        fn file(&self, ordinal: u64) -> Result<FileInventory> {
+            Ok(self.rows[ordinal as usize].clone())
+        }
+        fn find_record(&self, number: u64, sequence: Option<u16>) -> Result<Option<FileInventory>> {
+            Ok(self
+                .rows
+                .iter()
+                .find(|file| {
+                    file.record_number == number
+                        && sequence.is_none_or(|wanted| wanted == file.sequence_number)
+                })
+                .cloned())
+        }
+        fn allocated_record(&self, _number: u64) -> Result<bool> {
+            Ok(true)
+        }
+        fn extension_record(&self, _number: u64) -> Result<bool> {
+            Ok(false)
+        }
+        fn revalidate(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+    struct Upcase(Vec<u8>);
+    impl SourceMetadataRange for Upcase {
+        fn byte_len(&self) -> u64 {
+            self.0.len() as u64
+        }
+        fn read_exact_at(&self, offset: u64, output: &mut [u8]) -> Result<()> {
+            output.copy_from_slice(&self.0[offset as usize..offset as usize + output.len()]);
+            Ok(())
+        }
+        fn revalidate(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+    struct Directories {
+        headers: Vec<SourceDirectoryHeader>,
+        entries: Vec<Vec<Link>>,
+        upcase: Upcase,
+    }
+    impl RootDirectoryDomain for Directories {
+        fn directory_count(&self) -> u64 {
+            self.headers.len() as u64
+        }
+        fn directory(&self, ordinal: u64) -> Result<SourceDirectoryHeader> {
+            Ok(self.headers[ordinal as usize].clone())
+        }
+        fn entry(&self, directory: u64, entry: u64) -> Result<Link> {
+            Ok(self.entries[directory as usize][entry as usize].clone())
+        }
+        fn upcase(&self) -> &dyn SourceMetadataRange {
+            &self.upcase
+        }
+        fn revalidate(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+    fn utf16(name: &str) -> Vec<u16> {
+        name.encode_utf16().collect()
+    }
+    fn id(number: u64) -> u64 {
+        number | 1 << 48
+    }
+    fn file(number: u64, directory: bool, names: &[(&str, u64, u8)]) -> FileInventory {
+        FileInventory {
+            record_number: number,
+            sequence_number: 1,
+            hard_link_count: names.len() as u16,
+            is_directory: directory,
+            is_metadata: false,
+            metadata_role: MetadataRole::NotClassified,
+            metadata_role_issue: None,
+            base_file_reference: 0,
+            names: names
+                .iter()
+                .map(|(name, parent, namespace)| NameInventory {
+                    name: name.to_string(),
+                    name_utf16: utf16(name),
+                    namespace: *namespace,
+                    parent_record_number: *parent,
+                    parent_sequence_number: 1,
+                })
+                .collect(),
+            standard_information: None,
+            streams: Vec::new(),
+            attributes: Vec::new(),
+            extended_attributes: None,
+            reparse: None,
+        }
+    }
+    fn link(parent: u64, child: u64, name: &str, namespace: u8) -> Link {
+        Link {
+            child: id(child),
+            parent: id(parent),
+            namespace,
+            name: utf16(name),
+        }
+    }
+    /// The root (5) and a directory in it (64), with the indexes given.
+    fn volume(files: Vec<FileInventory>, root: Vec<Link>, dir: Vec<Link>) -> (Files, Directories) {
+        let mut upcase = Vec::with_capacity(131_072);
+        for unit in 0..=u16::MAX {
+            let upper = if (u16::from(b'a')..=u16::from(b'z')).contains(&unit) {
+                unit - 32
+            } else {
+                unit
+            };
+            upcase.extend_from_slice(&upper.to_le_bytes());
+        }
+        let header = |number: u64, entries: usize| SourceDirectoryHeader {
+            record_number: number,
+            sequence_number: 1,
+            entries: entries as u64,
+            index_blocks: 0,
+            evidence_sha256: String::new(),
+        };
+        let files = Files {
+            header: SourceHeader {
+                schema_version: 2,
+                geometry: NtfsGeometry {
+                    bytes_per_sector: 512,
+                    sectors_per_cluster: 8,
+                    cluster_size: 4096,
+                    total_sectors: 1 << 20,
+                    volume_size: 1 << 29,
+                    total_clusters: 1 << 17,
+                    mft_lcn: 4,
+                    mftmirr_lcn: 2,
+                    file_record_size: 1024,
+                    index_record_size: 4096,
+                    serial_number: 1,
+                },
+                volume_version: None,
+                volume_flags: None,
+                dirty: None,
+                mft_record_count: 128,
+                records_scanned: files.len() as u64,
+                allocated_clusters: None,
+                free_clusters: None,
+                inventory_complete: true,
+                stream_hash_bytes: 0,
+            },
+            rows: files,
+        };
+        let directories = Directories {
+            headers: vec![header(5, root.len()), header(64, dir.len())],
+            entries: vec![root, dir],
+            upcase: Upcase(upcase),
+        };
+        (files, directories)
+    }
+    /// The root, a directory `Dir` in it and two files: `a.txt` in the
+    /// directory and `B` in the root.
+    fn files(extra: Vec<FileInventory>) -> Vec<FileInventory> {
+        let mut files = vec![
+            file(5, true, &[(".", 5, 3)]),
+            file(64, true, &[("Dir", 5, 1)]),
+            file(65, false, &[("a.txt", 64, 1)]),
+            file(66, false, &[("B", 5, 3)]),
+        ];
+        files.extend(extra);
+        files
+    }
+    fn root_index() -> Vec<Link> {
+        vec![
+            link(5, 5, ".", 3),
+            link(5, 66, "B", 3),
+            link(5, 64, "Dir", 1),
+        ]
+    }
+    fn both(files: &Files, directories: &Directories) -> [Result<u64>; 2] {
+        [
+            reconcile_joined(files, directories, false, true),
+            reconcile_joined(files, directories, false, false),
+        ]
+    }
+
+    #[test]
+    fn counting_joins_names_and_entries_as_the_search_does() {
+        let (files, directories) = volume(
+            files(Vec::new()),
+            root_index(),
+            vec![link(64, 65, "a.txt", 1)],
+        );
+        let [searched, counted] = both(&files, &directories);
+        assert_eq!(searched.unwrap(), 4);
+        assert_eq!(counted.unwrap(), 4);
+    }
+
+    #[test]
+    fn a_name_the_index_lacks_fails_either_way_with_the_search_s_message() {
+        let (files, directories) = volume(
+            files(Vec::new()),
+            vec![link(5, 5, ".", 3), link(5, 64, "Dir", 1)],
+            vec![link(64, 65, "a.txt", 1)],
+        );
+        let [searched, counted] = both(&files, &directories);
+        assert_eq!(
+            searched.unwrap_err().to_string(),
+            "MFT name missing from directory index"
+        );
+        assert!(counted.is_err());
+        assert_eq!(
+            reconcile_domains(&files, &directories)
+                .unwrap_err()
+                .to_string(),
+            "MFT name missing from directory index"
+        );
+    }
+
+    #[test]
+    fn names_that_differ_only_by_case_are_refused_either_way() {
+        let (files, directories) = volume(
+            files(vec![file(67, false, &[("A.TXT", 64, 1)])]),
+            root_index(),
+            vec![link(64, 67, "A.TXT", 1), link(64, 65, "a.txt", 1)],
+        );
+        let [searched, counted] = both(&files, &directories);
+        let refusal = searched.unwrap_err();
+        assert!(
+            refusal
+                .downcast_ref::<n2r_win32::refusal::Refusal>()
+                .is_some(),
+            "{refusal:#}"
+        );
+        assert!(counted.is_err());
+    }
 }

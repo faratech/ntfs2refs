@@ -436,8 +436,10 @@ fn create_owned_domain_inner(
     // file it names, and opens every name of a file by its path and holds it
     // to the file's identity. The file's complete link count and its
     // identity are still checked here once its names are made. A thorough
-    // run and a recovery check each name as before.
-    let lean = !recovering && crate::verify_policy::verifies_once();
+    // run and a recovery check each name as before, and so does every route
+    // but the resource-bound private tree, whose metadata completion is the
+    // one that follows.
+    let lean = !recovering && resources.is_some() && crate::verify_policy::verifies_once();
     // A file's names are made one after another, each held to the link count
     // the name before it left; that file is the unit. Files do not depend on
     // one another, so on a fresh shadow the files that have other names are

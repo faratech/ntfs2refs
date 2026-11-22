@@ -1320,11 +1320,15 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
 /// The most tails one batch of a pass that reads tails ahead has asked
 /// for, and the most objects it holds.
 pub(crate) const TAIL_BATCH: usize = 8192;
-/// The most bytes of tails one batch has read ahead and holds.
+/// The most bytes of tails one batch asks for, and the bytes of lane reads
+/// reserved for a batch with the lanes: a batch that reads its tails in
+/// spans, the bytes between them included, holds its spans to this unless
+/// the ledger grants the rest as spare memory (#265).
 pub(crate) const TAIL_BATCH_BYTES: u64 = 16 * 1024 * 1024;
 /// What a batch's lists hold for each tail read ahead: its ticket, its
-/// place and length, and its slot.
-const TAIL_ASK_BYTES: u64 = 64;
+/// place and length, its slot, its place in the order on the disk and, for
+/// a batch that coalesces, its span (`paged_supply::routed`).
+const TAIL_ASK_BYTES: u64 = 128;
 
 /// Where on the partition `count` bytes of `stream` at `offset` lie, where
 /// the stream's expected run list puts all of them in one run: the place the

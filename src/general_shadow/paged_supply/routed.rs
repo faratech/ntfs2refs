@@ -546,6 +546,98 @@ impl<'a> StreamsAtOnce<'a> {
         self.taken += 1;
         self.seen.pop_front()
     }
+
+    /// Takes what a helper already saw of this batch's first streams
+    /// ([`ObservedAhead`]), as the first observation [`Self::next`] makes
+    /// would have returned it. Nothing is taken where this batch hands no
+    /// stream over, or has begun: the streams are then taken as before.
+    fn seen_ahead(&mut self, seen: Vec<SupplyStreamSeen>) {
+        if self.taken == 0 && self.seen.is_empty() && seen.len() <= self.requests.len() {
+            self.seen = seen.into();
+        }
+    }
+}
+
+/// The observations of the next batch's first streams, made by the tree's
+/// helpers while the planning pass takes the batch before it.
+///
+/// The planning pass handed a batch's streams to the tree's helpers
+/// ([`StreamsAtOnce`]) and waited for them, and the helpers then waited
+/// while the pass took the batch's streams one by one (the source's side of
+/// each, its frames and its counts). Here the pass makes the next batch
+/// ready before it takes this one, exactly as [`StreamsAtOnce::next`] does
+/// when it comes to that batch (the same streams in the same order, the same
+/// reservations of spare memory, the same function), and the helpers
+/// observe while the pass takes this batch. The pass then takes their
+/// results as it takes what it asked for itself
+/// ([`StreamsAtOnce::seen_ahead`]); every check is made where it was, in the
+/// same order. The planning pass only observes: it writes nothing to the
+/// shadow, so what a helper sees of a stream before the pass comes to it is
+/// what the pass would have seen. Where the next objects cannot be held now,
+/// or nothing is handed over, the next batch is taken as before.
+struct ObservedAhead<'scope> {
+    objects: Vec<LeasedExpectedObject>,
+    seen: Option<std::thread::ScopedJoinHandle<'scope, Vec<SupplyStreamSeen>>>,
+}
+impl<'scope> ObservedAhead<'scope> {
+    /// Makes the first streams of `objects` (the first of which is object
+    /// `first`) ready and starts their observation on a thread of `scope`.
+    fn start<'tree: 'scope>(
+        scope: &'scope std::thread::Scope<'scope, '_>,
+        template: &'tree PrivateTree,
+        objects: Vec<LeasedExpectedObject>,
+        first: usize,
+        row_window: u64,
+    ) -> Self {
+        let mut requests = Vec::new();
+        let mut streams = Vec::new();
+        'objects: for (offset, object) in objects.iter().enumerate() {
+            if object.directory || system(object) {
+                continue;
+            }
+            for stream in object.data_streams() {
+                if requests.len() == SUPPLY_BATCH_STREAMS {
+                    break 'objects;
+                }
+                requests.push(SupplyStreamRequest {
+                    object_index: first + offset,
+                    name_utf16: stream.name_utf16,
+                    components: &object.path,
+                    logical_length: stream.length,
+                });
+                streams.push(stream);
+            }
+        }
+        // A prefix is observed for exactly the streams `StreamsAtOnce::next`
+        // observes one for.
+        let seen = if requests.is_empty() {
+            None
+        } else {
+            template.observe_supply_streams_ahead(
+                scope,
+                &requests,
+                row_window,
+                false,
+                |slot, ranges| {
+                    let prefix = eligible_prefix(streams[slot]).ok().flatten();
+                    prefix.filter(|_| routed_in(ranges, prefix))
+                },
+            )
+        };
+        drop(requests);
+        drop(streams);
+        Self { objects, seen }
+    }
+
+    /// The objects and what the helpers saw of their first streams (nothing
+    /// where nothing was handed over, or a helper failed).
+    fn finish(self) -> (Vec<LeasedExpectedObject>, Vec<SupplyStreamSeen>) {
+        let seen = self
+            .seen
+            .and_then(|helpers| helpers.join().ok())
+            .unwrap_or_default();
+        (self.objects, seen)
+    }
 }
 
 /// Names the object a supply pass stopped on. The loops that use this run
@@ -749,6 +841,22 @@ pub(crate) fn preflight_source_references(
     Ok(())
 }
 
+/// One stream's frame of the ordered receipt of the supply's verification
+/// ([`RoutedSupplyOwner::verify`]); the planning pass of a run that
+/// verifies each thing once makes the same frames ([`scan_plan`]).
+fn receipt_frame(
+    index: usize,
+    object: &Object,
+    stream: StreamRef<'_>,
+    complete_content_digest: Option<String>,
+    summary: &StreamSupplySummary,
+) -> serde_json::Value {
+    serde_json::json!({"object_index":index,
+        "record_number":object.record_number,"stream_name_utf16":stream.name_utf16,
+        "logical_bytes":stream.length,"complete_content_digest":complete_content_digest,
+        "supply":summary})
+}
+
 type MaterializedPlan = std::collections::BTreeMap<
     (usize, usize),
     (
@@ -766,9 +874,20 @@ fn scan_plan(
     policy: VerificationPolicy,
     at_once: bool,
     progress: &Reporter,
-) -> Result<(RoutedPlan, MaterializedPlan)> {
+) -> Result<(RoutedPlan, MaterializedPlan, Option<String>)> {
     let mut hash = Sha256::new();
     hash.update(b"n2r-private-routed-prefix-plan-v1\0");
+    // A run that verifies each thing once (`at_once`) does not observe the
+    // shadow's streams again when it verifies the supply
+    // ([`RoutedSupplyOwner::verify`]): the frames of that pass's ordered
+    // receipt are made here instead, from this pass's observation of each
+    // stream, which is what that pass held its own to. Nothing was read
+    // there in such a run, so no stream's frame claims a content digest.
+    let mut receipt_hash = at_once.then(|| {
+        let mut receipt = Sha256::new();
+        receipt.update(b"n2r-private-routed-prefix-verification-v1\0");
+        receipt
+    });
     let (mut logical, mut referenced, mut routed, mut materialized, mut holes) =
         (0u64, 0u64, 0u64, 0u64, 0u64);
     let failing_object = std::cell::Cell::new(0usize);
@@ -789,101 +908,148 @@ fn scan_plan(
         );
     };
     let mut materialized_streams: MaterializedPlan = std::collections::BTreeMap::new();
-    (|| -> Result<()> {
-        let mut first = 0usize;
-        while first < expected.len() {
-            announce(first);
-            let held = objects_from(expected, first, arena.is_some())?;
-            let mut batch = StreamsAtOnce::new(&held, first, false, arena.as_ref());
-            for (index, object) in (first..).zip(&held) {
-                if index > first {
-                    announce(index);
+    std::thread::scope(|scope| -> Result<()> {
+        // The next batch, observed by the tree's helpers while this one is
+        // taken.
+        let mut ahead: Option<ObservedAhead<'_>> = None;
+        let planned = (|| -> Result<()> {
+            let mut first = 0usize;
+            while first < expected.len() {
+                announce(first);
+                let (held, seen) = match ahead.take() {
+                    Some(ahead) => ahead.finish(),
+                    None => (objects_from(expected, first, arena.is_some())?, Vec::new()),
+                };
+                let mut batch = StreamsAtOnce::new(&held, first, false, arena.as_ref());
+                batch.seen_ahead(seen);
+                let after = first + held.len();
+                // What the next batch's first object fails with is reported when
+                // the pass comes to it.
+                if arena.is_some()
+                    && after < expected.len()
+                    && let Ok(next) = objects_from(expected, after, true)
+                {
+                    ahead = Some(ObservedAhead::start(
+                        scope, template, next, after, row_window,
+                    ));
                 }
-                if object.directory || system(object) {
-                    continue;
-                }
-                for (stream_ordinal, stream) in object.data_streams().enumerate() {
-                    let mut seen = batch.next(template, row_window);
-                    require_policy_evidence(policy, stream)?;
-                    let id = identity(object, stream);
-                    bytes.check_stream(&id)?;
-                    let mut observed = leased_ranges(
-                        bytes,
-                        template,
-                        index,
-                        object,
-                        stream,
-                        row_window,
-                        seen.as_mut(),
-                    )?;
-                    let decision = route_decision(
-                        template,
-                        index,
-                        object,
-                        stream,
-                        &observed.ranges,
-                        seen.as_mut(),
-                    )?;
-                    // The native observations and route proof own their temporary
-                    // allocations; only the separate range vector remains live.
-                    drop(observed.native_ram.take());
-                    let summary = &observed.summary;
-                    let ranges = &observed.ranges;
-                    let prefix = decision.as_ref().map(|(prefix, _)| *prefix);
-                    let target_pin = decision.as_ref().map(|(_, pin)| pin);
-                    let _frame_ram = frame_ram(bytes, stream.name_utf16.len())?;
-                    frame(
-                        &mut hash,
-                        &serde_json::json!({"object_index":index,
-                    "record_number":object.record_number,
-                    "sequence_number":object.sequence_number,"stream_name_utf16":stream.name_utf16,
-                    "summary":summary,"target_readiness_sha256":target_pin}),
-                    )?;
-                    drop(_frame_ram);
-                    logical = logical
-                        .checked_add(summary.logical_bytes)
-                        .context("routed logical total overflow")?;
-                    for (kind, range) in ranges {
-                        pieces(stream, *kind, range, prefix, |piece, offset, length| {
-                            match piece {
-                                Piece::Reference(physical) => {
-                                    bytes.require_reference(&id, offset, physical, length)?;
-                                    referenced = referenced
-                                        .checked_add(length)
-                                        .context("reference total overflow")?;
-                                }
-                                Piece::Routed(physical) => {
-                                    bytes.require_reference(&id, offset, physical, length)?;
-                                    routed = routed
-                                        .checked_add(length)
-                                        .context("routed total overflow")?;
-                                }
-                                Piece::Materialize => {
-                                    materialized_streams
-                                        .entry((index, stream_ordinal))
-                                        .or_insert_with(|| (summary.clone(), Vec::new()))
-                                        .1
-                                        .push((offset, length));
-                                    materialized = materialized
-                                        .checked_add(length)
-                                        .context("materialized total overflow")?
-                                }
-                                Piece::Hole => {
-                                    bytes.require_hole(&id, offset, length)?;
-                                    holes =
-                                        holes.checked_add(length).context("hole total overflow")?;
-                                }
-                            }
-                            Ok(())
-                        })?;
+                for (index, object) in (first..).zip(&held) {
+                    if index > first {
+                        announce(index);
                     }
-                    bytes.finish_stream()?;
+                    if object.directory || system(object) {
+                        continue;
+                    }
+                    for (stream_ordinal, stream) in object.data_streams().enumerate() {
+                        let mut seen = batch.next(template, row_window);
+                        require_policy_evidence(policy, stream)?;
+                        // The verification's own check of the stream's evidence,
+                        // made here where that pass no longer takes the stream.
+                        ensure!(
+                            receipt_hash.is_none()
+                                || stream.sha256.is_some()
+                                || stream.source_evidence.is_some(),
+                            "routed verification lacks source content or extent evidence"
+                        );
+                        let id = identity(object, stream);
+                        bytes.check_stream(&id)?;
+                        let mut observed = leased_ranges(
+                            bytes,
+                            template,
+                            index,
+                            object,
+                            stream,
+                            row_window,
+                            seen.as_mut(),
+                        )?;
+                        let decision = route_decision(
+                            template,
+                            index,
+                            object,
+                            stream,
+                            &observed.ranges,
+                            seen.as_mut(),
+                        )?;
+                        // The native observations and route proof own their temporary
+                        // allocations; only the separate range vector remains live.
+                        drop(observed.native_ram.take());
+                        let summary = &observed.summary;
+                        let ranges = &observed.ranges;
+                        let prefix = decision.as_ref().map(|(prefix, _)| *prefix);
+                        let target_pin = decision.as_ref().map(|(_, pin)| pin);
+                        let _frame_ram = frame_ram(bytes, stream.name_utf16.len())?;
+                        frame(
+                            &mut hash,
+                            &serde_json::json!({"object_index":index,
+                        "record_number":object.record_number,
+                        "sequence_number":object.sequence_number,"stream_name_utf16":stream.name_utf16,
+                        "summary":summary,"target_readiness_sha256":target_pin}),
+                        )?;
+                        if let Some(receipt) = receipt_hash.as_mut() {
+                            // The frame `verify` makes of the stream, field for field.
+                            frame(
+                                receipt,
+                                &receipt_frame(index, object, stream, None, summary),
+                            )?;
+                        }
+                        drop(_frame_ram);
+                        logical = logical
+                            .checked_add(summary.logical_bytes)
+                            .context("routed logical total overflow")?;
+                        for (kind, range) in ranges {
+                            pieces(stream, *kind, range, prefix, |piece, offset, length| {
+                                match piece {
+                                    Piece::Reference(physical) => {
+                                        bytes.require_reference(&id, offset, physical, length)?;
+                                        referenced = referenced
+                                            .checked_add(length)
+                                            .context("reference total overflow")?;
+                                    }
+                                    Piece::Routed(physical) => {
+                                        ensure!(
+                                            receipt_hash.is_none()
+                                                || (stream.sha256.is_none()
+                                                    && stream.source_evidence.is_some()),
+                                            "routed prefix cannot claim an unmeasured content digest"
+                                        );
+                                        bytes.require_reference(&id, offset, physical, length)?;
+                                        routed = routed
+                                            .checked_add(length)
+                                            .context("routed total overflow")?;
+                                    }
+                                    Piece::Materialize => {
+                                        materialized_streams
+                                            .entry((index, stream_ordinal))
+                                            .or_insert_with(|| (summary.clone(), Vec::new()))
+                                            .1
+                                            .push((offset, length));
+                                        materialized = materialized
+                                            .checked_add(length)
+                                            .context("materialized total overflow")?
+                                    }
+                                    Piece::Hole => {
+                                        bytes.require_hole(&id, offset, length)?;
+                                        holes =
+                                            holes.checked_add(length).context("hole total overflow")?;
+                                    }
+                                }
+                                Ok(())
+                            })?;
+                        }
+                        bytes.finish_stream()?;
+                    }
                 }
+                first = after;
             }
-            first += held.len();
+            Ok(())
+        })();
+        // Where the pass stops early, the helpers still observing are waited
+        // for and what they saw is let go before the pass reports.
+        if let Some(ahead) = ahead.take() {
+            drop(ahead.finish());
         }
-        Ok(())
-    })()
+        planned
+    })
     .map_err(|error| {
         at_object(
             expected,
@@ -919,6 +1085,7 @@ fn scan_plan(
             holes,
         },
         materialized_streams,
+        receipt_hash.map(|receipt| hex::encode(receipt.finalize())),
     ))
 }
 
@@ -940,6 +1107,10 @@ pub(crate) struct RoutedSupplyOwner<'a, 'source, 'scope> {
     /// recovered owner, a thorough run and a diagnosis take one stream at a
     /// time.
     at_once: bool,
+    /// The ordered receipt digest of `verify`, made by the planning pass of
+    /// a run that verifies each thing once: such a run's `verify` observes
+    /// no stream of the shadow again.
+    planned_receipt: Option<String>,
     progress: Reporter,
     supplied_tails: Option<crate::ntfs_inspect::record_store::SortedRecordStore>,
     _ram: crate::ntfs_inspect::paged_storage::SourceRamLease,
@@ -950,6 +1121,544 @@ fn supplied_tail_key(object: u64, stream: u64) -> [u8; 16] {
     out[..8].copy_from_slice(&object.to_be_bytes());
     out[8..].copy_from_slice(&stream.to_be_bytes());
     out
+}
+
+/// Tails within this many bytes of each other on the disk are read as one
+/// span, the bytes between them too.
+const TAIL_COALESCE_GAP: u64 = 64 * 1024;
+/// The longest span one lane read makes.
+const TAIL_COALESCE_MAX: u64 = 1024 * 1024;
+
+/// The lane reads of `asks` (each a tail's place on the disk and its length,
+/// sorted by place): neighbours within [`TAIL_COALESCE_GAP`] are read as one
+/// span of at most [`TAIL_COALESCE_MAX`] bytes, gaps included, as long as
+/// every span's bytes, gaps included, stay within `limit`. Each span is its
+/// start, its length and the end of its tails in `asks`.
+///
+/// A span holds the bytes between its tails as well as theirs, and all of a
+/// batch's spans are read at once (#265): counting only the tails let 8,192
+/// of them, merged across gaps of up to 64 KiB, hold some 528 MiB against
+/// the 16 MiB reserved for them. Here a merge is made only where what it
+/// adds, with every tail still to come counted at its own length, fits
+/// `limit`; a tail that may not be merged starts a span of its own. Where
+/// the tails alone fit `limit`, every tail is read. A tail that would not
+/// fit even alone is not asked for (its stream reads it as before).
+fn tail_spans(asks: &[(u64, u32)], limit: u64) -> Vec<(u64, u64, usize)> {
+    let mut remaining: u64 = asks.iter().map(|&(_, count)| u64::from(count)).sum();
+    let mut total = 0u64;
+    let mut spans = Vec::new();
+    let mut next = 0usize;
+    while next < asks.len() {
+        let (start, count) = asks[next];
+        let count = u64::from(count);
+        remaining -= count;
+        if total.saturating_add(count) > limit {
+            break;
+        }
+        total += count;
+        let mut end = start.saturating_add(count);
+        next += 1;
+        while next < asks.len() {
+            let (place, count) = asks[next];
+            let count = u64::from(count);
+            if place > end.saturating_add(TAIL_COALESCE_GAP) {
+                break;
+            }
+            let merged_end = end.max(place.saturating_add(count));
+            if merged_end - start > TAIL_COALESCE_MAX {
+                break;
+            }
+            let added = merged_end - end;
+            let rest = remaining - count;
+            if total.saturating_add(added).saturating_add(rest) > limit {
+                break;
+            }
+            total += added;
+            remaining = rest;
+            end = merged_end;
+            next += 1;
+        }
+        spans.push((start, end - start, next));
+    }
+    spans
+}
+
+/// One lane read of a batch's tails, and how many of the batch's tails are
+/// still to take bytes from it: its bytes are let go with the last.
+struct TailSpan {
+    ticket: Option<u64>,
+    bytes: Option<Vec<u8>>,
+    left: u32,
+}
+/// Where one stream's tail lies in the lane reads of its batch.
+struct TailSlot {
+    index: usize,
+    ordinal: usize,
+    place: u64,
+    count: u32,
+    span: u32,
+    rel: u32,
+}
+/// No span: the tail was not asked for.
+const NO_SPAN: u32 = u32::MAX;
+
+/// The tails of one batch asked of the source's lanes, in the order the pass
+/// takes their streams, and the lease of the spans' bytes beyond what
+/// [`super::super::source_backed::tails_ahead`] reserved for a batch.
+struct TailBatchReads {
+    spans: Vec<TailSpan>,
+    slots: Vec<TailSlot>,
+    next: usize,
+    _beyond: Option<crate::artifact_arena::ArenaRamLease>,
+}
+impl TailBatchReads {
+    /// Asks the lanes for the tail of every stream of `held` (the first of
+    /// which is object `first`) that the plan materializes, as many as one
+    /// batch takes ([`TAIL_BATCH`], [`TAIL_BATCH_BYTES`] of tails), in their
+    /// order on the disk.
+    ///
+    /// The spans' bytes, gaps included, are held to what is leased for
+    /// them: [`TAIL_BATCH_BYTES`], reserved with the lanes, and what the
+    /// spans need beyond that where the ledger grants it as spare memory.
+    /// Where it does not, the spans are coalesced within
+    /// [`TAIL_BATCH_BYTES`] ([`tail_spans`]). Every span is asked at once,
+    /// so what the lanes read and hold, in their results too, is never more
+    /// than that.
+    fn ask(
+        reads: &mut super::super::source_backed::original_prefetch::LaneReads,
+        arena: Option<&crate::artifact_arena::ArtifactArena>,
+        bytes: &PagedSourceByteAdapterWithScope<'_, '_>,
+        held: &[LeasedExpectedObject],
+        first: usize,
+        planned: &MaterializedPlan,
+    ) -> Self {
+        let cluster = n2r_win32::target_cluster::bytes();
+        let mut slots = Vec::new();
+        let mut asked_bytes = 0u64;
+        for (index, object) in (first..).zip(held) {
+            if object.directory || system(object) {
+                continue;
+            }
+            for (stream_ordinal, stream) in object.data_streams().enumerate() {
+                let offset = stream.length / cluster * cluster;
+                let count = stream.length - offset;
+                if count == 0
+                    || !planned.contains_key(&(index, stream_ordinal))
+                    || slots.len() >= TAIL_BATCH
+                    || asked_bytes + count > TAIL_BATCH_BYTES
+                {
+                    continue;
+                }
+                let place = tail_place(&stream, offset, count).or_else(|| {
+                    use crate::ntfs_inspect::source_domain::RootFileDomain;
+                    bytes
+                        .raw_source()
+                        .find_record_shared(object.record_number, Some(object.sequence_number))
+                        .ok()
+                        .flatten()
+                        .and_then(|file| {
+                            let raw_stream = file
+                                .streams
+                                .iter()
+                                .find(|s| s.name_utf16 == stream.name_utf16)?;
+                            if raw_stream.resident || raw_stream.flags != 0 {
+                                return None;
+                            }
+                            let end = offset.checked_add(count)?;
+                            let run = raw_stream.extents.iter().find(|run| {
+                                run.logical_offset <= offset
+                                    && run
+                                        .logical_offset
+                                        .checked_add(run.length)
+                                        .is_some_and(|stop| end <= stop)
+                            })?;
+                            run.physical_offset?
+                                .checked_add(offset - run.logical_offset)
+                        })
+                });
+                if let (Some(place), Ok(count)) = (place, u32::try_from(count)) {
+                    asked_bytes += u64::from(count);
+                    slots.push(TailSlot {
+                        index,
+                        ordinal: stream_ordinal,
+                        place,
+                        count,
+                        span: NO_SPAN,
+                        rel: 0,
+                    });
+                }
+            }
+        }
+        // The slots in their order on the disk.
+        let mut order: Vec<u32> = (0..slots.len() as u32).collect();
+        order.sort_unstable_by_key(|&slot| (slots[slot as usize].place, slot));
+        let sorted: Vec<(u64, u32)> = order
+            .iter()
+            .map(|&slot| (slots[slot as usize].place, slots[slot as usize].count))
+            .collect();
+        let mut spans = tail_spans(&sorted, u64::MAX);
+        let total: u64 = spans.iter().map(|&(_, length, _)| length).sum();
+        let mut beyond = None;
+        if total > TAIL_BATCH_BYTES {
+            match arena.map(|arena| arena.reserve_spare_ram(total - TAIL_BATCH_BYTES)) {
+                Some(Ok(lease)) => beyond = Some(lease),
+                _ => spans = tail_spans(&sorted, TAIL_BATCH_BYTES),
+            }
+        }
+        drop(sorted);
+        let mut batch = Self {
+            spans: Vec::with_capacity(spans.len()),
+            slots,
+            next: 0,
+            _beyond: beyond,
+        };
+        let mut member = 0usize;
+        for (start, length, end) in spans {
+            let span = batch.spans.len() as u32;
+            let ticket = usize::try_from(length)
+                .ok()
+                .map(|length| reads.ask(start, length));
+            let mut left = 0u32;
+            for &slot in &order[member..end] {
+                let slot = &mut batch.slots[slot as usize];
+                if ticket.is_some() {
+                    slot.span = span;
+                    slot.rel = (slot.place - start) as u32;
+                    left += 1;
+                }
+            }
+            member = end;
+            batch.spans.push(TailSpan {
+                ticket,
+                bytes: None,
+                left,
+            });
+        }
+        batch
+    }
+
+    /// The tail of stream `ordinal` of object `index`, where it was asked
+    /// for and read: its place on the partition and its bytes. Called for
+    /// the streams in the order the pass takes them. The bytes of a span are
+    /// let go once its last tail has been taken.
+    fn take(
+        &mut self,
+        reads: &mut super::super::source_backed::original_prefetch::LaneReads,
+        index: usize,
+        ordinal: usize,
+    ) -> Option<(u64, Vec<u8>)> {
+        while self
+            .slots
+            .get(self.next)
+            .is_some_and(|slot| (slot.index, slot.ordinal) < (index, ordinal))
+        {
+            self.next += 1;
+        }
+        let slot = self
+            .slots
+            .get(self.next)
+            .filter(|slot| (slot.index, slot.ordinal) == (index, ordinal))?;
+        self.next += 1;
+        let span = self.spans.get_mut(slot.span as usize)?;
+        if span.bytes.is_none()
+            && let Some(ticket) = span.ticket.take()
+            && let Ok(bytes) = reads.take(ticket)
+        {
+            span.bytes = Some(bytes);
+        }
+        let (rel, count) = (slot.rel as usize, slot.count as usize);
+        let tail = span
+            .bytes
+            .as_ref()
+            .filter(|bytes| rel + count <= bytes.len())
+            .map(|bytes| (slot.place, bytes[rel..rel + count].to_vec()));
+        span.left = span.left.saturating_sub(1);
+        if span.left == 0 {
+            span.bytes = None;
+        }
+        tail
+    }
+
+    /// Takes back what was asked and not taken (every tail asked for is
+    /// taken by its stream; should one not have been, its bytes are not
+    /// kept past its batch).
+    fn finish(self, reads: &mut super::super::source_backed::original_prefetch::LaneReads) {
+        for span in self.spans {
+            if let Some(ticket) = span.ticket {
+                let _ = reads.take(ticket);
+            }
+        }
+    }
+}
+
+/// The one range of a stream a run that verifies once writes together with
+/// other streams' ([`PendingTails`]): a single materialized interval of at
+/// most one window, of a stream that is not sparse.
+fn batchable(at_once: bool, stream: StreamRef<'_>, intervals: &[(u64, u64)]) -> Option<(u64, u64)> {
+    match intervals {
+        [(at, length)]
+            if at_once && stream.sparse.is_none() && *length > 0 && *length <= WINDOW as u64 =>
+        {
+            Some((*at, *length))
+        }
+        _ => None,
+    }
+}
+
+/// What one tail waiting to be written holds beside its bytes: its entry
+/// here, the item its batch's write is handed, and that write's own lists
+/// of it (its key, its path on the shadow and its results).
+fn pending_overhead(object: &Object, stream: StreamRef<'_>) -> u64 {
+    let path = object
+        .path
+        .iter()
+        .map(|component| component.len() as u64 + 1)
+        .sum::<u64>()
+        + 2 * stream.name_utf16.len() as u64
+        + 64;
+    1024 + 4 * path
+}
+
+/// What a stream's record for the supplied tails holds while it waits.
+const PENDING_RECORD_BYTES: u64 = 256;
+/// What the tails waiting to be written are held to where the ledger has
+/// no spare room for all of a batch's.
+const PENDING_FALLBACK_BYTES: u64 = 4 * 1024 * 1024;
+
+/// What the tails of `held` (the first of which is object `first`) that
+/// wait to be written with their batch hold at most, with their records
+/// where the supplied tails are `recorded`. Nothing waits in a run that
+/// does not verify once.
+fn pending_need(
+    held: &[LeasedExpectedObject],
+    first: usize,
+    planned: &MaterializedPlan,
+    at_once: bool,
+    recorded: bool,
+) -> u64 {
+    let mut need = 0u64;
+    if !at_once {
+        return need;
+    }
+    for (index, object) in (first..).zip(held) {
+        if object.directory || system(object) {
+            continue;
+        }
+        for (ordinal, stream) in object.data_streams().enumerate() {
+            let Some((_, intervals)) = planned.get(&(index, ordinal)) else {
+                continue;
+            };
+            if let Some((_, length)) = batchable(at_once, stream, intervals) {
+                need = need
+                    .saturating_add(length)
+                    .saturating_add(pending_overhead(object, stream));
+            }
+            if recorded && stream.tail_requires_materialization() {
+                need = need.saturating_add(PENDING_RECORD_BYTES);
+            }
+        }
+    }
+    need
+}
+
+/// A tail read from the source that waits to be written with its batch.
+struct PendingTailWrite<'o> {
+    object_index: usize,
+    name: &'o [u16],
+    components: &'o [String],
+    logical_length: u64,
+    offset: u64,
+    bytes: Vec<u8>,
+    /// Where its record's digest begins in `bytes`.
+    digest_from: Option<usize>,
+    /// Its record in [`PendingTails::records`].
+    record: Option<usize>,
+}
+
+/// A stream's record for the supplied tails, waiting for the writes before
+/// it (the records are kept in the order of their keys) or for its digest.
+struct PendingRecord<'o> {
+    key: [u8; 16],
+    object_index: usize,
+    name: &'o [u16],
+    logical_offset: u64,
+    length: u64,
+    sha256: Option<String>,
+}
+
+/// The tails of a batch waiting to be written together
+/// (`PrivateTree::materialize_tails_batch_unhashed`), and the records of
+/// the supplied tails behind them.
+///
+/// They were held without a lease, up to a window for every stream of a
+/// batch of 8,192 objects. What they hold is now paid for as spare memory:
+/// what all of the batch's need where the ledger grants it, otherwise a few
+/// MiB, and the tails waiting are written whenever the next would pass what
+/// is paid for. Where nothing is granted each tail is written by itself, as
+/// a stream is that does not wait.
+///
+/// A stream whose range does not wait (several intervals, a longer one, a
+/// sparse stream) is written while the tails before it wait: each stream is
+/// written to its own file, a tail into the clusters its file was given
+/// when it was made, so the order of the writes to different files does not
+/// change what any of them holds; a batch's writes were made at once on
+/// helper threads, in no order, before.
+struct PendingTails<'o> {
+    writes: Vec<PendingTailWrite<'o>>,
+    records: Vec<PendingRecord<'o>>,
+    held: u64,
+    budget: u64,
+    _lease: Option<crate::artifact_arena::ArenaRamLease>,
+}
+impl<'o> PendingTails<'o> {
+    fn new(arena: Option<&crate::artifact_arena::ArtifactArena>, need: u64) -> Self {
+        let mut pending = Self {
+            writes: Vec::new(),
+            records: Vec::new(),
+            held: 0,
+            budget: 0,
+            _lease: None,
+        };
+        if need == 0 {
+            return pending;
+        }
+        let Some(arena) = arena else {
+            return pending;
+        };
+        for budget in [need, need.min(PENDING_FALLBACK_BYTES)] {
+            if let Ok(lease) = arena.reserve_spare_ram(budget) {
+                pending.budget = budget;
+                pending._lease = Some(lease);
+                break;
+            }
+        }
+        pending
+    }
+
+    fn has_writes(&self) -> bool {
+        !self.writes.is_empty()
+    }
+
+    /// Leaves `write` to be written with the tails waiting, with its
+    /// `record` for the supplied tails, if it has one. What waits is written
+    /// first where `write` would pass what is paid for, and `write` itself
+    /// at once where it passes it alone.
+    fn write(
+        &mut self,
+        template: &mut PrivateTree,
+        mut writer: Option<&mut crate::ntfs_inspect::record_store::SortedRecordWriter>,
+        mut write: PendingTailWrite<'o>,
+        record: Option<PendingRecord<'o>>,
+        overhead: u64,
+    ) -> Result<()> {
+        let cost = (write.bytes.len() as u64)
+            .saturating_add(overhead)
+            .saturating_add(if record.is_some() {
+                PENDING_RECORD_BYTES
+            } else {
+                0
+            });
+        if self.held.saturating_add(cost) > self.budget {
+            self.flush(template, writer.as_deref_mut())?;
+        }
+        if let Some(record) = record {
+            write.record = Some(self.records.len());
+            self.records.push(record);
+        }
+        self.writes.push(write);
+        self.held = self.held.saturating_add(cost);
+        if self.held > self.budget {
+            self.flush(template, writer)?;
+        }
+        Ok(())
+    }
+
+    /// Adds the record of a stream whose tail was written by itself: at
+    /// once where no record waits before it, otherwise behind them.
+    fn record(
+        &mut self,
+        writer: &mut crate::ntfs_inspect::record_store::SortedRecordWriter,
+        record: PendingRecord<'o>,
+    ) -> Result<()> {
+        if self.records.is_empty() {
+            return push_supplied_tail(writer, record);
+        }
+        self.records.push(record);
+        self.held = self.held.saturating_add(PENDING_RECORD_BYTES);
+        Ok(())
+    }
+
+    /// Writes every tail waiting, at once on helper threads, and then the
+    /// records waiting, in their order, each with the digest of its tail
+    /// taken as the tail was written.
+    fn flush(
+        &mut self,
+        template: &mut PrivateTree,
+        writer: Option<&mut crate::ntfs_inspect::record_store::SortedRecordWriter>,
+    ) -> Result<()> {
+        if !self.writes.is_empty() {
+            let items: Vec<n2r_win32::shadow_native::private_tree::TailBatchItem<'_>> = self
+                .writes
+                .iter()
+                .map(
+                    |item| n2r_win32::shadow_native::private_tree::TailBatchItem {
+                        object_index: item.object_index,
+                        name: item.name,
+                        components: item.components,
+                        logical_length: item.logical_length,
+                        offset: item.offset,
+                        bytes: item.bytes.as_slice(),
+                        digest_from: item.digest_from,
+                    },
+                )
+                .collect();
+            let digests = template.materialize_tails_batch_unhashed(&items)?;
+            drop(items);
+            ensure!(
+                digests.len() == self.writes.len(),
+                "parallel tail materialization returned a digest for another count of tails"
+            );
+            for (write, digest) in self.writes.iter().zip(digests) {
+                if let Some(record) = write.record {
+                    self.records[record].sha256 = digest;
+                }
+            }
+            self.writes.clear();
+        }
+        match writer {
+            Some(writer) => {
+                for record in self.records.drain(..) {
+                    push_supplied_tail(writer, record)?;
+                }
+            }
+            None => self.records.clear(),
+        }
+        self.held = 0;
+        Ok(())
+    }
+}
+
+fn push_supplied_tail(
+    writer: &mut crate::ntfs_inspect::record_store::SortedRecordWriter,
+    record: PendingRecord<'_>,
+) -> Result<()> {
+    let sha256 = record.sha256.with_context(|| {
+        format!(
+            "supplied tail of object {} stream {:?} has no digest",
+            record.object_index,
+            String::from_utf16_lossy(record.name)
+        )
+    })?;
+    writer.push(
+        record.key,
+        &n2r_win32::shadow_native::LayoutResidualExpectation {
+            object_index: record.object_index,
+            stream_name_utf16: record.name.to_vec(),
+            logical_offset: record.logical_offset,
+            length: record.length,
+            sha256,
+        },
+    )
 }
 
 pub(crate) fn prepare<'a, 'source, 'scope>(
@@ -1009,7 +1718,7 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
     // what a helper would have seen before. The budget refusal still stands
     // between the plan and the first write.
     let at_once = policy.verifies_once();
-    let (plan, materialized_streams) = scan_plan(
+    let (plan, materialized_streams, planned_receipt) = scan_plan(
         bytes, expected, template, row_window, policy, at_once, progress,
     )?;
     ensure!(
@@ -1072,141 +1781,67 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
         None
     };
     let cluster = n2r_win32::target_cluster::bytes();
+    // The ledger that pays, as spare memory, for what a batch holds beside
+    // the lanes: the spans of its tails beyond what `tails_ahead` reserved,
+    // and its tails waiting to be written.
+    let supply_arena = bytes
+        .metadata_scratch()
+        .artifact_group()
+        .map(|group| group.arena().clone());
+    let tail_arena = ahead.as_ref().and(supply_arena.as_ref());
+    // One batch of objects from `first` on: as many as one batch of tails
+    // takes where the tails are read ahead, one otherwise.
+    let lease_batch = |first: usize, lanes: bool| -> Result<Vec<LeasedExpectedObject>> {
+        if lanes {
+            let mut objects = 0usize;
+            expected.objects_leased_at_once(first, |_object| {
+                objects += 1;
+                objects < TAIL_BATCH
+            })
+        } else {
+            Ok(vec![expected.object_leased(first)?])
+        }
+    };
     (|| -> Result<()> {
         let mut first = 0usize;
+        // The batch after the one being written, where its tails were asked
+        // of the lanes before that batch's tails were written.
+        let mut asked_next: Option<(Vec<LeasedExpectedObject>, Option<TailBatchReads>)> = None;
         while first < expected.len() {
             // An object that does not decode is reported as itself: a batch
             // ends before it, and it is the first of the next.
             failing_object.set(first);
-            let held = if ahead.is_some() {
-                let mut objects = 0usize;
-                expected.objects_leased_at_once(first, |_object| {
-                    objects += 1;
-                    objects < TAIL_BATCH
-                })?
-            } else {
-                vec![expected.object_leased(first)?]
+            let (held, mut tail_reads) = match asked_next.take() {
+                Some(next) => next,
+                None => {
+                    let held = lease_batch(first, ahead.is_some())?;
+                    // The tails of the batch's materialized streams are asked
+                    // of the lanes at once, in their order on the disk,
+                    // coalesced into spans whose bytes, gaps included, stay
+                    // within what is leased for them.
+                    let reads = ahead.as_mut().map(|reads| {
+                        TailBatchReads::ask(
+                            reads,
+                            tail_arena,
+                            bytes,
+                            &held,
+                            first,
+                            &materialized_streams,
+                        )
+                    });
+                    (held, reads)
+                }
             };
-            // Coalesce sorted tail reads across gaps <= 64 KiB into <= 1 MiB
-            // spans so 91k tiny 4 KiB tail reads collapse into a few thousand
-            // sequential multi-lane reads.
-            const TAIL_COALESCE_GAP: u64 = 64 * 1024;
-            const TAIL_COALESCE_MAX: u64 = 1024 * 1024;
-            let mut group_tickets: Vec<(Option<u64>, Option<Vec<u8>>)> = Vec::new();
-            let mut tickets: std::collections::BTreeMap<(usize, usize), (usize, usize, usize, u64)> =
-                std::collections::BTreeMap::new();
-            if let Some(reads) = ahead.as_mut() {
-                let mut asks = Vec::new();
-                let mut asked_bytes = 0u64;
-                for (index, object) in (first..).zip(&held) {
-                    if object.directory || system(object) {
-                        continue;
-                    }
-                    for (stream_ordinal, stream) in object.data_streams().enumerate() {
-                        let offset = stream.length / cluster * cluster;
-                        let count = stream.length - offset;
-                        if count == 0
-                            || !materialized_streams.contains_key(&(index, stream_ordinal))
-                            || asks.len() >= TAIL_BATCH
-                            || asked_bytes + count > TAIL_BATCH_BYTES
-                        {
-                            continue;
-                        }
-                        let place = tail_place(&stream, offset, count).or_else(|| {
-                            use crate::ntfs_inspect::source_domain::RootFileDomain;
-                            bytes
-                                .raw_source()
-                                .find_record_shared(
-                                    object.record_number,
-                                    Some(object.sequence_number),
-                                )
-                                .ok()
-                                .flatten()
-                                .and_then(|file| {
-                                    let raw_stream = file
-                                        .streams
-                                        .iter()
-                                        .find(|s| s.name_utf16 == stream.name_utf16)?;
-                                    if raw_stream.resident || raw_stream.flags != 0 {
-                                        return None;
-                                    }
-                                    let end = offset.checked_add(count)?;
-                                    let run = raw_stream.extents.iter().find(|run| {
-                                        run.logical_offset <= offset
-                                            && run
-                                                .logical_offset
-                                                .checked_add(run.length)
-                                                .is_some_and(|stop| end <= stop)
-                                    })?;
-                                    run.physical_offset?.checked_add(offset - run.logical_offset)
-                                })
-                        });
-                        if let Some(place) = place {
-                            asked_bytes += count;
-                            asks.push((place, count as usize, index, stream_ordinal));
-                        }
-                    }
-                }
-                asks.sort_unstable();
-                let mut cursor = 0usize;
-                while cursor < asks.len() {
-                    let span_start = asks[cursor].0;
-                    let mut span_end = span_start + asks[cursor].1 as u64;
-                    let group_start_idx = cursor;
-                    cursor += 1;
-                    while cursor < asks.len() {
-                        let (next_place, next_count, _, _) = asks[cursor];
-                        if next_place > span_end.saturating_add(TAIL_COALESCE_GAP) {
-                            break;
-                        }
-                        let next_end = next_place + next_count as u64;
-                        let merged_end = span_end.max(next_end);
-                        if merged_end - span_start > TAIL_COALESCE_MAX {
-                            break;
-                        }
-                        span_end = merged_end;
-                        cursor += 1;
-                    }
-                    let span_len = (span_end - span_start) as usize;
-                    let group_id = group_tickets.len();
-                    group_tickets.push((Some(reads.ask(span_start, span_len)), None));
-                    for &(place, count, index, stream_ordinal) in &asks[group_start_idx..cursor] {
-                        let rel = (place - span_start) as usize;
-                        tickets.insert((index, stream_ordinal), (group_id, rel, count, place));
-                    }
-                }
-            }
-            struct PendingTailWrite<'o> {
-                object_index: usize,
-                name: &'o [u16],
-                components: &'o [String],
-                logical_length: u64,
-                offset: u64,
-                bytes: Vec<u8>,
-            }
-            let mut pending_tails: Vec<PendingTailWrite<'_>> = Vec::new();
-            let flush_pending = |template: &mut PrivateTree,
-                                 pending: &mut Vec<PendingTailWrite<'_>>|
-             -> Result<()> {
-                if pending.is_empty() {
-                    return Ok(());
-                }
-                let batch_items: Vec<n2r_win32::shadow_native::private_tree::TailBatchItem<'_>> =
-                    pending
-                        .iter()
-                        .map(|item| n2r_win32::shadow_native::private_tree::TailBatchItem {
-                            object_index: item.object_index,
-                            name: item.name,
-                            components: item.components,
-                            logical_length: item.logical_length,
-                            offset: item.offset,
-                            bytes: item.bytes.as_slice(),
-                        })
-                        .collect();
-                template.materialize_tails_batch_unhashed(&batch_items)?;
-                pending.clear();
-                Ok(())
-            };
+            let mut pending = PendingTails::new(
+                supply_arena.as_ref(),
+                pending_need(
+                    &held,
+                    first,
+                    &materialized_streams,
+                    at_once,
+                    tail_writer.is_some(),
+                ),
+            );
             for (index, object) in (first..).zip(&held) {
                 failing_object.set(index);
                 supply_progress(
@@ -1237,25 +1872,18 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                     }
                     // A read ahead that failed is left to the adapter to make
                     // again, and to report if it fails there too.
-                    if let (Some(reads), Some((group_id, rel, count, place))) =
-                        (ahead.as_mut(), tickets.remove(&(index, stream_ordinal)))
+                    if let (Some(reads), Some(batch)) = (ahead.as_mut(), tail_reads.as_mut())
+                        && let Some((place, tail)) = batch.take(reads, index, stream_ordinal)
                     {
-                        let entry = &mut group_tickets[group_id];
-                        if entry.1.is_none()
-                            && let Some(ticket) = entry.0.take()
-                            && let Ok(span_bytes) = reads.take(ticket)
-                        {
-                            entry.1 = Some(span_bytes);
-                        }
-                        if let Some(span_bytes) = entry.1.as_ref()
-                            && rel + count <= span_bytes.len()
-                        {
-                            bytes.offer_read_ahead(place, span_bytes[rel..rel + count].to_vec());
-                        }
+                        bytes.offer_read_ahead(place, tail);
                     }
                     // What was offered is withdrawn once the stream's windows
                     // are done, whether or not they were materialized.
                     let mut recorded_tail_sha: Option<String> = None;
+                    // Where the stream's tail was left to wait with its
+                    // batch: the digest of its bytes from there on is taken
+                    // as it is written.
+                    let mut waits_from: Option<usize> = None;
                     let tail_offset = stream.length / cluster * cluster;
                     let tail_len = stream.length - tail_offset;
                     let materialized = (|| -> Result<n2r_win32::shadow_native::private_tree::StreamSupplySummary> {
@@ -1289,13 +1917,7 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                             }
                             (observed.summary, intervals)
                         };
-                        let batchable = at_once
-                            && stream.sparse.is_none()
-                            && intervals.len() == 1
-                            && intervals[0].1 > 0
-                            && intervals[0].1 <= WINDOW as u64;
-                        if batchable {
-                            let (at, length) = intervals[0];
+                        if let Some((at, length)) = batchable(at_once, stream, &intervals) {
                             let n = usize::try_from(length)?;
                             let next_written = written
                                 .checked_add(n as u64)
@@ -1308,28 +1930,49 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                             bytes.read_range_checked(&id, at, &mut buffer[..n])?;
                             if tail_writer.is_some()
                                 && needs_tail
-                                && recorded_tail_sha.is_none()
                                 && at <= tail_offset
                                 && at + n as u64 == stream.length
                             {
                                 let start = (tail_offset - at) as usize;
                                 if n - start == tail_len as usize {
-                                    recorded_tail_sha =
-                                        Some(hex::encode(Sha256::digest(&buffer[start..n])));
+                                    waits_from = Some(start);
                                 }
                             }
-                            pending_tails.push(PendingTailWrite {
-                                object_index: index,
-                                name: stream.name_utf16,
-                                components: &object.path,
-                                logical_length: stream.length,
-                                offset: at,
-                                bytes: buffer[..n].to_vec(),
+                            // Its record for the supplied tails waits with it
+                            // for the digest taken as it is written.
+                            let record = waits_from.zip(this_tail_ordinal).map(|(_, ordinal)| {
+                                PendingRecord {
+                                    key: supplied_tail_key(index as u64, ordinal),
+                                    object_index: index,
+                                    name: stream.name_utf16,
+                                    logical_offset: tail_offset,
+                                    length: tail_len,
+                                    sha256: None,
+                                }
                             });
+                            pending.write(
+                                template,
+                                tail_writer.as_mut().map(|(writer, _)| writer),
+                                PendingTailWrite {
+                                    object_index: index,
+                                    name: stream.name_utf16,
+                                    components: &object.path,
+                                    logical_length: stream.length,
+                                    offset: at,
+                                    bytes: buffer[..n].to_vec(),
+                                    digest_from: waits_from,
+                                    record: None,
+                                },
+                                record,
+                                pending_overhead(object, stream),
+                            )?;
                             bytes.validate_protection()?;
                             written = next_written;
                         } else {
-                            flush_pending(template, &mut pending_tails)?;
+                            // The tails waiting with the batch are written
+                            // with it: they are other streams' and are written
+                            // to their own files, so this stream's windows do
+                            // not wait for them.
                             for (offset, length) in intervals {
                                 let mut done = 0u64;
                                 while done < length {
@@ -1402,14 +2045,15 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                     if let (Some((writer, _)), Some(ordinal), Some(sha256)) =
                         (tail_writer.as_mut(), this_tail_ordinal, recorded_tail_sha)
                     {
-                        writer.push(
-                            supplied_tail_key(index as u64, ordinal),
-                            &n2r_win32::shadow_native::LayoutResidualExpectation {
+                        pending.record(
+                            writer,
+                            PendingRecord {
+                                key: supplied_tail_key(index as u64, ordinal),
                                 object_index: index,
-                                stream_name_utf16: stream.name_utf16.to_vec(),
+                                name: stream.name_utf16,
                                 logical_offset: tail_offset,
                                 length: tail_len,
-                                sha256,
+                                sha256: Some(sha256),
                             },
                         )?;
                     }
@@ -1425,17 +2069,38 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                     }
                 }
             }
-            flush_pending(template, &mut pending_tails)?;
-            // Every tail asked for was taken by its stream; should one not
-            // have been, its bytes are not kept past its batch.
-            if let Some(reads) = ahead.as_mut() {
-                for (ticket, _) in group_tickets {
-                    if let Some(ticket) = ticket {
-                        let _ = reads.take(ticket);
-                    }
-                }
+            // Every tail of the batch has been taken: its lane reads are let
+            // go before the next batch's are asked.
+            if let (Some(reads), Some(batch)) = (ahead.as_mut(), tail_reads.take()) {
+                batch.finish(reads);
             }
-            first += held.len();
+            let after = first + held.len();
+            // The next batch's tails are asked of the lanes before this
+            // batch's tails are written, so that the lanes read while the
+            // tails are written. Its spans are held to what `tails_ahead`
+            // reserved, which this batch's spans no longer hold, and to
+            // spare memory beyond it; the tails waiting here hold a lease of
+            // their own. Where the next batch's objects cannot be held now,
+            // they are taken in turn once this batch is written, and what
+            // the first of them fails with is reported then.
+            if pending.has_writes()
+                && after < expected.len()
+                && let Some(reads) = ahead.as_mut()
+                && let Ok(next) = lease_batch(after, true)
+            {
+                let next_reads = TailBatchReads::ask(
+                    reads,
+                    tail_arena,
+                    bytes,
+                    &next,
+                    after,
+                    &materialized_streams,
+                );
+                asked_next = Some((next, Some(next_reads)));
+            }
+            pending.flush(template, tail_writer.as_mut().map(|(writer, _)| writer))?;
+            drop(pending);
+            first = after;
         }
         Ok(())
     })()
@@ -1482,6 +2147,7 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
         recovered: false,
         reread: !policy.verifies_once(),
         at_once,
+        planned_receipt,
         progress: progress.clone(),
         supplied_tails,
         _ram: ram,
@@ -1521,7 +2187,7 @@ pub(crate) fn prepare_recovered<'a, 'source, 'scope>(
             .context("recovered routed supply RAM overflow")?,
     )?;
     // A recovered supply takes one stream at a time, as before.
-    let (plan, _) = scan_plan(
+    let (plan, _, _) = scan_plan(
         bytes, expected, template, row_window, policy, false, progress,
     )?;
     ensure!(
@@ -1538,6 +2204,7 @@ pub(crate) fn prepare_recovered<'a, 'source, 'scope>(
         recovered: true,
         reread: true,
         at_once: false,
+        planned_receipt: None,
         progress: progress.clone(),
         supplied_tails: None,
         _ram: ram,
@@ -1573,9 +2240,7 @@ impl RoutedSupplyOwner<'_, '_, '_> {
         // Every byte materialized on the shadow was read back and held to
         // the source's when it was written (`prepare`), and a stream with a
         // digest is read in full on the converted volume after the apply.
-        // Under "verify once" this pass therefore reads no payload: it still
-        // walks every stream's mapping on both sides, which is what the plan
-        // digest in its receipt is made from.
+        // Under "verify once" this pass therefore reads no payload.
         let reread = self.reread;
         // Nor, under "verify once" (owner decision D2, #251), does it walk
         // the source's side of each stream again: opening the stream's
@@ -1590,11 +2255,73 @@ impl RoutedSupplyOwner<'_, '_, '_> {
         // reads every metadata range and extent the inspection read again and
         // holds them to the source fingerprint pinned at inspection
         // (`recheck_source`), so a changed file record or run list stops the
-        // run before it writes. Every observation of the shadow's side, and
-        // the plan digest and counts they make, are still taken and compared
-        // with the plan. A run that reads the payloads again (thorough,
-        // `--recheck-everything`, a recovered supply) walks both sides.
+        // run before it writes. A run that reads the payloads again
+        // (thorough, `--recheck-everything`, a recovered supply) walks both
+        // sides.
         let walk_source = reread;
+        // Nor, in a run that verifies each thing once, does it observe the
+        // shadow's side of each stream again (#140: 8.9 s of the full
+        // Windows volume): a duplicate of each stream's file, its metadata,
+        // security and complete mapping, and for a stream proven by its
+        // extents the comparison of its tracked pieces, the observation of
+        // its prefix (identity, security, mapping, initialized regions and
+        // integrity) and that again, all held to what the planning pass of
+        // this process had observed of the same held file. Every stream's
+        // file stays held by this process and nothing else can write to the
+        // shadow; what this process wrote since the plan (the materialized
+        // ranges) was read back as it was written; and the walk of the
+        // frozen shadow (`walk shadow (closing)`) captures every stream's
+        // complete mapping, both initialized-region views and its integrity
+        // again, holds each mapping to its expected allocation and reads
+        // every materialized tail back against its digest, before the
+        // capture is compared with the source and the gate re-reads the
+        // source's mappings against its fingerprint. The counts and the plan
+        // digest are then the plan's, and the ordered receipt digest is the
+        // one the planning pass framed of the same streams with the same
+        // fields ([`scan_plan`]); the receipt is the one this pass made.
+        // Nothing reads what the observations made here: each was compared
+        // and let go. A thorough run, a diagnosis, `--recheck-everything`
+        // and a recovered supply observe every stream as before.
+        if let Some(ordered_receipt_sha256) = self
+            .planned_receipt
+            .take()
+            .filter(|_| !reread && !self.recovered && n2r_win32::verify_policy::verifies_once())
+        {
+            supply_progress(
+                &self.progress,
+                Phase::PayloadVerification,
+                0,
+                0,
+                self.expected.len(),
+                0,
+                None,
+            );
+            let plan = &self.plan;
+            ensure!(
+                plan.referenced
+                    .checked_add(plan.routed)
+                    .and_then(|n| n.checked_add(plan.materialized))
+                    .and_then(|n| n.checked_add(plan.holes))
+                    == Some(plan.logical),
+                "routed verification counts differ from the complete preflight"
+            );
+            supply_progress(
+                &self.progress,
+                Phase::PayloadVerification,
+                0,
+                self.expected.len(),
+                self.expected.len(),
+                self.bytes.logical_bytes_read() - before_reads,
+                None,
+            );
+            phase(self.bytes, self.expected, self.template)?;
+            return Ok(self.receipt(
+                ordered_receipt_sha256,
+                self.bytes.logical_bytes_read() - before_reads,
+                reread,
+                walk_source,
+            ));
+        }
         let (mut logical, mut referenced, mut routed, mut materialized, mut holes) =
             (0u64, 0u64, 0u64, 0u64, 0u64);
         let mut source_buffer = vec![0u8; WINDOW];
@@ -1810,10 +2537,7 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                     let _frame_ram = frame_ram(self.bytes, stream.name_utf16.len())?;
                     frame(
                         &mut receipt_hash,
-                        &serde_json::json!({"object_index":index,
-                        "record_number":object.record_number,"stream_name_utf16":stream.name_utf16,
-                        "logical_bytes":stream.length,"complete_content_digest":digest,
-                        "supply":summary}),
+                        &receipt_frame(index, object, stream, digest, summary),
                     )?;
                 }
             }
@@ -1852,11 +2576,37 @@ impl RoutedSupplyOwner<'_, '_, '_> {
             None,
         );
         phase(self.bytes, self.expected, self.template)?;
+        Ok(self.receipt(
+            hex::encode(receipt_hash.finalize()),
+            self.bytes.logical_bytes_read() - before_reads,
+            reread,
+            walk_source,
+        ))
+    }
+
+    /// The receipt of [`Self::verify`]. Its counts are the plan's, which
+    /// the verification either held its own to or, in a run that verifies
+    /// each thing once, took.
+    fn receipt(
+        &self,
+        ordered_receipt_sha256: String,
+        source_bytes_read: u64,
+        reread: bool,
+        walk_source: bool,
+    ) -> serde_json::Value {
+        let plan = &self.plan;
+        let (logical, referenced, routed, materialized, holes) = (
+            plan.logical,
+            plan.referenced,
+            plan.routed,
+            plan.materialized,
+            plan.holes,
+        );
         let mut receipt = serde_json::json!({"kind":"private-routed-prefix-verification", "success":true,
             "logical_bytes":logical,"same_coordinate_reference_bytes":referenced,
             "relocated_prefix_routed_bytes":routed,"shadow_materialized_bytes":materialized,
-            "hole_bytes":holes,"actual_source_logical_bytes_read":self.bytes.logical_bytes_read()-before_reads,
-            "ordered_receipt_sha256":hex::encode(receipt_hash.finalize()),"routed_plan_sha256":self.plan.sha256,
+            "hole_bytes":holes,"actual_source_logical_bytes_read":source_bytes_read,
+            "ordered_receipt_sha256":ordered_receipt_sha256,"routed_plan_sha256":self.plan.sha256,
             "target_route_capture_pending":true,"journal_copy_literal_split_pending":true,
             "source_payload_writes":0,"source_admitted":false,"execution_authorized":false,
             "completed_payloads_reused":self.recovered,"payload_bytes_rematerialized":if self.recovered {Some(0u64)}else{None},
@@ -1872,7 +2622,7 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                 "the planning pass; the source fingerprint at the gate before the first source write"
                     .into();
         }
-        Ok(receipt)
+        receipt
     }
 }
 
@@ -1917,5 +2667,78 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(refusal.contains("--verify thorough"), "{refusal}");
+    }
+
+    #[test]
+    fn only_one_short_range_of_a_plain_stream_waits_with_its_batch() {
+        let plain = stream(None, Some(SourceStreamEvidence::ExtentIdentityV1));
+        let window = WINDOW as u64;
+        assert_eq!(batchable(true, plain, &[(4096, 100)]), Some((4096, 100)));
+        assert_eq!(batchable(true, plain, &[(0, window)]), Some((0, window)));
+        // Not in a run that does not verify once, not an empty, a longer or
+        // a second range.
+        assert_eq!(batchable(false, plain, &[(4096, 100)]), None);
+        assert_eq!(batchable(true, plain, &[(4096, 0)]), None);
+        assert_eq!(batchable(true, plain, &[(0, window + 1)]), None);
+        assert_eq!(batchable(true, plain, &[(0, 100), (8192, 100)]), None);
+        assert_eq!(batchable(true, plain, &[]), None);
+    }
+
+    fn span_bytes(spans: &[(u64, u64, usize)]) -> u64 {
+        spans.iter().map(|&(_, length, _)| length).sum()
+    }
+
+    /// #265: a batch's spans held the gaps between its tails as well as the
+    /// tails, against a lease of the tails alone.
+    #[test]
+    fn a_batchs_spans_hold_their_gaps_within_what_is_leased() {
+        const KIB: u64 = 1024;
+        // 8,192 tails of 2 KiB, each 63 KiB after the one before: merged
+        // across the gaps (into spans of up to 1 MiB) they are read as
+        // nearly 500 MiB.
+        let asks: Vec<(u64, u32)> = (0..8192u64).map(|n| (n * 65 * KIB, 2048)).collect();
+        let tails: u64 = asks.iter().map(|&(_, count)| u64::from(count)).sum();
+        let unbounded = tail_spans(&asks, u64::MAX);
+        assert!(span_bytes(&unbounded) > 450 * 1024 * KIB);
+        // Held to the lease, every tail is still read and the gaps merged
+        // only as far as they fit.
+        let limit = 16 * 1024 * KIB;
+        let bounded = tail_spans(&asks, limit);
+        assert!(span_bytes(&bounded) <= limit, "{}", span_bytes(&bounded));
+        assert!(span_bytes(&bounded) >= tails);
+        assert_eq!(bounded.last().map(|span| span.2), Some(asks.len()));
+        // Every tail lies wholly inside its span.
+        let mut member = 0;
+        for &(start, length, end) in &bounded {
+            for &(place, count) in &asks[member..end] {
+                assert!(place >= start && place + u64::from(count) <= start + length);
+            }
+            member = end;
+        }
+        // The tails alone at the limit: each is read by itself.
+        let exact = tail_spans(&asks, tails);
+        assert_eq!(span_bytes(&exact), tails);
+        assert_eq!(exact.len(), asks.len());
+    }
+
+    #[test]
+    fn spans_merge_neighbours_up_to_their_longest_and_no_further() {
+        // Two neighbours 1 KiB apart are one span; one beyond the gap is not.
+        let asks = [(0u64, 4096u32), (5120, 4096), (5120 + 4096 + 65537, 4096)];
+        assert_eq!(
+            tail_spans(&asks, u64::MAX),
+            vec![(0, 9216, 2), (5120 + 4096 + 65537, 4096, 3)]
+        );
+        // No span is longer than TAIL_COALESCE_MAX.
+        let asks: Vec<(u64, u32)> = (0..600u64).map(|n| (n * 4096, 4096)).collect();
+        let spans = tail_spans(&asks, u64::MAX);
+        assert!(
+            spans
+                .iter()
+                .all(|&(_, length, _)| length <= TAIL_COALESCE_MAX)
+        );
+        assert_eq!(span_bytes(&spans), 600 * 4096);
+        // A tail that does not fit at all is not asked for.
+        assert_eq!(tail_spans(&[(0, 4096), (1 << 30, 4096)], 6000).len(), 1);
     }
 }

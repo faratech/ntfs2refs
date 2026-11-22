@@ -1244,15 +1244,58 @@ impl PrivatePlaceholder {
                 "resource tracking requires its lease-owning holes owner",
             ));
         }
-        self.track_current_prefix_inner()
+        self.track_current_prefix_inner(None)
     }
     pub(super) fn track_current_prefix_resource(&mut self) -> io::Result<ResourceTrackedHoles> {
+        self.track_current_prefix_resource_with(None)
+    }
+
+    /// What the mapping query of [`Self::track_current_prefix_resource`]
+    /// reserves while it is made, or `None` where it makes none: the file
+    /// has no whole target cluster, or no resource owner.
+    pub(super) fn tracking_query_bytes(&self) -> Option<io::Result<u64>> {
+        if self.bytes / crate::target_cluster::bytes() == 0 {
+            return None;
+        }
+        let resource = self.resource.as_ref()?;
+        Some(resource.tracking_workspace_bytes(self.bytes))
+    }
+
+    /// The mapping query of [`Self::track_current_prefix_resource`], for a
+    /// helper thread: the runs of the file's complete mapping, as that query
+    /// returns them, under a workspace the helper holds
+    /// ([`Self::tracking_query_bytes`]). It changes nothing; the file is
+    /// tracked from them by [`Self::track_current_prefix_resource_queried`].
+    /// `None` where the query is not made.
+    pub(super) fn tracking_runs(&self) -> Option<io::Result<Vec<crate::stream_layout::Run>>> {
+        if self.bytes / crate::target_cluster::bytes() == 0 {
+            return None;
+        }
+        let resource = self.resource.as_ref()?;
+        Some(resource.capture(&self.file).map(|capture| capture.runs))
+    }
+
+    /// [`Self::track_current_prefix_resource`], where a helper made its
+    /// mapping query ([`Self::tracking_runs`]): every check and change is
+    /// made here as there, in the same order, and what the query failed with
+    /// is reported where the query is made.
+    pub(super) fn track_current_prefix_resource_queried(
+        &mut self,
+        runs: io::Result<Vec<crate::stream_layout::Run>>,
+    ) -> io::Result<ResourceTrackedHoles> {
+        self.track_current_prefix_resource_with(Some(runs))
+    }
+
+    fn track_current_prefix_resource_with(
+        &mut self,
+        queried: Option<io::Result<Vec<crate::stream_layout::Run>>>,
+    ) -> io::Result<ResourceTrackedHoles> {
         let _memory = self
             .resource
             .as_ref()
             .ok_or_else(|| invalid("resource tracking state absent"))?
             .tracking_workspace(self.bytes)?;
-        let holes = self.track_current_prefix_inner()?;
+        let holes = self.track_current_prefix_inner(queried)?;
         match self
             .resource
             .as_ref()
@@ -1266,7 +1309,12 @@ impl PrivatePlaceholder {
             }
         }
     }
-    fn track_current_prefix_inner(&mut self) -> io::Result<Vec<(u64, u32)>> {
+    /// `queried` is the file's mapping as a helper's query returned it
+    /// ([`Self::tracking_runs`]); without it the query is made here.
+    fn track_current_prefix_inner(
+        &mut self,
+        queried: Option<io::Result<Vec<crate::stream_layout::Run>>>,
+    ) -> io::Result<Vec<(u64, u32)>> {
         if self.poisoned
             || self.valid_prefix != 0
             || self.valid_data_submitted
@@ -1286,16 +1334,21 @@ impl PrivatePlaceholder {
             .resource
             .as_ref()
             .map_or(MAX_FILE_PLACEMENTS, |r| r.max_tracked_slots);
-        let capture = if let Some(resource) = &self.resource {
-            resource.capture(&self.file)?
-        } else {
-            crate::stream_native::retrieval_capture(&self.file)?
+        let runs = match queried {
+            Some(runs) => runs?,
+            None => {
+                if let Some(resource) = &self.resource {
+                    resource.capture(&self.file)?.runs
+                } else {
+                    crate::stream_native::retrieval_capture(&self.file)?.runs
+                }
+            }
         };
-        self.retrieval_extents = capture.runs.len();
+        self.retrieval_extents = runs.len();
         let mut tracked: Vec<(u64, u64, u32)> = Vec::new();
         let mut holes = Vec::new();
         let mut cursor = 0;
-        for run in capture.runs {
+        for run in runs {
             if run.vcn >= clusters {
                 break;
             }

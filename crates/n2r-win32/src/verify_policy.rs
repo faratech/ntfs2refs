@@ -57,6 +57,10 @@ static VERIFY_ONCE: AtomicBool = AtomicBool::new(false);
 /// - the journal apply reading a range again immediately before writing it:
 ///   the range was held to its OLD digest before the apply marker and is read
 ///   back against its NEW digest after it is written;
+/// - the journal's preparation reading a staged batch of rows back from the
+///   journal as it writes it: the batch is hashed as written, the bytes the
+///   rows' digests were computed from, and the gate reads the whole body
+///   again against that hash;
 /// - the short-name links of a converted Windows volume probed once.
 ///
 /// A run with `--verify thorough`, a diagnosis and every route that never

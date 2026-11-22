@@ -701,9 +701,20 @@ fn lease_preparation(
 /// diagnostic callers that verify the whole file including its leading marker
 /// region; `immutable` hashes the immutable body from `header` through `footer`
 /// on a background 4 MiB `HashedBehind` worker.
+///
+/// `read_back`: a staged batch of rows is read back from the file and held to
+/// the bytes written before it is hashed. A run that verifies each thing once
+/// (`verify_policy::verifies_once`) hashes the batch as it is written instead:
+/// the gate before the first write to the source reads the whole body again
+/// and holds it to this digest (`bulk_digest::journal_body`, from
+/// `begin_paged_fresh_apply`), and the batch is the very bytes the rows'
+/// digests were computed from. A row written without a stage is read back
+/// either way: its descriptor follows its payloads, and the file's bytes are
+/// hashed in file order.
 struct WrittenHashes {
     whole: Option<PinHash>,
     immutable: n2r_win32::bulk_digest::HashedBehind,
+    read_back: bool,
 }
 
 impl WrittenHashes {
@@ -760,12 +771,15 @@ fn complete_rows<J: DurableIo>(
             // Each payload stored in full is held to the digest of the bytes
             // it was written from (the source's OLD bytes, the candidate's
             // NEW bytes) as it is read back. Under the check-once policy this
-            // read-back is the only comparison of the journal's stored
-            // payloads before the first write to the source: the gate hashes
-            // the body as a whole, and an apply that verifies each thing once
-            // no longer reads the source against the stored OLD bytes before
-            // writing (#203). A zero row stores nothing and a COPY row's NEW
-            // bytes are an earlier row's OLD bytes, checked there.
+            // read-back is the only comparison of these stored payloads with
+            // their digests before the first write to the source: the gate
+            // hashes the body as a whole, and an apply that verifies each
+            // thing once no longer reads the source against the stored OLD
+            // bytes before writing (#203). (A staged row is hashed from the
+            // very bytes its digests were computed from, and the gate holds
+            // the stored body to that hash: `WrittenHashes::read_back`.) A
+            // zero row stores nothing and a COPY row's NEW bytes are an
+            // earlier row's OLD bytes, checked there.
             let full = |stored: u64| stored != 0 && stored == row.capture.length;
             let payloads = [
                 (
@@ -826,8 +840,10 @@ fn complete_rows<J: DurableIo>(
 
 /// Staged in-memory batch completion: patches all descriptors in `stage`,
 /// writes the entire contiguous batch in one sequential `write_all`, and when
-/// `written` is active reads the batch back sequentially in 1 MiB chunks to
-/// verify exact byte-for-byte equality with `stage` and feed `written`.
+/// `written` is active feeds it: where it reads back (`--verify thorough`),
+/// from the batch read back sequentially in 1 MiB chunks and held to `stage`
+/// byte for byte; otherwise from `stage` itself (`WrittenHashes::read_back`).
+/// Leaves the file at the end of the batch.
 #[allow(clippy::too_many_arguments)]
 fn complete_staged_rows<J: DurableIo>(
     f: JournalLayoutFacts,
@@ -869,20 +885,25 @@ fn complete_staged_rows<J: DurableIo>(
         stage[rel..rel + f.record_size].copy_from_slice(&record[..f.record_size]);
     }
     file.write_all(stage)?;
-    if let Some(written) = written.as_deref_mut() {
-        file.seek(SeekFrom::Start(base))?;
-        let mut pos = 0usize;
-        while pos < stage.len() {
-            let count = (stage.len() - pos).min(buffer.len());
-            file.read_exact(&mut buffer[..count])?;
-            ensure!(
-                buffer[..count] == stage[pos..pos + count],
-                "journal preparation read-back: staged batch at offset {} differs from the bytes written; the journal is not used",
-                base + pos as u64
-            );
-            written.update(&buffer[..count])?;
-            pos += count;
+    match written.as_deref_mut() {
+        // Hashed as written, in file order; the gate reads the body again.
+        Some(written) if !written.read_back => written.update(stage)?,
+        Some(written) => {
+            file.seek(SeekFrom::Start(base))?;
+            let mut pos = 0usize;
+            while pos < stage.len() {
+                let count = (stage.len() - pos).min(buffer.len());
+                file.read_exact(&mut buffer[..count])?;
+                ensure!(
+                    buffer[..count] == stage[pos..pos + count],
+                    "journal preparation read-back: staged batch at offset {} differs from the bytes written; the journal is not used",
+                    base + pos as u64
+                );
+                written.update(&buffer[..count])?;
+                pos += count;
+            }
         }
+        None => {}
     }
     stage.clear();
     Ok(())
@@ -1197,8 +1218,11 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     // the check-once policy each row is read back from the file as soon as
     // it is complete and hashed in order, so the hashes are those of the
     // file's own bytes; the gate before the first write to the source hashes
-    // the whole body again. A journal with source-free rows rewrites its
-    // header at the end and keeps the read-back.
+    // the whole body again. A run that verifies each thing once does not read
+    // a staged batch back: it hashes the batch it writes, the bytes the rows'
+    // digests were computed from, and the gate holds the stored body to that
+    // hash (`WrittenHashes::read_back`). A journal with source-free rows
+    // rewrites its header at the end and keeps the read-back.
     //
     // Every digest of a journal this build writes, and its ticket's, is
     // BLAKE3 (`n2r_win32::bulk_digest`); the ticket says so.
@@ -1214,7 +1238,11 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         };
         let mut immutable = n2r_win32::bulk_digest::HashedBehind::new(algorithm, 4 * BUFFER)?;
         immutable.update(&header)?;
-        Some(WrittenHashes { whole, immutable })
+        Some(WrittenHashes {
+            whole,
+            immutable,
+            read_back: !n2r_win32::verify_policy::verifies_once(),
+        })
     } else {
         None
     };
@@ -1583,7 +1611,11 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         None => validate_readback(domain, file, &ticket, &mut buffer, &mut compare)?,
     };
     ticket.immutable_sha256 = immutable;
-    // The whole body was just read back and compared with its sources.
+    // The whole body was just read back and compared with its sources, or,
+    // in a run that verifies each thing once, its staged batches hashed as
+    // they were written. Either way a full read of it is left out until the
+    // gate before the first write to the source, which makes one
+    // (`bulk_digest::journal_body_already_verified`).
     if ticket.marker_profile.is_none() {
         n2r_win32::bulk_digest::note_journal_body_verified(
             algorithm,
@@ -1899,5 +1931,219 @@ impl PartitionProtectedPreparedJournal<'_, '_, '_, '_, '_> {
         expected.require_resource_owner(self.context.resource_admission())?;
         expected.require_shared_memory(self.context.arena())?;
         qualification::expected_requires_maps(expected, self.context.verification_policy())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    /// A journal in memory; `corrupt_at` changes the byte written there, as a
+    /// device that stores something else than it was given would.
+    struct Memory {
+        bytes: Cursor<Vec<u8>>,
+        corrupt_at: Option<u64>,
+    }
+    impl Read for Memory {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            self.bytes.read(out)
+        }
+    }
+    impl Write for Memory {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let at = self.bytes.position();
+            let written = self.bytes.write(bytes)?;
+            if let Some(corrupt) = self.corrupt_at
+                && (at..at + written as u64).contains(&corrupt)
+            {
+                self.bytes.get_mut()[usize::try_from(corrupt).unwrap()] ^= 0x5a;
+            }
+            Ok(written)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl Seek for Memory {
+        fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+            self.bytes.seek(from)
+        }
+    }
+    impl ReadSeek for Memory {
+        fn byte_len(&mut self) -> std::io::Result<u64> {
+            Ok(self.bytes.get_ref().len() as u64)
+        }
+    }
+    impl DurableIo for Memory {
+        fn sync_all(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    const ROW: u64 = 4096;
+
+    fn facts(rows: u32) -> JournalLayoutFacts {
+        JournalLayoutFacts {
+            image_length: 1 << 30,
+            range_count: rows,
+            selected_bytes: u64::from(rows) * ROW,
+            old_zero_bytes: 0,
+            source_free_bytes: 0,
+            new_zero_bytes: 0,
+            copy_bytes: 0,
+            literal_bytes: u64::from(rows) * ROW,
+            body_offset: BODY,
+            record_size: RECORD,
+            journal_length: BODY
+                + HEADER as u64
+                + u64::from(rows) * (RECORD as u64 + 2 * ROW)
+                + FOOTER as u64,
+            marker_profile: None,
+        }
+    }
+
+    /// `rows` literal rows from `base`, staged as `prepare_inner` stages them
+    /// (descriptors still zero), and the rows the stage owes descriptors for.
+    fn staged(base: u64, rows: u32) -> (Vec<u8>, Vec<OwedRow>) {
+        let algorithm = Algorithm::WRITTEN;
+        let mut stage = Vec::new();
+        let mut owed = Vec::new();
+        let mut at = base;
+        for ordinal in 0..u64::from(rows) {
+            let old: Vec<u8> = (0..ROW).map(|i| (i * 7 + ordinal) as u8).collect();
+            let new: Vec<u8> = (0..ROW).map(|i| (i * 13 + ordinal + 1) as u8).collect();
+            let row = JournalLayoutRow {
+                capture: CaptureIndexRange {
+                    offset: (ordinal + 1) * 1024 * 1024,
+                    length: ROW,
+                    packed_offset: ordinal * ROW,
+                    new_is_zero: false,
+                    old_is_zero: false,
+                    old_is_source_free: false,
+                    copy_source_offset: None,
+                },
+                descriptor_offset: at,
+                old_storage_offset: at + RECORD as u64,
+                new_storage_offset: at + RECORD as u64 + ROW,
+                next_offset: at + RECORD as u64 + 2 * ROW,
+            };
+            stage.extend_from_slice(&[0u8; RECORD]);
+            stage.extend_from_slice(&old);
+            stage.extend_from_slice(&new);
+            owed.push(OwedRow {
+                row,
+                old: RowDigest::Known(n2r_win32::bulk_digest::digest(algorithm, &old).unwrap()),
+                new: RowDigest::Known(n2r_win32::bulk_digest::digest(algorithm, &new).unwrap()),
+            });
+            at = row.next_offset;
+        }
+        (stage, owed)
+    }
+
+    /// Completes `rows` staged rows into a journal whose bytes before `base`
+    /// are written; returns the immutable digest of what was hashed, or the
+    /// error, and the journal.
+    fn complete(read_back: bool, corrupt_at: Option<u64>) -> (Result<[u8; 32]>, Memory) {
+        let algorithm = Algorithm::WRITTEN;
+        let rows = 3;
+        let base = BODY + HEADER as u64;
+        let mut journal = Memory {
+            bytes: Cursor::new(vec![0u8; usize::try_from(base).unwrap()]),
+            corrupt_at,
+        };
+        journal.seek(SeekFrom::Start(base)).unwrap();
+        let (mut stage, mut owed) = staged(base, rows);
+        let mut written = WrittenHashes {
+            whole: None,
+            immutable: n2r_win32::bulk_digest::HashedBehind::new(algorithm, 4096).unwrap(),
+            read_back,
+        };
+        let mut stage_start = Some(base);
+        let result = complete_staged_rows(
+            facts(rows),
+            &mut journal,
+            &mut stage,
+            &mut stage_start,
+            &mut owed,
+            &mut RecordHashes::here(algorithm),
+            &mut RecordHashes::here(algorithm),
+            &mut ZeroDigests::new(),
+            Some(&mut written),
+            &mut vec![0u8; 1000],
+        );
+        let digest = result.and_then(|()| {
+            ensure!(
+                stage.is_empty() && stage_start.is_none() && owed.is_empty(),
+                "the batch was not completed"
+            );
+            Ok(written.immutable.finish()?)
+        });
+        (digest, journal)
+    }
+
+    #[test]
+    fn a_staged_batch_hashes_the_same_whether_it_is_read_back_or_not() {
+        let (read_back, journal) = complete(true, None);
+        let (as_written, unread) = complete(false, None);
+        let (read_back, as_written) = (read_back.unwrap(), as_written.unwrap());
+        let base = usize::try_from(BODY + HEADER as u64).unwrap();
+        let stored = journal.bytes.get_ref().clone();
+        assert_eq!(
+            stored,
+            *unread.bytes.get_ref(),
+            "the same bytes are written"
+        );
+        assert_eq!(
+            read_back, as_written,
+            "the hash of the bytes read back is the hash of the bytes written"
+        );
+        assert_eq!(
+            as_written,
+            n2r_win32::bulk_digest::digest(Algorithm::WRITTEN, &stored[base..]).unwrap(),
+            "the hash is of the journal's own bytes, descriptors in place"
+        );
+        assert_eq!(
+            journal.bytes.position(),
+            unread.bytes.position(),
+            "either way the file is left at the end of the batch"
+        );
+        assert_eq!(unread.bytes.position(), stored.len() as u64);
+        let (old, new) = (
+            &stored[base + RECORD..],
+            &stored[base + RECORD + ROW as usize..],
+        );
+        let record = &stored[base..base + RECORD];
+        assert_eq!(
+            record[16..48],
+            n2r_win32::bulk_digest::digest(Algorithm::WRITTEN, &old[..ROW as usize]).unwrap(),
+            "the first row's descriptor holds its OLD digest"
+        );
+        assert_eq!(
+            record[48..80],
+            n2r_win32::bulk_digest::digest(Algorithm::WRITTEN, &new[..ROW as usize]).unwrap(),
+            "and its NEW digest"
+        );
+    }
+
+    #[test]
+    fn only_a_read_back_finds_a_batch_stored_differently_at_once() {
+        let corrupt = BODY + HEADER as u64 + RECORD as u64 + 100;
+        let (read_back, _) = complete(true, Some(corrupt));
+        let error = format!("{:#}", read_back.unwrap_err());
+        assert!(
+            error.contains("differs from the bytes written"),
+            "a run that reads back stops here: {error}"
+        );
+        // A run that verifies each thing once hashes what it wrote; the gate
+        // before the first write to the source then finds the stored body
+        // differs from that hash.
+        let (as_written, stored) = complete(false, Some(corrupt));
+        let base = usize::try_from(BODY + HEADER as u64).unwrap();
+        assert_ne!(
+            as_written.unwrap(),
+            n2r_win32::bulk_digest::digest(Algorithm::WRITTEN, &stored.bytes.get_ref()[base..])
+                .unwrap()
+        );
     }
 }

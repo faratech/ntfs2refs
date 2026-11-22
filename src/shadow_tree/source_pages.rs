@@ -1934,8 +1934,13 @@ impl SourceExpectedDomain {
                             carry_case_marks,
                         );
                         if workspace > AT_ONCE_OBJECT_BYTES {
+                            // Its row is held until it is built, outside
+                            // the batch's share: the batch ends with it, so
+                            // that at most one such row is held for each of
+                            // the two batches (as the serial loop holds one
+                            // under the row allowance).
                             batch.push(in_order::Slot::Ready(AtOnce::InTurn { ordinal, file }));
-                            continue;
+                            break;
                         }
                         bytes += workspace;
                         batch.push(in_order::Slot::Work(AtOnceJob {

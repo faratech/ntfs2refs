@@ -575,6 +575,20 @@ pub(crate) fn classify_stream_windows_domain(
     classify_stream_domain_scoped(source, file, stream, admission, Some(aliases))
 }
 
+/// [`classify_stream_windows_domain`] for a caller that has itself just
+/// taken `aliases.user_paths(source, file)` of this same file and held
+/// source: that identical derivation is not made again for each stream.
+#[cfg(windows)]
+pub(crate) fn classify_stream_windows_domain_paths_taken(
+    source: &crate::ntfs_inspect::PagedInspection,
+    file: &FileInventory,
+    stream: &StreamInventory,
+    admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    aliases: &crate::boot_alias::WindowsAliasDomain,
+) -> Result<StreamDecision> {
+    classify_stream_domain_scoped(source, file, stream, admission, Some(aliases))
+}
+
 #[cfg(windows)]
 fn classify_stream_domain_scoped(
     source: &crate::ntfs_inspect::PagedInspection,

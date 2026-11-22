@@ -859,22 +859,13 @@ where
             }))?;
             expected
         } else {
-            let expected_path = output.join("expected.pages");
-            let (receipt, artifact) = PagedExpectedTree::create_with_resources_in_group(
+            PagedExpectedTree::create_and_open_with_resources_in_group(
                 projection
                     .as_ref()
                     .context("fresh source projection absent")?,
-                &expected_path,
+                &output.join("expected.pages"),
                 admission,
                 &expected_group,
-            )?;
-            PagedExpectedTree::open_with_resources_in_group(
-                &expected_path,
-                &receipt.file_sha256,
-                &receipt.semantic_sha256,
-                admission,
-                &expected_group,
-                artifact,
             )?
         };
         n2r_win32::perf::step("seal expected tree");

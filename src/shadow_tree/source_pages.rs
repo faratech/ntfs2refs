@@ -169,10 +169,23 @@ fn add_role(
     leases.push(lease);
     Ok(())
 }
-fn descriptor(
+/// The stored security descriptor of `file`: its bytes, held to the
+/// descriptor rules within `maximum_bytes`, and their SHA-256 in hex.
+///
+/// With `cache` (a run that verifies once), a descriptor that the volume's
+/// security stream names by an ID is decoded, checked and hashed once for
+/// all the objects bound to that ID. Each object's own binding is still
+/// read and held to its sequence and to the digest of the descriptor its ID
+/// names, with the same refusals in the same order; what is left out for a
+/// second object of the same ID is the same row decoded, the same bytes
+/// checked and the same digest computed again. Without it, every object's
+/// descriptor is read, checked and hashed by itself, as it always was.
+fn stored_descriptor(
     source: &PagedInspection,
     file: &ntfs::FileInventory,
-) -> Result<ntfs_security::Descriptor> {
+    maximum_bytes: u64,
+    cache: Option<&std::cell::RefCell<DescriptorCache>>,
+) -> Result<(Vec<u8>, String)> {
     let binding = source
         .security()
         .find_binding(file.record_number)?
@@ -181,6 +194,18 @@ fn descriptor(
         binding.sequence_number == file.sequence_number,
         "source descriptor sequence differs"
     );
+    if let (Some(id), Some(cache)) = (binding.security_id, cache)
+        && let Some(held) = cache.borrow().by_id.get(&id)
+    {
+        ensure!(
+            held.descriptor_sha256 == binding.descriptor_sha256,
+            "source descriptor binding hash differs"
+        );
+        let mut stored = Vec::new();
+        stored.try_reserve_exact(held.stored.len())?;
+        stored.extend_from_slice(&held.stored);
+        return Ok((stored, held.stored_sha256.clone()));
+    }
     let value = if let Some(id) = binding.security_id {
         source.security().find_id(id)?
     } else {
@@ -191,7 +216,82 @@ fn descriptor(
         value.descriptor.sha256 == binding.descriptor_sha256,
         "source descriptor binding hash differs"
     );
-    Ok(value.descriptor)
+    let stored = hex::decode(&value.descriptor.relative_hex)?;
+    n2r_win32::security_descriptor::validate_with_limit(&stored, maximum_bytes)?;
+    let stored_sha256 = hex::encode(Sha256::digest(&stored));
+    if let (Some(id), Some(cache)) = (binding.security_id, cache) {
+        cache
+            .borrow_mut()
+            .keep(id, value.descriptor.sha256, &stored, &stored_sha256);
+    }
+    Ok((stored, stored_sha256))
+}
+
+/// What a projection made in a run that verifies once
+/// ([`n2r_win32::verify_policy::verifies_once`]) leaves out of
+/// [`build_object`]: a stored descriptor decoded, checked and hashed again
+/// for another object of the same security ID (where spare memory holds
+/// the descriptors, [`stored_descriptor`]), and a Windows file's paths taken
+/// again for each of its streams. Only `derive_scoped` makes one, and only
+/// in such a run; a thorough run, a diagnosis and the comparison of a
+/// cached body with the current projection pass none.
+struct VerifiedOnce {
+    descriptors: Option<std::cell::RefCell<DescriptorCache>>,
+}
+
+/// The descriptors [`stored_descriptor`] has decoded, checked and hashed,
+/// by security ID, in the spare memory the projection could lease for them
+/// (`SourceScratch::lease_spare_ram`). A descriptor that does not fit in
+/// what is left of the lease is not kept: it is read again for the next
+/// object that names it, as without the cache. The lease is fixed, so the
+/// cache does not grow with the number of objects.
+struct DescriptorCache {
+    by_id: std::collections::HashMap<u32, HeldDescriptor>,
+    bytes: u64,
+    _lease: SourceRamLease,
+}
+struct HeldDescriptor {
+    // The digest of the descriptor record, which each binding names.
+    descriptor_sha256: String,
+    stored: Vec<u8>,
+    stored_sha256: String,
+}
+impl DescriptorCache {
+    const LEASE_BYTES: u64 = 8 * 1024 * 1024;
+    fn leased(scratch: &SourceScratch) -> Option<std::cell::RefCell<Self>> {
+        let lease = scratch.lease_spare_ram(Self::LEASE_BYTES).ok()?;
+        Some(std::cell::RefCell::new(Self {
+            by_id: std::collections::HashMap::new(),
+            bytes: 0,
+            _lease: lease,
+        }))
+    }
+    fn keep(&mut self, id: u32, descriptor_sha256: String, stored: &[u8], stored_sha256: &str) {
+        // The strings and bytes, and the entry with the table's room for
+        // it (a table holds at most twice its entries' room as it grows).
+        let entry = std::mem::size_of::<(u32, HeldDescriptor)>() as u64 * 4;
+        let bytes =
+            (descriptor_sha256.capacity() + stored.len() + stored_sha256.len()) as u64 + entry;
+        let Some(total) = self
+            .bytes
+            .checked_add(bytes)
+            .filter(|total| *total <= Self::LEASE_BYTES)
+        else {
+            return;
+        };
+        if self.by_id.try_reserve(1).is_err() {
+            return;
+        }
+        self.by_id.insert(
+            id,
+            HeldDescriptor {
+                descriptor_sha256,
+                stored: stored.to_vec(),
+                stored_sha256: stored_sha256.to_owned(),
+            },
+        );
+        self.bytes = total;
+    }
 }
 fn stream_evidence(
     source: &PagedInspection,
@@ -297,7 +397,7 @@ fn compared_key(record_number: u64) -> [u8; 16] {
 /// security views and its directory's case mark are then those the
 /// comparison evaluated for it from the same held source and Windows rows,
 /// and the Windows row is not decoded again. Without it they are evaluated
-/// here, as every thorough run does.
+/// here, as every thorough run does. `once` as in [`VerifiedOnce`].
 #[allow(clippy::too_many_arguments)]
 fn build_object(
     source: &PagedInspection,
@@ -309,6 +409,7 @@ fn build_object(
     aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
     object_ids: Option<&crate::object_id_disposition::DataObjectIds>,
     carry_case_marks: bool,
+    once: Option<&VerifiedOnce>,
 ) -> Result<(
     Object,
     Option<crate::ntfs_extended_attributes::WindowsKernelPurgeEaNormalization>,
@@ -409,9 +510,12 @@ fn build_object(
             file.record_number
         );
     }
-    let sd = descriptor(source, file)?;
-    let stored = hex::decode(&sd.relative_hex)?;
-    n2r_win32::security_descriptor::validate_with_limit(&stored, admission.budget.max_row_bytes)?;
+    let (stored, stored_sha256) = stored_descriptor(
+        source,
+        file,
+        admission.budget.max_row_bytes,
+        once.and_then(|once| once.descriptors.as_ref()),
+    )?;
     let case_mark_context = || {
         format!(
             "the case-sensitive mark of the directory at FILE {} ({})",
@@ -513,7 +617,7 @@ fn build_object(
     ensure!(
         views.api_stable
             && views.target_must_reproduce_both_views
-            && views.stored_sha256 == hex::encode(Sha256::digest(&stored)),
+            && views.stored_sha256 == stored_sha256,
         "source security view differs"
     );
     let si = file
@@ -549,15 +653,24 @@ fn build_object(
                 == 0,
         "unsupported basic metadata"
     );
+    // This file's paths were taken from `aliases` above. A projection that
+    // verifies once does not take them again for each of its streams: the
+    // same derivation of the same held rows, which has just succeeded.
+    let paths_taken = once.is_some();
+    let classify = |stream: &ntfs::StreamInventory| match aliases {
+        Some(aliases) if paths_taken => {
+            ntfs_stream_plan::classify_stream_windows_domain_paths_taken(
+                source, file, stream, admission, aliases,
+            )
+        }
+        Some(aliases) => ntfs_stream_plan::classify_stream_windows_domain(
+            source, file, stream, admission, aliases,
+        ),
+        None => ntfs_stream_plan::classify_stream_domain(source, file, stream, admission),
+    };
     let (source_offset, source_extents, length, sha256, source_evidence, sparse) =
         if let Some(stream) = file.streams.iter().find(|s| s.name_utf16.is_empty()) {
-            let decision = if let Some(aliases) = aliases {
-                ntfs_stream_plan::classify_stream_windows_domain(
-                    source, file, stream, admission, aliases,
-                )?
-            } else {
-                ntfs_stream_plan::classify_stream_domain(source, file, stream, admission)?
-            };
+            let decision = classify(stream)?;
             let (offset, extents) = planned_stream_source(Some(&decision), resources)?;
             (
                 offset,
@@ -573,13 +686,7 @@ fn build_object(
     let mut named_streams = Vec::new();
     for stream in file.streams.iter().filter(|s| !s.name_utf16.is_empty()) {
         ensure!(!file.is_directory, "named directory streams unsupported");
-        let decision = if let Some(aliases) = aliases {
-            ntfs_stream_plan::classify_stream_windows_domain(
-                source, file, stream, admission, aliases,
-            )?
-        } else {
-            ntfs_stream_plan::classify_stream_domain(source, file, stream, admission)?
-        };
+        let decision = classify(stream)?;
         ensure!(
             decision.disposition != Disposition::Reject,
             "named source stream candidate refused"
@@ -708,6 +815,7 @@ impl SourceExpectedDomain {
                 None,
                 // A volume that holds a Windows carries no mark over.
                 false,
+                None,
             )?;
             let hash: [u8; 32] = Sha256::digest(serde_json::to_vec(&object)?).into();
             ensure!(
@@ -975,6 +1083,11 @@ impl SourceExpectedDomain {
         };
         let mut pending_objects: Vec<([u8; 16], Object)> =
             Vec::with_capacity(serialize_batch_limit);
+        // What this projection leaves out of each object's construction in
+        // a run that verifies once (see `VerifiedOnce`).
+        let once = n2r_win32::verify_policy::verifies_once().then(|| VerifiedOnce {
+            descriptors: DescriptorCache::leased(scratch),
+        });
         let flush_encoded = |pending: &mut Vec<([u8; 16], Object)>,
                              objects: &mut ExternalSort,
                              names: &mut ExternalSort,
@@ -1041,6 +1154,7 @@ impl SourceExpectedDomain {
                 aliases,
                 object_ids,
                 carry_case_marks,
+                once.as_ref(),
             )?;
             if aliases
                 .map(|owner| owner.windows_txf_accounted(source, &file))
@@ -1184,6 +1298,7 @@ impl SourceExpectedDomain {
             &mut name_ordinal,
         )?;
         drop(_serialize_spare);
+        drop(once);
         if let Some(aliases) = aliases {
             // Alias entries participate in the real destination collision
             // proof without becoming source objects or changing source counts.
@@ -1208,6 +1323,13 @@ impl SourceExpectedDomain {
         // Hashes only select bounded on-disk comparison buckets. Equality is
         // ALWAYS the full folded string; distinct hash-colliding names remain
         // valid, and no bucket-size cap or resident whole-name set exists.
+        //
+        // The last name of a bucket (nearly every name is alone in its
+        // bucket) is compared with no other. A run that verifies once does
+        // not decode its row only to drop it: the rows are those this pass
+        // has just serialized into the store, which its writer framed and
+        // which is held. Every other run decodes every row, as before.
+        let decode_every_row = !n2r_win32::verify_policy::verifies_once();
         let mut start = 0u64;
         while start < name_store.len() {
             let prefix: [u8; 8] = name_store.key(start)?[..8].try_into()?;
@@ -1216,6 +1338,9 @@ impl SourceExpectedDomain {
                 end += 1;
             }
             for a in start..end {
+                if a + 1 == end && !decode_every_row {
+                    break;
+                }
                 let left: NameRow = name_store.get(a)?;
                 for b in a + 1..end {
                     let right: NameRow = name_store.get(b)?;
@@ -1504,5 +1629,56 @@ impl Serialize for SourceExpectedDomain {
             &self.internal_replacement_pending,
         )?;
         value.end()
+    }
+}
+
+#[cfg(test)]
+mod descriptor_cache_tests {
+    use super::*;
+
+    /// The cache keeps descriptors only as far as its fixed lease holds them,
+    /// and hands back what it kept, byte for byte.
+    #[test]
+    fn the_descriptor_cache_keeps_what_its_lease_holds_and_no_more() {
+        let directory = tempfile::tempdir().unwrap();
+        let arena = crate::artifact_arena::ArtifactArena::new(
+            directory.path(),
+            n2r_win32::tree_resources::ResourceBudget {
+                schema_version: 1,
+                ram_bytes: 256 * 1024 * 1024,
+                scratch_bytes: 256 * 1024 * 1024,
+                page_bytes: 65536,
+                max_row_bytes: 65536,
+                retained_index_bytes: 16 * 1024 * 1024,
+                handle_slots: 1024,
+            },
+            &[],
+        )
+        .unwrap();
+        let budget =
+            crate::ntfs_inspect::SourceMetadataBudget::from_resource_budget(arena.budget())
+                .unwrap();
+        let group = arena
+            .reserve_group(
+                crate::artifact_arena::ArtifactGroup::Source,
+                budget.scratch_bytes,
+            )
+            .unwrap();
+        let scratch = SourceScratch::new_in_arena(budget, group).unwrap();
+        let mut cache = DescriptorCache::leased(&scratch)
+            .expect("spare memory for the cache")
+            .into_inner();
+        let stored: Vec<u8> = (0..4096u32).map(|n| n as u8).collect();
+        for id in 0..4096u32 {
+            cache.keep(id, "ab".repeat(32), &stored, &"cd".repeat(32));
+        }
+        assert!(cache.bytes <= DescriptorCache::LEASE_BYTES);
+        let kept = cache.by_id.len();
+        assert!((1024..2048).contains(&kept), "{kept}");
+        let held = &cache.by_id[&0];
+        assert_eq!(held.stored, stored);
+        assert_eq!(held.descriptor_sha256, "ab".repeat(32));
+        assert_eq!(held.stored_sha256, "cd".repeat(32));
+        assert!(!cache.by_id.contains_key(&(kept as u32)));
     }
 }

@@ -152,6 +152,33 @@ pub struct ExpectedTreePageReceipt {
     pub semantic_byte_budget: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+    // What the creation computed of the pages, in memory only: never
+    // serialized, and made by nothing but the creation itself.
+    #[serde(skip)]
+    created: Option<CreatedHere>,
+}
+
+/// What this process's creation of a tree's pages derived of them, while it
+/// wrote them: the digest of the tree's legacy JSON and the counts of its
+/// objects, of the file it wrote, under the budgets it wrote it to.
+///
+/// Opening that file again in a run that verifies once
+/// ([`n2r_win32::verify_policy::verifies_once`]) takes these instead of
+/// writing the legacy JSON a second time to derive them again: the
+/// reader accepts the file only as the one this process's writer produced
+/// ([`n2r_win32::metadata_pages::Reader::written_by_this_process`]), held
+/// since and checked page by page as it is read, so the second derivation
+/// was of the same bytes as the first. Every other opening (a thorough run,
+/// a cached body, a rebind, a recovery, a resume, any file this process did
+/// not write) derives them from the pages, as it always has.
+#[derive(Clone, Debug)]
+struct CreatedHere {
+    file_sha256: String,
+    semantic_sha256: String,
+    counts: ExpectedTreePageCounts,
+    budget: PageBudget,
+    semantic_byte_budget: u64,
+    resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
 }
 
 pub struct PagedExpectedTree {
@@ -239,6 +266,66 @@ impl n2r_win32::evict::Evict for DecodedCache {
             _ => None,
         };
         taken.is_some()
+    }
+}
+impl DecodedCache {
+    /// An empty cache, registered as a cache of this thread.
+    fn registered() -> std::rc::Rc<Self> {
+        let decoded = std::rc::Rc::new(Self(
+            RefCell::new(DecodedObjects::default()),
+            std::cell::Cell::new(n2r_win32::evict::now()),
+        ));
+        n2r_win32::evict::register(&decoded);
+        decoded
+    }
+    /// Keeps `object`, object `index` of a tree of `len` objects, where the
+    /// arena can spare the memory for it (see [`DecodedObjects`]).
+    fn keep(
+        &self,
+        arena: &crate::artifact_arena::ArtifactArena,
+        row_limit: u64,
+        len: usize,
+        index: usize,
+        object: &Arc<Object>,
+    ) {
+        self.1.set(n2r_win32::evict::now());
+        let mut decoded = self.0.borrow_mut();
+        if decoded.rows.get(index).is_some_and(Option::is_some) {
+            return;
+        }
+        if decoded.refused_for > 0 {
+            decoded.refused_for -= 1;
+            return;
+        }
+        let Ok(mut bytes) = object_memory_bytes(object, 0, row_limit) else {
+            return;
+        };
+        let slots = decoded.rows.is_empty();
+        if slots {
+            bytes = bytes.saturating_add((len * std::mem::size_of::<Option<Arc<Object>>>()) as u64);
+        }
+        if decoded.unspent < bytes {
+            let block = DECODED_BLOCK_BYTES.max(bytes);
+            match arena.reserve_optional_ram(block) {
+                Ok(lease) => {
+                    decoded.leases.push(lease);
+                    decoded.unspent += block;
+                }
+                Err(_) => {
+                    decoded.refused_for = DECODED_RETRY_OBJECTS;
+                    return;
+                }
+            }
+        }
+        if slots {
+            if decoded.rows.try_reserve_exact(len).is_err() {
+                decoded.refused_for = DECODED_RETRY_OBJECTS;
+                return;
+            }
+            decoded.rows.resize_with(len, || None);
+        }
+        decoded.unspent -= bytes;
+        decoded.rows[index] = Some(Arc::clone(object));
     }
 }
 const DECODED_BLOCK_BYTES: u64 = 16 * 1024 * 1024;
@@ -761,7 +848,130 @@ impl Write for SemanticHash {
         self.bytes = next;
         Ok(total)
     }
+    // The JSON writer hands its text over in pieces of a few bytes, several
+    // for each element of a byte array. A piece that fits in the pending
+    // block, within the budget, is copied there at once; any other goes
+    // through `write`, which takes all of it or refuses it.
+    #[inline]
+    fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        if bytes.len() <= Self::BLOCK - self.pending.len()
+            && let Some(next) = self
+                .bytes
+                .checked_add(bytes.len() as u64)
+                .filter(|n| *n <= self.maximum)
+        {
+            self.pending.extend_from_slice(bytes);
+            self.bytes = next;
+            return Ok(());
+        }
+        self.write(bytes).map(|_| ())
+    }
     fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The legacy JSON of `value`, as `serde_json::to_writer_pretty` writes it,
+/// into `output`.
+fn write_legacy_json(
+    output: impl io::Write,
+    value: &(impl Serialize + ?Sized),
+) -> serde_json::Result<()> {
+    value.serialize(&mut serde_json::Serializer::with_formatter(
+        output,
+        LegacyPretty::default(),
+    ))
+}
+
+/// serde_json's `PrettyFormatter` with its two-space indentation, method for
+/// method, writing each line break together with the indentation that
+/// follows it, instead of the break and then each level's two spaces by
+/// itself. The bytes are the same; the legacy JSON of an expected tree is
+/// mostly byte arrays, one element a line, and this is a third of the
+/// pieces handed to its digest.
+#[derive(Default)]
+struct LegacyPretty {
+    current_indent: usize,
+    has_value: bool,
+}
+impl LegacyPretty {
+    /// Levels whose indentation is written in one piece with the break;
+    /// deeper ones (an expected tree has fewer than ten) a level at a time.
+    const LEVELS: usize = 32;
+    /// A comma, a line break, and the indentation of `LEVELS` levels.
+    const BREAKS: [u8; 2 + 2 * Self::LEVELS] = {
+        let mut breaks = [b' '; 2 + 2 * Self::LEVELS];
+        breaks[0] = b',';
+        breaks[1] = b'\n';
+        breaks
+    };
+    fn line<W: ?Sized + io::Write>(&self, writer: &mut W, comma: bool) -> io::Result<()> {
+        let from = usize::from(!comma);
+        let levels = self.current_indent.min(Self::LEVELS);
+        writer.write_all(&Self::BREAKS[from..2 + 2 * levels])?;
+        for _ in levels..self.current_indent {
+            writer.write_all(b"  ")?;
+        }
+        Ok(())
+    }
+}
+impl serde_json::ser::Formatter for LegacyPretty {
+    #[inline]
+    fn begin_array<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.current_indent += 1;
+        self.has_value = false;
+        writer.write_all(b"[")
+    }
+    #[inline]
+    fn end_array<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.current_indent -= 1;
+        if self.has_value {
+            self.line(writer, false)?;
+        }
+        writer.write_all(b"]")
+    }
+    #[inline]
+    fn begin_array_value<W: ?Sized + io::Write>(
+        &mut self,
+        writer: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
+        self.line(writer, !first)
+    }
+    #[inline]
+    fn end_array_value<W: ?Sized + io::Write>(&mut self, _writer: &mut W) -> io::Result<()> {
+        self.has_value = true;
+        Ok(())
+    }
+    #[inline]
+    fn begin_object<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.current_indent += 1;
+        self.has_value = false;
+        writer.write_all(b"{")
+    }
+    #[inline]
+    fn end_object<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.current_indent -= 1;
+        if self.has_value {
+            self.line(writer, false)?;
+        }
+        writer.write_all(b"}")
+    }
+    #[inline]
+    fn begin_object_key<W: ?Sized + io::Write>(
+        &mut self,
+        writer: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
+        self.line(writer, !first)
+    }
+    #[inline]
+    fn begin_object_value<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        writer.write_all(b": ")
+    }
+    #[inline]
+    fn end_object_value<W: ?Sized + io::Write>(&mut self, _writer: &mut W) -> io::Result<()> {
+        self.has_value = true;
         Ok(())
     }
 }
@@ -1141,6 +1351,18 @@ impl CompactObjects {
 struct CreationView<'a, T: ExpectedObjectDomain> {
     tree: &'a T,
     compact: &'a RefCell<Result<CompactObjects>>,
+    prefill: Option<Prefill<'a>>,
+}
+/// Where the objects a creation decodes are kept for the tree that opens
+/// its pages next (see [`PagedExpectedTree::create_and_open_with_resources_in_group`]):
+/// the cache, the arena that pays for what it keeps, the row budget an
+/// object is held to and the number of objects of the tree.
+#[derive(Clone, Copy)]
+struct Prefill<'a> {
+    cache: &'a DecodedCache,
+    arena: &'a crate::artifact_arena::ArtifactArena,
+    row_limit: u64,
+    len: usize,
 }
 impl<T: ExpectedObjectDomain> Serialize for CreationView<'_, T> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
@@ -1151,6 +1373,7 @@ impl<T: ExpectedObjectDomain> Serialize for CreationView<'_, T> {
             &CreationObjects {
                 tree: self.tree,
                 compact: self.compact,
+                prefill: self.prefill,
             },
         )?;
         fields.serialize_field("logical_bytes", &self.tree.logical_bytes())?;
@@ -1164,6 +1387,7 @@ impl<T: ExpectedObjectDomain> Serialize for CreationView<'_, T> {
 struct CreationObjects<'a, T: ExpectedObjectDomain> {
     tree: &'a T,
     compact: &'a RefCell<Result<CompactObjects>>,
+    prefill: Option<Prefill<'a>>,
 }
 impl<T: ExpectedObjectDomain> Serialize for CreationObjects<'_, T> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
@@ -1171,7 +1395,7 @@ impl<T: ExpectedObjectDomain> Serialize for CreationObjects<'_, T> {
         let mut sequence = serializer.serialize_seq(Some(count))?;
         for index in 0..count {
             let object = self.tree.object(index).map_err(S::Error::custom)?;
-            {
+            let written = {
                 let mut compact = self.compact.borrow_mut();
                 let written = match compact.as_mut() {
                     Ok(pages) => pages.write(index, &object),
@@ -1182,8 +1406,21 @@ impl<T: ExpectedObjectDomain> Serialize for CreationObjects<'_, T> {
                     // The writer goes with it: nothing certifies a prefix.
                     *compact = Err(error);
                 }
-            }
+                compact.is_ok()
+            };
             sequence.serialize_element(object.as_ref())?;
+            // The object as its pages now hold it: what decoding them would
+            // give, kept for the tree that opens them. (A copy is never made
+            // for this: an object the tree lends is not kept.)
+            if let (true, Some(prefill), Cow::Owned(object)) = (written, self.prefill, object) {
+                prefill.cache.keep(
+                    prefill.arena,
+                    prefill.row_limit,
+                    prefill.len,
+                    index,
+                    &Arc::new(object),
+                );
+            }
         }
         sequence.end()
     }
@@ -1195,6 +1432,41 @@ impl PagedExpectedTree {
         path: &Path,
         admission: n2r_win32::tree_resources::SourceResourceAdmission,
         group: &crate::artifact_arena::ArtifactGroupPermit,
+    ) -> Result<(
+        ExpectedTreePageReceipt,
+        crate::artifact_arena::ArtifactLease,
+    )> {
+        Self::create_in_group(tree, path, admission, group, None)
+    }
+    /// [`Self::create_with_resources_in_group`] and then
+    /// [`Self::open_created_with_resources_in_group`] of what it wrote.
+    ///
+    /// In a run that verifies once, the opening derives nothing of the
+    /// pages again, and decodes none of the objects: the objects the
+    /// creation decoded to write them are kept for the opened tree as its
+    /// decoded objects, as the opening's own pass over them used to keep
+    /// them (the same optional memory, the same cache, given up the same
+    /// way when memory is short). They are the objects whose JSON the pages
+    /// hold, so they are what decoding the pages gives. Where the opening
+    /// derives the pages' facts again, it starts from an empty cache, as
+    /// always.
+    pub fn create_and_open_with_resources_in_group(
+        tree: &impl ExpectedObjectDomain,
+        path: &Path,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        group: &crate::artifact_arena::ArtifactGroupPermit,
+    ) -> Result<Self> {
+        let decoded = n2r_win32::verify_policy::verifies_once().then(DecodedCache::registered);
+        let (receipt, artifact) =
+            Self::create_in_group(tree, path, admission, group, decoded.as_deref())?;
+        Self::open_created_in_group(path, &receipt, admission, group, artifact, decoded)
+    }
+    fn create_in_group(
+        tree: &impl ExpectedObjectDomain,
+        path: &Path,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        group: &crate::artifact_arena::ArtifactGroupPermit,
+        decoded: Option<&DecodedCache>,
     ) -> Result<(
         ExpectedTreePageReceipt,
         crate::artifact_arena::ArtifactLease,
@@ -1217,7 +1489,14 @@ impl PagedExpectedTree {
             .context("expected writer RAM overflow")?;
         let _ram = group.arena().reserve_ram(working)?;
         let permit = group.reserve_file(path, admission.expected_page_budget()?.max_file_bytes)?;
-        let receipt = Self::create_with_resources(tree, permit.path(), admission)?;
+        let prefill = decoded.map(|cache| Prefill {
+            cache,
+            arena: group.arena(),
+            row_limit: admission.budget.max_row_bytes,
+            len: tree.object_count(),
+        });
+        let receipt =
+            Self::create_with_resources_prefilled(tree, permit.path(), admission, prefill)?;
         let artifact = permit.verify_closed(&receipt.file_sha256)?;
         Ok((receipt, artifact))
     }
@@ -1240,12 +1519,20 @@ impl PagedExpectedTree {
         budget: PageBudget,
         semantic_byte_budget: u64,
     ) -> Result<ExpectedTreePageReceipt> {
-        Self::create_domain(tree, path, budget, semantic_byte_budget, None)
+        Self::create_domain(tree, path, budget, semantic_byte_budget, None, None)
     }
     pub fn create_with_resources(
         tree: &impl ExpectedObjectDomain,
         path: &Path,
         admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    ) -> Result<ExpectedTreePageReceipt> {
+        Self::create_with_resources_prefilled(tree, path, admission, None)
+    }
+    fn create_with_resources_prefilled(
+        tree: &impl ExpectedObjectDomain,
+        path: &Path,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        prefill: Option<Prefill<'_>>,
     ) -> Result<ExpectedTreePageReceipt> {
         admission.validate()?;
         ensure!(
@@ -1264,6 +1551,7 @@ impl PagedExpectedTree {
             admission.expected_page_budget()?,
             admission.semantic_byte_budget(),
             Some(admission),
+            prefill,
         )
     }
     fn create_domain(
@@ -1272,6 +1560,7 @@ impl PagedExpectedTree {
         budget: PageBudget,
         semantic_byte_budget: u64,
         resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+        prefill: Option<Prefill<'_>>,
     ) -> Result<ExpectedTreePageReceipt> {
         budget.validate()?;
         ensure!(
@@ -1299,7 +1588,7 @@ impl PagedExpectedTree {
         let (semantic_sha256, compact) = if n2r_win32::verify_policy::full_unremembered() {
             // Two passes over the tree, as it always was: its legacy JSON
             // first, then its pages.
-            serde_json::to_writer_pretty(&mut semantic, tree)?;
+            write_legacy_json(&mut semantic, tree)?;
             let semantic_sha256 = semantic.finish()?;
             let mut compact =
                 CompactObjects::begin(path, budget, &header, semantic_byte_budget, row_limit)?;
@@ -1320,11 +1609,12 @@ impl PagedExpectedTree {
                 semantic_byte_budget,
                 row_limit,
             ));
-            serde_json::to_writer_pretty(
+            write_legacy_json(
                 &mut semantic,
                 &CreationView {
                     tree,
                     compact: &compact,
+                    prefill,
                 },
             )?;
             let semantic_sha256 = semantic.finish()?;
@@ -1339,6 +1629,14 @@ impl PagedExpectedTree {
             summary.records >= records,
             "written expected-tree record domain differs"
         );
+        let created = CreatedHere {
+            file_sha256: summary.sha256.clone(),
+            semantic_sha256: semantic_sha256.clone(),
+            counts,
+            budget,
+            semantic_byte_budget,
+            resource_admission,
+        };
         Ok(ExpectedTreePageReceipt {
             schema_version: if resource_admission.is_some() { 3 } else { 2 },
             path: path.to_owned(),
@@ -1351,6 +1649,7 @@ impl PagedExpectedTree {
             page_budget: budget,
             semantic_byte_budget,
             resource_admission,
+            created: Some(created),
         })
     }
 
@@ -1432,6 +1731,54 @@ impl PagedExpectedTree {
             Some((group.arena().clone(), artifact)),
         )
     }
+    /// [`Self::open_with_resources_in_group`] for the pages that
+    /// [`Self::create_with_resources_in_group`] has just written, pinned by
+    /// the receipt it returned. In a run that verifies once, the legacy
+    /// JSON's digest and the object counts are those the creation derived
+    /// (see [`CreatedHere`]); otherwise, and for a receipt that does not
+    /// describe this file, the opening derives them again as every other
+    /// opening does.
+    pub fn open_created_with_resources_in_group(
+        path: &Path,
+        receipt: &ExpectedTreePageReceipt,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        group: &crate::artifact_arena::ArtifactGroupPermit,
+        artifact: crate::artifact_arena::ArtifactLease,
+    ) -> Result<Self> {
+        Self::open_created_in_group(path, receipt, admission, group, artifact, None)
+    }
+    fn open_created_in_group(
+        path: &Path,
+        receipt: &ExpectedTreePageReceipt,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        group: &crate::artifact_arena::ArtifactGroupPermit,
+        artifact: crate::artifact_arena::ArtifactLease,
+        decoded: Option<std::rc::Rc<DecodedCache>>,
+    ) -> Result<Self> {
+        admission.validate()?;
+        ensure!(
+            group.group() == crate::artifact_arena::ArtifactGroup::Expected
+                && group.arena().budget() == admission.budget
+                && artifact.same_group(group)
+                && artifact.sha256() == receipt.file_sha256,
+            "expected page file/arena owner differs"
+        );
+        Self::open_owned_domain(
+            path,
+            &receipt.file_sha256,
+            Some(&receipt.semantic_sha256),
+            admission.expected_page_budget()?,
+            admission.semantic_byte_budget(),
+            Some(admission),
+            false,
+            Some(ExpectedMemoryOwner {
+                arena: group.arena().clone(),
+                artifact: Some(artifact),
+                reopened: None,
+            }),
+            receipt.created.as_ref().map(|created| (created, decoded)),
+        )
+    }
     fn open_domain(
         path: &Path,
         file_sha256: &str,
@@ -1457,6 +1804,7 @@ impl PagedExpectedTree {
                 artifact: Some(artifact),
                 reopened: None,
             }),
+            None,
         )
     }
 
@@ -1491,6 +1839,7 @@ impl PagedExpectedTree {
                 artifact: Some(artifact),
                 reopened: None,
             }),
+            None,
         )
     }
 
@@ -1522,6 +1871,7 @@ impl PagedExpectedTree {
                 artifact: Some(artifact),
                 reopened: None,
             }),
+            None,
         )?;
         tree.cached_body_pending = true;
         Ok(tree)
@@ -1660,6 +2010,7 @@ impl PagedExpectedTree {
                 artifact: None,
                 reopened: Some(file.try_clone()?),
             }),
+            None,
         )?;
         tree.apply_binding(pin, current)?;
         use std::os::windows::fs::OpenOptionsExt;
@@ -1718,11 +2069,13 @@ impl PagedExpectedTree {
                 artifact: None,
                 reopened: Some(file.try_clone()?),
             }),
+            None,
         )?;
         tree.require_recovery_memory(arena)?;
         Ok(tree)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn open_owned_domain(
         path: &Path,
         file_sha256: &str,
@@ -1732,6 +2085,9 @@ impl PagedExpectedTree {
         resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
         allow_original_source_header: bool,
         mut memory: Option<ExpectedMemoryOwner>,
+        // What the creation of this file derived of it, and the objects it
+        // decoded, kept for this tree where those facts are taken.
+        created: Option<(&CreatedHere, Option<std::rc::Rc<DecodedCache>>)>,
     ) -> Result<Self> {
         ensure!(
             (1..=i64::MAX as u64).contains(&semantic_byte_budget),
@@ -1976,14 +2332,7 @@ impl PagedExpectedTree {
             alias_projection: RefCell::new(None),
             alias_projection_lookups: Cell::new(0),
             input_digest: n2r_win32::shadow_native::input_domain::InputDigestMemo::new(),
-            decoded: {
-                let decoded = std::rc::Rc::new(DecodedCache(
-                    RefCell::new(DecodedObjects::default()),
-                    std::cell::Cell::new(n2r_win32::evict::now()),
-                ));
-                n2r_win32::evict::register(&decoded);
-                decoded
-            },
+            decoded: DecodedCache::registered(),
             header,
             counts: ExpectedTreePageCounts::default(),
             file_sha256: file_sha256.into(),
@@ -2006,22 +2355,46 @@ impl PagedExpectedTree {
             _directory_ram: directory_ram,
             _header_ram: header_ram,
         };
-        let counts = Cell::new(ExpectedTreePageCounts::default());
-        let mut semantic = SemanticHash::new(semantic_byte_budget)?;
-        serde_json::to_writer_pretty(
-            &mut semantic,
-            &LegacyView {
-                tree: &view,
-                counts: Some(&counts),
-            },
-        )?;
-        let derived_semantic_sha256 = semantic.finish()?;
-        ensure!(
-            legacy_semantic_sha256.is_none_or(|expected| derived_semantic_sha256 == expected),
-            "paged objects do not reproduce the pinned legacy expectation JSON"
-        );
-        view.semantic_sha256 = derived_semantic_sha256;
-        view.counts = counts.get();
+        // The file this process's creation has just written, pinned by what
+        // that creation derived of it: in a run that verifies once, those
+        // stand for deriving them again (see `CreatedHere`).
+        // Where they are not taken, the objects the creation decoded are
+        // given up here, before the opening decodes them again.
+        let created = created.filter(|(created, _)| {
+            n2r_win32::verify_policy::verifies_once()
+                && !allow_original_source_header
+                && view.reader.borrow().written_by_this_process()
+                && created.file_sha256 == file_sha256
+                && legacy_semantic_sha256 == Some(created.semantic_sha256.as_str())
+                && created.budget == budget
+                && created.semantic_byte_budget == semantic_byte_budget
+                && created.resource_admission == view.resource_admission
+                && created.counts.objects == view.header.total_objects
+        });
+        if let Some((created, decoded)) = created {
+            view.semantic_sha256 = created.semantic_sha256.clone();
+            view.counts = created.counts;
+            if let Some(decoded) = decoded {
+                view.decoded = decoded;
+            }
+        } else {
+            let counts = Cell::new(ExpectedTreePageCounts::default());
+            let mut semantic = SemanticHash::new(semantic_byte_budget)?;
+            write_legacy_json(
+                &mut semantic,
+                &LegacyView {
+                    tree: &view,
+                    counts: Some(&counts),
+                },
+            )?;
+            let derived_semantic_sha256 = semantic.finish()?;
+            ensure!(
+                legacy_semantic_sha256.is_none_or(|expected| derived_semantic_sha256 == expected),
+                "paged objects do not reproduce the pinned legacy expectation JSON"
+            );
+            view.semantic_sha256 = derived_semantic_sha256;
+            view.counts = counts.get();
+        }
         ensure!(
             view.counts.objects == view.header.total_objects,
             "typed object count differs from the complete header domain"
@@ -2387,45 +2760,13 @@ impl PagedExpectedTree {
         let (Some(arena), Some(admission)) = (&self.arena, self.resource_admission) else {
             return;
         };
-        self.decoded.1.set(n2r_win32::evict::now());
-        let mut decoded = self.decoded.0.borrow_mut();
-        if decoded.rows.get(index).is_some_and(Option::is_some) {
-            return;
-        }
-        if decoded.refused_for > 0 {
-            decoded.refused_for -= 1;
-            return;
-        }
-        let Ok(mut bytes) = object_memory_bytes(object, 0, admission.budget.max_row_bytes) else {
-            return;
-        };
-        let slots = decoded.rows.is_empty();
-        if slots {
-            bytes = bytes
-                .saturating_add((self.len() * std::mem::size_of::<Option<Arc<Object>>>()) as u64);
-        }
-        if decoded.unspent < bytes {
-            let block = DECODED_BLOCK_BYTES.max(bytes);
-            match arena.reserve_optional_ram(block) {
-                Ok(lease) => {
-                    decoded.leases.push(lease);
-                    decoded.unspent += block;
-                }
-                Err(_) => {
-                    decoded.refused_for = DECODED_RETRY_OBJECTS;
-                    return;
-                }
-            }
-        }
-        if slots {
-            if decoded.rows.try_reserve_exact(self.len()).is_err() {
-                decoded.refused_for = DECODED_RETRY_OBJECTS;
-                return;
-            }
-            decoded.rows.resize_with(self.len(), || None);
-        }
-        decoded.unspent -= bytes;
-        decoded.rows[index] = Some(Arc::clone(object));
+        self.decoded.keep(
+            arena,
+            admission.budget.max_row_bytes,
+            self.len(),
+            index,
+            object,
+        );
     }
     fn decode_object(&self, index: usize) -> Result<Arc<Object>> {
         ensure!(
@@ -2802,6 +3143,271 @@ impl Serialize for PagedExpectedTree {
             counts: None,
         }
         .serialize(serializer)
+    }
+}
+
+#[cfg(test)]
+mod created_tests {
+    use super::*;
+
+    fn object(record_number: u64, path: &[&str], directory: bool) -> Object {
+        Object {
+            record_number,
+            sequence_number: 1,
+            path: path.iter().map(|part| (*part).to_owned()).collect(),
+            additional_names: Vec::new(),
+            directory,
+            stored_times: [1, 2, 3, 4],
+            attributes: if directory { 16 } else { 32 },
+            ntfs_compression_normalized: false,
+            security: (0..=255).collect(),
+            api_security: None,
+            extended_attributes: None,
+            reparse: None,
+            case_sensitive: None,
+            source_offset: None,
+            source_extents: Vec::new(),
+            length: if directory { 0 } else { 5 },
+            sha256: (!directory).then(|| "ab".repeat(16)),
+            source_evidence: None,
+            named_streams: Vec::new(),
+            sparse: None,
+        }
+    }
+
+    /// The legacy JSON is byte for byte what serde_json's pretty writer
+    /// writes: empty and nested arrays and objects, deeper than the levels
+    /// written in one piece, and an expected tree.
+    #[test]
+    fn the_legacy_formatter_writes_what_the_pretty_writer_writes() {
+        use serde_json::json;
+        let mut deep = json!(1);
+        for level in 0..40 {
+            deep = if level % 2 == 0 {
+                json!([deep, [], {}, [[]], [{}], 7])
+            } else {
+                json!({"k": deep, "e": [], "o": {}, "s": "x\n\"y\"", "n": null, "t": true})
+            };
+        }
+        let values = [
+            json!(null),
+            json!(-3),
+            json!("text"),
+            json!([]),
+            json!({}),
+            json!([[]]),
+            json!([{}]),
+            json!({"a": []}),
+            json!({"a": {}}),
+            json!([1, [2, []], {"b": [3, {}], "c": {"d": []}}]),
+            deep,
+        ];
+        for value in &values {
+            let mut ours = Vec::new();
+            write_legacy_json(&mut ours, value).unwrap();
+            assert_eq!(
+                String::from_utf8(ours).unwrap(),
+                serde_json::to_string_pretty(value).unwrap()
+            );
+        }
+        let mut objects = vec![object(5, &[], true), object(40, &["a"], true)];
+        let mut file = object(64, &["a", "f"], false);
+        file.additional_names = vec![vec!["a".into(), "F~1".into()]];
+        file.extended_attributes = Some(Default::default());
+        file.source_extents = vec![crate::ntfs_inspect::Extent {
+            logical_offset: 0,
+            physical_offset: Some(4096),
+            length: 8192,
+        }];
+        objects.push(file);
+        let tree = ExpectedTree {
+            profile: "test-profile".into(),
+            logical_bytes: 5,
+            internal_replacement_pending: vec!["root:$TXF_DATA".into()],
+            objects,
+        };
+        let mut ours = Vec::new();
+        write_legacy_json(&mut ours, &tree).unwrap();
+        assert!(ours == serde_json::to_vec_pretty(&tree).unwrap());
+    }
+
+    /// Pieces of any size, across the digest's blocks, give the digest of
+    /// the whole, and a piece past the budget is refused as it always was.
+    #[test]
+    fn the_semantic_digest_takes_pieces_and_refuses_past_its_budget() {
+        let text: Vec<u8> = (0..200_000u32).map(|n| b'a' + (n % 26) as u8).collect();
+        let mut whole = SemanticHash::new(1 << 20).unwrap();
+        for piece in text.chunks(7) {
+            whole.write_all(piece).unwrap();
+        }
+        assert_eq!(whole.finish().unwrap(), hex::encode(Sha256::digest(&text)));
+        let mut small = SemanticHash::new(10).unwrap();
+        small.write_all(b"0123456789").unwrap();
+        let refused = small.write_all(b"x").unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "legacy expected-tree JSON exceeds pinned byte budget"
+        );
+    }
+
+    /// What a creation keeps of its pages for an opening in a run that
+    /// verifies once is what an opening derives from them again, and never
+    /// part of the receipt's serialized form.
+    #[test]
+    fn a_creation_derives_what_its_opening_would_derive_again() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut objects = vec![object(5, &[], true), object(40, &["a"], true)];
+        for record in 0..300u64 {
+            objects.push(object(64 + record, &["a", &format!("f{record}")], false));
+        }
+        let tree = ExpectedTree {
+            profile: "test-profile".into(),
+            logical_bytes: 1500,
+            internal_replacement_pending: vec!["root:$TXF_DATA".into()],
+            objects,
+        };
+        let budget = PageBudget {
+            max_page_bytes: 64 * 1024,
+            max_records_per_page: 1024,
+            max_records: 4096,
+            max_pages: 1024,
+            max_file_bytes: 64 * 1024 * 1024,
+        };
+        let path = directory.path().join("expected.pages");
+        let receipt = PagedExpectedTree::create(&tree, &path, budget).unwrap();
+        let created = receipt.created.clone().unwrap();
+        assert_eq!(created.file_sha256, receipt.file_sha256);
+        assert_eq!(created.semantic_sha256, receipt.semantic_sha256);
+        assert_eq!(
+            created.semantic_sha256,
+            hex::encode(Sha256::digest(serde_json::to_vec_pretty(&tree).unwrap()))
+        );
+        assert_eq!(
+            created.counts,
+            ExpectedTreePageCounts {
+                objects: 302,
+                files: 300,
+                directories: 2,
+                data_streams: 300,
+            }
+        );
+
+        let opened = PagedExpectedTree::open(
+            &path,
+            &receipt.file_sha256,
+            &receipt.semantic_sha256,
+            budget,
+        )
+        .unwrap();
+        assert_eq!(opened.counts(), created.counts);
+        assert_eq!(opened.semantic_sha256(), created.semantic_sha256);
+
+        let written = serde_json::to_value(&receipt).unwrap();
+        assert!(!written.as_object().unwrap().contains_key("created"));
+    }
+
+    /// The objects a creation keeps for the tree that opens its pages are
+    /// what decoding those pages gives, ordinal by ordinal, and keeping them
+    /// changes nothing of the legacy JSON or of the pages written.
+    #[test]
+    fn the_objects_a_creation_keeps_are_those_its_pages_decode_to() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut objects = vec![object(5, &[], true), object(40, &["a"], true)];
+        for record in 0..200u64 {
+            objects.push(object(64 + record, &["a", &format!("f{record}")], false));
+        }
+        let tree = ExpectedTree {
+            profile: "test-profile".into(),
+            logical_bytes: 1000,
+            internal_replacement_pending: Vec::new(),
+            objects,
+        };
+        let budget = PageBudget {
+            max_page_bytes: 64 * 1024,
+            max_records_per_page: 1024,
+            max_records: 4096,
+            max_pages: 1024,
+            max_file_bytes: 64 * 1024 * 1024,
+        };
+        let first = directory.path().join("first.pages");
+        let receipt = PagedExpectedTree::create(&tree, &first, budget).unwrap();
+        // A tree that hands out objects of its own, as a projection does.
+        let source = PagedExpectedTree::open(
+            &first,
+            &receipt.file_sha256,
+            &receipt.semantic_sha256,
+            budget,
+        )
+        .unwrap();
+        let ledger = directory.path().join("ledger");
+        std::fs::create_dir(&ledger).unwrap();
+        let arena = crate::artifact_arena::ArtifactArena::new(
+            &ledger,
+            n2r_win32::tree_resources::ResourceBudget {
+                schema_version: 1,
+                ram_bytes: 256 * 1024 * 1024,
+                scratch_bytes: 256 * 1024 * 1024,
+                page_bytes: 65536,
+                max_row_bytes: 65536,
+                retained_index_bytes: 16 * 1024 * 1024,
+                handle_slots: 1024,
+            },
+            &[],
+        )
+        .unwrap();
+        let cache = DecodedCache::registered();
+        let wire = wire_budget(budget).unwrap();
+        let second = directory.path().join("second.pages");
+        let header = HeaderRef {
+            schema_version: 2,
+            profile: source.profile(),
+            logical_bytes: source.logical_bytes(),
+            internal_replacement_pending: source.internal_replacement_pending(),
+            total_objects: source.len() as u64,
+            resource_admission: None,
+        };
+        let compact = RefCell::new(CompactObjects::begin(
+            &second,
+            wire,
+            &header,
+            budget.max_file_bytes,
+            Some(65536),
+        ));
+        let mut json = Vec::new();
+        serde_json::to_writer_pretty(
+            &mut json,
+            &CreationView {
+                tree: &source,
+                compact: &compact,
+                prefill: Some(Prefill {
+                    cache: &cache,
+                    arena: &arena,
+                    row_limit: 65536,
+                    len: source.len(),
+                }),
+            },
+        )
+        .unwrap();
+        assert_eq!(json, serde_json::to_vec_pretty(&tree).unwrap());
+        let CompactObjects { writer, counts, .. } = compact.into_inner().unwrap();
+        assert_eq!(counts, receipt.created.as_ref().unwrap().counts);
+        let summary = writer.finish().unwrap();
+        let reopened = PagedExpectedTree::open_with_limits(
+            &second,
+            &summary.sha256,
+            &receipt.semantic_sha256,
+            wire,
+            budget.max_file_bytes,
+        )
+        .unwrap();
+        let kept = cache.0.borrow();
+        assert_eq!(kept.rows.len(), tree.objects.len());
+        assert!(!kept.leases.is_empty());
+        for (index, expected) in tree.objects.iter().enumerate() {
+            let held = kept.rows[index].as_deref().expect("every object kept");
+            assert_eq!(held, expected);
+            assert_eq!(*held, reopened.object(index).unwrap());
+        }
     }
 }
 

@@ -294,21 +294,27 @@ impl Engine {
             }
         }
     }
-    /// Stops reading ahead: the lanes take no more reads and what was read
-    /// is given up.
+    /// Stops reading ahead: the lanes take no more reads (nothing is handed
+    /// to them once it is closed) and what was read is given up, with what
+    /// they have sent back so far.
     fn close(&mut self) {
         self.closed = true;
         self.cancel.store(true, Ordering::Relaxed);
         self.jobs = None;
         self.blocks.clear();
         self.held = 0;
+        while self.results.try_recv().is_ok() {}
     }
-    /// Closes, ends the lanes' threads and gives the memory back.
+    /// Closes, ends the lanes' threads, gives up every read they sent back
+    /// and only then the memory that paid for them.
     fn finish(&mut self) {
         self.close();
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
+        // The lanes have ended and their senders with them: this takes
+        // every read still on its way back.
+        while self.results.try_recv().is_ok() {}
         self.lease = None;
     }
 }
@@ -780,6 +786,31 @@ mod tests {
         // Without lanes it is the source.
         let mut plain = PrefetchedSource::new(source(&bytes), bytes.len() as u64, None).unwrap();
         assert_eq!(transcript(&mut plain, &reads), expected);
+    }
+
+    #[test]
+    fn finishing_gives_up_every_read_on_its_way_back_and_takes_no_more() {
+        let bytes = partition();
+        let prefetch = prefetch(&bytes);
+        let reads: Vec<(u64, u64)> = (0..64).map(|n| (n * 131_072, 65_536)).collect();
+        prefetch.read_ahead(&reads);
+        prefetch.finish();
+        {
+            let engine = prefetch.0.borrow();
+            assert!(engine.workers.is_empty() && engine.lease.is_none());
+            assert!(engine.blocks.is_empty() && engine.held == 0);
+            assert!(
+                matches!(
+                    engine.results.try_recv(),
+                    Err(mpsc::TryRecvError::Disconnected)
+                ),
+                "nothing is left on its way back, and nothing can come"
+            );
+        }
+        prefetch.read_ahead(&reads);
+        assert!(prefetch.0.borrow().blocks.is_empty());
+        let mut buffer = [0u8; 4096];
+        assert!(!prefetch.serve(0, &mut buffer));
     }
 
     #[test]

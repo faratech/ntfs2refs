@@ -31,16 +31,23 @@ const SPAN: usize = n2r_win32::BorrowedPagedWriter::MAX_WRITE;
 /// Spans each reader may hold, read or being read, beside those hashed.
 const AHEAD: usize = 2;
 
-/// The memory the pass holds beyond the caller's: each reader's buffers,
-/// the extra handle's own aligned buffer, and the digest worker's two buffers.
-const WORKSPACE: u64 = ((2 * AHEAD + 3) * SPAN) as u64;
+/// Maximum concurrent unbuffered readers during read-back (writer + up to 3
+/// extra read lanes, matching the 4-lane NVMe/virtual-SCSI sweet spot).
+const MAX_READERS: usize = 4;
 
-/// What a read-back with two reads outstanding holds: the spare memory that
-/// pays for it, both readers' buffers, and the second read handle.
+/// The memory the pass holds beyond the caller's for `readers` concurrent
+/// handles: each reader's `AHEAD` buffers, each extra handle's aligned buffer,
+/// and the digest worker's two buffers.
+const fn workspace_for(readers: usize) -> u64 {
+    ((readers * AHEAD + (readers - 1) + 2) * SPAN) as u64
+}
+
+/// What a multi-handle read-back holds: the spare memory that pays for it,
+/// every reader's buffers, and the extra read handles.
 pub(super) struct TwoHandles {
     _lease: crate::artifact_arena::ArenaRamLease,
     buffers: Vec<Vec<u8>>,
-    lane: n2r_win32::GeneralFrozenLane,
+    lanes: Vec<n2r_win32::GeneralFrozenLane>,
 }
 
 /// Why the read-back reads through the writer's handle alone, with the OS
@@ -73,10 +80,11 @@ impl OneHandle {
     }
 }
 
-/// Both readers' buffers, or `None` where Windows has no memory for them.
-fn reader_buffers() -> Option<Vec<Vec<u8>>> {
-    let mut buffers = Vec::with_capacity(2 * AHEAD);
-    for _ in 0..2 * AHEAD {
+/// Buffers for `readers` concurrent readers, or `None` where Windows has no
+/// memory for them.
+fn reader_buffers_for(readers: usize) -> Option<Vec<Vec<u8>>> {
+    let mut buffers = Vec::with_capacity(readers * AHEAD);
+    for _ in 0..readers * AHEAD {
         let mut buffer = Vec::new();
         buffer.try_reserve_exact(SPAN).ok()?;
         buffer.resize(SPAN, 0);
@@ -85,13 +93,17 @@ fn reader_buffers() -> Option<Vec<Vec<u8>>> {
     Some(buffers)
 }
 
-/// Everything a read-back with two reads outstanding needs, or why it reads
-/// through the writer's handle alone: a disk that serves one read at a time
-/// (`io_profile`), spare memory or Windows memory refused, or a second
-/// handle that could not be opened or did not reach the same disk in the
-/// same state. They only buy speed, and the boot granule is already on the
-/// source: none of them is a reason for the run to stop. The read-back then
-/// reads one range at a time through the writer's handle, as before.
+#[cfg(test)]
+fn reader_buffers() -> Option<Vec<Vec<u8>>> {
+    reader_buffers_for(2)
+}
+
+/// Everything a multi-handle read-back needs, or why it reads through the
+/// writer's handle alone: a disk that serves one read at a time
+/// (`io_profile`), spare memory or Windows memory refused, or extra handles
+/// that could not be opened or did not reach the same disk in the same state.
+/// Scales up to [`MAX_READERS`] (4) handles when queue depth and spare RAM
+/// admit them, falling back to 2 handles before falling back to 1.
 pub(super) fn prepare(
     target: &n2r_win32::BorrowedPagedWriter<'_>,
     arena: &crate::artifact_arena::ArtifactArena,
@@ -103,18 +115,34 @@ pub(super) fn prepare(
             "the disk serves one read at a time (queue depth {depth})"
         )));
     }
-    let lease = arena.reserve_spare_ram(WORKSPACE).map_err(|error| {
-        OneHandle::because(format!("no spare memory for its buffers: {error:#}"))
-    })?;
-    let buffers = reader_buffers()
+    let desired = depth.min(MAX_READERS);
+    let (readers, lease) = match arena.reserve_spare_ram(workspace_for(desired)) {
+        Ok(lease) => (desired, lease),
+        Err(error) if desired > 2 => match arena.reserve_spare_ram(workspace_for(2)) {
+            Ok(lease) => (2, lease),
+            Err(_) => {
+                return Err(OneHandle::because(format!(
+                    "no spare memory for its buffers: {error:#}"
+                )));
+            }
+        },
+        Err(error) => {
+            return Err(OneHandle::because(format!(
+                "no spare memory for its buffers: {error:#}"
+            )));
+        }
+    };
+    let buffers = reader_buffers_for(readers)
         .ok_or_else(|| OneHandle::because("Windows has no memory for its buffers"))?;
-    let lane = match target.read_lanes(1, events) {
-        Ok(mut lanes) => lanes
-            .pop()
-            .ok_or_else(|| OneHandle::because("no second read handle was opened"))?,
+    let extra = readers - 1;
+    let lanes = match target.read_lanes(extra, events) {
+        Ok(lanes) if lanes.len() == extra => lanes,
+        Ok(_) => {
+            return Err(OneHandle::because("fewer extra read handles were opened"));
+        }
         Err(error) => {
             return Err(OneHandle {
-                reason: format!("the second read handle could not be opened: {error}"),
+                reason: format!("extra read handles could not be opened: {error}"),
                 native_error: error.raw_os_error(),
             });
         }
@@ -122,7 +150,7 @@ pub(super) fn prepare(
     Ok(TwoHandles {
         _lease: lease,
         buffers,
-        lane,
+        lanes,
     })
 }
 
@@ -261,7 +289,7 @@ fn hash_next(
     let span = pending
         .pop_front()
         .context("apply read-back: no span is outstanding")?;
-    let side = usize::from(*consumed % 2 == 1);
+    let side = (*consumed as usize) % lanes.len();
     let buffer = lanes[side]
         .results
         .recv()
@@ -282,11 +310,11 @@ fn hash_next(
 }
 
 /// The framed digest of every changed range of `domain`, read back through
-/// `target` and the second handle of `two` with a read outstanding on each,
+/// `target` and the extra handles of `two` with reads outstanding on each,
 /// held to `expected` as `check_selected_reaching` holds it. `Ok(Err(_))`
 /// where its reading threads could not be started: nothing was read or
 /// hashed, and the caller reads back through `target` alone. A read that
-/// fails on either handle, and a digest that differs, end the pass.
+/// fails on any handle, and a digest that differs, end the pass.
 pub(super) fn check_selected_two_handles(
     target: &mut n2r_win32::BorrowedPagedWriter<'_>,
     two: TwoHandles,
@@ -297,12 +325,12 @@ pub(super) fn check_selected_two_handles(
     let TwoHandles {
         _lease,
         buffers,
-        mut lane,
+        mut lanes,
     } = two;
     let mut aggregate = n2r_win32::bulk_digest::HashedBehind::new(algorithm, SPAN)?;
-    if let Some(one) = hash_two_readers(
+    if let Some(one) = hash_multi_readers(
         (target, "writer's handle"),
-        (&mut lane, "second read handle"),
+        &mut lanes,
         u64::from(domain.facts.range_count),
         |ordinal| {
             domain
@@ -324,28 +352,66 @@ pub(super) fn check_selected_two_handles(
     Ok(Ok(digest))
 }
 
-/// Frames and hashes into `aggregate` the `range_count` ranges `range`
-/// gives (offset and length, ascending), read in spans alternately through
-/// `first` and `second`, each on a thread of its own, into `buffers` (both
-/// readers', [`reader_buffers`]). `Ok(Some(_))` where a reading thread could
-/// not be started: nothing was read or hashed then.
+#[cfg(test)]
 fn hash_two_readers<A: Read + Seek + Send, B: Read + Seek + Send>(
     first: (&mut A, &'static str),
     second: (&mut B, &'static str),
+    range_count: u64,
+    range: impl FnMut(u64) -> Result<(u64, u64)>,
+    buffers: Vec<Vec<u8>>,
+    aggregate: &mut n2r_win32::bulk_digest::HashedBehind,
+) -> Result<Option<OneHandle>> {
+    let mut extras = [second.0];
+    hash_multi_readers_named(
+        first,
+        &mut extras,
+        second.1,
+        range_count,
+        range,
+        buffers,
+        aggregate,
+    )
+}
+
+fn hash_multi_readers<A: Read + Seek + Send, B: Read + Seek + Send>(
+    first: (&mut A, &'static str),
+    extras: &mut [B],
+    range_count: u64,
+    range: impl FnMut(u64) -> Result<(u64, u64)>,
+    buffers: Vec<Vec<u8>>,
+    aggregate: &mut n2r_win32::bulk_digest::HashedBehind,
+) -> Result<Option<OneHandle>> {
+    let mut refs: Vec<&mut B> = extras.iter_mut().collect();
+    hash_multi_readers_named(
+        first,
+        &mut refs,
+        "extra read handle",
+        range_count,
+        range,
+        buffers,
+        aggregate,
+    )
+}
+
+fn hash_multi_readers_named<A: Read + Seek + Send, B: Read + Seek + Send>(
+    first: (&mut A, &'static str),
+    extras: &mut [&mut B],
+    extra_name: &'static str,
     range_count: u64,
     mut range: impl FnMut(u64) -> Result<(u64, u64)>,
     buffers: Vec<Vec<u8>>,
     aggregate: &mut n2r_win32::bulk_digest::HashedBehind,
 ) -> Result<Option<OneHandle>> {
-    if buffers.len() != 2 * AHEAD || buffers.iter().any(|buffer| buffer.len() < SPAN) {
+    let reader_count = 1 + extras.len();
+    if buffers.len() != reader_count * AHEAD || buffers.iter().any(|buffer| buffer.len() < SPAN) {
         return Ok(Some(OneHandle::because(
-            "the read buffers are not those of two readers",
+            "the read buffers are not those of the configured readers",
         )));
     }
     let mut buffers = buffers.into_iter();
-    let mut lanes = Vec::with_capacity(2);
-    let mut readers = Vec::with_capacity(2);
-    for _ in 0..2 {
+    let mut lanes = Vec::with_capacity(reader_count);
+    let mut readers = Vec::with_capacity(reader_count);
+    for _ in 0..reader_count {
         let (jobs, queue) = mpsc::sync_channel::<(u64, usize)>(AHEAD);
         let (results, read) = mpsc::sync_channel::<Result<Vec<u8>>>(AHEAD);
         let (free, held) = mpsc::channel::<Vec<u8>>();
@@ -366,31 +432,35 @@ fn hash_two_readers<A: Read + Seek + Send, B: Read + Seek + Send>(
     };
     std::thread::scope(|scope| -> Result<Option<OneHandle>> {
         let mut readers = readers.into_iter();
+        let mut handles = Vec::with_capacity(reader_count);
         let (queue, results, held) = readers.next().context("apply read-back: no reader")?;
         let (reader, name) = first;
-        let first = match std::thread::Builder::new()
+        match std::thread::Builder::new()
             .name("n2r-read-back".into())
             .spawn_scoped(scope, move || {
                 read_spans(reader, name, queue, results, held);
             }) {
-            Ok(first) => first,
+            Ok(h) => handles.push(h),
             Err(error) => return Ok(Some(not_started(error))),
-        };
-        let (queue, results, held) = readers.next().context("apply read-back: no reader")?;
-        let (reader, name) = second;
-        let second = match std::thread::Builder::new()
-            .name("n2r-read-back".into())
-            .spawn_scoped(scope, move || {
-                read_spans(reader, name, queue, results, held);
-            }) {
-            Ok(second) => second,
-            Err(error) => {
-                // The first reader has been given nothing: it ends here.
-                drop(lanes);
-                let _ = first.join();
-                return Ok(Some(not_started(error)));
+        }
+        for extra in extras.iter_mut() {
+            let (queue, results, held) = readers.next().context("apply read-back: no reader")?;
+            match std::thread::Builder::new()
+                .name("n2r-read-back".into())
+                .spawn_scoped(scope, move || {
+                    read_spans(*extra, extra_name, queue, results, held);
+                }) {
+                Ok(h) => handles.push(h),
+                Err(error) => {
+                    drop(lanes);
+                    for h in handles {
+                        let _ = h.join();
+                    }
+                    return Ok(Some(not_started(error)));
+                }
             }
-        };
+        }
+        let max_in_flight = (reader_count * AHEAD) as u64;
         let hashed = (|| -> Result<()> {
             let mut spans = Spans::new();
             let mut ready: VecDeque<Span> = VecDeque::new();
@@ -414,10 +484,10 @@ fn hash_two_readers<A: Read + Seek + Send, B: Read + Seek + Send>(
                     }
                     continue;
                 };
-                if dispatched - consumed == 2 * AHEAD as u64 {
+                if dispatched - consumed == max_in_flight {
                     hash_next(aggregate, &lanes, &mut pending, &mut consumed)?;
                 }
-                let side = usize::from(dispatched % 2 == 1);
+                let side = (dispatched as usize) % reader_count;
                 if lanes[side]
                     .jobs
                     .send((span.start(), span.length()))
@@ -440,11 +510,15 @@ fn hash_two_readers<A: Read + Seek + Send, B: Read + Seek + Send>(
             }
             Ok(())
         })();
-        // Ends both readers: no more spans, and no buffers back.
+        // Ends all readers: no more spans, and no buffers back.
         drop(lanes);
-        let first = first.join();
-        let second = second.join();
-        if first.is_err() || second.is_err() {
+        let mut panicked = false;
+        for h in handles {
+            if h.join().is_err() {
+                panicked = true;
+            }
+        }
+        if panicked {
             anyhow::bail!("apply read-back: a reading thread panicked");
         }
         hashed.map(|()| None)

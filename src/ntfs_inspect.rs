@@ -39,6 +39,10 @@ mod paged_roles;
 #[cfg(windows)]
 pub mod paged_storage;
 #[cfg(windows)]
+mod read_lanes;
+#[cfg(windows)]
+pub(crate) use read_lanes::{LanePrefetch, LaneSource, PrefetchedSource};
+#[cfg(windows)]
 pub mod record_store;
 #[cfg(windows)]
 mod security_input;

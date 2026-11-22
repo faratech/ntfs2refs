@@ -217,6 +217,9 @@ impl ResourceSourceContext {
                 let inspection_sha=raw.canonical_sha256()?;
                 save(&source_output,"source-manifest.json",raw.pin(),&scratch,&mut metadata,&mut reservations)?;
                 save(&source_output,"inspection-read-coverage.json",&read_coverage.report()?,&scratch,&mut metadata,&mut reservations)?;
+                // Inspected by this process just above: its stream evidence
+                // was decided here (until the comparison below ends).
+                let inspected_here=crate::ntfs_attestation::inspected_here(&raw);
                 let selectors=PagedObservationRequest::new(&raw,&binding.storage,budget,policy)?;
                 let admission=selectors.admission();
                 let native_path=native_output.join("native.pages");
@@ -343,6 +346,7 @@ impl ResourceSourceContext {
                 .context("comparison row count overflow")?;
             Ok(())
         })?;
+        drop(inspected_here);
         let rows_pin = rows_writer.finish()?;
         let replacements_pin = replacements_writer.finish()?;
         ensure!(

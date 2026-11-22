@@ -190,6 +190,55 @@ pub(crate) fn extent_identity_stream_request_windows_domain(
     })
 }
 
+thread_local! {
+    /// The inspections this process made, while their callers hold them
+    /// ([`inspected_here`]): an identifier, the domain's address and type.
+    static INSPECTED_HERE: std::cell::RefCell<Vec<(u64, usize, &'static str)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static NEXT_INSPECTED: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+}
+
+/// While it lives, `files` is known on this thread as an inspection that
+/// this process made itself (not one reopened from the source cache of an
+/// earlier process): its stream evidence was decided here, by this build's
+/// selector function ([`extent_identity_stream_request_observed`]). The
+/// domain is borrowed while it lives, so that its address stands for it.
+pub(crate) struct InspectedHere<'a> {
+    id: u64,
+    _files: std::marker::PhantomData<&'a ()>,
+}
+pub(crate) fn inspected_here<D>(files: &D) -> InspectedHere<'_> {
+    let id = NEXT_INSPECTED.with(|next| {
+        let id = next.get();
+        next.set(id + 1);
+        id
+    });
+    INSPECTED_HERE.with(|held| {
+        held.borrow_mut().push((
+            id,
+            std::ptr::from_ref(files) as usize,
+            std::any::type_name::<D>(),
+        ))
+    });
+    InspectedHere {
+        id,
+        _files: std::marker::PhantomData,
+    }
+}
+impl Drop for InspectedHere<'_> {
+    fn drop(&mut self) {
+        INSPECTED_HERE.with(|held| held.borrow_mut().retain(|(id, _, _)| *id != self.id));
+    }
+}
+fn was_inspected_here<D>(files: &D) -> bool {
+    let address = std::ptr::from_ref(files) as usize;
+    let kind = std::any::type_name::<D>();
+    INSPECTED_HERE.with(|held| {
+        held.try_borrow()
+            .is_ok_and(|held| held.iter().any(|(_, at, of)| *at == address && *of == kind))
+    })
+}
+
 /// The extent-identity selector of `stream` for the observation of the frozen
 /// source through Windows and its comparison with the raw reading:
 /// [`extent_identity_stream_request_windows_domain`] where `windows_paths`,
@@ -204,17 +253,21 @@ pub(crate) fn extent_identity_stream_request_windows_domain(
 /// for the comparison's and once more for each of the comparison's checks
 /// of it; every other condition of the selector is checked again, and every
 /// object's own paths are still derived by the admission of the comparison.
-/// Every other run, and every other stream, derives them as before.
+/// That holds only of an inspection this process made ([`inspected_here`]);
+/// one reopened from the source cache had its statuses decided by an earlier
+/// process, perhaps of another build, and derives them as before. So does
+/// every other run, and every other stream.
 #[cfg(windows)]
-pub(crate) fn extent_identity_stream_request_observed(
-    files: &impl crate::ntfs_inspect::RootFileDomain,
+pub(crate) fn extent_identity_stream_request_observed<D: crate::ntfs_inspect::RootFileDomain>(
+    files: &D,
     file: &FileInventory,
     stream: &crate::ntfs_inspect::StreamInventory,
     windows_paths: bool,
 ) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
     let decided = n2r_win32::verify_policy::verifies_once()
         && stream.logical_hash_status
-            == crate::ntfs_inspect::LogicalHashStatus::NotReadExtentIdentityV1;
+            == crate::ntfs_inspect::LogicalHashStatus::NotReadExtentIdentityV1
+        && was_inspected_here(files);
     if !decided {
         return if windows_paths {
             extent_identity_stream_request_windows_domain(files, file, stream)
@@ -859,6 +912,40 @@ pub fn check_descriptor_with_limit(bytes: &[u8], maximum: u64) -> Result<()> {
         ntfs_security::parse_descriptor_with_limit(bytes, maximum).map(|_| true)
     })
     .map(|_| ())
+}
+
+#[cfg(test)]
+mod inspected_here_tests {
+    use super::{inspected_here, was_inspected_here};
+
+    #[test]
+    fn only_an_inspection_held_as_made_here_is_known_as_one() {
+        struct Store(#[allow(dead_code)] u64);
+        // A domain whose first field is another domain at its address.
+        struct Domain {
+            store: Store,
+        }
+        let (made_here, reopened) = (Domain { store: Store(1) }, Domain { store: Store(2) });
+        assert!(!was_inspected_here(&made_here));
+        {
+            let _held = inspected_here(&made_here);
+            assert!(was_inspected_here(&made_here));
+            assert!(!was_inspected_here(&reopened), "another domain");
+            // The same address taken as another type is not it.
+            assert_eq!(
+                std::ptr::from_ref(&made_here.store) as usize,
+                std::ptr::from_ref(&made_here) as usize
+            );
+            assert!(!was_inspected_here(&made_here.store));
+            {
+                let _also = inspected_here(&reopened);
+                assert!(was_inspected_here(&reopened));
+            }
+            assert!(!was_inspected_here(&reopened), "no longer held");
+            assert!(was_inspected_here(&made_here));
+        }
+        assert!(!was_inspected_here(&made_here), "no longer held");
+    }
 }
 
 #[cfg(test)]

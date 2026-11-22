@@ -1250,6 +1250,11 @@ impl ResourceSourceContext {
             // those walks, in a cache, until the comparison's gates are made.
             let directory_paths = n2r_win32::verify_policy::verifies_once()
                 .then(|| ntfs_admission::paged::hold_directory_paths(&raw));
+            // An inspection made by this process, not reopened from the
+            // source cache: its stream evidence was decided here.
+            let inspected_here = reopened_cache
+                .is_none()
+                .then(|| crate::ntfs_attestation::inspected_here(&raw));
             let storage_hint_ram = if binding.layout_profile
                 == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
             {
@@ -1274,9 +1279,17 @@ impl ResourceSourceContext {
             // security preflight). The read is joined before the volume is
             // mounted for its observation through Windows and before anything
             // takes the digest; it is the digest `hash` makes of the same
-            // chunks. Without the spare memory for the lanes and the copy of
-            // the ranges, a lane, or a thread, it is read in place below, as
+            // chunks. Without the memory for the lanes and the copy of the
+            // ranges, a lane, or a thread, it is read in place below, as
             // every other run reads it.
+            //
+            // The read and its memory are held as a cache of this thread
+            // (paid as one, and an `Evictable`): a reservation the work
+            // beside it cannot do without that finds no room gives it up
+            // (the read stops after the chunks it is reading and is waited
+            // for, and its memory is returned) before it is refused, and the
+            // fingerprint is then read in place where the read would have
+            // been joined.
             let early_fingerprint =
                 if n2r_win32::verify_policy::verifies_once() && reopened_cache.is_none() {
                     n2r_win32::perf::step("build source fingerprint and start its read");
@@ -1287,9 +1300,16 @@ impl ResourceSourceContext {
                         &output.join("fingerprint"),
                     )?;
                     fingerprint.validate_inspection_reads(&read_coverage)?;
+                    // The read's own refusals (a lane whose route differs
+                    // from the frozen state) are the fingerprint's, as where
+                    // it was read in place; the planning goes on under the
+                    // phase it had.
+                    *phase = "source-fingerprint";
                     let reading = fingerprint
-                        .lane_reread(source)?
-                        .and_then(|(lanes, ram)| lanes.start().ok().map(|read| (read, ram)));
+                        .lane_reread_as_cache(source)?
+                        .and_then(|(lanes, ram)| lanes.start().ok().map(|read| (read, ram)))
+                        .map(|started| n2r_win32::evict::Evictable::new(Some(started)));
+                    *phase = "source-inspection";
                     Some((fingerprint, reading))
                 } else {
                     None
@@ -1422,12 +1442,21 @@ impl ResourceSourceContext {
                 );
             }
             // The fingerprint read on lanes ends before the volume is mounted.
-            if let Some((read, _ram)) = fingerprint_reading {
+            if let Some(reading) = fingerprint_reading {
                 n2r_win32::perf::step("join source fingerprint read");
                 *phase = "source-fingerprint";
-                let hash = read.finish()?;
-                // As `hash` ends: its range stores are still as written.
-                fingerprint.revalidate()?;
+                let taken = reading.get_mut().and_then(|mut held| held.take());
+                drop(reading);
+                let hash = match taken {
+                    Some((read, _ram)) => {
+                        let hash = read.finish()?;
+                        // As `hash` ends: its range stores are still as written.
+                        fingerprint.revalidate()?;
+                        hash
+                    }
+                    // Given up for a reservation the run needed: read here.
+                    None => fingerprint.hash(&mut source)?,
+                };
                 save(
                     output,
                     "source-frozen.json",
@@ -1760,6 +1789,12 @@ impl ResourceSourceContext {
                 })
                 .transpose()?;
             let mut storage_hint_count = 0u64;
+            // Where the check of the Windows rows was left to the comparison
+            // below, the memory it cannot do without is reserved before the
+            // spare memory of the re-read beside it (and of its batches).
+            n2r_win32::attestation::NativeObservationDomain::reserve_deferred_validation(
+                native.domain(),
+            )?;
             let reread = if reread_beside_comparison {
                 n2r_win32::perf::step("re-read source fingerprint");
                 // Without the memory, a lane or a thread for it, the
@@ -2399,6 +2434,7 @@ impl ResourceSourceContext {
                 source_views["native_observation_origin"] = serde_json::to_value(native.origin())?;
             }
             let source_views_sha = json_sha(&source_views, scratch.budget().scratch_bytes / 2)?;
+            drop(inspected_here);
             drop(directory_paths);
             n2r_win32::perf::step("reopen comparison stores");
             let rows = SortedRecordStore::open(&rows_pin, &scratch)?;

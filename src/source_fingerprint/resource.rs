@@ -1361,6 +1361,35 @@ impl PagedSourceFingerprint {
             crate::ntfs_inspect::paged_storage::SourceRamLease,
         )>,
     > {
+        self.lane_reread_leased(source, |bytes| self.scratch.lease_spare_ram(bytes))
+    }
+    /// As [`Self::lane_reread`], its memory paid as a cache
+    /// (`lease_optional_ram`), for a caller that holds the read as a cache of
+    /// its thread (`n2r_win32::evict::Evictable`) while other work makes
+    /// reservations it cannot do without: such a reservation that finds no
+    /// room gives the read and its memory up before it is refused, and the
+    /// caller then reads the fingerprint with `hash`.
+    pub fn lane_reread_as_cache(
+        &self,
+        source: &n2r_win32::GeneralFrozenPartition,
+    ) -> Result<
+        Option<(
+            LaneFingerprint,
+            crate::ntfs_inspect::paged_storage::SourceRamLease,
+        )>,
+    > {
+        self.lane_reread_leased(source, |bytes| self.scratch.lease_optional_ram(bytes))
+    }
+    fn lane_reread_leased(
+        &self,
+        source: &n2r_win32::GeneralFrozenPartition,
+        lease: impl FnOnce(u64) -> Result<crate::ntfs_inspect::paged_storage::SourceRamLease>,
+    ) -> Result<
+        Option<(
+            LaneFingerprint,
+            crate::ntfs_inspect::paged_storage::SourceRamLease,
+        )>,
+    > {
         use crate::parallel_digest::{Chunk, MAX_CHUNK_BYTES};
         ensure!(
             source.byte_len() == self.pins.partition_bytes,
@@ -1419,7 +1448,7 @@ impl PagedSourceFingerprint {
         else {
             return Ok(None);
         };
-        let Ok(ram) = self.scratch.lease_spare_ram(bytes) else {
+        let Ok(ram) = lease(bytes) else {
             return Ok(None);
         };
         let mut pieces = Vec::new();

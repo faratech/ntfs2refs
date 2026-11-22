@@ -281,6 +281,29 @@ fast` to the end-of-placement complete mapping check:
 | 1-in-10 Windows fixture (`perf-w30-33-1in10`, VM with 24 GB) | 118.3 s | 124.9 s | identical listing (ReFS metadata variance) |
 | Lived-in data volume, 23,137 objects (`perf-w30-33-lived-in`, `-Check -Acceptance`) | 47.0 s | 49.7 s | `check and run: agree`, all acceptance checks passed, identical listing |
 
+An eighth round (`perf/wave34-39`, Waves 34–38) added a direct reparse-point
+install and basic-info fast path for freshly created short-name links under
+`--verify fast`, skipped `FSCTL_SET_INTEGRITY_INFORMATION` on 0-byte alias
+files, cached parent `FileIdInfo` in alias creation, and widened `ALIAS_BATCH`
+to 1,024 (`create short-name links` 23.6 → 17.2 s, `check recovered alias
+links` 16.3 → 15.1 s); removed 64 KiB `storage.fill(0)` per object in
+`extended_attributes_native::capture` (saving 27.6 GB of zeroing across the
+three full walks), skipped `reparse_native::capture` when `FileAttributeTagInfo`
+reports `FILE_ATTRIBUTE_REPARSE_POINT == 0`, and combined inline residual tail
+reads with EOF probing into one `ReadFile` into a thread-local scratch buffer;
+eliminated ~2.86 million redundant `SourceDirectoryHeader` JSON decodes and
+`FileInventory` deep clones in namespace reconciliation and role classification
+(`source-preparation` 85.6 → 79.7 s); widened `TAIL_BATCH` from 1,024 to 8,192
+with overlapping span coalescing (`plan and supply payloads` 22.4 → 19.4 s);
+and raised the evictable `$MFT` page cache cap from 64 MiB to 128 MiB while
+enabling sparse-stream routed prefetch (`shadow-placement` 150.8 → 141.6 s):
+
+| Run | Previous (`perf-w30-33`) | After (`perf-w34-38`) | Change |
+|---|---|---|---|
+| The full Windows volume, converted and started from ReFS (`perf-w34-38-clean-full`, VM with 24 GB) | 541.5 s (9.02 min) | 525.4 s (8.76 min) | −60.7% (2.54×) vs `r10-base-full`; −16.1 s vs `perf-w30-33-full` (`source-preparation` 85.6 → 79.7 s, `shadow-placement` 150.8 → 141.6 s); `BOOTED-ON-REFS`, identical listing |
+| 1-in-10 Windows fixture (`perf-w34-38-1in10`, VM with 24 GB) | 124.9 s | 116.9 s | −49.2% vs `g3a-fixture10`, identical listing |
+| Lived-in data volume, 23,137 objects (`perf-w34-38-lived-in`, `-Check -Acceptance`) | 49.7 s | 46.7 s | `check and run: agree`, all acceptance checks passed, identical listing |
+
 ## A partition on the Windows disk, through a restart
 
 A 6 GiB partition of 505 objects beside C: on Windows Server 2025, working

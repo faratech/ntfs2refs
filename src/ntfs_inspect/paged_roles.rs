@@ -177,7 +177,7 @@ pub(super) fn classify(
         .as_ref()
         .is_some_and(|file| valid_role_anchor(file, &[u16::from(b'.')], file.sequence_number));
     for ordinal in 0..files.file_count() {
-        let file = files.file(ordinal)?;
+        let file = files.file_shared(ordinal)?;
         if file.record_number < 16 {
             states.set(
                 ordinal,
@@ -216,7 +216,7 @@ pub(super) fn classify(
         push(&mut stack, start, scratch)?;
         while !stack.is_empty() {
             let current = stack.last().context("ancestry frame absent")?.ordinal;
-            let file = files.file(current)?;
+            let file = files.file_shared(current)?;
             let at = stack.last().context("ancestry frame absent")?.next_name;
             if at == file.names.len() {
                 let mask = stack.last().context("ancestry frame absent")?.mask;
@@ -234,7 +234,9 @@ pub(super) fn classify(
             }
             let name = &file.names[at];
             let parent = files.ordinal(name.parent_record_number)?;
-            let parent_file = parent.map(|ordinal| files.file(ordinal)).transpose()?;
+            let parent_file = parent
+                .map(|ordinal| files.file_shared(ordinal))
+                .transpose()?;
             let problem = match &parent_file {
                 None => Some(Issue::MissingParent),
                 Some(p) if p.sequence_number != name.parent_sequence_number => {

@@ -235,7 +235,7 @@ struct RecoveredRow {
 /// some twenty queries, and a Windows volume has one link for most of its
 /// names: one at a time on one thread, the 112,609 links of the full volume
 /// took a minute and a half each time they were checked.
-const ALIAS_BATCH: usize = super::PARALLEL_BATCH;
+const ALIAS_BATCH: usize = 1024;
 /// [`probe_alias`] for every probe, in order. The probes run on the walk's
 /// threads when the batch's query workspace can be paid for, and one after
 /// another under the caller's own workspace when it cannot.
@@ -1197,7 +1197,7 @@ impl StagedWindowsAliases {
             // The link an interrupted run left, taken over.
             held: Option<File>,
         }
-        type Made = (Option<File>, [u8; 24], [u8; 24], [u8; 24]);
+        type Made = (Option<File>, [u8; 24], [u8; 24]);
         let make = |pending: &Pending| -> io::Result<Made> {
             let entry = &pending.entry;
             let created = if pending.held.is_some() {
@@ -1222,7 +1222,7 @@ impl StagedWindowsAliases {
                     named_streams: Vec::new(),
                     sparse: None,
                 };
-                match super::create_returning_file(&pending.path, &initial, 0, None)? {
+                match super::create_alias_returning_file(&pending.path, &initial)? {
                     Some(file) => Some(file),
                     None => Some(super::open(&pending.path, entry.directory, true)?),
                 }
@@ -1241,15 +1241,9 @@ impl StagedWindowsAliases {
             )?
             .try_into()
             .map_err(|_| invalid("canonical native ID width differs"))?;
-            let parent: [u8; 24] = super::info(
-                held(handles, entry.parent_object_index, "parent directory")?,
-                18,
-                24,
-            )?
-            .try_into()
-            .map_err(|_| invalid("parent native ID width differs"))?;
-            Ok((created, id, canonical, parent))
+            Ok((created, id, canonical))
         };
+        let mut parent_id_cache: BTreeMap<usize, [u8; 24]> = BTreeMap::new();
         let batch_rows = if recovering { 1 } else { super::PARALLEL_BATCH };
         let helper_payer = (!recovering).then_some(&**payer);
         let mut index = 0usize;
@@ -1339,18 +1333,43 @@ impl StagedWindowsAliases {
             index += batch.len();
             for (pending, made) in batch.into_iter().zip(made) {
                 let Pending {
-                    mut entry, held, ..
+                    mut entry,
+                    held: held_file,
+                    ..
                 } = pending;
-                let taken = made.and_then(|(created, id, canonical, parent)| {
+                let taken = made.and_then(|(created, id, canonical)| {
                     created
-                        .or(held)
-                        .map(|file| (file, id, canonical, parent))
+                        .or(held_file)
+                        .map(|file| (file, id, canonical))
                         .ok_or_else(|| invalid("derived alias was neither made nor held"))
                 });
-                let (file, id, canonical, parent) = match taken {
+                let (file, id, canonical) = match taken {
                     Ok(taken) => taken,
                     Err(error) => {
                         return Err(at_alias("alias creation", &entry.components, error));
+                    }
+                };
+                let parent = match parent_id_cache.get(&entry.parent_object_index) {
+                    Some(&cached) => cached,
+                    None => {
+                        let parent_id: [u8; 24] = super::info(
+                            held(handles, entry.parent_object_index, "parent directory").map_err(
+                                |error| at_alias("alias creation", &entry.components, error),
+                            )?,
+                            18,
+                            24,
+                        )
+                        .map_err(|error| at_alias("alias creation", &entry.components, error))?
+                        .try_into()
+                        .map_err(|_| {
+                            at_alias(
+                                "alias creation",
+                                &entry.components,
+                                invalid("parent native ID width differs"),
+                            )
+                        })?;
+                        parent_id_cache.insert(entry.parent_object_index, parent_id);
+                        parent_id
                     }
                 };
                 entry.file_id_info = id;
@@ -1637,59 +1656,66 @@ impl StagedWindowsAliases {
         let restore_one = |link: &Link<'_>| -> io::Result<Option<Snapshot>> {
             let entry = &link.staged.entry;
             let file = &link.staged.file;
-            let canonical_held = held(handles, entry.canonical_object_index, "canonical object")?;
-            let reopened_target = if crate::verify_policy::verifies_once()
-                && entry.canonical_components.as_slice() == link.canonical.components
-            {
-                super::validate_bound_type(canonical_held, &link.canonical)?;
-                None
-            } else {
-                let target = File::options()
-                    .access_mode(0x01020189)
-                    .share_mode(3)
-                    .custom_flags(0x02200000)
-                    .open(format!("{root}{}", entry.canonical_components.join("\\")))?;
-                super::suppress_access(&target)?;
-                super::validate_bound_type(&target, &link.canonical)?;
-                if super::info(&target, 18, 24)? != super::info(canonical_held, 18, 24)? {
-                    return Err(invalid("derived alias canonical link identity changed"));
-                }
-                Some(target)
-            };
-            let target = reopened_target.as_ref().unwrap_or(canonical_held);
             let relative: Vec<u16> = entry
                 .canonical_components
                 .last()
                 .ok_or_else(|| invalid("derived alias names no object"))?
                 .encode_utf16()
                 .collect();
-            let parent = held(handles, entry.parent_object_index, "parent directory")?;
-            match link.parent {
-                Some(once) => {
-                    let examined = once
-                        .get_or_init(|| {
-                            crate::windows_alias_native::examine_parent(parent)
-                                .map_err(|error| (error.kind(), error.to_string()))
-                        })
-                        .as_ref()
-                        .map_err(|(kind, reason)| io::Error::new(*kind, reason.clone()))?;
-                    crate::windows_alias_native::install_fresh_owned_in(
-                        parent,
-                        examined,
-                        target,
-                        file,
-                        entry.directory,
-                        &relative,
-                    )?;
-                }
-                None => {
-                    crate::windows_alias_native::install_fresh_owned(
-                        parent,
-                        target,
-                        file,
-                        entry.directory,
-                        &relative,
-                    )?;
+            let fast_alias_install =
+                parents_once && entry.canonical_components.as_slice() == link.canonical.components;
+            if fast_alias_install {
+                crate::windows_alias_native::install_fresh_owned_fast(file, &relative)?;
+            } else {
+                let canonical_held =
+                    held(handles, entry.canonical_object_index, "canonical object")?;
+                let reopened_target = if crate::verify_policy::verifies_once()
+                    && entry.canonical_components.as_slice() == link.canonical.components
+                {
+                    super::validate_bound_type(canonical_held, &link.canonical)?;
+                    None
+                } else {
+                    let target = File::options()
+                        .access_mode(0x01020189)
+                        .share_mode(3)
+                        .custom_flags(0x02200000)
+                        .open(format!("{root}{}", entry.canonical_components.join("\\")))?;
+                    super::suppress_access(&target)?;
+                    super::validate_bound_type(&target, &link.canonical)?;
+                    if super::info(&target, 18, 24)? != super::info(canonical_held, 18, 24)? {
+                        return Err(invalid("derived alias canonical link identity changed"));
+                    }
+                    Some(target)
+                };
+                let target = reopened_target.as_ref().unwrap_or(canonical_held);
+                let parent = held(handles, entry.parent_object_index, "parent directory")?;
+                match link.parent {
+                    Some(once) => {
+                        let examined = once
+                            .get_or_init(|| {
+                                crate::windows_alias_native::examine_parent(parent)
+                                    .map_err(|error| (error.kind(), error.to_string()))
+                            })
+                            .as_ref()
+                            .map_err(|(kind, reason)| io::Error::new(*kind, reason.clone()))?;
+                        crate::windows_alias_native::install_fresh_owned_in(
+                            parent,
+                            examined,
+                            target,
+                            file,
+                            entry.directory,
+                            &relative,
+                        )?;
+                    }
+                    None => {
+                        crate::windows_alias_native::install_fresh_owned(
+                            parent,
+                            target,
+                            file,
+                            entry.directory,
+                            &relative,
+                        )?;
+                    }
                 }
             }
             let expected = restored_link(entry, &link.canonical, link.temporary);
@@ -1707,7 +1733,11 @@ impl StagedWindowsAliases {
                 )?;
             }
             super::backup_security_with_limit(file, expected.security, Some(maximum_row_bytes))?;
-            super::basic(file, &expected)?;
+            if fast_alias_install {
+                super::basic_without_reparse_check(file, &expected)?;
+            } else {
+                super::basic(file, &expected)?;
+            }
             if !entry.directory {
                 crate::verify_policy::flush_working_file(file)?;
             }

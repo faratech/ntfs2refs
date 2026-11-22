@@ -934,12 +934,21 @@ impl<'source, 'observation, 'scope>
         if self.routed_ahead.is_none() || length == 0 {
             return Ok(());
         }
-        const ROUTED_COALESCE_GAP: u64 = 64 * 1024;
-        const ROUTED_COALESCE_MAX: u64 = 4 * 1024 * 1024;
-        let end = offset
-            .checked_add(length as u64)
-            .context("routed prefetch end overflow")?;
         let mut asks: Vec<(u64, usize)> = Vec::new();
+        self.collect_routed_asks(offset, length as u64, reusing_original, &mut asks)?;
+        self.submit_routed_asks(asks)
+    }
+
+    fn collect_routed_asks(
+        &mut self,
+        offset: u64,
+        length: u64,
+        reusing_original: bool,
+        asks: &mut Vec<(u64, usize)>,
+    ) -> Result<()> {
+        let end = offset
+            .checked_add(length)
+            .context("routed prefetch end overflow")?;
         let mut cursor = offset;
         while cursor < end {
             let (route, boundary) = self.routes.locate(cursor)?;
@@ -961,7 +970,6 @@ impl<'source, 'observation, 'scope>
                 }
                 if let Some((_, object)) = self.object.as_ref()
                     && let Some(stream) = object.stream(&route.stream_name_utf16)
-                    && stream.sparse.is_none()
                     && let Some(logical) = route
                         .logical_offset
                         .checked_add(cursor - route.target_physical_offset)
@@ -1003,6 +1011,12 @@ impl<'source, 'observation, 'scope>
             }
             cursor += count as u64;
         }
+        Ok(())
+    }
+
+    fn submit_routed_asks(&mut self, mut asks: Vec<(u64, usize)>) -> Result<()> {
+        const ROUTED_COALESCE_GAP: u64 = 64 * 1024;
+        const ROUTED_COALESCE_MAX: u64 = 4 * 1024 * 1024;
         if asks.len() < 2 {
             return Ok(());
         }

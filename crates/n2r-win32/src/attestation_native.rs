@@ -323,6 +323,21 @@ pub(crate) fn source_snapshot_paged(file: &File, require_case: bool, maximum: us
     source_snapshot_paged_scoped(file, require_case, maximum, true, true)
 }
 
+/// Returns whether `FileAttributeTagInfo` (class 9, `queries[3]`) succeeded
+/// and reported `FILE_ATTRIBUTE_REPARSE_POINT` (0x0400). When `Some(false)`,
+/// the object is guaranteed not to carry a reparse point, so calling
+/// `reparse_native::capture` (4 syscalls -> `ERROR_NOT_A_REPARSE_POINT`) is
+/// unnecessary.
+fn has_reparse_attribute(queries: &[Query]) -> Option<bool> {
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    let tag = queries.get(3)?;
+    if tag.class != 9 || tag.native_error.is_some() || tag.bytes.len() < 4 {
+        return None;
+    }
+    let attributes = u32::from_le_bytes(tag.bytes[..4].try_into().ok()?);
+    Some(attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+}
+
 /// [`source_snapshot_paged`] that asks Windows for the extended attributes
 /// and the reparse point only where the caller keeps them. A caller that set
 /// them aside after every snapshot (the security checks, a link's metadata)
@@ -359,12 +374,19 @@ pub(crate) fn source_snapshot_paged_scoped(
         }
     }
     if reparse {
-        snapshot.reparse = Some(match crate::reparse_native::capture(file) {
-            Ok(point) => ReparseObservation { point, error: None },
-            Err(error) => ReparseObservation {
+        snapshot.reparse = Some(if has_reparse_attribute(&snapshot.queries) == Some(false) {
+            ReparseObservation {
                 point: None,
-                error: Some(error.to_string()),
-            },
+                error: None,
+            }
+        } else {
+            match crate::reparse_native::capture(file) {
+                Ok(point) => ReparseObservation { point, error: None },
+                Err(error) => ReparseObservation {
+                    point: None,
+                    error: Some(error.to_string()),
+                },
+            }
         });
     }
     if require_case {
@@ -405,12 +427,19 @@ pub(crate) fn source_snapshot_paged_layout_only(
         }
     }
     if reparse {
-        snapshot.reparse = Some(match crate::reparse_native::capture(file) {
-            Ok(point) => ReparseObservation { point, error: None },
-            Err(error) => ReparseObservation {
+        snapshot.reparse = Some(if has_reparse_attribute(&snapshot.queries) == Some(false) {
+            ReparseObservation {
                 point: None,
-                error: Some(error.to_string()),
-            },
+                error: None,
+            }
+        } else {
+            match crate::reparse_native::capture(file) {
+                Ok(point) => ReparseObservation { point, error: None },
+                Err(error) => ReparseObservation {
+                    point: None,
+                    error: Some(error.to_string()),
+                },
+            }
         });
     }
     if require_case {

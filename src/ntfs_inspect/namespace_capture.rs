@@ -106,6 +106,19 @@ impl RootDirectoryDomain for PagedNamespaceDomain {
             .find(namespace_key(header.record_number, entry))?
             .context("complete namespace entry missing")
     }
+    fn entry_by_record(
+        &self,
+        _directory: u64,
+        record_number: u64,
+        entry: u64,
+    ) -> Result<crate::ntfs_namespace::Link> {
+        self.entries
+            .find(namespace_key(record_number, entry))?
+            .context("complete namespace entry missing")
+    }
+    fn entry_at(&self, global_ordinal: u64) -> Result<Option<crate::ntfs_namespace::Link>> {
+        Ok(Some(self.entries.get(global_ordinal)?))
+    }
     fn upcase(&self) -> &dyn SourceMetadataRange {
         &self.upcase
     }

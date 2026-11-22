@@ -72,14 +72,46 @@ pub(super) fn restore_acl_protection_with_limit(
     restore_acl_protection_observed(file, item, maximum, &actual)
 }
 /// [`restore_acl_protection_with_limit`] where the object's security views
-/// were just read through `file`, and nothing has changed the object since:
-/// the protection is set from the kernel descriptor of that observation
+/// Restore DACL/SACL protection flags on an object whose current security
+/// views were just read through `file`, and nothing has changed the object
+/// since: the protection is set from the kernel descriptor of that observation
 /// instead of one read again.
 pub(super) fn restore_acl_protection_observed(
     file: &File,
     item: &Input<'_>,
     maximum: Option<u64>,
     actual: &Snapshot,
+) -> io::Result<ProtectionRestore> {
+    let kernel = actual
+        .kernel_security
+        .as_ref()
+        .ok_or_else(|| invalid("kernel descriptor absent during protection restore"))?;
+    if kernel.native_error.is_some() || kernel.bytes.len() < 20 {
+        return Err(invalid("kernel protection query failed"));
+    }
+    apply_acl_protection(file, item, maximum, Some(&kernel.bytes))
+}
+
+/// Restore DACL/SACL protection flags on a freshly created shadow object
+/// without an extra `GetKernelObjectSecurity` pre-read.
+///
+/// Objects created inside our private shadow tree inherit the constructor's
+/// unprotected SYSTEM-only DACL and no SACL, so neither `SE_DACL_PROTECTED`
+/// nor `SE_SACL_PROTECTED` is set on creation. Only objects whose source
+/// descriptor carries a protection flag need an update.
+pub(super) fn restore_acl_protection_fresh(
+    file: &File,
+    item: &Input<'_>,
+    maximum: Option<u64>,
+) -> io::Result<ProtectionRestore> {
+    apply_acl_protection(file, item, maximum, None)
+}
+
+fn apply_acl_protection(
+    file: &File,
+    item: &Input<'_>,
+    maximum: Option<u64>,
+    observed_kernel: Option<&[u8]>,
 ) -> io::Result<ProtectionRestore> {
     use crate::security_descriptor::{self, Presence};
     use windows_sys::Win32::Security::{
@@ -88,26 +120,26 @@ pub(super) fn restore_acl_protection_observed(
         PROTECTED_SACL_SECURITY_INFORMATION, SACL_SECURITY_INFORMATION,
         UNPROTECTED_DACL_SECURITY_INFORMATION, UNPROTECTED_SACL_SECURITY_INFORMATION,
     };
-    let kernel = actual
-        .kernel_security
-        .as_ref()
-        .ok_or_else(|| invalid("kernel descriptor absent during protection restore"))?;
-    if kernel.native_error.is_some() || kernel.bytes.len() < 20 {
-        return Err(invalid("kernel protection query failed"));
-    }
     let source = if let Some(maximum) = maximum {
         security_descriptor::validate_with_limit(item.security, maximum)?
     } else {
         security_descriptor::validate(item.security)?
     };
-    let observed = if let Some(maximum) = maximum {
-        security_descriptor::validate_with_limit(&kernel.bytes, maximum)?
+    let changed = if let Some(kernel_bytes) = observed_kernel {
+        let observed = if let Some(maximum) = maximum {
+            security_descriptor::validate_with_limit(kernel_bytes, maximum)?
+        } else {
+            security_descriptor::validate(kernel_bytes)?
+        };
+        ProtectionRestore {
+            dacl: source.dacl_protected() != observed.dacl_protected(),
+            sacl: source.sacl_protected() != observed.sacl_protected(),
+        }
     } else {
-        security_descriptor::validate(&kernel.bytes)?
-    };
-    let changed = ProtectionRestore {
-        dacl: source.dacl_protected() != observed.dacl_protected(),
-        sacl: source.sacl_protected() != observed.sacl_protected(),
+        ProtectionRestore {
+            dacl: source.dacl_protected(),
+            sacl: source.sacl_protected(),
+        }
     };
     if !changed.dacl && !changed.sacl {
         return Ok(changed);
@@ -1108,34 +1140,51 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             })
             .collect();
         // On a freshly created private shadow tree under `verifies_once()`,
-        // every object still holds the constructor's SYSTEM-only DACL, so skip
-        // the redundant `BackupRead` + `security_matches` pre-check and fetch
-        // only the kernel security descriptor needed for protection flags.
+        // every object created beneath the root/top-level formatter directories
+        // still holds the constructor's unprotected SYSTEM-only DACL, so skip
+        // both the redundant `BackupRead` + `security_matches` pre-check and
+        // the `GetKernelObjectSecurity` pre-read on depth >= 2 objects.
+        // Depth 0/1 (root and `System Volume Information`) were created by the
+        // ReFS formatter and still use the observed kernel descriptor check.
         let fresh_fast_security =
             !recovering && crate::verify_policy::verifies_once() && row_limit.is_some();
-        let found = super::each_at_once(
-            change_payer,
-            &items,
-            |(_, _, item)| Some(report_memory::security_query_peak(item.security.len())),
-            |(_, index, _)| -> io::Result<Snapshot> {
-                let handle = held(handles, *index)?;
-                if (!fresh_fast_security || !crate::verify_policy::checks_once())
-                    && info(handle, 18, 24)? != *identity_of(&identities, *index)?
-                {
-                    return Err(invalid(
-                        "owned identity changed before security restoration",
-                    ));
-                }
-                if fresh_fast_security {
-                    let max_bytes = usize::try_from(row_limit.unwrap()).unwrap_or(usize::MAX);
-                    Ok(crate::attestation_native::kernel_security_snapshot_paged(
-                        handle, max_bytes,
-                    ))
-                } else {
-                    Ok(security_snapshot_with_limit(handle, row_limit))
-                }
-            },
-        );
+        let all_fresh_children = fresh_fast_security
+            && crate::verify_policy::checks_once()
+            && items.iter().all(|(_, _, item)| item.components.len() >= 2);
+        let found: Vec<io::Result<Option<Snapshot>>> = if all_fresh_children {
+            (0..items.len()).map(|_| Ok(None)).collect()
+        } else {
+            super::each_at_once(
+                change_payer,
+                &items,
+                |(_, _, item)| Some(report_memory::security_query_peak(item.security.len())),
+                |(_, index, item)| -> io::Result<Option<Snapshot>> {
+                    let handle = held(handles, *index)?;
+                    if (!fresh_fast_security || !crate::verify_policy::checks_once())
+                        && info(handle, 18, 24)? != *identity_of(&identities, *index)?
+                    {
+                        return Err(invalid(
+                            "owned identity changed before security restoration",
+                        ));
+                    }
+                    if fresh_fast_security {
+                        if item.components.len() >= 2 {
+                            Ok(None)
+                        } else {
+                            let max_bytes =
+                                usize::try_from(row_limit.unwrap()).unwrap_or(usize::MAX);
+                            Ok(Some(
+                                crate::attestation_native::kernel_security_snapshot_paged(
+                                    handle, max_bytes,
+                                ),
+                            ))
+                        }
+                    } else {
+                        Ok(Some(security_snapshot_with_limit(handle, row_limit)))
+                    }
+                },
+            )
+        };
         // An object whose descriptor differs keeps the views just read: its
         // protection is restored from that kernel descriptor, which the
         // protection restore read again through the same handle. Nothing
@@ -1147,7 +1196,10 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         for (object, found) in items.iter().zip(found) {
             let (slot, _, item) = object;
             let differs = found.and_then(|found| {
-                if !fresh_fast_security && security_matches(item, &found, &same_security)? {
+                if !fresh_fast_security
+                    && let Some(observed) = found.as_ref()
+                    && security_matches(item, observed, &same_security)?
+                {
                     return Ok(None);
                 }
                 // One before the protection change, one before the
@@ -1169,7 +1221,12 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             |((_, _, item), _)| Some(report_memory::security_query_peak(item.security.len())),
             |((_, index, item), found)| -> io::Result<(ProtectionRestore, io::Result<Option<Snapshot>>)> {
                 let handle = held(handles, *index)?;
-                let protection = restore_acl_protection_observed(handle, item, row_limit, found)?;
+                let protection = match found {
+                    Some(observed) => {
+                        restore_acl_protection_observed(handle, item, row_limit, observed)?
+                    }
+                    None => restore_acl_protection_fresh(handle, item, row_limit)?,
+                };
                 Ok((
                     protection,
                     super::backup_security_write_with_limit(handle, item.security, row_limit)

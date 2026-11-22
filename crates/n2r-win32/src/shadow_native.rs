@@ -252,6 +252,32 @@ fn gather_batch<O, L>(
     Ok((objects, leases))
 }
 
+/// [`gather_batch`] for the batch after one that is still held, gathered
+/// while helpers observe that one: every object is paid for as one beside
+/// others (`pay` is told it is not the first), and whatever fails or is
+/// refused ends the batch, which may then be empty. The objects it did not
+/// take are gathered again after the batches before them are taken, and the
+/// first of them as the first of a batch, with every rule of
+/// [`gather_batch`].
+fn gather_ahead<O, L>(
+    indexes: std::ops::Range<usize>,
+    mut decode: impl FnMut(usize) -> io::Result<O>,
+    mut pay: impl FnMut(&O, bool) -> io::Result<L>,
+) -> (Vec<O>, Vec<L>) {
+    let mut objects = Vec::with_capacity(indexes.len());
+    let mut leases = Vec::with_capacity(indexes.len());
+    for index in indexes {
+        match decode(index).and_then(|object| pay(&object, false).map(|lease| (object, lease))) {
+            Ok((object, lease)) => {
+                objects.push(object);
+                leases.push(lease);
+            }
+            Err(_) => break,
+        }
+    }
+    (objects, leases)
+}
+
 /// One object after another, on the calling thread: the part of a batch
 /// whose workspace could not be paid for. Counted apart in the run's timing,
 /// so that a pass which ran in turn where it could have run at once shows.
@@ -641,6 +667,184 @@ fn observe_read_back<T: Sync, U: Send>(
         }
     }
     Ok(reports)
+}
+
+/// [`observe_read_back`] while the calling thread does `meanwhile`: the
+/// helpers are started, `meanwhile` runs on this thread, and then the
+/// helpers are waited for. A walk takes the batch before this one and
+/// gathers the batch after it meanwhile, where it used to leave the helpers
+/// idle while it did (as `ordered_observation::in_order` does for its
+/// passes). The helpers are the ones [`observe_read_back`] starts, each
+/// taking runs of neighbouring items, and the results and the failure
+/// returned are the same: every item is observed, and the first failure in
+/// item order is returned. A batch too small for two runs, or a machine
+/// with one processor, is observed as [`observe_read_back`] observes it,
+/// after `meanwhile`.
+fn observe_read_back_while<T: Sync, U: Send, M>(
+    items: &[T],
+    observe: &(impl Fn(&T) -> io::Result<U> + Sync),
+    meanwhile: impl FnOnce() -> M,
+) -> (io::Result<Vec<U>>, M) {
+    use crate::ordered_observation::RUN;
+    let helpers = std::thread::available_parallelism().map_or(1, |cores| cores.get());
+    if items.len() < 2 * RUN || helpers < 2 {
+        let done = meanwhile();
+        return (observe_read_back(items, observe), done);
+    }
+    let threads = helpers.min(items.len().div_ceil(RUN));
+    let claimed = std::sync::atomic::AtomicUsize::new(0);
+    let mut results: Vec<Option<io::Result<U>>> = items.iter().map(|_| None).collect();
+    let done = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let _sampled = crate::stack_sampler::helper();
+                    let mut seen = Vec::new();
+                    loop {
+                        let start = claimed.fetch_add(RUN, std::sync::atomic::Ordering::Relaxed);
+                        if start >= items.len() {
+                            break;
+                        }
+                        for (index, item) in items.iter().enumerate().skip(start).take(RUN) {
+                            let _timed = crate::perf::scope(crate::perf::Point::AtOnce);
+                            seen.push((index, observe(item)));
+                        }
+                    }
+                    seen
+                })
+            })
+            .collect();
+        let done = meanwhile();
+        for handle in handles {
+            match handle.join() {
+                Ok(seen) => {
+                    for (index, result) in seen {
+                        results[index] = Some(result);
+                    }
+                }
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+        done
+    });
+    let observed = results
+        .into_iter()
+        .map(|result| {
+            result.unwrap_or_else(|| Err(io::Error::other("read-back observation stopped early")))
+        })
+        .collect();
+    (observed, done)
+}
+
+/// A batch of a walk, observed and waiting to be taken: each object's row
+/// and inline residual results, the residual expectations it was observed
+/// with, and the query reservation of its row with the peak it was paid for.
+struct ObservedBatch {
+    rows: Vec<(ObjectReport, Vec<([u8; 16], String)>)>,
+    residuals: Vec<Vec<LayoutResidualExpectation>>,
+    leases: Vec<(Option<Box<dyn report_memory::ReportMemoryLease>>, u64)>,
+}
+
+/// The residual tails of objects `start..start + len` that a closing walk
+/// reads inline, while the walk's residual list is held: each object's run
+/// of the list, from where the batches gathered before it end (`pending`
+/// counts those of them not yet taken). Where the list is no longer held,
+/// the walk gives up reading inline, and the residual pass that follows it
+/// goes on from what was taken.
+fn assign_residuals(
+    inline_residuals: Option<&mut InlineResiduals<'_>>,
+    pending: &mut u64,
+    start: usize,
+    len: usize,
+) -> Vec<Vec<LayoutResidualExpectation>> {
+    let mut batch_residuals: Vec<Vec<LayoutResidualExpectation>> = vec![Vec::new(); len];
+    if let Some(inline) = inline_residuals
+        .filter(|state| !state.abandoned && !crate::verify_policy::full_unremembered())
+    {
+        if let Some(list) = inline.kept.get() {
+            let first = inline.taken.saturating_add(*pending);
+            let mut cursor = usize::try_from(first).unwrap_or(usize::MAX);
+            for (slot, bucket) in batch_residuals.iter_mut().enumerate() {
+                let object_index = start + slot;
+                while let Some(expected) = list.list.get(cursor) {
+                    if expected.object_index != object_index {
+                        break;
+                    }
+                    bucket.push(expected.clone());
+                    cursor += 1;
+                }
+            }
+            *pending = pending.saturating_add(
+                batch_residuals
+                    .iter()
+                    .map(|bucket| bucket.len() as u64)
+                    .sum::<u64>(),
+            );
+        } else {
+            inline.abandoned = true;
+        }
+    }
+    batch_residuals
+}
+
+/// Takes an observed batch into a walk's rows, in order: each object's
+/// inline residual results are written, and its row is kept with its
+/// reservation shrunk to it.
+fn take_walked_batch(
+    batch: ObservedBatch,
+    result: &mut Rows,
+    retained_memory: &mut Option<report_memory::Retained>,
+    mut inline_residuals: Option<&mut InlineResiduals<'_>>,
+    pending: &mut u64,
+    memory_accountant: Option<&dyn report_memory::ReportMemoryAccountant>,
+    in_blocks: bool,
+) -> io::Result<()> {
+    for (((mut row, residual_results), res_expected), (lease, peak)) in batch
+        .rows
+        .into_iter()
+        .zip(batch.residuals)
+        .zip(batch.leases)
+    {
+        *pending = pending.saturating_sub(res_expected.len() as u64);
+        if let Some(inline) = inline_residuals.as_deref_mut()
+            && !res_expected.is_empty()
+        {
+            for (expected, (id, sha)) in res_expected.into_iter().zip(residual_results) {
+                let length = expected.length;
+                inline
+                    .writer
+                    .push(&crate::layout_residual_pages::LayoutResidualResult {
+                        expectation: expected,
+                        native_file_id: id,
+                        actual_sha256: sha,
+                        bytes_read: length,
+                        eof_observed: true,
+                    })?;
+                inline.bytes_read = inline
+                    .bytes_read
+                    .checked_add(length)
+                    .ok_or_else(|| invalid("paged residual byte count overflow"))?;
+                inline.taken += 1;
+            }
+        }
+        match (memory_accountant, lease) {
+            (Some(payer), Some(lease)) if in_blocks => {
+                report_memory::compact_row(&mut row);
+                let lease = report_memory::Retained::shrink_to_row(lease, &row, peak)?;
+                result.push_paid(payer, row, lease)?;
+                continue;
+            }
+            (_, Some(lease)) => {
+                if let Some(memory) = retained_memory {
+                    report_memory::compact_row(&mut row);
+                    memory.retain(lease, &row, peak)?;
+                }
+            }
+            _ => {}
+        }
+        result.push(row)?;
+    }
+    Ok(())
 }
 
 /// The [`crate::content_digest`] of exactly `length` bytes, then confirmed EOF.
@@ -6704,113 +6908,142 @@ fn run_role_content_domain_accounted(
         // each row's query workspace paid for before its batch starts. If the
         // ledger cannot pay for a whole batch, the batch is cut short; only a
         // refusal for the first object of a batch is a failure, as before.
+        //
+        // While the helpers observe one batch, this thread takes the batch
+        // before it (writes its residual results and keeps its rows, in
+        // order) and gathers the batch after it, which it did in between
+        // batches with the helpers idle. A batch gathered ahead is paid for
+        // from spare memory alone, and what is refused or fails there only
+        // ends it: those objects are gathered again once the batches before
+        // them are taken, the first as the first of its batch. The rows, their
+        // order and the failure reported (a batch's own, after the batches
+        // before it are taken) are as before.
         const BATCH: usize = PARALLEL_BATCH;
+        let pay = |start: usize, item: &Input<'_>, first: bool| {
+            let peak = if memory_accountant.is_some() {
+                report_memory::row_peak(item, sd_limit.unwrap_or(0))?
+            } else {
+                0
+            };
+            memory_accountant
+                .map(|payer| {
+                    if first {
+                        payer.reserve(peak)
+                    } else {
+                        payer.reserve_spare(peak)
+                    }
+                })
+                .transpose()
+                .map(|lease| (lease, peak))
+                .map_err(|error| {
+                    io::Error::other(format!(
+                        "native object row {}/{} query workspace {peak} bytes refused: {error}",
+                        start,
+                        input.len()
+                    ))
+                })
+        };
+        // Residual expectations given to batches gathered but not yet taken.
+        let mut pending_residuals = 0u64;
+        let several_cores =
+            std::thread::available_parallelism().map_or(1, |cores| cores.get()) >= 2;
         let mut next = 0;
         while next < input.len() {
             let (owners, leases) = gather_batch(
                 next..(next + BATCH).min(input.len()),
                 |index| input.object(index),
-                |owner, first| {
-                    let peak = if memory_accountant.is_some() {
-                        report_memory::row_peak(&owner.input(), sd_limit.unwrap_or(0))?
-                    } else {
-                        0
-                    };
-                    memory_accountant
-                        .map(|payer| {
-                            if first {
-                                payer.reserve(peak)
-                            } else {
-                                payer.reserve_spare(peak)
-                            }
-                        })
-                        .transpose()
-                        .map(|lease| (lease, peak))
-                        .map_err(|error| {
-                            io::Error::other(format!(
-                                "native object row {}/{} query workspace {peak} bytes refused: {error}",
-                                next,
-                                input.len()
-                            ))
-                        })
-                },
+                |owner, first| pay(next, &owner.input(), first),
             )?;
-            let items: Vec<Input<'_>> = owners.iter().map(|owner| owner.input()).collect();
-            let mut batch_residuals: Vec<Vec<LayoutResidualExpectation>> =
-                vec![Vec::new(); items.len()];
-            if let Some(inline) = inline_residuals
-                .as_deref_mut()
-                .filter(|state| !state.abandoned && !crate::verify_policy::full_unremembered())
-            {
-                if let Some(list) = inline.kept.get() {
-                    let mut cursor = inline.taken as usize;
-                    for (slot, bucket) in batch_residuals.iter_mut().enumerate() {
-                        let object_index = next + slot;
-                        while let Some(expected) = list.list.get(cursor) {
-                            if expected.object_index != object_index {
-                                break;
-                            }
-                            bucket.push(expected.clone());
-                            cursor += 1;
-                        }
+            let residuals = assign_residuals(
+                inline_residuals.as_deref_mut(),
+                &mut pending_residuals,
+                next,
+                owners.len(),
+            );
+            let mut current = (next, owners, leases, residuals);
+            let mut waiting: Option<ObservedBatch> = None;
+            loop {
+                let (start, owners, leases, residuals) = current;
+                let after = start + owners.len();
+                let items: Vec<(Input<'_>, &[LayoutResidualExpectation])> = owners
+                    .iter()
+                    .zip(&residuals)
+                    .map(|(owner, residuals)| (owner.input(), residuals.as_slice()))
+                    .collect();
+                // Only a batch observed on helpers overlaps the next, and only
+                // while the run has memory to spare: decoding objects ahead
+                // holds their decoding leases a batch longer.
+                let ahead_wanted = several_cores
+                    && items.len() >= 2 * crate::ordered_observation::RUN
+                    && memory_accountant.is_none_or(|payer| payer.has_memory_to_spare());
+                let started = std::time::Instant::now();
+                let (rows, (taken, ahead, meanwhile)) =
+                    observe_read_back_while(&items, &observe_with_residuals, || {
+                        let at = std::time::Instant::now();
+                        let taken = waiting.take().map_or(Ok(()), |batch| {
+                            take_walked_batch(
+                                batch,
+                                &mut result,
+                                &mut retained_memory,
+                                inline_residuals.as_deref_mut(),
+                                &mut pending_residuals,
+                                memory_accountant,
+                                in_blocks,
+                            )
+                        });
+                        let ahead = (taken.is_ok() && ahead_wanted && after < input.len())
+                            .then(|| {
+                                let (owners, leases) = gather_ahead(
+                                    after..(after + BATCH).min(input.len()),
+                                    |index| input.object(index),
+                                    |owner, first| pay(after, &owner.input(), first),
+                                );
+                                let residuals = assign_residuals(
+                                    inline_residuals.as_deref_mut(),
+                                    &mut pending_residuals,
+                                    after,
+                                    owners.len(),
+                                );
+                                (after, owners, leases, residuals)
+                            })
+                            .filter(|(_, owners, _, _)| !owners.is_empty());
+                        (taken, ahead, at.elapsed())
+                    });
+                // The calling thread's time in the observation, beside what
+                // it did meanwhile, as one call a batch.
+                crate::perf::add_call(crate::perf::Point::ShadowObject);
+                crate::perf::add_time(
+                    crate::perf::Point::ShadowObject,
+                    started.elapsed().saturating_sub(meanwhile),
+                );
+                drop(items);
+                drop(owners);
+                taken?;
+                let observed = ObservedBatch {
+                    rows: rows?,
+                    residuals,
+                    leases,
+                };
+                match ahead {
+                    Some(ahead) => {
+                        waiting = Some(observed);
+                        current = ahead;
                     }
-                } else {
-                    inline.abandoned = true;
-                }
-            }
-            let batch_items: Vec<(Input<'_>, &[LayoutResidualExpectation])> = items
-                .into_iter()
-                .zip(batch_residuals.iter())
-                .map(|(item, residuals)| (item, residuals.as_slice()))
-                .collect();
-            let rows = {
-                let _timed = crate::perf::scope(crate::perf::Point::ShadowObject);
-                observe_read_back(&batch_items, &observe_with_residuals)?
-            };
-            let batch_len = batch_items.len();
-            drop(batch_items);
-            for (((mut row, residual_results), res_expected), (lease, peak)) in
-                rows.into_iter().zip(batch_residuals).zip(leases)
-            {
-                if let Some(inline) = inline_residuals.as_deref_mut()
-                    && !res_expected.is_empty()
-                {
-                    for (expected, (id, sha)) in res_expected.into_iter().zip(residual_results) {
-                        let length = expected.length;
-                        inline.writer.push(
-                            &crate::layout_residual_pages::LayoutResidualResult {
-                                expectation: expected,
-                                native_file_id: id,
-                                actual_sha256: sha,
-                                bytes_read: length,
-                                eof_observed: true,
-                            },
+                    None => {
+                        take_walked_batch(
+                            observed,
+                            &mut result,
+                            &mut retained_memory,
+                            inline_residuals.as_deref_mut(),
+                            &mut pending_residuals,
+                            memory_accountant,
+                            in_blocks,
                         )?;
-                        inline.bytes_read = inline
-                            .bytes_read
-                            .checked_add(length)
-                            .ok_or_else(|| invalid("paged residual byte count overflow"))?;
-                        inline.taken += 1;
+                        next = after;
+                        break;
                     }
                 }
-                match (memory_accountant, lease) {
-                    (Some(payer), Some(lease)) if in_blocks => {
-                        report_memory::compact_row(&mut row);
-                        let lease = report_memory::Retained::shrink_to_row(lease, &row, peak)?;
-                        result.push_paid(payer, row, lease)?;
-                        continue;
-                    }
-                    (_, Some(lease)) => {
-                        if let Some(memory) = &mut retained_memory {
-                            report_memory::compact_row(&mut row);
-                            memory.retain(lease, &row, peak)?;
-                        }
-                    }
-                    _ => {}
-                }
-                result.push(row)?;
             }
-            next += batch_len;
         }
         result.finish(memory_accountant)?;
         result
@@ -7022,6 +7255,69 @@ mod tests {
         let (_, firsts) =
             gather_batch(0..3, |index| Ok(index), |_: &usize, first| Ok(first)).unwrap();
         assert_eq!(firsts, [true, false, false]);
+    }
+
+    #[test]
+    fn a_batch_gathered_ahead_is_paid_from_spare_memory_and_ends_where_it_fails() {
+        // No object is told it is the first of its batch.
+        let (objects, firsts) = gather_ahead(4..8, |index| Ok(index), |_: &usize, first| Ok(first));
+        assert_eq!(objects, [4, 5, 6, 7]);
+        assert_eq!(firsts, [false; 4]);
+        // A refusal or a failure ends the batch, the first object's too,
+        // and is not an error.
+        let (objects, _) = gather_ahead(
+            0..8,
+            |index| Ok(index),
+            |object: &usize, _| {
+                if *object == 3 {
+                    Err(invalid("no spare memory"))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert_eq!(objects, [0, 1, 2]);
+        let (objects, _) = gather_ahead(
+            0..8,
+            |index| {
+                if index == 0 {
+                    Err(invalid("cannot decode"))
+                } else {
+                    Ok(index)
+                }
+            },
+            |_: &usize, _| Ok(()),
+        );
+        assert!(objects.is_empty());
+    }
+
+    #[test]
+    fn a_batch_observed_while_this_thread_works_gives_what_it_gave_alone() {
+        let observe = |item: &usize| -> io::Result<usize> {
+            if *item % 37 == 36 {
+                Err(invalid(if *item == 36 { "first" } else { "later" }))
+            } else {
+                Ok(item * 3)
+            }
+        };
+        for count in [0usize, 5, 31, 32, 33, 100, 256] {
+            let items: Vec<usize> = (0..count).collect();
+            let caller = std::thread::current().id();
+            let (observed, meanwhile) = observe_read_back_while(&items, &observe, || {
+                assert_eq!(std::thread::current().id(), caller);
+                count + 1
+            });
+            assert_eq!(meanwhile, count + 1);
+            let alone = observe_read_back(&items, observe);
+            match (observed, alone) {
+                (Ok(observed), Ok(alone)) => assert_eq!(observed, alone),
+                (Err(observed), Err(alone)) => {
+                    assert_eq!(observed.to_string(), alone.to_string());
+                    assert_eq!(observed.to_string(), "first");
+                }
+                (observed, alone) => panic!("{count}: {observed:?} against {alone:?}"),
+            }
+        }
     }
 
     /// The root of a volume on which Windows made "System Volume Information"

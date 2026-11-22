@@ -919,6 +919,24 @@ impl SourceExpectedDomain {
         expected.revalidate()?;
         Ok(())
     }
+    /// What a projection of `file_count` source rows under `admission`
+    /// reserves in `scratch`, at the most, of memory it cannot do without:
+    /// its row working allowance, the batches of its three sorts as they
+    /// grow and what writing their runs out takes, and the page windows of
+    /// its other writers. A bound for deciding whether caches may stay
+    /// beside it; nothing depends on it being exact.
+    pub(crate) fn working_ram_bound(
+        file_count: u64,
+        admission: SourceResourceAdmission,
+        scratch: &SourceScratch,
+    ) -> u64 {
+        let rows = admission.budget.max_row_bytes.saturating_mul(8);
+        let sort = ExternalSort::shared_projection_batch_bytes(scratch, file_count)
+            .saturating_add(ExternalSort::shared_projection_spill_bytes(scratch));
+        let windows = u64::from(scratch.budget().page_bytes).saturating_mul(16);
+        rows.saturating_add(sort.saturating_mul(3))
+            .saturating_add(windows)
+    }
     pub fn derive(
         source: &PagedInspection,
         native: &impl NativeObservationDomain,

@@ -554,6 +554,15 @@ impl PagedRawFiles {
         self.scratch.budget()
     }
     pub(super) fn release_inventory_resident_cache(&mut self) {
+        self.release_inventory_resident_cache_keeping(|| false);
+    }
+    /// As [`Self::release_inventory_resident_cache`]; where `keep_decoded`,
+    /// asked once the rest is released, says so, the decoded rows stay: the
+    /// caller has found room for what it is about to reserve beside them.
+    pub(super) fn release_inventory_resident_cache_keeping(
+        &mut self,
+        keep_decoded: impl FnOnce() -> bool,
+    ) {
         // Projection consumes file records sequentially, but it also walks
         // parents and security rows, and later stages look files up in every
         // order. Release the full file-data copy and its RAM credit only when
@@ -564,8 +573,13 @@ impl PagedRawFiles {
         self.last_row.get_mut().take();
         // The decoded rows are memory of the same kind: returned before the
         // projection pays for its rows and sorters, and kept again as its
-        // passes decode them.
-        self.decoded.clear();
+        // passes decode them. Where the ledger has room for those beside
+        // the rows, they stay, and the projection does not decode every row
+        // of the store again to keep them once more. They are still a cache
+        // of the run, given up when memory is short.
+        if !keep_decoded() {
+            self.decoded.clear();
+        }
     }
     pub(super) fn set_header(&mut self, header: SourceHeader) -> Result<()> {
         ensure!(

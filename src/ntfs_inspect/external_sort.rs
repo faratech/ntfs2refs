@@ -130,15 +130,26 @@ impl ExternalSort {
     ) -> Result<Self> {
         let budget = scratch.budget();
         budget.validate()?;
-        let target = record_hint
-            .saturating_mul(4096)
-            .max(u64::from(budget.page_bytes))
-            .min(budget.ram_bytes / 32)
-            .max(size_of::<Row>() as u64 + 129);
+        let target = Self::shared_projection_batch_bytes(scratch, record_hint);
         let mut sort = Self::with_batch_target(base, purpose, scratch, target, Some(record_hint))?;
         // Each sorter computed its fan-in as if it owned the whole budget.
         sort.fan_in = sort.fan_in.clamp(2, 8);
         Ok(sort)
+    }
+    /// What the batch of a sort made by [`Self::with_shared_projection_hint`]
+    /// may take in all.
+    pub(crate) fn shared_projection_batch_bytes(scratch: &SourceScratch, record_hint: u64) -> u64 {
+        let budget = scratch.budget();
+        record_hint
+            .saturating_mul(4096)
+            .max(u64::from(budget.page_bytes))
+            .min(budget.ram_bytes / 32)
+            .max(size_of::<Row>() as u64 + 129)
+    }
+    /// What writing one run of such a sort out takes beside its batch (the
+    /// `spill_room` its batch leaves).
+    pub(crate) fn shared_projection_spill_bytes(scratch: &SourceScratch) -> u64 {
+        u64::from(scratch.budget().page_bytes).saturating_mul(12)
     }
 
     fn with_batch_target(

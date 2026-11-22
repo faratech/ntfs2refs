@@ -721,7 +721,17 @@ impl VerifiedWindowsAliases {
             && self
                 .probed_converted
                 .swap(false, std::sync::atomic::Ordering::SeqCst);
-        let to_probe: &[VerifiedAlias] = if already_probed { &[] } else { &self.entries };
+        // Under `verifies_once()` (where handoff follows full verification of
+        // the converted volume in `resource-protected-verification`), skip
+        // re-probing all 112k freshly created aliases on the frozen shadow;
+        // every alias will still be independently verified on the converted
+        // volume before handoff.
+        let skip_shadow_reprobe = !converted && crate::verify_policy::verifies_once();
+        let to_probe: &[VerifiedAlias] = if already_probed || skip_shadow_reprobe {
+            &[]
+        } else {
+            &self.entries
+        };
         for entries in to_probe.chunks(ALIAS_BATCH) {
             let owners = entries
                 .iter()
@@ -1325,7 +1335,7 @@ impl StagedWindowsAliases {
             }
             // The path, the descriptor the link is created with and the
             // identities read.
-            let made = super::each_at_once(helper_payer, &batch, |_| Some(65536), make);
+            let made = super::each_at_once_bounded(helper_payer, &batch, 4, |_| Some(65536), make);
             index += batch.len();
             for (pending, made) in batch.into_iter().zip(made) {
                 let Pending {
@@ -1683,11 +1693,23 @@ impl StagedWindowsAliases {
                 }
             }
             let expected = restored_link(entry, &link.canonical, link.temporary);
-            super::cache_refresh::restore_acl_protection_with_limit(
-                file,
-                &expected,
-                Some(maximum_row_bytes),
-            )?;
+            if crate::verify_policy::verifies_once() {
+                let max_bytes = usize::try_from(maximum_row_bytes).unwrap_or(usize::MAX);
+                let kernel =
+                    crate::attestation_native::kernel_security_snapshot_paged(file, max_bytes);
+                super::cache_refresh::restore_acl_protection_observed(
+                    file,
+                    &expected,
+                    Some(maximum_row_bytes),
+                    &kernel,
+                )?;
+            } else {
+                super::cache_refresh::restore_acl_protection_with_limit(
+                    file,
+                    &expected,
+                    Some(maximum_row_bytes),
+                )?;
+            }
             super::backup_security_with_limit(file, expected.security, Some(maximum_row_bytes))?;
             super::basic(file, &expected)?;
             if !entry.directory {
@@ -1789,9 +1811,10 @@ impl StagedWindowsAliases {
             // are installed through the one handle held on it. The rest are
             // restored one after another, under this owner's own workspace.
             // The workspaces are spare memory, which leaves the ledger room.
-            let restored: Vec<io::Result<Option<Snapshot>>> = super::each_at_once(
+            let restored: Vec<io::Result<Option<Snapshot>>> = super::each_at_once_bounded(
                 Some(&*payer),
                 &links,
+                4,
                 |link| {
                     Some(
                         report_memory::security_query_peak(link.canonical.security.len())

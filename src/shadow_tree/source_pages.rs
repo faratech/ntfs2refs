@@ -934,6 +934,97 @@ impl SourceExpectedDomain {
             mut physical_ordinal,
             mut pushed_roots,
         ) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+        // Parallelize JSON serialization and case-folded NameRow generation in
+        // spare-RAM batches of up to 256 objects, falling back to single-object
+        // inline encoding if spare RAM is unavailable.
+        const SERIALIZE_BATCH: usize = 256;
+        const SERIALIZE_BATCH_SPARE_BYTES: u64 = 16 * 1024 * 1024;
+        let _serialize_spare = scratch.lease_spare_ram(SERIALIZE_BATCH_SPARE_BYTES).ok();
+        let serialize_batch_limit = if _serialize_spare.is_some() {
+            SERIALIZE_BATCH
+        } else {
+            1
+        };
+        let serialize_workers = std::thread::available_parallelism()
+            .map_or(2, |n| n.get())
+            .clamp(2, 4);
+        let record_limit = scratch.budget().record_bytes;
+        struct EncodedObject {
+            object_key: [u8; 16],
+            object_json: Vec<u8>,
+            names: Vec<(u64, Vec<u8>)>,
+        }
+        let encode_one = |(object_key, object): ([u8; 16], Object)| -> Result<EncodedObject> {
+            let object_json = serde_json::to_vec(&object)?;
+            ensure!(
+                !object_json.is_empty() && (object_json.len() as u64) <= record_limit,
+                "projected source object exceeds admitted working record bytes"
+            );
+            let mut folded_names = Vec::with_capacity(1 + object.additional_names.len());
+            for path in std::iter::once(&object.path).chain(object.additional_names.iter()) {
+                let folded = n2r_win32::shadow_names::conservative_path_key(path);
+                let bucket = xxhash_rust::xxh3::xxh3_64(folded.as_bytes());
+                let name_json = serde_json::to_vec(&NameRow { folded })?;
+                folded_names.push((bucket, name_json));
+            }
+            Ok(EncodedObject {
+                object_key,
+                object_json,
+                names: folded_names,
+            })
+        };
+        let mut pending_objects: Vec<([u8; 16], Object)> =
+            Vec::with_capacity(serialize_batch_limit);
+        let flush_encoded = |pending: &mut Vec<([u8; 16], Object)>,
+                             objects: &mut ExternalSort,
+                             names: &mut ExternalSort,
+                             name_ordinal: &mut u64|
+         -> Result<()> {
+            if pending.is_empty() {
+                return Ok(());
+            }
+            let items = std::mem::take(pending);
+            let encoded: Vec<Result<EncodedObject>> = if items.len() >= 16 && serialize_workers > 1
+            {
+                let chunk_size = items.len().div_ceil(serialize_workers);
+                let mut iter = items.into_iter();
+                let mut chunks: Vec<Vec<([u8; 16], Object)>> =
+                    Vec::with_capacity(serialize_workers);
+                loop {
+                    let chunk: Vec<_> = iter.by_ref().take(chunk_size).collect();
+                    if chunk.is_empty() {
+                        break;
+                    }
+                    chunks.push(chunk);
+                }
+                std::thread::scope(|scope| {
+                    let handles: Vec<_> = chunks
+                        .into_iter()
+                        .map(|chunk| {
+                            scope.spawn(|| chunk.into_iter().map(&encode_one).collect::<Vec<_>>())
+                        })
+                        .collect();
+                    let mut out = Vec::with_capacity(SERIALIZE_BATCH);
+                    for handle in handles {
+                        out.extend(handle.join().expect("source projection worker panicked"));
+                    }
+                    out
+                })
+            } else {
+                items.into_iter().map(&encode_one).collect()
+            };
+            for row in encoded {
+                let row = row?;
+                for (bucket, name_json) in row.names {
+                    names.push_json(ordered_key(bucket, *name_ordinal), name_json)?;
+                    *name_ordinal = name_ordinal
+                        .checked_add(1)
+                        .context("namespace name count overflow")?;
+                }
+                objects.push_json(row.object_key, row.object_json)?;
+            }
+            Ok(())
+        };
         for ordinal in 0..source.file_count() {
             let file = source.file_shared(ordinal)?;
             if let Some(role) = ntfs_admission::paged::internal_role(source, &file)? {
@@ -999,14 +1090,6 @@ impl SourceExpectedDomain {
                     .context("directory count overflow")?;
             } else {
                 files = files.checked_add(1).context("file count overflow")?;
-            }
-            for path in std::iter::once(&object.path).chain(object.additional_names.iter()) {
-                let folded = n2r_win32::shadow_names::conservative_path_key(path);
-                let bucket = xxhash_rust::xxh3::xxh3_64(folded.as_bytes());
-                names.push(ordered_key(bucket, name_ordinal), &NameRow { folded })?;
-                name_ordinal = name_ordinal
-                    .checked_add(1)
-                    .context("namespace name count overflow")?;
             }
             let mut ranges = Vec::new();
             for stream in object.data_streams() {
@@ -1083,11 +1166,24 @@ impl SourceExpectedDomain {
                 );
                 pushed_roots += 1;
             }
-            objects.push(
-                ordered_key(u64::try_from(object.path.len())?, object.record_number),
-                &object,
-            )?;
+            let object_key = ordered_key(u64::try_from(object.path.len())?, object.record_number);
+            pending_objects.push((object_key, object));
+            if pending_objects.len() >= serialize_batch_limit {
+                flush_encoded(
+                    &mut pending_objects,
+                    &mut objects,
+                    &mut names,
+                    &mut name_ordinal,
+                )?;
+            }
         }
+        flush_encoded(
+            &mut pending_objects,
+            &mut objects,
+            &mut names,
+            &mut name_ordinal,
+        )?;
+        drop(_serialize_spare);
         if let Some(aliases) = aliases {
             // Alias entries participate in the real destination collision
             // proof without becoming source objects or changing source counts.

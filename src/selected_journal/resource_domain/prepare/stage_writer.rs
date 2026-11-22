@@ -259,7 +259,7 @@ impl Drop for StageWriter<'_, '_> {
     }
 }
 
-/// Writes `bytes` at the journal's position, which is `base`, and where
+/// Writes `bytes` at the journal's position, which must be `base`, and where
 /// `read_back` is given reads them back and holds them to `bytes`, as the
 /// preparing thread does when it writes a batch itself. Leaves the position
 /// at the end of the batch.
@@ -270,6 +270,19 @@ fn write_batch(
     bytes: &[u8],
     read_back: Option<&mut [u8]>,
 ) -> Result<()> {
+    // Where the batch is not read back, nothing else would notice it
+    // written anywhere but at its place before the gate.
+    let at = file.stream_position().with_context(|| {
+        format!(
+            "journal preparation: finding the position of the journal {} before its staged rows at offset {base}",
+            path.display()
+        )
+    })?;
+    ensure!(
+        at == base,
+        "journal preparation: the journal {} is at offset {at}, not at offset {base} where its staged rows begin; the journal is not used",
+        path.display()
+    );
     file.write_all(bytes).with_context(|| {
         format!(
             "journal preparation: writing the staged rows at offset {base} ({} bytes) of the journal {}",
@@ -401,6 +414,34 @@ mod tests {
             shared.write_all(b"x").unwrap();
             writer.finish().unwrap();
         });
+    }
+
+    #[test]
+    fn a_batch_is_written_only_at_its_own_offset() {
+        let file = tempfile::tempfile().unwrap();
+        let in_flight = Cell::new(0);
+        std::thread::scope(|scope| {
+            let mut writer = StageWriter::start(
+                scope,
+                &file,
+                Path::new("journal"),
+                Vec::with_capacity(16),
+                None,
+                &in_flight,
+            )
+            .unwrap();
+            let next = writer.submit(5, batch(1, 16)).unwrap();
+            let error = match writer.submit(21, next) {
+                Err(error) => error,
+                Ok(_) => writer.drain().unwrap_err(),
+            };
+            let message = format!("{error:#}");
+            assert!(
+                message.contains("the journal journal is at offset 0, not at offset 5"),
+                "{message}"
+            );
+        });
+        assert_eq!(file.metadata().unwrap().len(), 0, "nothing was written");
     }
 
     #[test]

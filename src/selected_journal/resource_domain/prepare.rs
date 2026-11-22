@@ -904,10 +904,15 @@ fn complete_rows<J: DurableIo>(
 /// read back; `stage` becomes the other, empty, buffer. The hash is the same:
 /// the bytes read back are the batch's or the preparation stops. The file is
 /// then the writing thread's until [`stage_writer::StageWriter::drain`].
+///
+/// Either way the batch is written only where the journal's position is the
+/// batch's own offset: where it is not read back, nothing else would notice
+/// it written anywhere else before the gate.
 #[allow(clippy::too_many_arguments)]
 fn complete_staged_rows<J: DurableIo>(
     f: JournalLayoutFacts,
     file: &mut J,
+    journal_path: &Path,
     stage: &mut Vec<u8>,
     stage_start: &mut Option<u64>,
     owed: &mut Vec<OwedRow>,
@@ -952,6 +957,12 @@ fn complete_staged_rows<J: DurableIo>(
         *stage = writer.submit(base, std::mem::take(stage))?;
         return Ok(());
     }
+    let at = file.stream_position()?;
+    ensure!(
+        at == base,
+        "journal preparation: the journal {} is at offset {at}, not at offset {base} where its staged rows begin; the journal is not used",
+        journal_path.display()
+    );
     file.write_all(stage)?;
     match written.as_deref_mut() {
         // Hashed as written, in file order; the gate reads the body again.
@@ -1350,6 +1361,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: PreparedJournal>(
             source,
             candidate,
             file,
+            journal_path,
             same_captured_source,
             old_zero_unread,
             capture_witness,
@@ -1381,6 +1393,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: PreparedJournal>(
             source,
             candidate,
             &mut shared,
+            journal_path,
             same_captured_source,
             old_zero_unread,
             capture_witness,
@@ -1439,6 +1452,7 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     source: &mut R,
     candidate: &mut S,
     mut file: &mut J,
+    journal_path: &Path,
     same_captured_source: bool,
     old_zero_unread: bool,
     capture_witness: Option<&CaptureRevalidation<'_>>,
@@ -1555,6 +1569,7 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 complete_staged_rows(
                     f,
                     file,
+                    journal_path,
                     buf,
                     &mut stage_start,
                     &mut owed,
@@ -1683,6 +1698,7 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 complete_staged_rows(
                     f,
                     file,
+                    journal_path,
                     buf,
                     &mut stage_start,
                     &mut owed,
@@ -1811,6 +1827,7 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
             complete_staged_rows(
                 f,
                 file,
+                journal_path,
                 buf,
                 &mut stage_start,
                 &mut owed,
@@ -2397,6 +2414,7 @@ mod tests {
         let result = complete_staged_rows(
             facts(rows),
             &mut journal,
+            Path::new("journal"),
             &mut stage,
             &mut stage_start,
             &mut owed,
@@ -2449,6 +2467,7 @@ mod tests {
             complete_staged_rows(
                 facts(rows),
                 &mut shared,
+                Path::new("journal"),
                 &mut stage,
                 &mut stage_start,
                 &mut owed,
@@ -2595,6 +2614,52 @@ mod tests {
             n2r_win32::bulk_digest::digest(Algorithm::WRITTEN, &new[..ROW as usize]).unwrap(),
             "and its NEW digest"
         );
+    }
+
+    #[test]
+    fn a_staged_batch_is_written_only_at_its_own_offset() {
+        let algorithm = Algorithm::WRITTEN;
+        let base = BODY + HEADER as u64;
+        for read_back in [false, true] {
+            let mut journal = Memory {
+                bytes: Cursor::new(vec![0u8; usize::try_from(base).unwrap() + 1]),
+                corrupt_at: None,
+            };
+            journal.seek(SeekFrom::Start(base + 1)).unwrap();
+            let (mut stage, mut owed) = staged(base, 2);
+            let mut written = WrittenHashes {
+                whole: None,
+                immutable: n2r_win32::bulk_digest::HashedBehind::new(algorithm, 4096).unwrap(),
+                read_back,
+            };
+            let error = complete_staged_rows(
+                facts(2),
+                &mut journal,
+                Path::new("journal"),
+                &mut stage,
+                &mut Some(base),
+                &mut owed,
+                &mut RecordHashes::here(algorithm),
+                &mut RecordHashes::here(algorithm),
+                &mut ZeroDigests::new(),
+                Some(&mut written),
+                &mut vec![0u8; 1000],
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                format!("{error:#}").contains(&format!(
+                    "the journal journal is at offset {}, not at offset {base}",
+                    base + 1
+                )),
+                "{error:#}"
+            );
+            assert_eq!(
+                journal.bytes.get_ref().len(),
+                usize::try_from(base).unwrap() + 1,
+                "nothing was written"
+            );
+        }
     }
 
     #[test]

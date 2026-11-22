@@ -868,10 +868,9 @@ where
                 admission,
                 &expected_group,
             )?;
-            PagedExpectedTree::open_with_resources_in_group(
+            PagedExpectedTree::open_created_with_resources_in_group(
                 &expected_path,
-                &receipt.file_sha256,
-                &receipt.semantic_sha256,
+                &receipt,
                 admission,
                 &expected_group,
                 artifact,

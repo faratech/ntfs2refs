@@ -152,6 +152,33 @@ pub struct ExpectedTreePageReceipt {
     pub semantic_byte_budget: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+    // What the creation computed of the pages, in memory only: never
+    // serialized, and made by nothing but the creation itself.
+    #[serde(skip)]
+    created: Option<CreatedHere>,
+}
+
+/// What this process's creation of a tree's pages derived of them, while it
+/// wrote them: the digest of the tree's legacy JSON and the counts of its
+/// objects, of the file it wrote, under the budgets it wrote it to.
+///
+/// Opening that file again in a run that verifies once
+/// ([`n2r_win32::verify_policy::verifies_once`]) takes these instead of
+/// writing the legacy JSON a second time to derive them again: the
+/// reader accepts the file only as the one this process's writer produced
+/// ([`n2r_win32::metadata_pages::Reader::written_by_this_process`]), held
+/// since and checked page by page as it is read, so the second derivation
+/// was of the same bytes as the first. Every other opening (a thorough run,
+/// a cached body, a rebind, a recovery, a resume, any file this process did
+/// not write) derives them from the pages, as it always has.
+#[derive(Clone, Debug)]
+struct CreatedHere {
+    file_sha256: String,
+    semantic_sha256: String,
+    counts: ExpectedTreePageCounts,
+    budget: PageBudget,
+    semantic_byte_budget: u64,
+    resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
 }
 
 pub struct PagedExpectedTree {
@@ -1339,6 +1366,14 @@ impl PagedExpectedTree {
             summary.records >= records,
             "written expected-tree record domain differs"
         );
+        let created = CreatedHere {
+            file_sha256: summary.sha256.clone(),
+            semantic_sha256: semantic_sha256.clone(),
+            counts,
+            budget,
+            semantic_byte_budget,
+            resource_admission,
+        };
         Ok(ExpectedTreePageReceipt {
             schema_version: if resource_admission.is_some() { 3 } else { 2 },
             path: path.to_owned(),
@@ -1351,6 +1386,7 @@ impl PagedExpectedTree {
             page_budget: budget,
             semantic_byte_budget,
             resource_admission,
+            created: Some(created),
         })
     }
 
@@ -1432,6 +1468,44 @@ impl PagedExpectedTree {
             Some((group.arena().clone(), artifact)),
         )
     }
+    /// [`Self::open_with_resources_in_group`] for the pages that
+    /// [`Self::create_with_resources_in_group`] has just written, pinned by
+    /// the receipt it returned. In a run that verifies once, the legacy
+    /// JSON's digest and the object counts are those the creation derived
+    /// (see [`CreatedHere`]); otherwise, and for a receipt that does not
+    /// describe this file, the opening derives them again as every other
+    /// opening does.
+    pub fn open_created_with_resources_in_group(
+        path: &Path,
+        receipt: &ExpectedTreePageReceipt,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        group: &crate::artifact_arena::ArtifactGroupPermit,
+        artifact: crate::artifact_arena::ArtifactLease,
+    ) -> Result<Self> {
+        admission.validate()?;
+        ensure!(
+            group.group() == crate::artifact_arena::ArtifactGroup::Expected
+                && group.arena().budget() == admission.budget
+                && artifact.same_group(group)
+                && artifact.sha256() == receipt.file_sha256,
+            "expected page file/arena owner differs"
+        );
+        Self::open_owned_domain(
+            path,
+            &receipt.file_sha256,
+            Some(&receipt.semantic_sha256),
+            admission.expected_page_budget()?,
+            admission.semantic_byte_budget(),
+            Some(admission),
+            false,
+            Some(ExpectedMemoryOwner {
+                arena: group.arena().clone(),
+                artifact: Some(artifact),
+                reopened: None,
+            }),
+            receipt.created.as_ref(),
+        )
+    }
     fn open_domain(
         path: &Path,
         file_sha256: &str,
@@ -1457,6 +1531,7 @@ impl PagedExpectedTree {
                 artifact: Some(artifact),
                 reopened: None,
             }),
+            None,
         )
     }
 
@@ -1491,6 +1566,7 @@ impl PagedExpectedTree {
                 artifact: Some(artifact),
                 reopened: None,
             }),
+            None,
         )
     }
 
@@ -1522,6 +1598,7 @@ impl PagedExpectedTree {
                 artifact: Some(artifact),
                 reopened: None,
             }),
+            None,
         )?;
         tree.cached_body_pending = true;
         Ok(tree)
@@ -1660,6 +1737,7 @@ impl PagedExpectedTree {
                 artifact: None,
                 reopened: Some(file.try_clone()?),
             }),
+            None,
         )?;
         tree.apply_binding(pin, current)?;
         use std::os::windows::fs::OpenOptionsExt;
@@ -1718,11 +1796,13 @@ impl PagedExpectedTree {
                 artifact: None,
                 reopened: Some(file.try_clone()?),
             }),
+            None,
         )?;
         tree.require_recovery_memory(arena)?;
         Ok(tree)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn open_owned_domain(
         path: &Path,
         file_sha256: &str,
@@ -1732,6 +1812,7 @@ impl PagedExpectedTree {
         resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
         allow_original_source_header: bool,
         mut memory: Option<ExpectedMemoryOwner>,
+        created: Option<&CreatedHere>,
     ) -> Result<Self> {
         ensure!(
             (1..=i64::MAX as u64).contains(&semantic_byte_budget),
@@ -2006,22 +2087,41 @@ impl PagedExpectedTree {
             _directory_ram: directory_ram,
             _header_ram: header_ram,
         };
-        let counts = Cell::new(ExpectedTreePageCounts::default());
-        let mut semantic = SemanticHash::new(semantic_byte_budget)?;
-        serde_json::to_writer_pretty(
-            &mut semantic,
-            &LegacyView {
-                tree: &view,
-                counts: Some(&counts),
-            },
-        )?;
-        let derived_semantic_sha256 = semantic.finish()?;
-        ensure!(
-            legacy_semantic_sha256.is_none_or(|expected| derived_semantic_sha256 == expected),
-            "paged objects do not reproduce the pinned legacy expectation JSON"
-        );
-        view.semantic_sha256 = derived_semantic_sha256;
-        view.counts = counts.get();
+        // The file this process's creation has just written, pinned by what
+        // that creation derived of it: in a run that verifies once, those
+        // stand for deriving them again (see `CreatedHere`).
+        let created = created.filter(|created| {
+            n2r_win32::verify_policy::verifies_once()
+                && !allow_original_source_header
+                && view.reader.borrow().written_by_this_process()
+                && created.file_sha256 == file_sha256
+                && legacy_semantic_sha256 == Some(created.semantic_sha256.as_str())
+                && created.budget == budget
+                && created.semantic_byte_budget == semantic_byte_budget
+                && created.resource_admission == view.resource_admission
+                && created.counts.objects == view.header.total_objects
+        });
+        if let Some(created) = created {
+            view.semantic_sha256 = created.semantic_sha256.clone();
+            view.counts = created.counts;
+        } else {
+            let counts = Cell::new(ExpectedTreePageCounts::default());
+            let mut semantic = SemanticHash::new(semantic_byte_budget)?;
+            serde_json::to_writer_pretty(
+                &mut semantic,
+                &LegacyView {
+                    tree: &view,
+                    counts: Some(&counts),
+                },
+            )?;
+            let derived_semantic_sha256 = semantic.finish()?;
+            ensure!(
+                legacy_semantic_sha256.is_none_or(|expected| derived_semantic_sha256 == expected),
+                "paged objects do not reproduce the pinned legacy expectation JSON"
+            );
+            view.semantic_sha256 = derived_semantic_sha256;
+            view.counts = counts.get();
+        }
         ensure!(
             view.counts.objects == view.header.total_objects,
             "typed object count differs from the complete header domain"
@@ -2802,6 +2902,92 @@ impl Serialize for PagedExpectedTree {
             counts: None,
         }
         .serialize(serializer)
+    }
+}
+
+#[cfg(test)]
+mod created_tests {
+    use super::*;
+
+    fn object(record_number: u64, path: &[&str], directory: bool) -> Object {
+        Object {
+            record_number,
+            sequence_number: 1,
+            path: path.iter().map(|part| (*part).to_owned()).collect(),
+            additional_names: Vec::new(),
+            directory,
+            stored_times: [1, 2, 3, 4],
+            attributes: if directory { 16 } else { 32 },
+            ntfs_compression_normalized: false,
+            security: (0..=255).collect(),
+            api_security: None,
+            extended_attributes: None,
+            reparse: None,
+            case_sensitive: None,
+            source_offset: None,
+            source_extents: Vec::new(),
+            length: if directory { 0 } else { 5 },
+            sha256: (!directory).then(|| "ab".repeat(16)),
+            source_evidence: None,
+            named_streams: Vec::new(),
+            sparse: None,
+        }
+    }
+
+    /// What a creation keeps of its pages for an opening in a run that
+    /// verifies once is what an opening derives from them again, and never
+    /// part of the receipt's serialized form.
+    #[test]
+    fn a_creation_derives_what_its_opening_would_derive_again() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut objects = vec![object(5, &[], true), object(40, &["a"], true)];
+        for record in 0..300u64 {
+            objects.push(object(64 + record, &["a", &format!("f{record}")], false));
+        }
+        let tree = ExpectedTree {
+            profile: "test-profile".into(),
+            logical_bytes: 1500,
+            internal_replacement_pending: vec!["root:$TXF_DATA".into()],
+            objects,
+        };
+        let budget = PageBudget {
+            max_page_bytes: 64 * 1024,
+            max_records_per_page: 1024,
+            max_records: 4096,
+            max_pages: 1024,
+            max_file_bytes: 64 * 1024 * 1024,
+        };
+        let path = directory.path().join("expected.pages");
+        let receipt = PagedExpectedTree::create(&tree, &path, budget).unwrap();
+        let created = receipt.created.clone().unwrap();
+        assert_eq!(created.file_sha256, receipt.file_sha256);
+        assert_eq!(created.semantic_sha256, receipt.semantic_sha256);
+        assert_eq!(
+            created.semantic_sha256,
+            hex::encode(Sha256::digest(serde_json::to_vec_pretty(&tree).unwrap()))
+        );
+        assert_eq!(
+            created.counts,
+            ExpectedTreePageCounts {
+                objects: 302,
+                files: 300,
+                directories: 2,
+                data_streams: 300,
+            }
+        );
+
+        let opened = PagedExpectedTree::open(
+            &path,
+            &receipt.file_sha256,
+            &receipt.semantic_sha256,
+            budget,
+        )
+        .unwrap();
+        assert_eq!(opened.counts(), created.counts);
+        assert_eq!(opened.semantic_sha256(), created.semantic_sha256);
+
+        let written = serde_json::to_value(&receipt).unwrap();
+        assert!(!written.as_object().unwrap().contains_key("created"));
     }
 }
 

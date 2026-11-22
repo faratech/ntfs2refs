@@ -29,10 +29,12 @@ use std::{
 /// (the same rows, from the same offsets), which the refill then takes
 /// without waiting for the lanes. Where that memory is not granted, or the
 /// batch read ahead is not the one asked for, a batch is read when it is
-/// asked for, as before.
+/// asked for, as before. Where the thread cannot be started, the lanes stay
+/// here, a line says so, and from then on every batch is read when it is
+/// asked for. A panic of that thread is the error of the read that takes its
+/// batch, as a lane's panic was of the read that waited for it.
 struct CopyPrefetch {
-    /// `None` while the thread reading ahead has them, and for good where
-    /// that thread failed: its rows are then read through `source_lane`.
+    /// `None` only while the thread reading ahead has them.
     lanes: Option<Vec<GeneralFrozenLane>>,
     cache: VecDeque<(u64, Vec<u8>)>,
     /// The batch being read ahead. Its thread gives the lanes back, with the
@@ -49,10 +51,15 @@ struct CopyPrefetch {
 type CopyBatch = Vec<(u64, Vec<u8>)>;
 
 impl Drop for CopyPrefetch {
-    /// The batch being read ahead ends before the lanes and the memory go.
+    /// The batch being read ahead ends before the lanes and the memory go;
+    /// a panic of its thread goes on from here, as a lane's did from the
+    /// read that waited for it.
     fn drop(&mut self) {
-        if let Some(ahead) = self.ahead.take() {
-            let _ = ahead.join();
+        if let Some(ahead) = self.ahead.take()
+            && let Err(panic) = ahead.join()
+            && !std::thread::panicking()
+        {
+            std::panic::resume_unwind(panic);
         }
     }
 }
@@ -146,44 +153,53 @@ impl CopyPrefetch {
         &mut self,
         index: &crate::general_shadow::capture_index::ClosedCaptureIndex,
         start_ordinal: u64,
-    ) {
+    ) -> io::Result<()> {
         self.cache.clear();
-        if let Some(batch) = self.take_ahead()
+        if let Some(batch) = self.take_ahead()?
             && batch.iter().any(|(ordinal, _)| *ordinal == start_ordinal)
         {
             self.cache.extend(batch);
             self.read_ahead(index);
-            return;
+            return Ok(());
         }
         self.next_scan = None;
         let Some((spans, stopped)) =
             plan_copy_batch(index.len(), |ordinal| index.range(ordinal), start_ordinal)
         else {
-            return;
+            return Ok(());
         };
         let Some(lanes) = self.lanes.as_mut() else {
-            return;
+            return Ok(());
         };
         let Some(batch) = read_copy_spans(lanes, &spans) else {
-            return;
+            return Ok(());
         };
         self.cache.extend(batch);
         self.next_scan = Some(stopped);
         self.read_ahead(index);
+        Ok(())
     }
 
-    /// The batch read ahead, once its thread is done, and the lanes back.
-    fn take_ahead(&mut self) -> Option<CopyBatch> {
-        let (lanes, batch) = self.ahead.take()?.join().ok()?;
+    /// The batch read ahead, once its thread is done, and the lanes back. A
+    /// panic of that thread is an error: the lanes went with it.
+    fn take_ahead(&mut self) -> io::Result<Option<CopyBatch>> {
+        let Some(ahead) = self.ahead.take() else {
+            return Ok(None);
+        };
+        let (lanes, batch) = ahead.join().map_err(|_| {
+            io::Error::other(
+                "journal preparation: the thread reading COPY rows' source bytes ahead, through read lanes of the frozen source, panicked",
+            )
+        })?;
         self.lanes = Some(lanes);
-        batch
+        Ok(batch)
     }
 
     /// Starts reading, on a thread of its own, the batch a refill at the
     /// first COPY row from `next_scan` on would read, where the memory for a
     /// second batch is held.
     fn read_ahead(&mut self, index: &crate::general_shadow::capture_index::ClosedCaptureIndex) {
-        if self.ahead_ram.is_none() || self.ahead.is_some() {
+        if self.ahead_ram.is_none() || self.ahead.is_some() || self.lanes.is_none() {
             return;
         }
         let Some(from) = self.next_scan.take() else {
@@ -196,21 +212,45 @@ impl CopyPrefetch {
         let Some((spans, stopped)) = plan_copy_batch(index.len(), range, first) else {
             return;
         };
-        let Some(mut lanes) = self.lanes.take() else {
-            return;
-        };
-        // A thread that cannot be started takes the lanes with it: the rows
-        // are then read through `source_lane`, as where a lane fails.
-        if let Ok(ahead) = std::thread::Builder::new()
+        // The thread is started first and handed the lanes once it runs, so
+        // that a thread that cannot be started leaves them here.
+        let (hand_over, handed) =
+            std::sync::mpsc::sync_channel::<(Vec<GeneralFrozenLane>, Vec<CopySpan>)>(1);
+        let started = std::thread::Builder::new()
             .name("n2r-copy-read-ahead".into())
             .spawn(move || {
                 let _sampled = n2r_win32::stack_sampler::helper();
+                let (mut lanes, spans) = handed
+                    .recv()
+                    .expect("the COPY read-ahead thread is handed its lanes once it runs");
                 let batch = read_copy_spans(&mut lanes, &spans);
                 (lanes, batch)
-            })
-        {
-            self.ahead = Some(ahead);
-            self.next_scan = Some(stopped);
+            });
+        let ahead = match started {
+            Ok(ahead) => ahead,
+            Err(error) => {
+                eprintln!(
+                    "journal preparation: COPY rows' source bytes are read when they are asked for from here on, not ahead: the thread to read them ahead could not be started: {error}"
+                );
+                self.ahead_ram = None;
+                return;
+            }
+        };
+        let lanes = self
+            .lanes
+            .take()
+            .expect("the lanes are here: checked above");
+        match hand_over.send((lanes, spans)) {
+            Ok(()) => {
+                self.ahead = Some(ahead);
+                self.next_scan = Some(stopped);
+            }
+            // The thread ended before it took them: its panic is taken with
+            // the next batch, and the lanes stay here.
+            Err(std::sync::mpsc::SendError((lanes, _))) => {
+                self.lanes = Some(lanes);
+                self.ahead = Some(ahead);
+            }
         }
     }
 }
@@ -539,7 +579,7 @@ impl Read for ProtectedCapturedCandidate<'_> {
                     .is_none_or(|(ord, _)| *ord != ordinal)
                     && within == 0
                 {
-                    prefetch.refill(self.proof.captured().index(), ordinal);
+                    prefetch.refill(self.proof.captured().index(), ordinal)?;
                 }
                 if let Some((ord, bytes)) = prefetch.cache.front()
                     && *ord == ordinal

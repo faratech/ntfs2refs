@@ -421,6 +421,23 @@ fn create_owned_domain_inner(
     // The volume root and the namespace limit, without the payer: what the
     // links of one file are made with, on whichever thread makes them.
     let limits = resources.map(|(maximum_names, root, _)| (maximum_names, root));
+    // In a run that verifies once (`--verify fast`) a fresh shadow's names
+    // are made by the link call alone. Looking the name up first is left
+    // out: the call refuses a name that exists (ReplaceIfExists is false),
+    // which is the only answer the look-up could give on a fresh shadow.
+    // Asking the parent for its type and identity, and the file and the
+    // parent again after each link, the file's link count and the new name's
+    // entry are left out as well: what they hold is held again before the
+    // metadata is restored and by the one observation of the frozen shadow,
+    // before anything is written to the source. The metadata completion
+    // asks every directory's handle for its type and identity, each on the
+    // shadow's volume, lists every directory and holds each of its entries,
+    // these names among them, to the identity and the attributes of the
+    // file it names, and opens every name of a file by its path and holds it
+    // to the file's identity. The file's complete link count and its
+    // identity are still checked here once its names are made. A thorough
+    // run and a recovery check each name as before.
+    let lean = !recovering && crate::verify_policy::verifies_once();
     // A file's names are made one after another, each held to the link count
     // the name before it left; that file is the unit. Files do not depend on
     // one another, so on a fresh shadow the files that have other names are
@@ -456,9 +473,31 @@ fn create_owned_domain_inner(
             let parent = handles
                 .get(&parent_index)
                 .ok_or_else(|| invalid("hard-link parent handle missing"))?;
+            let name = path.last().ok_or_else(|| invalid("empty hard-link name"))?;
+            if lean {
+                if limits.is_some_and(|(maximum_names, _)| parent_children > maximum_names) {
+                    return Err(invalid(
+                        "resource hard-link parent exceeds admitted namespace",
+                    ));
+                }
+                before_mutation()?;
+                create_link(file, parent, name).map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!("making hard link \\{}: {error}", path.join("\\")),
+                    )
+                })?;
+                let expected =
+                    u32::try_from(number + 2).map_err(|_| invalid("hard-link count overflow"))?;
+                created.push(
+                    serde_json::json!({"components":path,"canonical_components":item.components,
+                    "file_id":&identity[8..24],"link_count":expected,"replace_if_exists":false}),
+                );
+                current_links = expected;
+                continue;
+            }
             validate_open_type(parent, true)?;
             let parent_id = info(parent, 18, 24)?;
-            let name = path.last().ok_or_else(|| invalid("empty hard-link name"))?;
             // Final canonical/additional-name count bounds the parent at
             // every intermediate link step. The same real tree payer owns
             // both complete enumeration passes before either native query.
@@ -549,7 +588,7 @@ fn create_owned_domain_inner(
             || info(file, 18, 24)? != identity
         {
             return Err(invalid(
-                "complete recovered hard-link count or identity differs",
+                "the file's complete hard-link count or identity differs once its names are made",
             ));
         }
         Ok(created)
@@ -564,8 +603,10 @@ fn create_owned_domain_inner(
         |_| {},
         |item| item.additional_names.len(),
         link_file,
-        |_, linked| {
-            created.extend(linked?);
+        |index, linked| {
+            created.extend(linked.map_err(|error| {
+                super::cache_refresh::at_object(input, "hard-link creation", index, error)
+            })?);
             Ok(())
         },
     )?;

@@ -865,6 +865,59 @@ type MaterializedPlan = std::collections::BTreeMap<
     ),
 >;
 
+/// The plan of the streams whose bytes are written to the shadow, with the
+/// memory it holds paid for. It keeps an entry for every such stream of the
+/// volume from planning until the supply is verified (some 97,000 on the
+/// full Windows volume, about 20 MB), so it is leased as it grows (#268),
+/// in steps of at least [`MATERIALIZED_LEASE_STEP`].
+#[derive(Default)]
+struct LeasedMaterializedPlan {
+    plan: MaterializedPlan,
+    held: u64,
+    leased: u64,
+    leases: Vec<crate::ntfs_inspect::paged_storage::SourceRamLease>,
+}
+impl std::ops::Deref for LeasedMaterializedPlan {
+    type Target = MaterializedPlan;
+    fn deref(&self) -> &MaterializedPlan {
+        &self.plan
+    }
+}
+impl LeasedMaterializedPlan {
+    /// Pays for `more` bytes the plan is about to hold.
+    fn hold(&mut self, more: u64, bytes: &PagedSourceByteAdapterWithScope<'_, '_>) -> Result<()> {
+        self.held = self
+            .held
+            .checked_add(more)
+            .context("materialized plan RAM overflow")?;
+        if self.held > self.leased {
+            let step = (self.held - self.leased).max(MATERIALIZED_LEASE_STEP);
+            self.leases.push(bytes.lease_working_ram(step)?);
+            self.leased = self
+                .leased
+                .checked_add(step)
+                .context("materialized plan RAM overflow")?;
+        }
+        Ok(())
+    }
+}
+const MATERIALIZED_LEASE_STEP: u64 = 1024 * 1024;
+/// One interval of a stream's plan, with the room its list grows into.
+const MATERIALIZED_INTERVAL_BYTES: u64 = 2 * std::mem::size_of::<(u64, u64)>() as u64;
+/// One stream's entry besides its intervals: its key and summary, the text
+/// of the summary's digest, and half as much again for the map's nodes.
+fn materialized_entry_bytes(
+    summary: &n2r_win32::shadow_native::private_tree::StreamSupplySummary,
+) -> u64 {
+    let entry = std::mem::size_of::<(usize, usize)>()
+        + std::mem::size_of::<(
+            n2r_win32::shadow_native::private_tree::StreamSupplySummary,
+            Vec<(u64, u64)>,
+        )>()
+        + summary.ordered_range_sha256.capacity();
+    (entry + entry / 2) as u64
+}
+
 #[allow(clippy::too_many_arguments)]
 fn scan_plan(
     bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
@@ -874,7 +927,7 @@ fn scan_plan(
     policy: VerificationPolicy,
     at_once: bool,
     progress: &Reporter,
-) -> Result<(RoutedPlan, MaterializedPlan, Option<String>)> {
+) -> Result<(RoutedPlan, LeasedMaterializedPlan, Option<String>)> {
     let mut hash = Sha256::new();
     hash.update(b"n2r-private-routed-prefix-plan-v1\0");
     // A run that verifies each thing once (`at_once`) does not observe the
@@ -907,7 +960,7 @@ fn scan_plan(
             None,
         );
     };
-    let mut materialized_streams: MaterializedPlan = std::collections::BTreeMap::new();
+    let mut materialized_streams = LeasedMaterializedPlan::default();
     std::thread::scope(|scope| -> Result<()> {
         // The next batch, observed by the tree's helpers while this one is
         // taken.
@@ -1018,8 +1071,18 @@ fn scan_plan(
                                             .context("routed total overflow")?;
                                     }
                                     Piece::Materialize => {
+                                        let key = (index, stream_ordinal);
+                                        let more = if materialized_streams.contains_key(&key) {
+                                            MATERIALIZED_INTERVAL_BYTES
+                                        } else {
+                                            materialized_entry_bytes(summary)
+                                                .checked_add(MATERIALIZED_INTERVAL_BYTES)
+                                                .context("materialized plan RAM overflow")?
+                                        };
+                                        materialized_streams.hold(more, bytes)?;
                                         materialized_streams
-                                            .entry((index, stream_ordinal))
+                                            .plan
+                                            .entry(key)
                                             .or_insert_with(|| (summary.clone(), Vec::new()))
                                             .1
                                             .push((offset, length));

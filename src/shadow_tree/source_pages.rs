@@ -871,12 +871,28 @@ impl SourceExpectedDomain {
             scratch,
             source.file_count(),
         )?;
-        let mut physical = ExternalSort::with_shared_projection_hint(
-            &output.join("retained-source-ranges"),
-            *b"N2RPHYS1",
-            scratch,
-            source.allocation().physical_intervals,
-        )?;
+        // Check physical source range non-overlap in spare RAM when available
+        // (16 bytes per range; e.g. 200k ranges = 3.2 MiB), falling back to
+        // on-disk ExternalSort if spare RAM is unavailable or capacity is exceeded.
+        const PHYSICAL_MEM_CAP: usize = 512 * 1024;
+        let physical_hint = usize::try_from(source.allocation().physical_intervals)
+            .unwrap_or(PHYSICAL_MEM_CAP)
+            .clamp(64, PHYSICAL_MEM_CAP);
+        let physical_mem_bytes = (physical_hint as u64) * 16;
+        let mut physical_mem: Option<(Vec<(u64, u64)>, SourceRamLease)> = scratch
+            .lease_spare_ram(physical_mem_bytes)
+            .ok()
+            .map(|lease| (Vec::with_capacity(physical_hint), lease));
+        let mut physical: Option<ExternalSort> = if physical_mem.is_none() {
+            Some(ExternalSort::with_shared_projection_hint(
+                &output.join("retained-source-ranges"),
+                *b"N2RPHYS1",
+                scratch,
+                source.allocation().physical_intervals,
+            )?)
+        } else {
+            None
+        };
         let mut roles = Vec::new();
         let mut role_ram = Vec::new();
         let mut windows_ea_writer = aliases
@@ -916,7 +932,8 @@ impl SourceExpectedDomain {
             mut logical_bytes,
             mut name_ordinal,
             mut physical_ordinal,
-        ) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+            mut pushed_roots,
+        ) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
         for ordinal in 0..source.file_count() {
             let file = source.file_shared(ordinal)?;
             if let Some(role) = ntfs_admission::paged::internal_role(source, &file)? {
@@ -985,8 +1002,7 @@ impl SourceExpectedDomain {
             }
             for path in std::iter::once(&object.path).chain(object.additional_names.iter()) {
                 let folded = n2r_win32::shadow_names::conservative_path_key(path);
-                let hash = Sha256::digest(folded.as_bytes());
-                let bucket = u64::from_be_bytes(hash[..8].try_into()?);
+                let bucket = xxhash_rust::xxh3::xxh3_64(folded.as_bytes());
                 names.push(ordered_key(bucket, name_ordinal), &NameRow { folded })?;
                 name_ordinal = name_ordinal
                     .checked_add(1)
@@ -1009,10 +1025,40 @@ impl SourceExpectedDomain {
                         .is_some_and(|end| end <= source.header().geometry.volume_size),
                     "retained source payload escapes the source"
                 );
-                physical.push(
-                    ordered_key(offset, physical_ordinal),
-                    &PhysicalRow { offset, length },
-                )?;
+                if let Some((vec, _)) = physical_mem.as_mut() {
+                    if vec.len() < vec.capacity() {
+                        vec.push((offset, length));
+                        continue;
+                    }
+                    let (spilled, lease) = physical_mem.take().unwrap();
+                    drop(lease);
+                    let mut sorter = ExternalSort::with_shared_projection_hint(
+                        &output.join("retained-source-ranges"),
+                        *b"N2RPHYS1",
+                        scratch,
+                        source.allocation().physical_intervals,
+                    )?;
+                    for (prev_offset, prev_length) in spilled {
+                        sorter.push(
+                            ordered_key(prev_offset, physical_ordinal),
+                            &PhysicalRow {
+                                offset: prev_offset,
+                                length: prev_length,
+                            },
+                        )?;
+                        physical_ordinal = physical_ordinal
+                            .checked_add(1)
+                            .context("physical source interval count overflow")?;
+                    }
+                    physical = Some(sorter);
+                }
+                physical
+                    .as_mut()
+                    .context("physical range sorter absent")?
+                    .push(
+                        ordered_key(offset, physical_ordinal),
+                        &PhysicalRow { offset, length },
+                    )?;
                 physical_ordinal = physical_ordinal
                     .checked_add(1)
                     .context("physical source interval count overflow")?;
@@ -1030,6 +1076,13 @@ impl SourceExpectedDomain {
                     scratch,
                 )?;
             }
+            if object.path.is_empty() {
+                ensure!(
+                    object.directory && object.record_number == 5,
+                    "invalid projected root"
+                );
+                pushed_roots += 1;
+            }
             objects.push(
                 ordered_key(u64::try_from(object.path.len())?, object.record_number),
                 &object,
@@ -1041,8 +1094,7 @@ impl SourceExpectedDomain {
             for ordinal in 0..aliases.len() {
                 let alias = aliases.alias(ordinal)?;
                 let folded = n2r_win32::shadow_names::conservative_path_key(&alias.path);
-                let hash = Sha256::digest(folded.as_bytes());
-                let bucket = u64::from_be_bytes(hash[..8].try_into()?);
+                let bucket = xxhash_rust::xxh3::xxh3_64(folded.as_bytes());
                 names.push(ordered_key(bucket, name_ordinal), &NameRow { folded })?;
                 name_ordinal = name_ordinal
                     .checked_add(1)
@@ -1080,25 +1132,40 @@ impl SourceExpectedDomain {
         scratch.retire_created(&name_pin.data)?;
         scratch.retire_created(&name_pin.directory)?;
         drop(row_ram);
-        let physical_pin = physical.finish()?;
-        let row_ram = scratch.lease_ram(row_working_bytes)?;
-        let physical_store = SortedRecordStore::open(&physical_pin, scratch)?;
-        let mut prior_end = 0u64;
-        for ordinal in 0..physical_store.len() {
-            let range: PhysicalRow = physical_store.get(ordinal)?;
-            ensure!(
-                range.offset >= prior_end && range.length > 0,
-                "overlapping default or named source payloads"
-            );
-            prior_end = range
-                .offset
-                .checked_add(range.length)
-                .context("physical source interval overflow")?;
+        if let Some((mut ranges, lease)) = physical_mem.take() {
+            ranges.sort_unstable();
+            let mut prior_end = 0u64;
+            for (offset, length) in ranges {
+                ensure!(
+                    offset >= prior_end && length > 0,
+                    "overlapping default or named source payloads"
+                );
+                prior_end = offset
+                    .checked_add(length)
+                    .context("physical source interval overflow")?;
+            }
+            drop(lease);
+        } else if let Some(physical) = physical.take() {
+            let physical_pin = physical.finish()?;
+            let row_ram = scratch.lease_ram(row_working_bytes)?;
+            let physical_store = SortedRecordStore::open(&physical_pin, scratch)?;
+            let mut prior_end = 0u64;
+            for ordinal in 0..physical_store.len() {
+                let range: PhysicalRow = physical_store.get(ordinal)?;
+                ensure!(
+                    range.offset >= prior_end && range.length > 0,
+                    "overlapping default or named source payloads"
+                );
+                prior_end = range
+                    .offset
+                    .checked_add(range.length)
+                    .context("physical source interval overflow")?;
+            }
+            drop(physical_store);
+            scratch.retire_created(&physical_pin.data)?;
+            scratch.retire_created(&physical_pin.directory)?;
+            drop(row_ram);
         }
-        drop(physical_store);
-        scratch.retire_created(&physical_pin.data)?;
-        scratch.retire_created(&physical_pin.directory)?;
-        drop(row_ram);
         let object_pin = objects.finish()?;
         let row_ram = scratch.lease_ram(row_working_bytes)?;
         let objects = SortedRecordStore::open(&object_pin, scratch)?;
@@ -1125,38 +1192,40 @@ impl SourceExpectedDomain {
                 "Windows object-ID projected disposition coverage differs"
             );
         }
-        let mut roots = 0u64;
         // Each row is held to its key and the root to its place. Under the
-        // check-once policy, outside its gate, the three fields that takes
-        // are read from the row and nothing of it is allocated: this pass
-        // wrote every row from a typed object, and each is decoded in full
-        // when the expected pages are made of them. Otherwise the whole
-        // object is decoded here, as it always was.
-        let heads_only = !n2r_win32::verify_policy::full_unremembered();
-        for ordinal in 0..objects.len() {
-            let head = if heads_only {
-                objects.get::<ObjectHead>(ordinal)?
-            } else {
+        // check-once policy, outside its gate, this pass just wrote every row
+        // from a typed `Object` into `objects` with key `(path.len(), record_number)`
+        // and verified the single root while pushing, and `SortedRecordStore::open`
+        // verified the store's integrity and strictly ascending keys. Otherwise
+        // the whole object is decoded here, as it always was.
+        if !n2r_win32::verify_policy::full_unremembered() {
+            ensure!(
+                pushed_roots == 1,
+                "exactly one projected source root required"
+            );
+        } else {
+            let mut roots = 0u64;
+            for ordinal in 0..objects.len() {
                 let object: Object = objects.get(ordinal)?;
-                ObjectHead {
+                let head = ObjectHead {
                     record_number: object.record_number,
                     path: PathDepth(u64::try_from(object.path.len())?),
                     directory: object.directory,
-                }
-            };
-            ensure!(
-                objects.key(ordinal)? == ordered_key(head.path.0, head.record_number),
-                "projected object key or ordering differs"
-            );
-            if head.path.0 == 0 {
+                };
                 ensure!(
-                    head.directory && head.record_number == 5,
-                    "invalid projected root"
+                    objects.key(ordinal)? == ordered_key(head.path.0, head.record_number),
+                    "projected object key or ordering differs"
                 );
-                roots += 1;
+                if head.path.0 == 0 {
+                    ensure!(
+                        head.directory && head.record_number == 5,
+                        "invalid projected root"
+                    );
+                    roots += 1;
+                }
             }
+            ensure!(roots == 1, "exactly one projected source root required");
         }
-        ensure!(roots == 1, "exactly one projected source root required");
         source.revalidate()?;
         native.revalidate()?;
         let value = Self {

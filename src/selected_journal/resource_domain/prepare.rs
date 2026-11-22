@@ -1519,6 +1519,10 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     let mut owed: Vec<OwedRow> = Vec::with_capacity(MOST_OWED_ROWS);
     let mut owed_bytes = 0u64;
     let mut stage_start: Option<u64> = None;
+    let mut paths = RowPaths {
+        threaded: writer.is_some(),
+        ..RowPaths::default()
+    };
     let mut rows = n2r_win32::AscendingRanges::new(u64::from(f.range_count));
     while let Some((row, group_end)) = rows.next(|ordinal| {
         domain
@@ -1539,6 +1543,7 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         let use_stage = stage
             .as_ref()
             .is_some_and(|(buf, _)| row_bytes <= buf.capacity() as u64);
+        paths.count(row, row_bytes, use_stage, old_zero_unread);
         if use_stage {
             let (buf, _) = stage.as_mut().unwrap();
             if stage_start.is_some()
@@ -1900,7 +1905,61 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         );
     }
     revalidate_preparation_domain(domain, capture_witness)?;
+    eprintln!("{}", paths.line());
     Ok((ticket, whole))
+}
+
+/// How the journal's rows were written, for the line its preparation prints
+/// (as the apply prints `apply-writes:`): the rows staged in batches and
+/// those written one at a time, and the OLD-zero bytes not read again.
+#[derive(Default)]
+struct RowPaths {
+    threaded: bool,
+    staged_rows: u64,
+    staged_bytes: u64,
+    direct_rows: u64,
+    direct_bytes: u64,
+    old_zero_unread_bytes: u64,
+}
+
+impl RowPaths {
+    fn count(
+        &mut self,
+        row: JournalLayoutRow,
+        row_bytes: u64,
+        staged: bool,
+        old_zero_unread: bool,
+    ) {
+        if staged {
+            self.staged_rows += 1;
+            self.staged_bytes = self.staged_bytes.saturating_add(row_bytes);
+        } else {
+            self.direct_rows += 1;
+            self.direct_bytes = self.direct_bytes.saturating_add(row_bytes);
+        }
+        if old_zero_unread && row.capture.old_is_zero && !row.capture.old_is_source_free {
+            self.old_zero_unread_bytes = self
+                .old_zero_unread_bytes
+                .saturating_add(row.capture.length);
+        }
+    }
+
+    fn line(&self) -> String {
+        let gb = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
+        format!(
+            "journal-preparation: {} rows staged ({:.2} GB, written {}), {} rows written one at a time ({:.2} GB, read back); OLD-zero ranges not read again: {:.2} GB",
+            self.staged_rows,
+            gb(self.staged_bytes),
+            if self.threaded {
+                "on a thread of their own"
+            } else {
+                "by the preparing thread"
+            },
+            self.direct_rows,
+            gb(self.direct_bytes),
+            gb(self.old_zero_unread_bytes)
+        )
+    }
 }
 
 fn read_stored<J: ReadSeek>(

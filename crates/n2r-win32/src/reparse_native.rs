@@ -229,3 +229,50 @@ pub fn restore_fresh_owned(file: &File, expected: &Point) -> io::Result<Point> {
     }
     Ok(actual)
 }
+
+/// Fast path for setting a validated reparse point on a freshly created,
+/// constructor-owned empty shadow alias under `--verify fast`.
+///
+/// Skips the redundant pre/post identity, retrieval-pointer, and capture
+/// round-trips because the caller just created the empty handle in the
+/// private shadow tree and every alias link is verified in full on the
+/// converted volume before handoff.
+pub fn set_reparse_point_fast(file: &File, expected: &Point) -> io::Result<()> {
+    expected.validate()?;
+    let words = expected.buffer.len().div_ceil(8);
+    let mut stack = [0u64; 128];
+    let mut heap;
+    let storage: &mut [u64] = if words <= stack.len() {
+        &mut stack[..words]
+    } else {
+        heap = vec![0u64; words];
+        &mut heap
+    };
+    // SAFETY: `storage` holds at least `expected.buffer.len()` bytes with 8-byte alignment.
+    unsafe {
+        std::slice::from_raw_parts_mut(storage.as_mut_ptr().cast::<u8>(), expected.buffer.len())
+    }
+    .copy_from_slice(&expected.buffer);
+    let mut used = 0u32;
+    // SAFETY: SDK FSCTL_SET_REPARSE_POINT (0x900a4) on the caller's fresh
+    // owned handle, complete validated input, no output/DELETE/follow operation.
+    if unsafe {
+        DeviceIoControl(
+            file.as_raw_handle(),
+            FSCTL_SET_REPARSE_POINT,
+            storage.as_ptr().cast(),
+            expected.buffer.len() as u32,
+            ptr::null_mut(),
+            0,
+            &mut used,
+            ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if used != 0 {
+        return Err(invalid("reparse setter returned unexpected output"));
+    }
+    Ok(())
+}

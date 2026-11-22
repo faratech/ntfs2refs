@@ -238,6 +238,14 @@ pub fn install_fresh_owned_in(
     )
 }
 
+/// Fast path for installing a relative short-name alias reparse point on a
+/// freshly created shadow handle under `--verify fast`. Every installed link
+/// is independently verified in full on the converted volume before handoff.
+pub fn install_fresh_owned_fast(alias: &File, relative_target_component: &[u16]) -> io::Result<()> {
+    let expected = Point::relative_component_alias(relative_target_component)?;
+    reparse_native::set_reparse_point_fast(alias, &expected)
+}
+
 fn install_fresh_owned_under(
     parent: &File,
     examined: Option<&ExaminedParent>,

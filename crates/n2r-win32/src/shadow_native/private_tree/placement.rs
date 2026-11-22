@@ -323,9 +323,10 @@ fn per_move_retrieval_scope(resource: bool) -> &'static str {
     }
 }
 
-/// The progress artifact, rebuilt twice for every move. The recent phases
-/// and the pending step are moved into it; `json!` copied each of them once
-/// more, value by value, on the way in.
+/// The progress artifact, rebuilt for every move (and once more after the
+/// last: [`settle_progress`]). The recent phases and the pending step are
+/// moved into it; `json!` copied each of them once more, value by value, on
+/// the way in.
 fn progress_document(
     phase: &str,
     charged_bytes: u64,
@@ -357,6 +358,18 @@ fn progress_document(
         document["post_evacuation_barrier"] = barrier.clone();
     }
     document
+}
+
+/// The progress artifact once the move recorded as pending in it has been
+/// made and before its proof is recorded: [`progress`] with nothing pending
+/// would build the same document again, since nothing it is made of has
+/// changed but what was written into it as the move went (its charge and
+/// its evidence reservation).
+fn settle_progress(tree: &mut PrivateTree) {
+    settled(&mut tree.placement_progress);
+}
+fn settled(document: &mut serde_json::Value) {
+    document["pending"] = serde_json::Value::Null;
 }
 
 /// Record the bounded quantity in the progress artifact and refuse.
@@ -1470,7 +1483,11 @@ fn allocate_deferred(
         if let Err(message) = recorded {
             return Err(refuse(tree, counters, message));
         }
-        progress(tree, step.phase, *move_bytes, &evidence, None, counters);
+        // Where another step follows, the next thing done is to record it
+        // as pending: this record would be replaced unread.
+        if next_step + 1 >= deferred.len() {
+            progress(tree, step.phase, *move_bytes, &evidence, None, counters);
+        }
         next_step += 1;
     }
     Ok(())
@@ -1983,6 +2000,167 @@ pub(super) fn audit_recovered_maps(tree: &PrivateTree, bytes: u64, moves: usize)
     Ok(())
 }
 
+/// How many files' first mapping queries [`TrackingQueries`] makes at a
+/// time: their runs wait here until the files are tracked.
+const TRACKING_ROUND: usize = 4096;
+/// The most helpers that make them, as the final comparison of the files'
+/// mappings has.
+const TRACKING_HELPERS: usize = 8;
+
+/// The first query of every file's mapping, which binds its allocated
+/// ownership before any move, made by helper threads.
+///
+/// One thread asked Windows for the complete mapping of every stream's file
+/// on the shadow, one after another, before the first move. The queries
+/// are read-only, of different files, and nothing changes the shadow until
+/// they are all made (the loop that makes them changes only this process's
+/// records of each file). Here, in a run that verifies each thing once, up
+/// to [`TRACKING_HELPERS`] helpers make the queries of a round of files,
+/// each under its file's tracking workspace reserved as spare memory and
+/// then held to the runs it returned, and the calling thread takes them in
+/// slot order and tracks each file from them as it would have from its own
+/// query ([`unwritten::PrivatePlaceholder::track_current_prefix_resource_queried`]):
+/// every check, the order of the files and the first failure reported are
+/// what they were. A file no helper queried (its workspace refused, too few
+/// helpers granted a stack) is queried by the calling thread, as before. A
+/// thorough run and a recovered placement query one file at a time.
+struct TrackingQueries<'p> {
+    payer: Option<&'p dyn report_memory::ReportMemoryAccountant>,
+    // The positions in the slot order of the round's files.
+    start: usize,
+    end: usize,
+    // What the helpers' queries of the round returned, and the lease of
+    // this list; empty where the round was not handed to helpers.
+    runs: Vec<Option<QueriedRuns>>,
+    _lists: Option<Box<dyn report_memory::ReportMemoryLease>>,
+}
+type QueriedRuns = (
+    io::Result<Vec<crate::stream_layout::Run>>,
+    Box<dyn report_memory::ReportMemoryLease>,
+);
+impl<'p> TrackingQueries<'p> {
+    fn new(payer: Option<&'p dyn report_memory::ReportMemoryAccountant>) -> Self {
+        Self {
+            payer,
+            start: 0,
+            end: 0,
+            runs: Vec::new(),
+            _lists: None,
+        }
+    }
+
+    /// Makes the queries of the round of files that begins at `position`
+    /// of `slots`, where the round before has been taken.
+    fn ahead(&mut self, tree: &PrivateTree, slots: &[usize], position: usize) {
+        let Some(payer) = self.payer else {
+            return;
+        };
+        if position < self.end {
+            return;
+        }
+        self.runs = Vec::new();
+        self._lists = None;
+        self.start = position;
+        self.end = position.saturating_add(TRACKING_ROUND).min(slots.len());
+        let count = self.end - self.start;
+        let wanted = std::thread::available_parallelism()
+            .map_or(1, |cores| cores.get())
+            .min(TRACKING_HELPERS)
+            .min(count);
+        let mut stacks = Vec::new();
+        while wanted >= 2 && stacks.len() < wanted {
+            match payer.reserve_spare(super::super::HELPER_THREAD_BYTES) {
+                Ok(lease) => stacks.push(lease),
+                Err(_) => break,
+            }
+        }
+        // The round's lists: the files, the helpers' results and what waits.
+        let lists = (count
+            * (std::mem::size_of::<Option<&unwritten::PrivatePlaceholder>>()
+                + std::mem::size_of::<std::sync::Mutex<Option<QueriedRuns>>>()
+                + std::mem::size_of::<Option<QueriedRuns>>())) as u64
+            + 4096;
+        let lists = match stacks.len() >= 2 {
+            true => payer.reserve_spare(lists).ok(),
+            false => None,
+        };
+        if lists.is_none() {
+            return;
+        }
+        let files: Vec<Option<&unwritten::PrivatePlaceholder>> = slots[self.start..self.end]
+            .iter()
+            .map(|&slot| tree.file_by_slot(slot).ok())
+            .collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let results: Vec<std::sync::Mutex<Option<QueriedRuns>>> =
+            files.iter().map(|_| std::sync::Mutex::new(None)).collect();
+        let query = || {
+            let _sampled = crate::stack_sampler::helper();
+            loop {
+                let index = next.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                let Some(file) = files.get(index) else {
+                    break;
+                };
+                let Some(file) = file else {
+                    continue;
+                };
+                let Some(Ok(bytes)) = file.tracking_query_bytes() else {
+                    continue;
+                };
+                let Ok(mut lease) = payer.reserve_spare(bytes) else {
+                    continue;
+                };
+                let Some(runs) = ({
+                    let _timed = crate::perf::scope(crate::perf::Point::AtOnce);
+                    file.tracking_runs()
+                }) else {
+                    continue;
+                };
+                // What waits for the calling thread is the runs.
+                let kept = runs.as_ref().map_or(0, |runs| {
+                    runs.capacity() * std::mem::size_of::<crate::stream_layout::Run>()
+                }) as u64
+                    + 4096;
+                let _ = lease.shrink_to(kept);
+                if let Ok(mut slot) = results[index].lock() {
+                    *slot = Some((runs, lease));
+                }
+            }
+        };
+        std::thread::scope(|scope| {
+            let helpers: Vec<_> = (0..stacks.len())
+                .map_while(|_| {
+                    std::thread::Builder::new()
+                        .name("n2r-placement-track".into())
+                        .spawn_scoped(scope, &query)
+                        .ok()
+                })
+                .collect();
+            // A helper that failed leaves its files to the calling thread.
+            for helper in helpers {
+                let _ = helper.join();
+            }
+        });
+        drop(stacks);
+        self.runs = results
+            .into_iter()
+            .map(|slot| {
+                slot.into_inner()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            })
+            .collect();
+        self._lists = lists;
+    }
+
+    /// What a helper's query returned for the file at `position` of the slot
+    /// order, with the lease it is held under; `None` where none was made.
+    fn take(&mut self, position: usize) -> Option<QueriedRuns> {
+        self.runs
+            .get_mut(position.checked_sub(self.start)?)
+            .and_then(Option::take)
+    }
+}
+
 fn run_domain_inner(
     tree: &mut PrivateTree,
     input: &impl InputDomain,
@@ -2242,11 +2420,17 @@ fn run_domain_inner(
         None
     };
     let mut holes = Vec::new();
-    for index in &indexes {
+    let mut queried = TrackingQueries::new(payer.as_deref().filter(|_| {
+        limits.resource && recovered.is_none() && crate::verify_policy::verifies_once()
+    }));
+    for (position, index) in indexes.iter().enumerate() {
+        queried.ahead(tree, &indexes, position);
         let file = tree.file_by_slot_mut(*index)?;
         if limits.resource {
             let file_holes = if recovered.is_some() {
                 file.recovered_holes_resource()?
+            } else if let Some((runs, _lease)) = queried.take(position) {
+                file.track_current_prefix_resource_queried(runs)?
             } else {
                 file.track_current_prefix_resource()?
             };
@@ -2474,7 +2658,7 @@ fn run_domain_inner(
         parked.push(plan_record);
     }
     drop(plan_json_memory);
-    for movement in &evacuation.moves {
+    for (moved, movement) in evacuation.moves.iter().enumerate() {
         let mut offset = 0;
         while offset < movement.length {
             let length = (movement.length - offset).min(MOVE_BYTES);
@@ -2548,14 +2732,22 @@ fn run_domain_inner(
             if let Err(message) = recorded {
                 return Err(refuse(tree, &counters, message));
             }
-            progress(
-                tree,
-                "evacuate-blocker",
-                move_bytes,
-                &evidence,
-                None,
-                &counters,
-            );
+            // Where another piece follows, the next thing done is to record
+            // it as pending: this record would be replaced unread.
+            let last = offset + length >= movement.length
+                && evacuation.moves[moved + 1..]
+                    .iter()
+                    .all(|later| later.length == 0);
+            if last {
+                progress(
+                    tree,
+                    "evacuate-blocker",
+                    move_bytes,
+                    &evidence,
+                    None,
+                    &counters,
+                );
+            }
             offset += length;
         }
     }
@@ -2793,14 +2985,7 @@ fn run_domain_inner(
                                 }
                                 result => result?,
                             };
-                            progress(
-                                tree,
-                                "original-coordinate",
-                                move_bytes,
-                                &evidence,
-                                None,
-                                &counters,
-                            );
+                            settle_progress(tree);
                             if proof["native_error"] != serde_json::Value::Null
                                 || proof["all_placements_match"] != true
                             {
@@ -3338,6 +3523,50 @@ mod move_record_tests {
             (new.compact_bytes, new.saved_bytes, new.len())
         );
         assert_eq!(old.moves, new.moves);
+    }
+
+    #[test]
+    fn a_settled_move_is_the_progress_document_made_again_without_it() {
+        let mut sink = Recorded::default();
+        let with_sink = Evidence::new(Some(&mut sink), usize::MAX);
+        let without = Evidence::default();
+        for evidence in [&with_sink, &without] {
+            let mut counters = Counters {
+                files: 7,
+                desired_runs: 12,
+                move_evidence_reservation_bytes: 5,
+                ..Counters::default()
+            };
+            let pending = serde_json::json!({"object_index":3,"logical_offset":4096,
+                "destination":1 << 30,"length":65536,"placement_result_recorded":false,
+                "budget_charged":false,"canonical_object_index":2,"stream_name_utf16":[65, 66]});
+            let mut document = progress_document(
+                "original-coordinate",
+                1 << 20,
+                evidence,
+                Some(pending),
+                &counters,
+            );
+            // What a move writes into the document as it goes.
+            document["charged_move_bytes"] = ((1u64 << 20) + 65536).into();
+            document["pending"]["budget_charged"] = true.into();
+            counters.move_evidence_reservation_bytes = 777;
+            document["counters"]["move_evidence_reservation_bytes"] =
+                counters.move_evidence_reservation_bytes.into();
+            settled(&mut document);
+            let again = progress_document(
+                "original-coordinate",
+                (1 << 20) + 65536,
+                evidence,
+                None,
+                &counters,
+            );
+            assert_eq!(document, again);
+            assert_eq!(
+                serde_json::to_vec(&document).unwrap(),
+                serde_json::to_vec(&again).unwrap()
+            );
+        }
     }
 
     #[test]

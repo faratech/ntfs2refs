@@ -104,6 +104,27 @@ fn empty_directory(file: &File) -> io::Result<()> {
 pub fn capture(file: &File) -> io::Result<Option<Point>> {
     synchronous(file)?;
     let before = file_storage::file_id_info(file)?;
+    query_point(file, || {
+        if file_storage::file_id_info(file)? != before {
+            return Err(invalid("reparse identity changed during query"));
+        }
+        Ok(())
+    })
+}
+
+/// [`capture`] through a handle its caller opened itself without
+/// FILE_FLAG_OVERLAPPED, on a volume held READ_ONLY, whose identity the
+/// caller reads through the same handle: the point alone, one
+/// FSCTL_GET_REPARSE_POINT. The handle is not asked for its mode, nor for
+/// its identity before and after the query: a handle names one object for
+/// as long as it is open, and nothing can change that object's point.
+pub fn capture_held_readonly(file: &File) -> io::Result<Option<Point>> {
+    query_point(file, || Ok(()))
+}
+
+/// FSCTL_GET_REPARSE_POINT on `file`; `after` runs once the call has
+/// returned, before its answer is read.
+fn query_point(file: &File, after: impl FnOnce() -> io::Result<()>) -> io::Result<Option<Point>> {
     // Asked of every object, and nearly always answered "not a reparse
     // point": the sixteen KiB for the answer are this thread's query buffer.
     crate::query_scratch::with(reparse_layout::MAX_REPARSE_BYTES, |storage| {
@@ -123,9 +144,7 @@ pub fn capture(file: &File) -> io::Result<Option<Point>> {
             )
         };
         let error = (ok == 0).then(io::Error::last_os_error);
-        if file_storage::file_id_info(file)? != before {
-            return Err(invalid("reparse identity changed during query"));
-        }
+        after()?;
         if let Some(error) = error {
             if error.raw_os_error() == Some(ERROR_NOT_A_REPARSE_POINT as i32) {
                 if used != 0 {

@@ -630,12 +630,16 @@ impl<'scope> ObservedAhead<'scope> {
     }
 
     /// The objects and what the helpers saw of their first streams (nothing
-    /// where nothing was handed over, or a helper failed).
+    /// where nothing was handed over). A helper that panicked is not hidden:
+    /// its panic is carried on here, on the pass's thread, as a helper's of a
+    /// batch the pass waits for is (`ordered_observation::observe_batch`);
+    /// it may have left a lock of the ledger poisoned.
     fn finish(self) -> (Vec<LeasedExpectedObject>, Vec<SupplyStreamSeen>) {
-        let seen = self
-            .seen
-            .and_then(|helpers| helpers.join().ok())
-            .unwrap_or_default();
+        let seen = match self.seen.map(std::thread::ScopedJoinHandle::join) {
+            Some(Ok(seen)) => seen,
+            Some(Err(panic)) => std::panic::resume_unwind(panic),
+            None => Vec::new(),
+        };
         (self.objects, seen)
     }
 }

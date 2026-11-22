@@ -2136,9 +2136,19 @@ impl<'p> TrackingQueries<'p> {
                         .ok()
                 })
                 .collect();
-            // A helper that failed leaves its files to the calling thread.
+            // A helper that could not be started leaves its files to the
+            // calling thread. One that panicked is not hidden: every helper
+            // is waited for and the first panic is carried on here, as a
+            // batch's helper's is (`ordered_observation::observe_batch`); it
+            // may have left a lock of the ledger poisoned.
+            let mut panicked = None;
             for helper in helpers {
-                let _ = helper.join();
+                if let Err(panic) = helper.join() {
+                    panicked.get_or_insert(panic);
+                }
+            }
+            if let Some(panic) = panicked {
+                std::panic::resume_unwind(panic);
             }
         });
         drop(stacks);

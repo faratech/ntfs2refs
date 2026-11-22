@@ -422,6 +422,74 @@ pub fn verify_owned_in(
     )
 }
 
+fn validate_known_canonical_pair(
+    parent: &Snapshot,
+    canonical_id: [u8; 24],
+    alias: &Snapshot,
+) -> io::Result<Vec<u16>> {
+    if canonical_id[..8] == [0; 8]
+        || canonical_id[8..] == [0; 16]
+        || parent.id[..8] != canonical_id[..8]
+        || canonical_id[..8] != alias.id[..8]
+        || parent.id == canonical_id
+        || parent.id == alias.id
+        || canonical_id == alias.id
+        || u32::from_le_bytes(parent.tag[..4].try_into().unwrap()) & 0x400 != 0
+        || parent.tag[4..] != [0; 4]
+        || u32::from_le_bytes(alias.standard[16..20].try_into().unwrap()) != 1
+    {
+        return Err(invalid(
+            "derived alias needs distinct same-volume objects and an ordinary held parent",
+        ));
+    }
+    Ok(direct_child(parent, alias)?.encode_utf16().collect())
+}
+
+/// [`verify_owned_in`] when the caller has already opened and verified the
+/// canonical target on this exact held READ_ONLY ReFS volume and recorded its
+/// 24-byte `FileIdInfo`. Used under `verifies_once()` /
+/// `repeats_once_as_verified()` after `walk converted metadata` has verified
+/// every canonical object, avoiding 112k redundant canonical opens and queries.
+pub fn verify_owned_in_with_known_canonical(
+    parent: &File,
+    examined: &ExaminedParent,
+    canonical_file_id_info: [u8; 24],
+    alias: &File,
+    directory: bool,
+    relative_target_component: &[u16],
+) -> io::Result<Observation> {
+    let _ = parent;
+    let parent_before = &examined.before;
+    let expected = Point::relative_component_alias(relative_target_component)?;
+    let check_child_refs = !crate::verify_policy::checks_once();
+    let alias_before =
+        snapshot_checked(alias, directory, check_child_refs).map_err(|e| of(ALIAS, e))?;
+    let alias_component =
+        validate_known_canonical_pair(parent_before, canonical_file_id_info, &alias_before)?;
+    let alias_point = reparse_native::capture(alias)?;
+    if alias_point.as_ref() != Some(&expected)
+        || u32::from_le_bytes(alias_before.tag[..4].try_into().unwrap()) & 0x400 == 0
+        || u32::from_le_bytes(alias_before.tag[4..].try_into().unwrap()) != expected.tag()
+        || (!directory && u64::from_le_bytes(alias_before.standard[8..16].try_into().unwrap()) != 0)
+    {
+        return Err(invalid(
+            "held derived alias has different native reparse bytes or type",
+        ));
+    }
+    Ok(Observation {
+        parent_file_id_info: parent_before.id,
+        canonical_file_id_info,
+        alias_file_id_info: alias_before.id,
+        directory,
+        alias_component,
+        relative_target_component: relative_target_component.to_vec(),
+        point: expected,
+        same_volume_and_parent_verified: true,
+        canonical_identity_and_shape_unchanged: true,
+        grants_admission_or_source_authority: false,
+    })
+}
+
 /// [`verify_owned_in`], where `seen` is what the installation made in the
 /// same call has just read of the target and of the link's point.
 fn verify_held(
@@ -517,5 +585,38 @@ mod role_tests {
         }
         assert_ne!(PARENT, CANONICAL);
         assert_ne!(CANONICAL, ALIAS);
+    }
+
+    #[test]
+    fn known_canonical_pair_validates_volume_serial_and_distinct_identities() {
+        let mut parent_id = [0u8; 24];
+        parent_id[..8].copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes());
+        parent_id[8] = 1;
+        let mut canonical_id = parent_id;
+        canonical_id[8] = 2;
+        let mut alias_id = parent_id;
+        alias_id[8] = 3;
+        let mut alias_standard = [0u8; 24];
+        alias_standard[16..20].copy_from_slice(&1u32.to_le_bytes());
+        let parent = Snapshot {
+            id: parent_id,
+            standard: [0u8; 24],
+            tag: [0u8; 8],
+            path: "\\Device\\HarddiskVolume1\\Windows".to_string(),
+        };
+        let alias = Snapshot {
+            id: alias_id,
+            standard: alias_standard,
+            tag: [0u8; 8],
+            path: "\\Device\\HarddiskVolume1\\Windows\\PROGRA~1".to_string(),
+        };
+        let comp = validate_known_canonical_pair(&parent, canonical_id, &alias).unwrap();
+        assert_eq!(comp, "PROGRA~1".encode_utf16().collect::<Vec<_>>());
+        assert!(validate_known_canonical_pair(&parent, [0u8; 24], &alias).is_err());
+        assert!(validate_known_canonical_pair(&parent, parent_id, &alias).is_err());
+        assert!(validate_known_canonical_pair(&parent, alias_id, &alias).is_err());
+        let mut other_vol = canonical_id;
+        other_vol[0] ^= 0xff;
+        assert!(validate_known_canonical_pair(&parent, other_vol, &alias).is_err());
     }
 }

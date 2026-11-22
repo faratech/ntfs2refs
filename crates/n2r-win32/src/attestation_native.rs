@@ -292,9 +292,12 @@ pub(crate) fn snapshot_with_ea(file: &File) -> Snapshot {
 }
 
 /// Source NTFS only. FileCaseSensitiveInfo is Win32 class 23 and its SDK
-/// FILE_CASE_SENSITIVE_INFO contains one ULONG Flags (four bytes). Value1 means
-/// case-sensitive; higher layers refuse every nonzero value, including unknown
-/// flags. Failed queries retain the actual Windows error, never flags zero.
+/// FILE_CASE_SENSITIVE_INFO contains one ULONG Flags (four bytes). Value 1
+/// means case-sensitive, which converts (#103: the mark is counted and kept
+/// in the run's records, and set on the new volume where the running
+/// Windows was shown to hold it); higher layers refuse any other nonzero
+/// value, and two names of one directory that differ only by case. Failed
+/// queries retain the actual Windows error, never flags zero.
 fn source_directory_case(file: &File, queries: &[Query]) -> Option<Query> {
     let standard = queries.iter().find(|query| query.class == 1)?;
     (standard.native_error.is_none() && standard.bytes.len() == 24 && standard.bytes[21] != 0)

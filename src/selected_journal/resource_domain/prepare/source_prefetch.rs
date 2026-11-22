@@ -9,8 +9,9 @@
 //! Any out-of-order read (e.g. a backward COPY reference) falls back directly
 //! to the primary handle, and if lanes or spare memory are unavailable the
 //! caller falls back to `source.with_read_ahead`. A run that verifies each
-//! thing once does not read the OLD-zero ranges here (`old_zero_unread` in
-//! `prepare_inner`), and they are not read ahead.
+//! thing once does not read the OLD-zero ranges here (`OldZero::Unread`),
+//! and the lanes do not read them ahead; `with_read_ahead`'s own window may
+//! still read through them.
 use super::*;
 use std::{
     collections::VecDeque,
@@ -47,7 +48,7 @@ struct PrefetchedSource<'a, R: ReadSeek> {
     domain: &'a ResourceJournalDomain<'a>,
     range_count: u64,
     /// The OLD-zero ranges are not read by the preparation
-    /// (`old_zero_unread` in `prepare_inner`): none is read ahead either.
+    /// (`OldZero::Unread`): none is read ahead either.
     old_zero_unread: bool,
     next_ordinal: u64,
     /// Unqueued tail `(start, end)` of a range larger than `SPAN`.
@@ -298,6 +299,13 @@ pub(super) enum SourceReader<'a> {
 }
 
 impl SourceReader<'_> {
+    /// Whether the source is read ahead by read lanes, which pass over the
+    /// ranges the preparation does not read, rather than through a window of
+    /// its own, which may read through them.
+    pub(super) fn reads_on_lanes(&self) -> bool {
+        matches!(self, Self::Prefetched(_))
+    }
+
     pub(super) fn set_read_ahead_reach(&mut self, end: u64) {
         if let Self::Direct(source) = self {
             source.set_read_ahead_reach(end);

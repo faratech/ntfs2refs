@@ -298,7 +298,7 @@ pub(crate) fn prepare_native_partition_from_protected_capture<
             journal,
             facts.native.path,
             true,
-            false,
+            OldZero::Read,
             None,
             read_back_buffers,
             false,
@@ -652,7 +652,7 @@ fn copy_candidate_checked<S: ReadSeek, R: ReadSeek, J: Write>(
 static ZERO_CHUNK: [u8; 64 * 1024] = [0; 64 * 1024];
 
 /// `verify_zero_selected_with` for an OLD-zero row that is not read again
-/// (`old_zero_unread` in [`prepare_inner`]): as many zero bytes as the row
+/// ([`OldZero::Unread`], [`prepare_inner`]): as many zero bytes as the row
 /// has go to the OLD aggregates and to the row's own digest, framed and in
 /// the order that reading the row gives them, so every digest is the one a
 /// read of the row's zero bytes makes. A digest already known for the row's
@@ -907,10 +907,15 @@ fn complete_rows<J: DurableIo>(
 /// read back; `stage` becomes the other, empty, buffer. The hash is the same:
 /// the bytes read back are the batch's or the preparation stops. The file is
 /// then the writing thread's until [`stage_writer::StageWriter::drain`].
+///
+/// Either way the batch is written only where the journal's position is the
+/// batch's own offset: where it is not read back, nothing else would notice
+/// it written anywhere else before the gate.
 #[allow(clippy::too_many_arguments)]
 fn complete_staged_rows<J: DurableIo>(
     f: JournalLayoutFacts,
     file: &mut J,
+    journal_path: &Path,
     stage: &mut Vec<u8>,
     stage_start: &mut Option<u64>,
     owed: &mut Vec<OwedRow>,
@@ -955,6 +960,12 @@ fn complete_staged_rows<J: DurableIo>(
         *stage = writer.submit(base, std::mem::take(stage))?;
         return Ok(());
     }
+    let at = file.stream_position()?;
+    ensure!(
+        at == base,
+        "journal preparation: the journal {} is at offset {at}, not at offset {base} where its staged rows begin; the journal is not used",
+        journal_path.display()
+    );
     file.write_all(stage)?;
     match written.as_deref_mut() {
         // Hashed as written, in file order; the gate reads the body again.
@@ -1019,7 +1030,7 @@ pub(crate) fn prepare_diagnostic<'domain, 'capture, R: ReadSeek, S: ReadSeek>(
         &mut file,
         permit.path(),
         false,
-        false,
+        OldZero::Read,
         None,
         read_back_buffers,
         true,
@@ -1210,6 +1221,13 @@ fn prepare_native_inner<'journal, 'domain, 'capture, S: ReadSeek>(
         old_zero_unread,
         events,
         |prefetched| {
+            let old_zero = if old_zero_unread {
+                OldZero::Unread {
+                    read_ahead_passes_over: prefetched.reads_on_lanes(),
+                }
+            } else {
+                OldZero::Read
+            };
             prepare_inner(
                 domain,
                 prefetched,
@@ -1217,7 +1235,7 @@ fn prepare_native_inner<'journal, 'domain, 'capture, S: ReadSeek>(
                 journal,
                 facts.path,
                 same_captured_source,
-                old_zero_unread,
+                old_zero,
                 capture_witness,
                 read_back_buffers,
                 false,
@@ -1303,11 +1321,11 @@ fn hashed_as_written(f: JournalLayoutFacts) -> Option<bool> {
 /// first range. The rows are taken in the same order and each read as
 /// before; only the index is looked at a few rows ahead.
 ///
-/// With `old_zero_unread`, an OLD-zero row is not read from `source`: its
-/// zero bytes are given to the OLD aggregates and its digest from memory
-/// ([`old_zero_unread_selected`]). Only for a run that verifies each thing
-/// once, from its own capture, which read those bytes and found them zero,
-/// before a gate that reads them again against the OLD aggregate.
+/// With `old_zero` [`OldZero::Unread`], an OLD-zero row is not read from
+/// `source`: its zero bytes are given to the OLD aggregates and its digest
+/// from memory ([`old_zero_unread_selected`]). Only for a run that verifies
+/// each thing once, from its own capture, which read those bytes and found
+/// them zero, before a gate that reads them again against the OLD aggregate.
 #[allow(clippy::too_many_arguments)]
 fn prepare_inner<R: ReadSeek, S: ReadSeek, J: PreparedJournal>(
     domain: &ResourceJournalDomain<'_>,
@@ -1316,7 +1334,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: PreparedJournal>(
     file: &mut J,
     journal_path: &Path,
     same_captured_source: bool,
-    old_zero_unread: bool,
+    old_zero: OldZero,
     capture_witness: Option<&CaptureRevalidation<'_>>,
     read_back_buffers: usize,
     need_whole: bool,
@@ -1336,7 +1354,9 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: PreparedJournal>(
     // writes each batch (and reads it back where batches are) while this one
     // stages the next. Without it, or for a journal written through a cache
     // of its own, this thread writes them, as before.
-    let read_back = hashed_as_written(f) == Some(true);
+    // Decided once, here, for the writing thread and for this one alike.
+    let hashing = hashed_as_written(f);
+    let read_back = hashing == Some(true);
     let writing = if stage.is_some() && file.plain_handle().is_some() {
         WriterMemory::lease(domain, read_back)
     } else {
@@ -1353,11 +1373,13 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: PreparedJournal>(
             source,
             candidate,
             file,
+            journal_path,
             same_captured_source,
-            old_zero_unread,
+            old_zero,
             capture_witness,
             read_back_buffers,
             need_whole,
+            hashing,
             reach,
             stage,
             None,
@@ -1384,11 +1406,13 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: PreparedJournal>(
             source,
             candidate,
             &mut shared,
+            journal_path,
             same_captured_source,
-            old_zero_unread,
+            old_zero,
             capture_witness,
             read_back_buffers,
             need_whole,
+            hashing,
             reach,
             stage,
             writer,
@@ -1435,18 +1459,21 @@ impl WriterMemory {
 
 /// The body of [`prepare_inner`]: writes the journal through `file`, staging
 /// rows in `stage` where it is given, and handing the staged batches to
-/// `writer` where there is one.
+/// `writer` where there is one. `hashing` is [`hashed_as_written`], as
+/// `prepare_inner` decided it for the writer too.
 #[allow(clippy::too_many_arguments)]
 fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     domain: &ResourceJournalDomain<'_>,
     source: &mut R,
     candidate: &mut S,
     mut file: &mut J,
+    journal_path: &Path,
     same_captured_source: bool,
-    old_zero_unread: bool,
+    old_zero: OldZero,
     capture_witness: Option<&CaptureRevalidation<'_>>,
     read_back_buffers: usize,
     need_whole: bool,
+    hashing: Option<bool>,
     mut reach: impl FnMut(&mut R, u64),
     mut stage: Option<(Vec<u8>, crate::ntfs_inspect::paged_storage::SourceRamLease)>,
     mut writer: Option<stage_writer::StageWriter<'_, '_>>,
@@ -1483,7 +1510,7 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     // Every digest of a journal this build writes, and its ticket's, is
     // BLAKE3 (`n2r_win32::bulk_digest`); the ticket says so.
     let algorithm = Algorithm::WRITTEN;
-    let mut written = if let Some(read_back) = hashed_as_written(f) {
+    let mut written = if let Some(read_back) = hashing {
         let whole = if need_whole {
             let mut whole = burst_pin_hash(algorithm, read_back_buffers)?;
             whole.update(&vec![0u8; usize::try_from(f.body_offset)?])?;
@@ -1524,6 +1551,8 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     let mut stage_start: Option<u64> = None;
     let mut paths = RowPaths {
         threaded: writer.is_some(),
+        hashing,
+        old_zero,
         ..RowPaths::default()
     };
     let mut rows = n2r_win32::AscendingRanges::new(u64::from(f.range_count));
@@ -1546,7 +1575,7 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         let use_stage = stage
             .as_ref()
             .is_some_and(|(buf, _)| row_bytes <= buf.capacity() as u64);
-        paths.count(row, row_bytes, use_stage, old_zero_unread);
+        paths.count(row, row_bytes, use_stage);
         if use_stage {
             let (buf, _) = stage.as_mut().unwrap();
             if stage_start.is_some()
@@ -1558,6 +1587,7 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 complete_staged_rows(
                     f,
                     file,
+                    journal_path,
                     buf,
                     &mut stage_start,
                     &mut owed,
@@ -1605,7 +1635,7 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                     &mut old_selected,
                     &mut buffer,
                 )?)
-            } else if row.capture.old_is_zero && old_zero_unread {
+            } else if row.capture.old_is_zero && old_zero.unread() {
                 old_zero_unread_selected(
                     &range,
                     &mut old_selected,
@@ -1686,6 +1716,7 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 complete_staged_rows(
                     f,
                     file,
+                    journal_path,
                     buf,
                     &mut stage_start,
                     &mut owed,
@@ -1719,7 +1750,7 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 &mut old_selected,
                 &mut buffer,
             )?)
-        } else if row.capture.old_is_zero && old_zero_unread {
+        } else if row.capture.old_is_zero && old_zero.unread() {
             old_zero_unread_selected(
                 &range,
                 &mut old_selected,
@@ -1814,6 +1845,7 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
             complete_staged_rows(
                 f,
                 file,
+                journal_path,
                 buf,
                 &mut stage_start,
                 &mut owed,
@@ -1914,10 +1946,14 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
 
 /// How the journal's rows were written, for the line its preparation prints
 /// (as the apply prints `apply-writes:`): the rows staged in batches and
-/// those written one at a time, and the OLD-zero bytes not read again.
+/// those written one at a time, where they were read back, and the OLD-zero
+/// bytes the preparation did not read.
 #[derive(Default)]
 struct RowPaths {
     threaded: bool,
+    /// [`hashed_as_written`], as the preparation decided it.
+    hashing: Option<bool>,
+    old_zero: OldZero,
     staged_rows: u64,
     staged_bytes: u64,
     direct_rows: u64,
@@ -1926,13 +1962,7 @@ struct RowPaths {
 }
 
 impl RowPaths {
-    fn count(
-        &mut self,
-        row: JournalLayoutRow,
-        row_bytes: u64,
-        staged: bool,
-        old_zero_unread: bool,
-    ) {
+    fn count(&mut self, row: JournalLayoutRow, row_bytes: u64, staged: bool) {
         if staged {
             self.staged_rows += 1;
             self.staged_bytes = self.staged_bytes.saturating_add(row_bytes);
@@ -1940,7 +1970,7 @@ impl RowPaths {
             self.direct_rows += 1;
             self.direct_bytes = self.direct_bytes.saturating_add(row_bytes);
         }
-        if old_zero_unread && row.capture.old_is_zero && !row.capture.old_is_source_free {
+        if self.old_zero.unread() && row.capture.old_is_zero && !row.capture.old_is_source_free {
             self.old_zero_unread_bytes = self
                 .old_zero_unread_bytes
                 .saturating_add(row.capture.length);
@@ -1950,7 +1980,7 @@ impl RowPaths {
     fn line(&self) -> String {
         let gb = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
         format!(
-            "journal-preparation: {} rows staged ({:.2} GB, written {}), {} rows written one at a time ({:.2} GB, read back); OLD-zero ranges not read again: {:.2} GB",
+            "journal-preparation: {} rows staged ({:.2} GB, written {}), {} rows written one at a time ({:.2} GB); {}; OLD-zero ranges the preparation did not read: {:.2} GB{}",
             self.staged_rows,
             gb(self.staged_bytes),
             if self.threaded {
@@ -1960,8 +1990,41 @@ impl RowPaths {
             },
             self.direct_rows,
             gb(self.direct_bytes),
-            gb(self.old_zero_unread_bytes)
+            match self.hashing {
+                Some(true) => "every row read back as it was written",
+                Some(false) => {
+                    "staged rows hashed as written, rows written one at a time read back as they were written"
+                }
+                None => "the whole journal read back once written",
+            },
+            gb(self.old_zero_unread_bytes),
+            match self.old_zero {
+                OldZero::Unread {
+                    read_ahead_passes_over: false,
+                } =>
+                    " (the source was read without read lanes: its read-ahead may have read through them)",
+                _ => "",
+            }
         )
+    }
+}
+
+/// Whether the preparation reads the source's OLD-zero ranges
+/// (`old_zero_unread_selected`), and where it does not, whether the
+/// source's read-ahead passes over them too: read lanes do, a source read
+/// through its own window may read through them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum OldZero {
+    #[default]
+    Read,
+    Unread {
+        read_ahead_passes_over: bool,
+    },
+}
+
+impl OldZero {
+    fn unread(self) -> bool {
+        matches!(self, Self::Unread { .. })
     }
 }
 
@@ -2400,6 +2463,7 @@ mod tests {
         let result = complete_staged_rows(
             facts(rows),
             &mut journal,
+            Path::new("journal"),
             &mut stage,
             &mut stage_start,
             &mut owed,
@@ -2452,6 +2516,7 @@ mod tests {
             complete_staged_rows(
                 facts(rows),
                 &mut shared,
+                Path::new("journal"),
                 &mut stage,
                 &mut stage_start,
                 &mut owed,
@@ -2598,6 +2663,82 @@ mod tests {
             n2r_win32::bulk_digest::digest(Algorithm::WRITTEN, &new[..ROW as usize]).unwrap(),
             "and its NEW digest"
         );
+    }
+
+    #[test]
+    fn the_preparation_line_says_what_was_read_back_and_left_unread() {
+        let line = |hashing, old_zero| {
+            RowPaths {
+                hashing,
+                old_zero,
+                ..RowPaths::default()
+            }
+            .line()
+        };
+        let lanes = OldZero::Unread {
+            read_ahead_passes_over: true,
+        };
+        let window = OldZero::Unread {
+            read_ahead_passes_over: false,
+        };
+        assert!(line(Some(true), OldZero::Read).contains("every row read back as it was written"));
+        assert!(line(Some(false), lanes).contains(
+            "staged rows hashed as written, rows written one at a time read back as they were written"
+        ));
+        let whole = line(None, OldZero::Read);
+        assert!(
+            whole.contains("the whole journal read back once written")
+                && !whole.contains("one at a time read back"),
+            "{whole}"
+        );
+        assert!(!line(Some(false), lanes).contains("read-ahead may have read through them"));
+        assert!(line(Some(false), window).contains("read-ahead may have read through them"));
+    }
+
+    #[test]
+    fn a_staged_batch_is_written_only_at_its_own_offset() {
+        let algorithm = Algorithm::WRITTEN;
+        let base = BODY + HEADER as u64;
+        for read_back in [false, true] {
+            let mut journal = Memory {
+                bytes: Cursor::new(vec![0u8; usize::try_from(base).unwrap() + 1]),
+                corrupt_at: None,
+            };
+            journal.seek(SeekFrom::Start(base + 1)).unwrap();
+            let (mut stage, mut owed) = staged(base, 2);
+            let mut written = WrittenHashes {
+                whole: None,
+                immutable: n2r_win32::bulk_digest::HashedBehind::new(algorithm, 4096).unwrap(),
+                read_back,
+            };
+            let error = complete_staged_rows(
+                facts(2),
+                &mut journal,
+                Path::new("journal"),
+                &mut stage,
+                &mut Some(base),
+                &mut owed,
+                &mut RecordHashes::here(algorithm),
+                &mut RecordHashes::here(algorithm),
+                &mut ZeroDigests::new(),
+                Some(&mut written),
+                &mut vec![0u8; 1000],
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                format!("{error:#}").contains(&format!(
+                    "the journal journal is at offset {}, not at offset {base}",
+                    base + 1
+                )),
+                "{error:#}"
+            );
+            assert_eq!(
+                journal.bytes.get_ref().len(),
+                usize::try_from(base).unwrap() + 1,
+                "nothing was written"
+            );
+        }
     }
 
     #[test]

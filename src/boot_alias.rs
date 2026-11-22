@@ -234,6 +234,14 @@ pub struct WindowsPathAlias {
     pub canonical_path: Vec<String>,
     pub reparse: Point,
 }
+impl WindowsPathAlias {
+    /// The alias a row of the alias domain holds, decoded from its bytes
+    /// (`WindowsAliasDomain::alias_bytes`) as `SortedRecordStore::get`
+    /// decodes it.
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
+        Ok(serde_json::from_str(std::str::from_utf8(bytes)?)?)
+    }
+}
 
 pub(crate) fn aliases_for(
     source: &PagedInspection,
@@ -379,6 +387,15 @@ impl WindowsAliasDomain {
     }
     pub fn alias(&self, ordinal: u64) -> Result<WindowsPathAlias> {
         self.entries.get(ordinal)
+    }
+    /// [`Self::alias`] in two halves: the row's bytes, read here (and
+    /// counted as a decoding), and [`WindowsPathAlias::decode`] of them,
+    /// which may run on another thread.
+    pub(crate) fn alias_bytes(&self, ordinal: u64) -> Result<Vec<u8>> {
+        // `SortedRecordStore::get` counts its decoding before it reads.
+        self.entries.record_bytes(ordinal)?;
+        n2r_win32::perf::add_call(n2r_win32::perf::Point::SourceRowDecode);
+        self.entries.get_json(ordinal)
     }
     pub(crate) fn bind_storage_hint_normalization(
         &mut self,

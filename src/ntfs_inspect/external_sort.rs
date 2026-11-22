@@ -296,7 +296,15 @@ impl ExternalSort {
 
     pub fn push(&mut self, key: [u8; 16], value: &impl Serialize) -> Result<()> {
         ensure!(!self.poisoned, "source sort is poisoned");
-        let limit = self.scratch.budget().record_bytes;
+        let json = Self::encode(value, self.scratch.budget().record_bytes)?;
+        self.push_json(key, json)
+    }
+
+    /// The row [`Self::push`] makes of `value` in a sort whose working
+    /// record bytes are `limit`, refused as it refuses one: for a caller
+    /// that encodes rows on other threads and hands them to
+    /// [`Self::push_json`] in order.
+    pub(crate) fn encode(value: &impl Serialize, limit: u64) -> Result<Vec<u8>> {
         let mut json = Vec::new();
         serde_json::to_writer(
             &mut Exact {
@@ -305,7 +313,7 @@ impl ExternalSort {
             },
             value,
         )?;
-        self.push_json(key, json)
+        Ok(json)
     }
 
     /// Push a pre-serialized JSON row into the sort. Enforces the same

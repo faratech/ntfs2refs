@@ -2028,14 +2028,88 @@ impl SourceExpectedDomain {
         if let Some(aliases) = aliases {
             // Alias entries participate in the real destination collision
             // proof without becoming source objects or changing source counts.
-            for ordinal in 0..aliases.len() {
-                let alias = aliases.alias(ordinal)?;
-                let folded = n2r_win32::shadow_names::conservative_path_key(&alias.path);
-                let bucket = xxhash_rust::xxh3::xxh3_64(folded.as_bytes());
-                names.push(ordered_key(bucket, name_ordinal), &NameRow { folded })?;
-                name_ordinal = name_ordinal
-                    .checked_add(1)
-                    .context("Windows alias namespace count overflow")?;
+            //
+            // A run that verifies once, with spare memory for two batches
+            // (each may end with a row past its share, an alias's paths:
+            // far less than a third more), reads the alias rows here and
+            // has helper threads decode them
+            // and make their name rows (`ExternalSort::encode`, as `push`
+            // makes them), which go into the sort here in the domain's
+            // order; the first refusal in that order ends it. Otherwise
+            // each is decoded and pushed in turn, as before.
+            const ALIAS_BATCH: usize = 4096;
+            const ALIAS_BATCH_BYTES: u64 = 8 << 20;
+            let record_limit = scratch.budget().record_bytes;
+            let at_once = (n2r_win32::verify_policy::verifies_once() && helpers >= 1)
+                .then(|| scratch.lease_spare_ram(3 * ALIAS_BATCH_BYTES).ok())
+                .flatten();
+            if let Some(_workspace) = at_once {
+                let end = aliases.len();
+                let mut next = 0u64;
+                let mut stopped = false;
+                in_order::in_order(
+                    helpers,
+                    || {
+                        let mut batch = Vec::new();
+                        let mut bytes = 0u64;
+                        while !stopped
+                            && next < end
+                            && batch.len() < ALIAS_BATCH
+                            && bytes < ALIAS_BATCH_BYTES
+                        {
+                            let ordinal = next;
+                            next += 1;
+                            match aliases.alias_bytes(ordinal) {
+                                Ok(row) => {
+                                    // The row, the alias and its key's row.
+                                    bytes += 4 * row.len() as u64 + 256;
+                                    batch.push(in_order::Slot::Work((ordinal, row)));
+                                }
+                                Err(error) => {
+                                    stopped = true;
+                                    batch.push(in_order::Slot::Ready(Err(error)));
+                                }
+                            }
+                        }
+                        batch
+                    },
+                    move |(ordinal, row): (u64, Vec<u8>)| -> Result<(u64, Vec<u8>)> {
+                        std::panic::catch_unwind(|| {
+                            let alias = crate::boot_alias::WindowsPathAlias::decode(&row)?;
+                            let folded =
+                                n2r_win32::shadow_names::conservative_path_key(&alias.path);
+                            let bucket = xxhash_rust::xxh3::xxh3_64(folded.as_bytes());
+                            Ok((
+                                bucket,
+                                ExternalSort::encode(&NameRow { folded }, record_limit)?,
+                            ))
+                        })
+                        .unwrap_or_else(|panic| {
+                            Err(anyhow::anyhow!(
+                                "the name row of Windows alias {ordinal} panicked on a helper thread: {}",
+                                in_order::panic_text(panic.as_ref())
+                            ))
+                        })
+                    },
+                    |made| {
+                        let (bucket, row) = made?;
+                        names.push_json(ordered_key(bucket, name_ordinal), row)?;
+                        name_ordinal = name_ordinal
+                            .checked_add(1)
+                            .context("Windows alias namespace count overflow")?;
+                        Ok(())
+                    },
+                )?;
+            } else {
+                for ordinal in 0..aliases.len() {
+                    let alias = aliases.alias(ordinal)?;
+                    let folded = n2r_win32::shadow_names::conservative_path_key(&alias.path);
+                    let bucket = xxhash_rust::xxh3::xxh3_64(folded.as_bytes());
+                    names.push(ordered_key(bucket, name_ordinal), &NameRow { folded })?;
+                    name_ordinal = name_ordinal
+                        .checked_add(1)
+                        .context("Windows alias namespace count overflow")?;
+                }
             }
             aliases.require_source(source)?;
         }

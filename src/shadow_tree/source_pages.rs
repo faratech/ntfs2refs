@@ -13,7 +13,9 @@ use crate::{
 use n2r_win32::{attestation::NativeObservationDomain, tree_resources::SourceResourceAdmission};
 use serde::ser::{Error as _, SerializeSeq, SerializeStruct};
 use sha2::{Digest, Sha256};
-use std::{borrow::Cow, path::Path};
+use std::{borrow::Cow, cell::Cell, path::Path, sync::Arc};
+
+mod in_order;
 
 #[derive(Serialize, Deserialize)]
 struct NameRow {
@@ -237,12 +239,17 @@ fn stored_descriptor(
 /// ([`n2r_win32::verify_policy::verifies_once`]) leaves out of
 /// [`build_object`]: a stored descriptor decoded, checked and hashed again
 /// for another object of the same security ID (while the cache of them is
-/// held, [`DescriptorCache`]), and a Windows file's paths taken again for
-/// each of its streams. Only `derive_scoped` makes one, and only in such a
-/// run; a thorough run, a diagnosis and the comparison of a cached body
-/// with the current projection pass none.
+/// held, [`DescriptorCache`]); a file's paths taken again for each of its
+/// streams, and the canonical paths an extent-identity stream's selector
+/// walks again for its classification (the object's own paths, just
+/// derived from the same held source, stand for both); and that selector
+/// made again for the stream's evidence, which its classification has just
+/// established. Only `derive_scoped` makes one, and only in such a run; a
+/// thorough run, a diagnosis and the comparison of a cached body with the
+/// current projection pass none.
 struct VerifiedOnce {
     descriptors: Option<DescriptorCache>,
+    stream_facts: ntfs_stream_plan::StreamSourceFacts,
 }
 
 /// The descriptors [`stored_descriptor`] has decoded, checked and hashed,
@@ -349,6 +356,44 @@ fn stream_evidence(
         _ => anyhow::bail!("source stream evidence is incomplete"),
     }
 }
+/// [`stream_evidence`] of a stream that `decision`, its classification in
+/// this projection, has just admitted. A stream left unread under the
+/// extent-identity policy is admitted (any disposition but `Reject`) only
+/// where its classification found its digest absent and its selector
+/// eligible, on the same held source and paths: that selector is not made
+/// again here. A projection that verifies once calls this; every other
+/// calls `stream_evidence`.
+fn stream_evidence_classified(
+    stream: &ntfs::StreamInventory,
+    decision: &ntfs_stream_plan::StreamDecision,
+) -> Result<Option<SourceStreamEvidence>> {
+    match stream.logical_hash_status {
+        ntfs::LogicalHashStatus::Complete => {
+            ensure!(
+                stream
+                    .logical_sha256
+                    .as_deref()
+                    .is_some_and(n2r_win32::content_digest::is_hex),
+                "complete source stream digest absent"
+            );
+            Ok(None)
+        }
+        ntfs::LogicalHashStatus::NotReadExtentIdentityV1 => {
+            ensure!(
+                stream.logical_sha256.is_none() && decision.disposition != Disposition::Reject,
+                "source extent-only stream is not eligible"
+            );
+            Ok(Some(
+                if n2r_win32::target_cluster::aligned(stream.logical_size) {
+                    SourceStreamEvidence::ExtentIdentityV1
+                } else {
+                    SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1
+                },
+            ))
+        }
+        _ => anyhow::bail!("source stream evidence is incomplete"),
+    }
+}
 /// What the comparison of the raw and Windows views wrote of one object
 /// (`source-comparison`, the admission's `ObjectRow` of a
 /// `PagedFileComparison`), read under its own field names: the results a
@@ -405,32 +450,463 @@ fn compared_key(record_number: u64) -> [u8; 16] {
     key
 }
 
-/// `compared` is the comparison's store of rows where the run verifies once
-/// (`--verify fast`, owner's decision D2, #250): the object's user issues, its metadata and
-/// security views and its directory's case mark are then those the
-/// comparison evaluated for it from the same held source and Windows rows,
-/// and the Windows row is not decoded again. Without it they are evaluated
-/// here, as every thorough run does. `once` as in [`VerifiedOnce`].
-#[allow(clippy::too_many_arguments)]
+/// What [`build_object`] reads of the held source and of its stores, each
+/// asked for where the object's construction uses it, in that order.
+///
+/// [`LiveReads`] reads each when it is asked, as the construction always
+/// did. [`GatheredReads`] answers with what the thread that holds the
+/// source read for the object beforehand, by the very same calls (or, for
+/// the comparison's row, the row's bytes, decoded when asked), errors
+/// included: so the construction refuses an object with the same first
+/// refusal either way, and may run on a thread that holds no reader.
+trait ObjectReads {
+    /// The comparison's row of the object, as `SortedRecordStore::find`
+    /// gives it; `None` where there is no comparison store.
+    fn compared(&self, record_number: u64) -> Option<Result<Option<ComparedObject>>>;
+    /// The object's paths: its canonical paths on a Windows volume (with
+    /// its aliases held to the alias domain), its user paths otherwise.
+    fn user_paths(&self, file: &ntfs::FileInventory) -> Result<Vec<Vec<String>>>;
+    /// The user issues of the object, evaluated here: only where there is
+    /// no comparison store.
+    fn ordinary_user_issues(
+        &self,
+        file: &ntfs::FileInventory,
+        admission: SourceResourceAdmission,
+    ) -> Result<Vec<String>>;
+    /// [`stored_descriptor`] of the object.
+    fn stored_descriptor(
+        &self,
+        file: &ntfs::FileInventory,
+        maximum_bytes: u64,
+    ) -> Result<(Vec<u8>, String)>;
+    /// A path to name the object by in a refusal of its case mark.
+    fn refused_object_path(&self, file: &ntfs::FileInventory) -> Option<Vec<String>>;
+    /// Whether this is a Windows volume's projection (an alias domain).
+    fn windows(&self) -> bool;
+    /// Whether the alias domain holds a storage-hint normalization.
+    fn storage_hint_normalized(&self) -> bool;
+    /// Whether the source was inspected for a Windows conversion.
+    fn is_windows_conversion(&self) -> bool;
+    /// The case mark, stored times and security views of the object from
+    /// its native row: only where there is no comparison store.
+    fn native_views(
+        &self,
+        ordinal: u64,
+        file: &ntfs::FileInventory,
+        stored: &[u8],
+        admission: SourceResourceAdmission,
+        carry_case_marks: bool,
+        case_mark_context: &dyn Fn() -> String,
+    ) -> Result<(Option<bool>, [u64; 4], SecurityFacts)>;
+    /// The classification of one of the object's streams;
+    /// `paths_eligible` as in [`ntfs_stream_plan::classify_stream_known_paths`],
+    /// of the paths [`Self::user_paths`] gave.
+    fn classify(
+        &self,
+        file: &ntfs::FileInventory,
+        stream: &ntfs::StreamInventory,
+        admission: SourceResourceAdmission,
+        paths_eligible: bool,
+    ) -> Result<ntfs_stream_plan::StreamDecision>;
+    /// The evidence of a stream that `decision` has admitted.
+    fn stream_evidence(
+        &self,
+        file: &ntfs::FileInventory,
+        stream: &ntfs::StreamInventory,
+        decision: &ntfs_stream_plan::StreamDecision,
+    ) -> Result<Option<SourceStreamEvidence>>;
+}
+
+/// The reads of [`build_object`] made when they are asked for. `compared`
+/// as in [`build_object`]; `once` as in [`VerifiedOnce`].
+struct LiveReads<'a, N> {
+    source: &'a PagedInspection,
+    native: &'a N,
+    compared: Option<&'a SortedRecordStore>,
+    aliases: Option<&'a crate::boot_alias::WindowsAliasDomain>,
+    object_ids: Option<&'a crate::object_id_disposition::DataObjectIds>,
+    once: Option<&'a VerifiedOnce>,
+}
+impl<N: NativeObservationDomain> ObjectReads for LiveReads<'_, N> {
+    fn compared(&self, record_number: u64) -> Option<Result<Option<ComparedObject>>> {
+        self.compared
+            .map(|rows| rows.find(compared_key(record_number)))
+    }
+    fn user_paths(&self, file: &ntfs::FileInventory) -> Result<Vec<Vec<String>>> {
+        if let Some(aliases) = self.aliases {
+            aliases.user_paths(self.source, file)
+        } else {
+            ntfs_admission::paged::user_paths(self.source, file)
+        }
+    }
+    fn ordinary_user_issues(
+        &self,
+        file: &ntfs::FileInventory,
+        admission: SourceResourceAdmission,
+    ) -> Result<Vec<String>> {
+        if let Some(aliases) = self.aliases {
+            ntfs_admission::paged::ordinary_user_issues_windows(
+                self.source,
+                file,
+                admission,
+                aliases,
+            )
+        } else {
+            ntfs_admission::paged::ordinary_user_issues_data(
+                self.source,
+                file,
+                admission,
+                self.object_ids,
+            )
+        }
+    }
+    fn stored_descriptor(
+        &self,
+        file: &ntfs::FileInventory,
+        maximum_bytes: u64,
+    ) -> Result<(Vec<u8>, String)> {
+        stored_descriptor(
+            self.source,
+            file,
+            maximum_bytes,
+            self.once.and_then(|once| once.descriptors.as_ref()),
+        )
+    }
+    fn refused_object_path(&self, file: &ntfs::FileInventory) -> Option<Vec<String>> {
+        ntfs_admission::paged::refused_object_path(self.source, file)
+    }
+    fn windows(&self) -> bool {
+        self.aliases.is_some()
+    }
+    fn storage_hint_normalized(&self) -> bool {
+        self.aliases
+            .is_some_and(|aliases| aliases.storage_hint_normalization().is_some())
+    }
+    fn is_windows_conversion(&self) -> bool {
+        self.source.is_windows_conversion()
+    }
+    fn native_views(
+        &self,
+        ordinal: u64,
+        file: &ntfs::FileInventory,
+        stored: &[u8],
+        admission: SourceResourceAdmission,
+        carry_case_marks: bool,
+        case_mark_context: &dyn Fn() -> String,
+    ) -> Result<(Option<bool>, [u64; 4], SecurityFacts)> {
+        let native_row = self.native.row_view(usize::try_from(ordinal)?)?;
+        let observed = native_row.observation();
+        ensure!(
+            observed.identity.record_number == file.record_number
+                && observed.identity.sequence_number == file.sequence_number
+                && observed.open_error.is_none(),
+            "actual native row identity/open differs from canonical source"
+        );
+        let before = observed
+            .before
+            .as_ref()
+            .context("source native before snapshot absent")?;
+        let after = observed
+            .after
+            .as_ref()
+            .context("source native after snapshot absent")?;
+        // Where the mark is carried over, every directory states the source's:
+        // the new directory is made with it, set or not, and held to it. The
+        // flags are those the admission read, asked of Windows twice.
+        let case_sensitive = if carry_case_marks && file.is_directory {
+            Some(
+                crate::ntfs_attestation::check_directory_case_observation(
+                    file,
+                    self.source.header().geometry.serial_number,
+                    observed,
+                )
+                .with_context(case_mark_context)?,
+            )
+        } else {
+            None
+        };
+        let check_metadata = if self.aliases.is_some() {
+            crate::ntfs_source_view::check_metadata_windows_with_limit
+        } else {
+            crate::ntfs_source_view::check_metadata_with_limit
+        };
+        let timestamps = check_metadata(
+            file,
+            self.source.header().geometry.serial_number,
+            stored,
+            before,
+            after,
+            admission.budget.max_row_bytes,
+        )?;
+        let views = crate::ntfs_source_view::check_security_views_with_limit(
+            stored,
+            before,
+            after,
+            admission.budget.max_row_bytes,
+        )?;
+        Ok((
+            case_sensitive,
+            timestamps.stored,
+            SecurityFacts::from(views),
+        ))
+    }
+    fn classify(
+        &self,
+        file: &ntfs::FileInventory,
+        stream: &ntfs::StreamInventory,
+        admission: SourceResourceAdmission,
+        paths_eligible: bool,
+    ) -> Result<ntfs_stream_plan::StreamDecision> {
+        // This file's paths were taken just before (from `aliases` on a
+        // Windows volume). A projection that verifies once does not take
+        // them again for each of its streams, nor the canonical paths an
+        // extent-identity stream's selector walks: the same derivation of
+        // the same held rows, which has just succeeded.
+        match (self.once, self.aliases) {
+            (Some(once), _) => ntfs_stream_plan::classify_stream_known_paths(
+                &once.stream_facts,
+                file,
+                stream,
+                admission,
+                self.aliases.is_some(),
+                paths_eligible,
+            ),
+            (None, Some(aliases)) => ntfs_stream_plan::classify_stream_windows_domain(
+                self.source,
+                file,
+                stream,
+                admission,
+                aliases,
+            ),
+            (None, None) => {
+                ntfs_stream_plan::classify_stream_domain(self.source, file, stream, admission)
+            }
+        }
+    }
+    fn stream_evidence(
+        &self,
+        file: &ntfs::FileInventory,
+        stream: &ntfs::StreamInventory,
+        decision: &ntfs_stream_plan::StreamDecision,
+    ) -> Result<Option<SourceStreamEvidence>> {
+        // Nor does it make that selector again for the stream's evidence:
+        // its classification has just made it.
+        if self.once.is_some() {
+            stream_evidence_classified(stream, decision)
+        } else {
+            stream_evidence(self.source, file, stream, self.aliases)
+        }
+    }
+}
+
+/// A stored security descriptor and its SHA-256 in hex ([`stored_descriptor`]).
+type StoredDescriptor = (Vec<u8>, String);
+/// The reads of [`build_object`] for one object of a projection that
+/// verifies once and has the comparison's rows, made beforehand by the
+/// thread that holds the source ([`GatheredReads::gather`]): each answer is
+/// taken once, where the construction asks for it, so that it may run on
+/// another thread. The comparison's row is decoded there.
+struct GatheredReads<'a> {
+    compared: Cell<Option<Result<Option<Vec<u8>>>>>,
+    user_paths: Cell<Option<Result<Vec<Vec<String>>>>>,
+    descriptor: Cell<Option<Result<StoredDescriptor>>>,
+    // Read only where the construction may name the object in a refusal of
+    // its case mark: a directory whose mark is carried over.
+    refused_path: Option<Option<Vec<String>>>,
+    windows: bool,
+    storage_hint_normalized: bool,
+    is_windows_conversion: bool,
+    stream_facts: &'a ntfs_stream_plan::StreamSourceFacts,
+}
+impl<'a> GatheredReads<'a> {
+    /// Makes, through `live` (which verifies once and has the comparison's
+    /// rows), every read the construction of `file` will ask for, and what
+    /// holding the answers and constructing the object take, at the most.
+    fn gather<N: NativeObservationDomain>(
+        live: &LiveReads<'_, N>,
+        once: &'a VerifiedOnce,
+        rows: &SortedRecordStore,
+        file: &ntfs::FileInventory,
+        admission: SourceResourceAdmission,
+        carry_case_marks: bool,
+    ) -> (Self, u64) {
+        // `SortedRecordStore::find`, with the row's bytes taken and not
+        // decoded: the same reads and lookups, counted as a decoding.
+        let compared = (|| -> Result<Option<Vec<u8>>> {
+            let Some(ordinal) = rows.find_ordinal(compared_key(file.record_number))? else {
+                return Ok(None);
+            };
+            n2r_win32::perf::add_call(n2r_win32::perf::Point::SourceRowDecode);
+            rows.get_json(ordinal).map(Some)
+        })();
+        let user_paths = live.user_paths(file);
+        let descriptor = live.stored_descriptor(file, admission.budget.max_row_bytes);
+        let refused_path =
+            (carry_case_marks && file.is_directory).then(|| live.refused_object_path(file));
+        // The row and what is read for it, the object made of them and its
+        // text: each about as large as what it is made of, four times over.
+        let read = |bytes: usize| bytes as u64;
+        let paths = user_paths.as_ref().map_or(0, |paths| {
+            paths
+                .iter()
+                .flatten()
+                .map(|part| read(part.len()) + 32)
+                .sum::<u64>()
+                + read(paths.len()) * 32
+        });
+        let workspace = crate::ntfs_inspect::file_heap_bytes(file)
+            .ok()
+            .and_then(|row| {
+                row.checked_add(std::mem::size_of::<ntfs::FileInventory>() as u64)?
+                    .checked_add(
+                        compared
+                            .as_ref()
+                            .map_or(0, |row| row.as_ref().map_or(0, |bytes| read(bytes.len()))),
+                    )?
+                    .checked_add(
+                        descriptor
+                            .as_ref()
+                            .map_or(0, |(stored, hash)| read(stored.len()) + read(hash.len())),
+                    )?
+                    .checked_add(paths)?
+                    .checked_mul(4)?
+                    .checked_add(4096)
+            })
+            .unwrap_or(u64::MAX);
+        (
+            Self {
+                compared: Cell::new(Some(compared)),
+                user_paths: Cell::new(Some(user_paths)),
+                descriptor: Cell::new(Some(descriptor)),
+                refused_path,
+                windows: live.windows(),
+                storage_hint_normalized: live.storage_hint_normalized(),
+                is_windows_conversion: live.is_windows_conversion(),
+                stream_facts: &once.stream_facts,
+            },
+            workspace,
+        )
+    }
+}
+/// The answer a construction asks for a second time: it never does.
+fn asked_again(what: &str) -> anyhow::Error {
+    anyhow::anyhow!("the projection asked for an object's {what} twice")
+}
+impl ObjectReads for GatheredReads<'_> {
+    fn compared(&self, _: u64) -> Option<Result<Option<ComparedObject>>> {
+        // `SortedRecordStore::get`'s decoding of the row's bytes.
+        Some(
+            self.compared
+                .take()
+                .unwrap_or_else(|| Err(asked_again("comparison row")))
+                .and_then(|row| {
+                    row.map(|bytes| -> Result<ComparedObject> {
+                        Ok(serde_json::from_str(std::str::from_utf8(&bytes)?)?)
+                    })
+                    .transpose()
+                }),
+        )
+    }
+    fn user_paths(&self, _: &ntfs::FileInventory) -> Result<Vec<Vec<String>>> {
+        self.user_paths
+            .take()
+            .unwrap_or_else(|| Err(asked_again("paths")))
+    }
+    fn ordinary_user_issues(
+        &self,
+        file: &ntfs::FileInventory,
+        _: SourceResourceAdmission,
+    ) -> Result<Vec<String>> {
+        // A projection with the comparison's rows takes the issues from
+        // them and never asks.
+        anyhow::bail!(
+            "the projection of FILE {} has no comparison row to take its user issues from",
+            file.record_number
+        )
+    }
+    fn stored_descriptor(&self, _: &ntfs::FileInventory, _: u64) -> Result<(Vec<u8>, String)> {
+        self.descriptor
+            .take()
+            .unwrap_or_else(|| Err(asked_again("security descriptor")))
+    }
+    fn refused_object_path(&self, _: &ntfs::FileInventory) -> Option<Vec<String>> {
+        self.refused_path.clone().flatten()
+    }
+    fn windows(&self) -> bool {
+        self.windows
+    }
+    fn storage_hint_normalized(&self) -> bool {
+        self.storage_hint_normalized
+    }
+    fn is_windows_conversion(&self) -> bool {
+        self.is_windows_conversion
+    }
+    fn native_views(
+        &self,
+        _: u64,
+        file: &ntfs::FileInventory,
+        _: &[u8],
+        _: SourceResourceAdmission,
+        _: bool,
+        _: &dyn Fn() -> String,
+    ) -> Result<(Option<bool>, [u64; 4], SecurityFacts)> {
+        // As for the user issues: the comparison's row holds these.
+        anyhow::bail!(
+            "the projection of FILE {} has no comparison row to take its views from",
+            file.record_number
+        )
+    }
+    fn classify(
+        &self,
+        file: &ntfs::FileInventory,
+        stream: &ntfs::StreamInventory,
+        admission: SourceResourceAdmission,
+        paths_eligible: bool,
+    ) -> Result<ntfs_stream_plan::StreamDecision> {
+        // `LiveReads::classify` of a projection that verifies once.
+        ntfs_stream_plan::classify_stream_known_paths(
+            self.stream_facts,
+            file,
+            stream,
+            admission,
+            self.windows,
+            paths_eligible,
+        )
+    }
+    fn stream_evidence(
+        &self,
+        _: &ntfs::FileInventory,
+        stream: &ntfs::StreamInventory,
+        decision: &ntfs_stream_plan::StreamDecision,
+    ) -> Result<Option<SourceStreamEvidence>> {
+        // `LiveReads::stream_evidence` of a projection that verifies once.
+        stream_evidence_classified(stream, decision)
+    }
+}
+
+/// The object a source row projects to, and the EA normalization of a
+/// Windows file, from what `reads` reads of the held source.
+///
+/// Where `reads` has the comparison's store of rows (the run verifies once,
+/// `--verify fast`, owner's decision D2, #250), the object's user issues,
+/// its metadata and security views and its directory's case mark are those
+/// the comparison evaluated for it from the same held source and Windows
+/// rows, and the Windows row is not decoded again. Without it they are
+/// evaluated here, as every thorough run does.
 fn build_object(
-    source: &PagedInspection,
-    native: &impl NativeObservationDomain,
-    compared: Option<&SortedRecordStore>,
+    reads: &impl ObjectReads,
     ordinal: u64,
     file: &ntfs::FileInventory,
     admission: SourceResourceAdmission,
-    aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
-    object_ids: Option<&crate::object_id_disposition::DataObjectIds>,
     carry_case_marks: bool,
-    once: Option<&VerifiedOnce>,
 ) -> Result<(
     Object,
     Option<crate::ntfs_extended_attributes::WindowsKernelPurgeEaNormalization>,
 )> {
-    let compared = compared
-        .map(|rows| -> Result<ComparedObject> {
-            let row: ComparedObject = rows
-                .find(compared_key(file.record_number))?
+    let compared = reads
+        .compared(file.record_number)
+        .map(|found| -> Result<ComparedObject> {
+            let row: ComparedObject = found?
                 .with_context(|| {
                     format!(
                         "the comparison of FILE {} with its Windows view is absent from source-comparison",
@@ -448,15 +924,14 @@ fn build_object(
         })
         .transpose()?;
     let resources = ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission));
-    let mut names = if let Some(aliases) = aliases {
-        aliases.user_paths(source, file)?
-    } else {
-        ntfs_admission::paged::user_paths(source, file)?
-    };
+    let mut names = reads.user_paths(file)?;
     ensure!(
         !names.is_empty() && (!file.is_directory || names.len() == 1),
         "missing names or unsupported directory links"
     );
+    // Whether these paths keep extent evidence, as an extent-identity
+    // stream's selector would find of the same paths derived again.
+    let extent_paths_eligible = crate::ntfs_attestation::extent_identity_paths_eligible(&names);
     for name in &names {
         if let Some(part) = name
             .iter()
@@ -496,8 +971,7 @@ fn build_object(
                     || (matches!(a.type_code, 0x90 | 0xa0 | 0xb0)
                         && crate::ntfs_namespace::is_i30(&a.name_utf16))
                     || ntfs_admission::recognized_root_txf(a)
-                    || (aliases
-                        .is_some_and(|aliases| aliases.storage_hint_normalization().is_some())
+                    || (reads.storage_hint_normalized()
                         && crate::ntfs_storage_class::recognized_default(a)))),
             "unknown root attributes"
         );
@@ -506,15 +980,7 @@ fn build_object(
         let issues: &[String] = if let Some(row) = &compared {
             &row.user_issues
         } else {
-            evaluated = if let Some(aliases) = aliases {
-                ntfs_admission::paged::ordinary_user_issues_windows(
-                    source, file, admission, aliases,
-                )?
-            } else {
-                ntfs_admission::paged::ordinary_user_issues_data(
-                    source, file, admission, object_ids,
-                )?
-            };
+            evaluated = reads.ordinary_user_issues(file, admission)?;
             &evaluated
         };
         ensure!(
@@ -523,24 +989,20 @@ fn build_object(
             file.record_number
         );
     }
-    let (stored, stored_sha256) = stored_descriptor(
-        source,
-        file,
-        admission.budget.max_row_bytes,
-        once.and_then(|once| once.descriptors.as_ref()),
-    )?;
+    let (stored, stored_sha256) = reads.stored_descriptor(file, admission.budget.max_row_bytes)?;
     let case_mark_context = || {
         format!(
             "the case-sensitive mark of the directory at FILE {} ({})",
             file.record_number,
-            ntfs_admission::paged::refused_object_path(source, file)
+            reads
+                .refused_object_path(file)
                 .map(|path| format!("\\{}", path.join("\\")))
                 .unwrap_or_else(|| "its path was not read".to_owned())
         )
     };
-    if aliases.is_some() {
+    if reads.windows() {
         ensure!(
-            source.is_windows_conversion(),
+            reads.is_windows_conversion(),
             "Windows projection requires its actual inspection purpose"
         );
     }
@@ -571,61 +1033,14 @@ fn build_object(
                 .context("the comparison holds no security view")?,
         )
     } else {
-        let native_row = native.row_view(usize::try_from(ordinal)?)?;
-        let observed = native_row.observation();
-        ensure!(
-            observed.identity.record_number == file.record_number
-                && observed.identity.sequence_number == file.sequence_number
-                && observed.open_error.is_none(),
-            "actual native row identity/open differs from canonical source"
-        );
-        let before = observed
-            .before
-            .as_ref()
-            .context("source native before snapshot absent")?;
-        let after = observed
-            .after
-            .as_ref()
-            .context("source native after snapshot absent")?;
-        // Where the mark is carried over, every directory states the source's:
-        // the new directory is made with it, set or not, and held to it. The
-        // flags are those the admission read, asked of Windows twice.
-        let case_sensitive = if carry_case_marks && file.is_directory {
-            Some(
-                crate::ntfs_attestation::check_directory_case_observation(
-                    file,
-                    source.header().geometry.serial_number,
-                    observed,
-                )
-                .with_context(case_mark_context)?,
-            )
-        } else {
-            None
-        };
-        let check_metadata = if aliases.is_some() {
-            crate::ntfs_source_view::check_metadata_windows_with_limit
-        } else {
-            crate::ntfs_source_view::check_metadata_with_limit
-        };
-        let timestamps = check_metadata(
+        reads.native_views(
+            ordinal,
             file,
-            source.header().geometry.serial_number,
             &stored,
-            before,
-            after,
-            admission.budget.max_row_bytes,
-        )?;
-        let views = crate::ntfs_source_view::check_security_views_with_limit(
-            &stored,
-            before,
-            after,
-            admission.budget.max_row_bytes,
-        )?;
-        (
-            case_sensitive,
-            timestamps.stored,
-            SecurityFacts::from(views),
-        )
+            admission,
+            carry_case_marks,
+            &case_mark_context,
+        )?
     };
     ensure!(
         views.api_stable
@@ -666,20 +1081,11 @@ fn build_object(
                 == 0,
         "unsupported basic metadata"
     );
-    // This file's paths were taken from `aliases` above. A projection that
-    // verifies once does not take them again for each of its streams: the
-    // same derivation of the same held rows, which has just succeeded.
-    let paths_taken = once.is_some();
-    let classify = |stream: &ntfs::StreamInventory| match aliases {
-        Some(aliases) if paths_taken => {
-            ntfs_stream_plan::classify_stream_windows_domain_paths_taken(
-                source, file, stream, admission, aliases,
-            )
-        }
-        Some(aliases) => ntfs_stream_plan::classify_stream_windows_domain(
-            source, file, stream, admission, aliases,
-        ),
-        None => ntfs_stream_plan::classify_stream_domain(source, file, stream, admission),
+    let classify = |stream: &ntfs::StreamInventory| {
+        reads.classify(file, stream, admission, extent_paths_eligible)
+    };
+    let evidence = |stream: &ntfs::StreamInventory, decision: &ntfs_stream_plan::StreamDecision| {
+        reads.stream_evidence(file, stream, decision)
     };
     let (source_offset, source_extents, length, sha256, source_evidence, sparse) =
         if let Some(stream) = file.streams.iter().find(|s| s.name_utf16.is_empty()) {
@@ -690,7 +1096,7 @@ fn build_object(
                 extents,
                 stream.logical_size,
                 stream.logical_sha256.clone(),
-                stream_evidence(source, file, stream, aliases)?,
+                evidence(stream, &decision)?,
                 decision.sparse,
             )
         } else {
@@ -712,14 +1118,14 @@ fn build_object(
             source_extents: extents,
             length: stream.logical_size,
             sha256: stream.logical_sha256.clone(),
-            source_evidence: stream_evidence(source, file, stream, aliases)?,
+            source_evidence: evidence(stream, &decision)?,
             sparse: decision.sparse,
         });
     }
     named_streams.sort_by(|a, b| a.name_utf16.cmp(&b.name_utf16));
-    let (extended_attributes, ea_normalization) = if aliases.is_some() {
+    let (extended_attributes, ea_normalization) = if reads.windows() {
         ensure!(
-            source.is_windows_conversion(),
+            reads.is_windows_conversion(),
             "Windows EA projection requires its actual inspection purpose"
         );
         crate::ntfs_extended_attributes::windows_target_projection(file)?
@@ -758,6 +1164,343 @@ fn build_object(
         },
         ea_normalization,
     ))
+}
+
+/// The text of an object and of the case-folded keys of its names, made on
+/// whichever thread.
+struct EncodedRow {
+    object_json: Vec<u8>,
+    names: Vec<(u64, Vec<u8>)>,
+}
+/// The text of `object`, held to the admitted working record bytes, and
+/// the rows of its names' keys.
+fn encode_row(object: &Object, record_limit: u64) -> Result<EncodedRow> {
+    let object_json = serde_json::to_vec(object)?;
+    ensure!(
+        !object_json.is_empty() && (object_json.len() as u64) <= record_limit,
+        "projected source object exceeds admitted working record bytes"
+    );
+    let mut folded_names = Vec::with_capacity(1 + object.additional_names.len());
+    for path in std::iter::once(&object.path).chain(object.additional_names.iter()) {
+        let folded = n2r_win32::shadow_names::conservative_path_key(path);
+        let bucket = xxhash_rust::xxh3::xxh3_64(folded.as_bytes());
+        let name_json = serde_json::to_vec(&NameRow { folded })?;
+        folded_names.push((bucket, name_json));
+    }
+    Ok(EncodedRow {
+        object_json,
+        names: folded_names,
+    })
+}
+/// An object on its way into the sorts, under its key: as it was built, or
+/// already encoded by the helper thread that built it. (At most a batch
+/// of them is held, and an object is far larger than its text's handle.)
+#[allow(clippy::large_enum_variant)]
+enum PendingObject {
+    Built([u8; 16], Object),
+    Encoded([u8; 16], Result<EncodedRow>),
+}
+
+/// What `derive_scoped` has made of the source so far, and where each
+/// object goes once it is built: the counts, the archives, the roles, the
+/// physical ranges and the objects and names on their way into the sorts.
+/// Every object is added to it in the source's order, on the thread that
+/// holds the source.
+struct Projecting<'a> {
+    source: &'a PagedInspection,
+    aliases: Option<&'a crate::boot_alias::WindowsAliasDomain>,
+    windows_object_id_owner: Option<&'a crate::boot_alias::WindowsObjectIdDomain>,
+    scratch: &'a SourceScratch,
+    output: &'a Path,
+    objects: ExternalSort,
+    names: ExternalSort,
+    physical_mem: Option<(Vec<(u64, u64)>, SourceRamLease)>,
+    physical: Option<ExternalSort>,
+    roles: Vec<String>,
+    role_ram: Vec<SourceRamLease>,
+    windows_ea_writer: Option<SortedRecordWriter>,
+    windows_ea_normalized_entries: u64,
+    windows_txf_writer: Option<SortedRecordWriter>,
+    windows_object_id_writer: Option<SortedRecordWriter>,
+    files: u64,
+    directories: u64,
+    streams: u64,
+    logical_bytes: u64,
+    name_ordinal: u64,
+    physical_ordinal: u64,
+    pushed_roots: u64,
+    pending: Vec<PendingObject>,
+    serialize_batch_limit: usize,
+    serialize_workers: usize,
+    record_limit: u64,
+}
+impl Projecting<'_> {
+    fn role(&mut self, role: String) -> Result<()> {
+        add_role(&mut self.roles, &mut self.role_ram, role, self.scratch)
+    }
+    /// Adds `object`, built from `file` at `ordinal`, with what follows
+    /// its construction: its archives (TxF marker, object ID, EA
+    /// normalization), its counts and physical ranges, the root's roles and
+    /// place, and the object itself on its way into the sorts (`encoded`
+    /// where it is already encoded).
+    fn record(
+        &mut self,
+        ordinal: u64,
+        file: &ntfs::FileInventory,
+        object: Object,
+        ea_normalization: Option<
+            crate::ntfs_extended_attributes::WindowsKernelPurgeEaNormalization,
+        >,
+        encoded: Option<Result<EncodedRow>>,
+    ) -> Result<()> {
+        let source = self.source;
+        if self
+            .aliases
+            .map(|owner| owner.windows_txf_accounted(source, file))
+            .transpose()?
+            .unwrap_or(false)
+        {
+            let attribute = file
+                .attributes
+                .iter()
+                .find(|attribute| {
+                    attribute.type_code == 0x100
+                        && attribute.name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65]
+                })
+                .context("verified Windows TxF source attribute disappeared")?;
+            self.windows_txf_writer
+                .as_mut()
+                .context("Windows TxF disposition archive absent")?
+                .push(
+                    ordered_key(ordinal, file.record_number),
+                    &WindowsTxfDisposition {
+                        record_number: file.record_number,
+                        sequence_number: file.sequence_number,
+                        source_attribute: attribute.clone(),
+                    },
+                )?;
+        }
+        if let Some(owner) = self.windows_object_id_owner
+            && let Some(disposition) = owner.disposition(source, file)?
+        {
+            self.windows_object_id_writer
+                .as_mut()
+                .context("Windows object-ID disposition archive absent")?
+                .push(ordered_key(ordinal, file.record_number), &disposition)?;
+        }
+        if let Some(normalization) = ea_normalization {
+            self.windows_ea_normalized_entries = self
+                .windows_ea_normalized_entries
+                .checked_add(u64::try_from(normalization.omitted.entries.len())?)
+                .context("Windows kernel EA normalization count overflow")?;
+            self.windows_ea_writer
+                .as_mut()
+                .context("Windows EA normalization archive absent")?
+                .push(ordered_key(ordinal, file.record_number), &normalization)?;
+        }
+        if object.directory {
+            self.directories = self
+                .directories
+                .checked_add(1)
+                .context("directory count overflow")?;
+        } else {
+            self.files = self.files.checked_add(1).context("file count overflow")?;
+        }
+        let mut ranges = Vec::new();
+        for stream in object.data_streams() {
+            self.streams = self
+                .streams
+                .checked_add(1)
+                .context("DATA-stream count overflow")?;
+            self.logical_bytes = self
+                .logical_bytes
+                .checked_add(stream.length)
+                .context("logical byte total overflow")?;
+            validate_stream_source(stream, &mut ranges)?;
+        }
+        for (offset, length) in ranges {
+            ensure!(
+                offset
+                    .checked_add(length)
+                    .is_some_and(|end| end <= source.header().geometry.volume_size),
+                "retained source payload escapes the source"
+            );
+            if let Some((vec, _)) = self.physical_mem.as_mut() {
+                if vec.len() < vec.capacity() {
+                    vec.push((offset, length));
+                    continue;
+                }
+                let (spilled, lease) = self.physical_mem.take().unwrap();
+                drop(lease);
+                let mut sorter = ExternalSort::with_shared_projection_hint(
+                    &self.output.join("retained-source-ranges"),
+                    *b"N2RPHYS1",
+                    self.scratch,
+                    source.allocation().physical_intervals,
+                )?;
+                for (prev_offset, prev_length) in spilled {
+                    sorter.push(
+                        ordered_key(prev_offset, self.physical_ordinal),
+                        &PhysicalRow {
+                            offset: prev_offset,
+                            length: prev_length,
+                        },
+                    )?;
+                    self.physical_ordinal = self
+                        .physical_ordinal
+                        .checked_add(1)
+                        .context("physical source interval count overflow")?;
+                }
+                self.physical = Some(sorter);
+            }
+            self.physical
+                .as_mut()
+                .context("physical range sorter absent")?
+                .push(
+                    ordered_key(offset, self.physical_ordinal),
+                    &PhysicalRow { offset, length },
+                )?;
+            self.physical_ordinal = self
+                .physical_ordinal
+                .checked_add(1)
+                .context("physical source interval count overflow")?;
+        }
+        if file.record_number == 5
+            && file
+                .attributes
+                .iter()
+                .any(ntfs_admission::recognized_root_txf)
+        {
+            self.role("root:$TXF_DATA (not yet admitted for replacement)".into())?;
+        }
+        if object.path.is_empty() {
+            ensure!(
+                object.directory && object.record_number == 5,
+                "invalid projected root"
+            );
+            self.pushed_roots += 1;
+        }
+        let object_key = ordered_key(u64::try_from(object.path.len())?, object.record_number);
+        self.pending.push(match encoded {
+            None => PendingObject::Built(object_key, object),
+            Some(encoded) => PendingObject::Encoded(object_key, encoded),
+        });
+        if self.pending.len() >= self.serialize_batch_limit {
+            self.flush()?;
+        }
+        Ok(())
+    }
+    /// Puts the objects waiting into the sorts, in order: those not yet
+    /// encoded are encoded first, on helper threads where there are enough
+    /// of them. The first that cannot be encoded or put ends it.
+    fn flush(&mut self) -> Result<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let items = std::mem::take(&mut self.pending);
+        let record_limit = self.record_limit;
+        let encode = |item: PendingObject| -> Result<([u8; 16], EncodedRow)> {
+            match item {
+                PendingObject::Built(key, object) => {
+                    let record_number = object.record_number;
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        encode_row(&object, record_limit)
+                    }))
+                    .unwrap_or_else(|panic| {
+                        Err(anyhow::anyhow!(
+                            "the encoding of the projected FILE {record_number} panicked: {}",
+                            in_order::panic_text(panic.as_ref())
+                        ))
+                    })
+                    .map(|row| (key, row))
+                }
+                PendingObject::Encoded(key, row) => row.map(|row| (key, row)),
+            }
+        };
+        let built = items
+            .iter()
+            .filter(|item| matches!(item, PendingObject::Built(..)))
+            .count();
+        let workers = self.serialize_workers;
+        let encoded: Vec<Result<([u8; 16], EncodedRow)>> = if built >= 16 && workers > 1 {
+            let chunk_size = items.len().div_ceil(workers);
+            let mut iter = items.into_iter();
+            let mut chunks: Vec<Vec<PendingObject>> = Vec::with_capacity(workers);
+            loop {
+                let chunk: Vec<_> = iter.by_ref().take(chunk_size).collect();
+                if chunk.is_empty() {
+                    break;
+                }
+                chunks.push(chunk);
+            }
+            std::thread::scope(|scope| -> Result<Vec<_>> {
+                let handles: Vec<_> = chunks
+                    .into_iter()
+                    .map(|chunk| scope.spawn(|| chunk.into_iter().map(&encode).collect::<Vec<_>>()))
+                    .collect();
+                let mut out = Vec::with_capacity(built);
+                for handle in handles {
+                    out.extend(handle.join().map_err(|panic| {
+                        anyhow::anyhow!(
+                            "a thread encoding projected objects panicked: {}",
+                            in_order::panic_text(panic.as_ref())
+                        )
+                    })?);
+                }
+                Ok(out)
+            })?
+        } else {
+            items.into_iter().map(&encode).collect()
+        };
+        for row in encoded {
+            let (object_key, row) = row?;
+            for (bucket, name_json) in row.names {
+                self.names
+                    .push_json(ordered_key(bucket, self.name_ordinal), name_json)?;
+                self.name_ordinal = self
+                    .name_ordinal
+                    .checked_add(1)
+                    .context("namespace name count overflow")?;
+            }
+            self.objects.push_json(object_key, row.object_json)?;
+        }
+        Ok(())
+    }
+}
+
+/// A source row a helper thread builds the object of, with what the
+/// thread that holds the source read for it.
+struct AtOnceJob<'a> {
+    ordinal: u64,
+    file: Arc<ntfs::FileInventory>,
+    reads: GatheredReads<'a>,
+}
+/// A source row of a projection that builds its objects at once, as it is
+/// added to the projection in the source's order. (At most a batch of
+/// them is held.)
+#[allow(clippy::large_enum_variant)]
+enum AtOnce {
+    /// An NTFS internal role.
+    Role(String),
+    /// The row could not be read, or its role derived: the projection
+    /// stops there.
+    Refused(anyhow::Error),
+    /// An object too large for a helper's share of the workspace: built in
+    /// turn, on the thread that holds the source.
+    InTurn {
+        ordinal: u64,
+        file: Arc<ntfs::FileInventory>,
+    },
+    /// An object a helper built and encoded, or its first refusal.
+    Built {
+        ordinal: u64,
+        file: Arc<ntfs::FileInventory>,
+        built: Result<(
+            Object,
+            Option<crate::ntfs_extended_attributes::WindowsKernelPurgeEaNormalization>,
+            Result<EncodedRow>,
+        )>,
+    },
 }
 
 impl SourceExpectedDomain {
@@ -811,6 +1554,14 @@ impl SourceExpectedDomain {
         }
         let mut logical = 0u64;
         let mut roles = Vec::new();
+        let reads = LiveReads {
+            source,
+            native,
+            compared: None,
+            aliases: Some(aliases),
+            object_ids: None,
+            once: None,
+        };
         for ordinal in 0..source.file_count() {
             let file = source.file_shared(ordinal)?;
             if let Some(role) = ntfs_admission::paged::internal_role(source, &file)? {
@@ -818,17 +1569,9 @@ impl SourceExpectedDomain {
                 continue;
             }
             let (object, _) = build_object(
-                source,
-                native,
-                None,
-                ordinal,
-                &file,
-                admission,
-                Some(aliases),
-                None,
+                &reads, ordinal, &file, admission,
                 // A volume that holds a Windows carries no mark over.
                 false,
-                None,
             )?;
             let hash: [u8; 32] = Sha256::digest(serde_json::to_vec(&object)?).into();
             ensure!(
@@ -860,6 +1603,24 @@ impl SourceExpectedDomain {
         native.revalidate()?;
         expected.revalidate()?;
         Ok(())
+    }
+    /// What a projection of `file_count` source rows under `admission`
+    /// reserves in `scratch`, at the most, of memory it cannot do without:
+    /// its row working allowance, the batches of its three sorts as they
+    /// grow and what writing their runs out takes, and the page windows of
+    /// its other writers. A bound for deciding whether caches may stay
+    /// beside it; nothing depends on it being exact.
+    pub(crate) fn working_ram_bound(
+        file_count: u64,
+        admission: SourceResourceAdmission,
+        scratch: &SourceScratch,
+    ) -> u64 {
+        let rows = admission.budget.max_row_bytes.saturating_mul(8);
+        let sort = ExternalSort::shared_projection_batch_bytes(scratch, file_count)
+            .saturating_add(ExternalSort::shared_projection_spill_bytes(scratch));
+        let windows = u64::from(scratch.budget().page_bytes).saturating_mul(16);
+        rows.saturating_add(sort.saturating_mul(3))
+            .saturating_add(windows)
     }
     pub fn derive(
         source: &PagedInspection,
@@ -980,13 +1741,13 @@ impl SourceExpectedDomain {
         let row_ram = scratch.lease_ram(row_working_bytes)?;
         // The complete source counts size batches only; extra names or large
         // rows still spill and merge without dropping any source evidence.
-        let mut objects = ExternalSort::with_shared_projection_hint(
+        let objects = ExternalSort::with_shared_projection_hint(
             &output.join("source-objects"),
             *b"N2RSOBJ1",
             scratch,
             source.file_count(),
         )?;
-        let mut names = ExternalSort::with_shared_projection_hint(
+        let names = ExternalSort::with_shared_projection_hint(
             &output.join("destination-names"),
             *b"N2RDNAM1",
             scratch,
@@ -1000,11 +1761,11 @@ impl SourceExpectedDomain {
             .unwrap_or(PHYSICAL_MEM_CAP)
             .clamp(64, PHYSICAL_MEM_CAP);
         let physical_mem_bytes = (physical_hint as u64) * 16;
-        let mut physical_mem: Option<(Vec<(u64, u64)>, SourceRamLease)> = scratch
+        let physical_mem: Option<(Vec<(u64, u64)>, SourceRamLease)> = scratch
             .lease_spare_ram(physical_mem_bytes)
             .ok()
             .map(|lease| (Vec::with_capacity(physical_hint), lease));
-        let mut physical: Option<ExternalSort> = if physical_mem.is_none() {
+        let physical: Option<ExternalSort> = if physical_mem.is_none() {
             Some(ExternalSort::with_shared_projection_hint(
                 &output.join("retained-source-ranges"),
                 *b"N2RPHYS1",
@@ -1014,9 +1775,7 @@ impl SourceExpectedDomain {
         } else {
             None
         };
-        let mut roles = Vec::new();
-        let mut role_ram = Vec::new();
-        let mut windows_ea_writer = aliases
+        let windows_ea_writer = aliases
             .map(|_| {
                 SortedRecordWriter::new(
                     &output.join("windows-kernel-purge-ea-normalizations"),
@@ -1025,8 +1784,7 @@ impl SourceExpectedDomain {
                 )
             })
             .transpose()?;
-        let mut windows_ea_normalized_entries = 0u64;
-        let mut windows_txf_writer = aliases
+        let windows_txf_writer = aliases
             .map(|_| {
                 SortedRecordWriter::new(
                     &output.join("windows-nontransacted-txf-dispositions"),
@@ -1036,7 +1794,7 @@ impl SourceExpectedDomain {
             })
             .transpose()?;
         let windows_object_id_owner = aliases.and_then(|owner| owner.windows_object_ids_owned());
-        let mut windows_object_id_writer = windows_object_id_owner
+        let windows_object_id_writer = windows_object_id_owner
             .as_ref()
             .map(|_| {
                 SortedRecordWriter::new(
@@ -1046,15 +1804,6 @@ impl SourceExpectedDomain {
                 )
             })
             .transpose()?;
-        let (
-            mut files,
-            mut directories,
-            mut streams,
-            mut logical_bytes,
-            mut name_ordinal,
-            mut physical_ordinal,
-            mut pushed_roots,
-        ) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
         // Parallelize JSON serialization and case-folded NameRow generation in
         // spare-RAM batches of up to 256 objects, falling back to single-object
         // inline encoding if spare RAM is unavailable.
@@ -1070,259 +1819,297 @@ impl SourceExpectedDomain {
             .map_or(2, |n| n.get())
             .clamp(2, 4);
         let record_limit = scratch.budget().record_bytes;
-        struct EncodedObject {
-            object_key: [u8; 16],
-            object_json: Vec<u8>,
-            names: Vec<(u64, Vec<u8>)>,
-        }
-        let encode_one = |(object_key, object): ([u8; 16], Object)| -> Result<EncodedObject> {
-            let object_json = serde_json::to_vec(&object)?;
-            ensure!(
-                !object_json.is_empty() && (object_json.len() as u64) <= record_limit,
-                "projected source object exceeds admitted working record bytes"
-            );
-            let mut folded_names = Vec::with_capacity(1 + object.additional_names.len());
-            for path in std::iter::once(&object.path).chain(object.additional_names.iter()) {
-                let folded = n2r_win32::shadow_names::conservative_path_key(path);
-                let bucket = xxhash_rust::xxh3::xxh3_64(folded.as_bytes());
-                let name_json = serde_json::to_vec(&NameRow { folded })?;
-                folded_names.push((bucket, name_json));
-            }
-            Ok(EncodedObject {
-                object_key,
-                object_json,
-                names: folded_names,
-            })
-        };
-        let mut pending_objects: Vec<([u8; 16], Object)> =
-            Vec::with_capacity(serialize_batch_limit);
         // What this projection leaves out of each object's construction in
         // a run that verifies once (see `VerifiedOnce`).
         let once = n2r_win32::verify_policy::verifies_once().then(|| VerifiedOnce {
             descriptors: DescriptorCache::leased(scratch),
+            stream_facts: ntfs_stream_plan::StreamSourceFacts::of(source),
         });
-        let flush_encoded = |pending: &mut Vec<([u8; 16], Object)>,
-                             objects: &mut ExternalSort,
-                             names: &mut ExternalSort,
-                             name_ordinal: &mut u64|
-         -> Result<()> {
-            if pending.is_empty() {
-                return Ok(());
-            }
-            let items = std::mem::take(pending);
-            let encoded: Vec<Result<EncodedObject>> = if items.len() >= 16 && serialize_workers > 1
-            {
-                let chunk_size = items.len().div_ceil(serialize_workers);
-                let mut iter = items.into_iter();
-                let mut chunks: Vec<Vec<([u8; 16], Object)>> =
-                    Vec::with_capacity(serialize_workers);
-                loop {
-                    let chunk: Vec<_> = iter.by_ref().take(chunk_size).collect();
-                    if chunk.is_empty() {
-                        break;
-                    }
-                    chunks.push(chunk);
-                }
-                std::thread::scope(|scope| {
-                    let handles: Vec<_> = chunks
-                        .into_iter()
-                        .map(|chunk| {
-                            scope.spawn(|| chunk.into_iter().map(&encode_one).collect::<Vec<_>>())
-                        })
-                        .collect();
-                    let mut out = Vec::with_capacity(SERIALIZE_BATCH);
-                    for handle in handles {
-                        out.extend(handle.join().expect("source projection worker panicked"));
-                    }
-                    out
-                })
-            } else {
-                items.into_iter().map(&encode_one).collect()
-            };
-            for row in encoded {
-                let row = row?;
-                for (bucket, name_json) in row.names {
-                    names.push_json(ordered_key(bucket, *name_ordinal), name_json)?;
-                    *name_ordinal = name_ordinal
-                        .checked_add(1)
-                        .context("namespace name count overflow")?;
-                }
-                objects.push_json(row.object_key, row.object_json)?;
-            }
-            Ok(())
+        let mut projecting = Projecting {
+            source,
+            aliases,
+            windows_object_id_owner: windows_object_id_owner.as_deref(),
+            scratch,
+            output,
+            objects,
+            names,
+            physical_mem,
+            physical,
+            roles: Vec::new(),
+            role_ram: Vec::new(),
+            windows_ea_writer,
+            windows_ea_normalized_entries: 0,
+            windows_txf_writer,
+            windows_object_id_writer,
+            files: 0,
+            directories: 0,
+            streams: 0,
+            logical_bytes: 0,
+            name_ordinal: 0,
+            physical_ordinal: 0,
+            pushed_roots: 0,
+            pending: Vec::with_capacity(serialize_batch_limit),
+            serialize_batch_limit,
+            serialize_workers,
+            record_limit,
         };
-        for ordinal in 0..source.file_count() {
-            let file = source.file_shared(ordinal)?;
-            if let Some(role) = ntfs_admission::paged::internal_role(source, &file)? {
-                add_role(&mut roles, &mut role_ram, role, scratch)?;
-                continue;
-            }
-            let (object, ea_normalization) = build_object(
-                source,
-                native,
-                compared,
-                ordinal,
-                &file,
-                admission,
-                aliases,
-                object_ids,
-                carry_case_marks,
-                once.as_ref(),
+        let live = LiveReads {
+            source,
+            native,
+            compared,
+            aliases,
+            object_ids,
+            once: once.as_ref(),
+        };
+        // A run that verifies once and has the comparison's rows builds its
+        // objects on helper threads, in batches whose workspace it pays from
+        // spare memory: this thread reads, for one batch after another,
+        // what the construction of each object reads of the held source
+        // (`GatheredReads`), the helpers build and encode the objects of
+        // the batch before (`build_object` itself, from those reads), and
+        // this thread adds them to the projection in the source's order. An
+        // object's first refusal is the one building it in turn gives, and
+        // the first refusal in the source's order ends the projection, as
+        // in turn. Without the spare memory, a second core or that run, the
+        // objects are built in turn, as they always were.
+        const AT_ONCE_OBJECTS: usize = 512;
+        const AT_ONCE_BATCH_BYTES: u64 = 16 << 20;
+        // An object whose reads and construction may take more is built in
+        // turn, under the projection's own row allowance.
+        const AT_ONCE_OBJECT_BYTES: u64 = 4 << 20;
+        let helpers = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .saturating_sub(1)
+            .min(8);
+        let at_once = match (compared, once.as_ref()) {
+            (Some(rows), Some(once)) if helpers >= 1 => scratch
+                // The batch being built and the one being read beside it.
+                .lease_spare_ram(2 * (AT_ONCE_BATCH_BYTES + AT_ONCE_OBJECT_BYTES))
+                .ok()
+                .map(|workspace| (rows, once, workspace)),
+            _ => None,
+        };
+        if let Some((rows, once, _workspace)) = at_once {
+            let end = source.file_count();
+            let mut next = 0u64;
+            let mut stopped = false;
+            in_order::in_order(
+                helpers,
+                || {
+                    let mut batch = Vec::new();
+                    let mut bytes = 0u64;
+                    while !stopped
+                        && next < end
+                        && batch.len() < AT_ONCE_OBJECTS
+                        && bytes < AT_ONCE_BATCH_BYTES
+                    {
+                        let ordinal = next;
+                        next += 1;
+                        let file = match source.file_shared(ordinal) {
+                            Ok(file) => file,
+                            Err(error) => {
+                                stopped = true;
+                                batch.push(in_order::Slot::Ready(AtOnce::Refused(error)));
+                                break;
+                            }
+                        };
+                        match ntfs_admission::paged::internal_role(source, &file) {
+                            Ok(Some(role)) => {
+                                batch.push(in_order::Slot::Ready(AtOnce::Role(role)));
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                stopped = true;
+                                batch.push(in_order::Slot::Ready(AtOnce::Refused(error)));
+                                break;
+                            }
+                        }
+                        let (reads, workspace) = GatheredReads::gather(
+                            &live,
+                            once,
+                            rows,
+                            &file,
+                            admission,
+                            carry_case_marks,
+                        );
+                        if workspace > AT_ONCE_OBJECT_BYTES {
+                            batch.push(in_order::Slot::Ready(AtOnce::InTurn { ordinal, file }));
+                            continue;
+                        }
+                        bytes += workspace;
+                        batch.push(in_order::Slot::Work(AtOnceJob {
+                            ordinal,
+                            file,
+                            reads,
+                        }));
+                    }
+                    batch
+                },
+                move |AtOnceJob {
+                          ordinal,
+                          file,
+                          reads,
+                      }| {
+                    let record_number = file.record_number;
+                    let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::AtOnce);
+                        let (object, ea_normalization) =
+                            build_object(&reads, ordinal, &file, admission, carry_case_marks)?;
+                        let encoded = encode_row(&object, record_limit);
+                        Ok((object, ea_normalization, encoded))
+                    }))
+                    .unwrap_or_else(|panic| {
+                        Err(anyhow::anyhow!(
+                            "the projection of FILE {record_number} panicked on a helper thread: {}",
+                            in_order::panic_text(panic.as_ref())
+                        ))
+                    });
+                    AtOnce::Built {
+                        ordinal,
+                        file,
+                        built,
+                    }
+                },
+                |made| match made {
+                    AtOnce::Role(role) => projecting.role(role),
+                    AtOnce::Refused(error) => Err(error),
+                    AtOnce::InTurn { ordinal, file } => {
+                        let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::InTurn);
+                        let (object, ea_normalization) =
+                            build_object(&live, ordinal, &file, admission, carry_case_marks)?;
+                        projecting.record(ordinal, &file, object, ea_normalization, None)
+                    }
+                    AtOnce::Built {
+                        ordinal,
+                        file,
+                        built,
+                    } => {
+                        let (object, ea_normalization, encoded) = built?;
+                        projecting.record(ordinal, &file, object, ea_normalization, Some(encoded))
+                    }
+                },
             )?;
-            if aliases
-                .map(|owner| owner.windows_txf_accounted(source, &file))
-                .transpose()?
-                .unwrap_or(false)
-            {
-                let attribute = file
-                    .attributes
-                    .iter()
-                    .find(|attribute| {
-                        attribute.type_code == 0x100
-                            && attribute.name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65]
-                    })
-                    .context("verified Windows TxF source attribute disappeared")?;
-                windows_txf_writer
-                    .as_mut()
-                    .context("Windows TxF disposition archive absent")?
-                    .push(
-                        ordered_key(ordinal, file.record_number),
-                        &WindowsTxfDisposition {
-                            record_number: file.record_number,
-                            sequence_number: file.sequence_number,
-                            source_attribute: attribute.clone(),
-                        },
-                    )?;
-            }
-            if let Some(owner) = &windows_object_id_owner {
-                if let Some(disposition) = owner.disposition(source, &file)? {
-                    windows_object_id_writer
-                        .as_mut()
-                        .context("Windows object-ID disposition archive absent")?
-                        .push(ordered_key(ordinal, file.record_number), &disposition)?;
+        } else {
+            for ordinal in 0..source.file_count() {
+                let file = source.file_shared(ordinal)?;
+                if let Some(role) = ntfs_admission::paged::internal_role(source, &file)? {
+                    projecting.role(role)?;
+                    continue;
                 }
-            }
-            if let Some(normalization) = ea_normalization {
-                windows_ea_normalized_entries = windows_ea_normalized_entries
-                    .checked_add(u64::try_from(normalization.omitted.entries.len())?)
-                    .context("Windows kernel EA normalization count overflow")?;
-                windows_ea_writer
-                    .as_mut()
-                    .context("Windows EA normalization archive absent")?
-                    .push(ordered_key(ordinal, file.record_number), &normalization)?;
-            }
-            if object.directory {
-                directories = directories
-                    .checked_add(1)
-                    .context("directory count overflow")?;
-            } else {
-                files = files.checked_add(1).context("file count overflow")?;
-            }
-            let mut ranges = Vec::new();
-            for stream in object.data_streams() {
-                streams = streams
-                    .checked_add(1)
-                    .context("DATA-stream count overflow")?;
-                logical_bytes = logical_bytes
-                    .checked_add(stream.length)
-                    .context("logical byte total overflow")?;
-                validate_stream_source(stream, &mut ranges)?;
-            }
-            for (offset, length) in ranges {
-                ensure!(
-                    offset
-                        .checked_add(length)
-                        .is_some_and(|end| end <= source.header().geometry.volume_size),
-                    "retained source payload escapes the source"
-                );
-                if let Some((vec, _)) = physical_mem.as_mut() {
-                    if vec.len() < vec.capacity() {
-                        vec.push((offset, length));
-                        continue;
-                    }
-                    let (spilled, lease) = physical_mem.take().unwrap();
-                    drop(lease);
-                    let mut sorter = ExternalSort::with_shared_projection_hint(
-                        &output.join("retained-source-ranges"),
-                        *b"N2RPHYS1",
-                        scratch,
-                        source.allocation().physical_intervals,
-                    )?;
-                    for (prev_offset, prev_length) in spilled {
-                        sorter.push(
-                            ordered_key(prev_offset, physical_ordinal),
-                            &PhysicalRow {
-                                offset: prev_offset,
-                                length: prev_length,
-                            },
-                        )?;
-                        physical_ordinal = physical_ordinal
-                            .checked_add(1)
-                            .context("physical source interval count overflow")?;
-                    }
-                    physical = Some(sorter);
-                }
-                physical
-                    .as_mut()
-                    .context("physical range sorter absent")?
-                    .push(
-                        ordered_key(offset, physical_ordinal),
-                        &PhysicalRow { offset, length },
-                    )?;
-                physical_ordinal = physical_ordinal
-                    .checked_add(1)
-                    .context("physical source interval count overflow")?;
-            }
-            if file.record_number == 5
-                && file
-                    .attributes
-                    .iter()
-                    .any(ntfs_admission::recognized_root_txf)
-            {
-                add_role(
-                    &mut roles,
-                    &mut role_ram,
-                    "root:$TXF_DATA (not yet admitted for replacement)".into(),
-                    scratch,
-                )?;
-            }
-            if object.path.is_empty() {
-                ensure!(
-                    object.directory && object.record_number == 5,
-                    "invalid projected root"
-                );
-                pushed_roots += 1;
-            }
-            let object_key = ordered_key(u64::try_from(object.path.len())?, object.record_number);
-            pending_objects.push((object_key, object));
-            if pending_objects.len() >= serialize_batch_limit {
-                flush_encoded(
-                    &mut pending_objects,
-                    &mut objects,
-                    &mut names,
-                    &mut name_ordinal,
-                )?;
+                let (object, ea_normalization) =
+                    build_object(&live, ordinal, &file, admission, carry_case_marks)?;
+                projecting.record(ordinal, &file, object, ea_normalization, None)?;
             }
         }
-        flush_encoded(
-            &mut pending_objects,
-            &mut objects,
-            &mut names,
-            &mut name_ordinal,
-        )?;
+        projecting.flush()?;
+        let Projecting {
+            objects,
+            mut names,
+            physical_mem,
+            physical,
+            roles,
+            role_ram,
+            windows_ea_writer,
+            windows_ea_normalized_entries,
+            windows_txf_writer,
+            windows_object_id_writer,
+            files,
+            directories,
+            streams,
+            logical_bytes,
+            mut name_ordinal,
+            pushed_roots,
+            ..
+        } = projecting;
+        let (mut physical_mem, mut physical) = (physical_mem, physical);
         drop(_serialize_spare);
         drop(once);
         if let Some(aliases) = aliases {
             // Alias entries participate in the real destination collision
             // proof without becoming source objects or changing source counts.
-            for ordinal in 0..aliases.len() {
-                let alias = aliases.alias(ordinal)?;
-                let folded = n2r_win32::shadow_names::conservative_path_key(&alias.path);
-                let bucket = xxhash_rust::xxh3::xxh3_64(folded.as_bytes());
-                names.push(ordered_key(bucket, name_ordinal), &NameRow { folded })?;
-                name_ordinal = name_ordinal
-                    .checked_add(1)
-                    .context("Windows alias namespace count overflow")?;
+            //
+            // A run that verifies once, with spare memory for two batches
+            // (each may end with a row past its share, an alias's paths:
+            // far less than a third more), reads the alias rows here and
+            // has helper threads decode them
+            // and make their name rows (`ExternalSort::encode`, as `push`
+            // makes them), which go into the sort here in the domain's
+            // order; the first refusal in that order ends it. Otherwise
+            // each is decoded and pushed in turn, as before.
+            const ALIAS_BATCH: usize = 4096;
+            const ALIAS_BATCH_BYTES: u64 = 8 << 20;
+            let record_limit = scratch.budget().record_bytes;
+            let at_once = (n2r_win32::verify_policy::verifies_once() && helpers >= 1)
+                .then(|| scratch.lease_spare_ram(3 * ALIAS_BATCH_BYTES).ok())
+                .flatten();
+            if let Some(_workspace) = at_once {
+                let end = aliases.len();
+                let mut next = 0u64;
+                let mut stopped = false;
+                in_order::in_order(
+                    helpers,
+                    || {
+                        let mut batch = Vec::new();
+                        let mut bytes = 0u64;
+                        while !stopped
+                            && next < end
+                            && batch.len() < ALIAS_BATCH
+                            && bytes < ALIAS_BATCH_BYTES
+                        {
+                            let ordinal = next;
+                            next += 1;
+                            match aliases.alias_bytes(ordinal) {
+                                Ok(row) => {
+                                    // The row, the alias and its key's row.
+                                    bytes += 4 * row.len() as u64 + 256;
+                                    batch.push(in_order::Slot::Work((ordinal, row)));
+                                }
+                                Err(error) => {
+                                    stopped = true;
+                                    batch.push(in_order::Slot::Ready(Err(error)));
+                                }
+                            }
+                        }
+                        batch
+                    },
+                    move |(ordinal, row): (u64, Vec<u8>)| -> Result<(u64, Vec<u8>)> {
+                        std::panic::catch_unwind(|| {
+                            let alias = crate::boot_alias::WindowsPathAlias::decode(&row)?;
+                            let folded =
+                                n2r_win32::shadow_names::conservative_path_key(&alias.path);
+                            let bucket = xxhash_rust::xxh3::xxh3_64(folded.as_bytes());
+                            Ok((
+                                bucket,
+                                ExternalSort::encode(&NameRow { folded }, record_limit)?,
+                            ))
+                        })
+                        .unwrap_or_else(|panic| {
+                            Err(anyhow::anyhow!(
+                                "the name row of Windows alias {ordinal} panicked on a helper thread: {}",
+                                in_order::panic_text(panic.as_ref())
+                            ))
+                        })
+                    },
+                    |made| {
+                        let (bucket, row) = made?;
+                        names.push_json(ordered_key(bucket, name_ordinal), row)?;
+                        name_ordinal = name_ordinal
+                            .checked_add(1)
+                            .context("Windows alias namespace count overflow")?;
+                        Ok(())
+                    },
+                )?;
+            } else {
+                for ordinal in 0..aliases.len() {
+                    let alias = aliases.alias(ordinal)?;
+                    let folded = n2r_win32::shadow_names::conservative_path_key(&alias.path);
+                    let bucket = xxhash_rust::xxh3::xxh3_64(folded.as_bytes());
+                    names.push(ordered_key(bucket, name_ordinal), &NameRow { folded })?;
+                    name_ordinal = name_ordinal
+                        .checked_add(1)
+                        .context("Windows alias namespace count overflow")?;
+                }
             }
             aliases.require_source(source)?;
         }

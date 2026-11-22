@@ -333,6 +333,23 @@ impl PagedInspection {
     pub(crate) fn release_inventory_resident_cache(&mut self) {
         self.files.release_inventory_resident_cache();
     }
+    /// As [`Self::release_inventory_resident_cache`], before a pass that
+    /// reserves `working_bytes`: in a run that verifies once, the decoded
+    /// rows of the file store stay where, the rest released, both ledgers
+    /// have room for that beside everything they hold now
+    /// (`SourceScratch::has_room_beside_caches` of `working`, the pass's
+    /// own scratch), so that no cache would be given up for it. Otherwise,
+    /// and in every other run, they go, as before.
+    pub(crate) fn release_inventory_resident_cache_before(
+        &mut self,
+        working: &crate::ntfs_inspect::paged_storage::SourceScratch,
+        working_bytes: u64,
+    ) {
+        self.files.release_inventory_resident_cache_keeping(|| {
+            n2r_win32::verify_policy::verifies_once()
+                && working.has_room_beside_caches(working_bytes)
+        });
+    }
     /// Whether this is the inspection made of a volume that is still in
     /// use: complete in its metadata, with nothing read of any stream's
     /// contents, and never a source a conversion is admitted from.

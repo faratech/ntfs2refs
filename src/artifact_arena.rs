@@ -1907,6 +1907,19 @@ impl ArtifactArena {
                 <= self.0.budget.ram_bytes / 2
         })
     }
+    /// Whether `bytes` more would fit the budget beside everything the
+    /// ledger holds now, its caches among them: a reservation of that much
+    /// would be granted without giving up any cache. Nothing is reserved.
+    pub fn has_room_beside_caches(&self, bytes: u64) -> bool {
+        self.0.state.lock().is_ok_and(|state| {
+            !state.ram_poisoned
+                && state
+                    .leased_ram_bytes
+                    .checked_add(state.index_bytes)
+                    .and_then(|held| held.checked_add(bytes))
+                    .is_some_and(|wanted| wanted <= self.0.budget.ram_bytes)
+        })
+    }
     /// The most the ledger may hold with a cache in it: seven eighths of
     /// the budget, and no more than seven eighths of two thirds of the
     /// memory that was free when the ledger was made. A budget made larger
@@ -3764,5 +3777,29 @@ mod cache_tests {
         let state = arena.0.state.lock().unwrap();
         assert_eq!(state.spare.largest_beside, 0);
         assert_eq!(state.spare.largest_since, 0);
+    }
+
+    /// Room beside the caches counts what the caches hold, reserves
+    /// nothing and gives up no cache.
+    #[test]
+    fn room_beside_the_caches_counts_them_and_takes_nothing() {
+        let (_directory, arena) = ledger();
+        let free = |arena: &ArtifactArena| {
+            let state = arena.0.state.lock().unwrap();
+            LIMIT - state.leased_ram_bytes - state.index_bytes
+        };
+        let empty = free(&arena);
+        assert!(arena.has_room_beside_caches(empty));
+        assert!(!arena.has_room_beside_caches(empty + 1));
+        let cache = Evictable::new(arena.reserve_optional_ram(LIMIT / 4).unwrap());
+        let needed = arena.reserve_ram(LIMIT / 4).unwrap();
+        let before = held(&arena);
+        let room = empty - LIMIT / 2;
+        assert!(arena.has_room_beside_caches(room));
+        assert!(!arena.has_room_beside_caches(room + 1), "the cache counts");
+        assert_eq!(held(&arena), before, "nothing is reserved");
+        assert!(cache.is_held(), "and no cache is given up");
+        drop((cache, needed));
+        assert!(arena.has_room_beside_caches(empty));
     }
 }

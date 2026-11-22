@@ -3094,7 +3094,17 @@ impl ResourceSourceContext {
         // walks its file domain in ordinal order, so return the optional
         // whole-inventory cache before paying for projection rows/sorters.
         // Authenticated readers, compact indexes and all proof owners remain.
-        self.raw.release_inventory_resident_cache();
+        // The decoded file rows stay where the run verifies once and the
+        // ledgers have room for the projection's working memory beside them:
+        // the projection would otherwise decode every row again to keep it
+        // once more.
+        let working = crate::shadow_tree::source_pages::SourceExpectedDomain::working_ram_bound(
+            self.raw.file_count(),
+            admission,
+            scratch,
+        );
+        self.raw
+            .release_inventory_resident_cache_before(scratch, working);
         // A run that verifies once (`--verify fast`) takes what the
         // comparison evaluated of each object (its user issues, metadata and
         // security views and case mark) from the comparison's rows (owner's

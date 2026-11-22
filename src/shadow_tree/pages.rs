@@ -871,6 +871,111 @@ impl Write for SemanticHash {
     }
 }
 
+/// The legacy JSON of `value`, as `serde_json::to_writer_pretty` writes it,
+/// into `output`.
+fn write_legacy_json(
+    output: impl io::Write,
+    value: &(impl Serialize + ?Sized),
+) -> serde_json::Result<()> {
+    value.serialize(&mut serde_json::Serializer::with_formatter(
+        output,
+        LegacyPretty::default(),
+    ))
+}
+
+/// serde_json's `PrettyFormatter` with its two-space indentation, method for
+/// method, writing each line break together with the indentation that
+/// follows it, instead of the break and then each level's two spaces by
+/// itself. The bytes are the same; the legacy JSON of an expected tree is
+/// mostly byte arrays, one element a line, and this is a third of the
+/// pieces handed to its digest.
+#[derive(Default)]
+struct LegacyPretty {
+    current_indent: usize,
+    has_value: bool,
+}
+impl LegacyPretty {
+    /// Levels whose indentation is written in one piece with the break;
+    /// deeper ones (an expected tree has fewer than ten) a level at a time.
+    const LEVELS: usize = 32;
+    /// A comma, a line break, and the indentation of `LEVELS` levels.
+    const BREAKS: [u8; 2 + 2 * Self::LEVELS] = {
+        let mut breaks = [b' '; 2 + 2 * Self::LEVELS];
+        breaks[0] = b',';
+        breaks[1] = b'\n';
+        breaks
+    };
+    fn line<W: ?Sized + io::Write>(&self, writer: &mut W, comma: bool) -> io::Result<()> {
+        let from = usize::from(!comma);
+        let levels = self.current_indent.min(Self::LEVELS);
+        writer.write_all(&Self::BREAKS[from..2 + 2 * levels])?;
+        for _ in levels..self.current_indent {
+            writer.write_all(b"  ")?;
+        }
+        Ok(())
+    }
+}
+impl serde_json::ser::Formatter for LegacyPretty {
+    #[inline]
+    fn begin_array<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.current_indent += 1;
+        self.has_value = false;
+        writer.write_all(b"[")
+    }
+    #[inline]
+    fn end_array<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.current_indent -= 1;
+        if self.has_value {
+            self.line(writer, false)?;
+        }
+        writer.write_all(b"]")
+    }
+    #[inline]
+    fn begin_array_value<W: ?Sized + io::Write>(
+        &mut self,
+        writer: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
+        self.line(writer, !first)
+    }
+    #[inline]
+    fn end_array_value<W: ?Sized + io::Write>(&mut self, _writer: &mut W) -> io::Result<()> {
+        self.has_value = true;
+        Ok(())
+    }
+    #[inline]
+    fn begin_object<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.current_indent += 1;
+        self.has_value = false;
+        writer.write_all(b"{")
+    }
+    #[inline]
+    fn end_object<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.current_indent -= 1;
+        if self.has_value {
+            self.line(writer, false)?;
+        }
+        writer.write_all(b"}")
+    }
+    #[inline]
+    fn begin_object_key<W: ?Sized + io::Write>(
+        &mut self,
+        writer: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
+        self.line(writer, !first)
+    }
+    #[inline]
+    fn begin_object_value<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        writer.write_all(b": ")
+    }
+    #[inline]
+    fn end_object_value<W: ?Sized + io::Write>(&mut self, _writer: &mut W) -> io::Result<()> {
+        self.has_value = true;
+        Ok(())
+    }
+}
+
 fn canonical_sha(value: &str) -> bool {
     value.len() == 64
         && value
@@ -1483,7 +1588,7 @@ impl PagedExpectedTree {
         let (semantic_sha256, compact) = if n2r_win32::verify_policy::full_unremembered() {
             // Two passes over the tree, as it always was: its legacy JSON
             // first, then its pages.
-            serde_json::to_writer_pretty(&mut semantic, tree)?;
+            write_legacy_json(&mut semantic, tree)?;
             let semantic_sha256 = semantic.finish()?;
             let mut compact =
                 CompactObjects::begin(path, budget, &header, semantic_byte_budget, row_limit)?;
@@ -1504,7 +1609,7 @@ impl PagedExpectedTree {
                 semantic_byte_budget,
                 row_limit,
             ));
-            serde_json::to_writer_pretty(
+            write_legacy_json(
                 &mut semantic,
                 &CreationView {
                     tree,
@@ -2275,7 +2380,7 @@ impl PagedExpectedTree {
         } else {
             let counts = Cell::new(ExpectedTreePageCounts::default());
             let mut semantic = SemanticHash::new(semantic_byte_budget)?;
-            serde_json::to_writer_pretty(
+            write_legacy_json(
                 &mut semantic,
                 &LegacyView {
                     tree: &view,
@@ -3068,6 +3173,62 @@ mod created_tests {
             named_streams: Vec::new(),
             sparse: None,
         }
+    }
+
+    /// The legacy JSON is byte for byte what serde_json's pretty writer
+    /// writes: empty and nested arrays and objects, deeper than the levels
+    /// written in one piece, and an expected tree.
+    #[test]
+    fn the_legacy_formatter_writes_what_the_pretty_writer_writes() {
+        use serde_json::json;
+        let mut deep = json!(1);
+        for level in 0..40 {
+            deep = if level % 2 == 0 {
+                json!([deep, [], {}, [[]], [{}], 7])
+            } else {
+                json!({"k": deep, "e": [], "o": {}, "s": "x\n\"y\"", "n": null, "t": true})
+            };
+        }
+        let values = [
+            json!(null),
+            json!(-3),
+            json!("text"),
+            json!([]),
+            json!({}),
+            json!([[]]),
+            json!([{}]),
+            json!({"a": []}),
+            json!({"a": {}}),
+            json!([1, [2, []], {"b": [3, {}], "c": {"d": []}}]),
+            deep,
+        ];
+        for value in &values {
+            let mut ours = Vec::new();
+            write_legacy_json(&mut ours, value).unwrap();
+            assert_eq!(
+                String::from_utf8(ours).unwrap(),
+                serde_json::to_string_pretty(value).unwrap()
+            );
+        }
+        let mut objects = vec![object(5, &[], true), object(40, &["a"], true)];
+        let mut file = object(64, &["a", "f"], false);
+        file.additional_names = vec![vec!["a".into(), "F~1".into()]];
+        file.extended_attributes = Some(Default::default());
+        file.source_extents = vec![crate::ntfs_inspect::Extent {
+            logical_offset: 0,
+            physical_offset: Some(4096),
+            length: 8192,
+        }];
+        objects.push(file);
+        let tree = ExpectedTree {
+            profile: "test-profile".into(),
+            logical_bytes: 5,
+            internal_replacement_pending: vec!["root:$TXF_DATA".into()],
+            objects,
+        };
+        let mut ours = Vec::new();
+        write_legacy_json(&mut ours, &tree).unwrap();
+        assert!(ours == serde_json::to_vec_pretty(&tree).unwrap());
     }
 
     /// Pieces of any size, across the digest's blocks, give the digest of

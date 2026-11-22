@@ -535,6 +535,10 @@ the boot harness keeps too).
 - `-Reattach`, when the attempt ends, however it ends, shuts the VM down and
   gives it back the disks and the media, each in its place, and the device
   it started from.
+- Once Windows is back, the verdict's `after.run_images` says of every
+  virtual disk in the run's folder whether that Windows has it attached, or
+  why Windows would not say (a finished run or recovery detaches its working
+  volume, #182).
 - `-Hold` stops at a command prompt in the environment instead
   (`held-in-the-environment`), to be typed into with `Send-VmKeys.ps1`.
 

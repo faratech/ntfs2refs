@@ -447,15 +447,28 @@ try {
             foreach ($leaf in 'converter-output.txt', 'converter-errors.txt', 'recover-forward-output.txt', 'recover-rollback-output.txt', 'recover-command.json', 'recover-command.done.json') {
                 try { Copy-Item -FromSession $back -LiteralPath "$($found.staging)\$leaf" -Destination $records -ErrorAction Stop } catch { }
             }
-            $after = Invoke-Command -Session $back -ScriptBlock {
+            $after = Invoke-Command -Session $back -ArgumentList (Split-Path -Parent $found.staging) -ScriptBlock {
+                param($run)
                 $c = Get-Volume -DriveLetter C
                 $bcd = (& bcdedit.exe /enum '{bootmgr}' 2>&1 | Out-String)
                 $refs = (& "$env:SystemRoot\System32\fsutil.exe" fsinfo refsinfo C: 2>&1 | Out-String)
+                # Whether this Windows has the run's virtual disks attached
+                # (#182): a run folder cannot be removed while one is, and a
+                # finished run or recovery detaches its working volume. What
+                # Windows answers for each, or why it would not.
+                $images = @(Get-ChildItem -LiteralPath $run -Recurse -Force -Filter '*.vhdx' -ErrorAction SilentlyContinue | ForEach-Object {
+                    $image = $_.FullName
+                    try { [pscustomobject]@{ path = $image; attached = [bool](Get-DiskImage -ImagePath $image -ErrorAction Stop).Attached } }
+                    catch { [pscustomobject]@{ path = $image; error = "$($_.Exception.Message)" } }
+                })
                 [pscustomobject]@{ filesystem = [string]$c.FileSystem; health = [string]$c.HealthStatus; cluster_bytes = $c.AllocationUnitSize; bootmgr = $bcd; refsinfo = $refs
-                    boot_utc = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o') }
+                    boot_utc = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o'); run_images = $images }
             }
             $verdict.after = $after
             Say "back in Windows: C: is $($after.filesystem), health $($after.health)"
+            foreach ($image in @($after.run_images)) {
+                Say "the run's $(Split-Path -Leaf $image.path) ($($image.path)): $(if ($image.error) { "Windows did not say whether it is attached: $($image.error)" } elseif ($image.attached) { 'ATTACHED' } else { 'not attached' })"
+            }
             $expected = if ($Diagnose) { 'NTFS' } else { 'ReFS' }
             $converterEnded = if ($report -match 'The converter ended with exit code: (\d+)') { [int]$Matches[1] } else { -1 }
             $verdict.converter_exit = $converterEnded

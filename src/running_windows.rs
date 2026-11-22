@@ -834,9 +834,9 @@ fn recover_from(
     if outcome != Recovered::Failed {
         let _ = fs::rename(&saved, directory.join("recover-command.done.json"));
         // The recovery detaches the run's working volume itself; where that
-        // was refused (#182: Access is denied) it is tried again here, its
-        // process gone and every handle it held closed, before Windows
-        // starts and the run folder is to be removed.
+        // did not succeed (#182) it is tried again here, its process gone
+        // and every handle it held closed, before Windows starts and the run
+        // folder is to be removed.
         if let Some(line) =
             run_shadow(Path::new(&recovery_directory)).and_then(|s| detach_after_recovery(&s))
         {
@@ -876,7 +876,7 @@ fn detach_after_recovery_line(shadow: &Path, detached: std::io::Result<bool>) ->
         )),
         Ok(false) => None,
         Err(error) => Some(format!(
-            "The volume the run built is still attached and could not be detached ({error}): {}. Before deleting the run folder, in diskpart: `select vdisk file=\"{}\"` and `detach vdisk`.",
+            "The volume the run built may still be attached: it could not be detached ({error}): {}. Before deleting the run folder, in diskpart: `select vdisk file=\"{}\"` and `detach vdisk`.",
             shadow.display(),
             shadow.display()
         )),

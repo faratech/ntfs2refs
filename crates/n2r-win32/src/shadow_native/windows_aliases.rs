@@ -201,20 +201,26 @@ fn probe_alias_walked(
         .collect();
     let alias = open_readonly(root, probe.components)?;
     let expected = probe.expected();
-    let basic = super::info(&alias, 0, 40)?;
-    if !super::basic_matches(&expected, &basic) {
-        return Err(invalid(differs));
-    }
+    // The link's identity, type and reparse point are checked first, as in
+    // `probe_alias_unnamed`, with its attributes from the basic information
+    // read where the attribute-tag query was; then its times and attributes.
+    let mut basic = None;
     let observed = crate::windows_alias_native::verify_walked(
         parent_id,
         canonical_id,
         &alias,
-        layout::u32_at(&basic, 32)?,
+        || {
+            let read = super::info(&alias, 0, 40)?;
+            let attributes = layout::u32_at(&read, 32)?;
+            basic = Some(read);
+            Ok(attributes)
+        },
         probe.directory,
         &component,
         &relative,
     )?;
-    if observed.point != *probe.point {
+    let basic = basic.ok_or_else(|| invalid("the link's basic information was not read"))?;
+    if !super::basic_matches(&expected, &basic) || observed.point != *probe.point {
         return Err(invalid(differs));
     }
     let mut snapshot = super::security_snapshot_with_limit(&alias, Some(maximum_row_bytes));

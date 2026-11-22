@@ -392,6 +392,23 @@ pub(crate) fn security_snapshot_paged(file: &File, maximum: usize) -> Snapshot {
     }
 }
 
+/// Kernel-only security snapshot (skips `BackupRead`). Used on a freshly
+/// created private shadow tree under `verifies_once()` where every object still
+/// holds the constructor's SYSTEM-only DACL and only the kernel protection
+/// flags are needed before restoring the source descriptor.
+pub(crate) fn kernel_security_snapshot_paged(file: &File, maximum: usize) -> Snapshot {
+    Snapshot {
+        queries: Vec::new(),
+        security: Vec::new(),
+        security_error: None,
+        kernel_security: Some(kernel_security_paged(file, maximum)),
+        extended_attributes: None,
+        extended_attributes_error: None,
+        reparse: None,
+        directory_case_sensitivity: None,
+    }
+}
+
 /// The kernel's view of an object's descriptor, asked for with the row's
 /// bound: a failed query keeps Windows' error.
 fn kernel_security_paged(file: &File, maximum: usize) -> SecurityQuery {

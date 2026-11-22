@@ -112,16 +112,26 @@ pub fn check_projected_directory_domain(
     admission: n2r_win32::tree_resources::SourceResourceAdmission,
 ) -> Result<ProjectedDirectory> {
     admission.validate()?;
-    let mut low = 0u64;
-    let mut high = directories.directory_count();
-    while low < high {
-        let middle = low + (high - low) / 2;
-        if directories.directory(middle)?.record_number < file.record_number {
-            low = middle + 1;
-        } else {
-            high = middle;
+    // The directory is found by its key, without decoding a directory header
+    // at each step of the search (a paged domain searches its keys alone).
+    // Where it is not there, the search by headers says which way it is not,
+    // with the message it always gave.
+    let low = match directories.find_directory_ordinal(file.record_number)? {
+        Some(ordinal) => ordinal,
+        None => {
+            let mut low = 0u64;
+            let mut high = directories.directory_count();
+            while low < high {
+                let middle = low + (high - low) / 2;
+                if directories.directory(middle)?.record_number < file.record_number {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            low
         }
-    }
+    };
     ensure!(
         low < directories.directory_count(),
         "raw directory index is absent"
@@ -136,15 +146,21 @@ pub fn check_projected_directory_domain(
     let mut expected = BTreeMap::new();
     let mut index_bytes = 0u64;
     for ordinal in 0..header.entries {
-        let link = directories.entry(low, ordinal)?;
+        // The header was decoded above: each entry is found by its key
+        // (`entry` decodes the header again for every entry). Every ordinal
+        // asked is one of the header's entries.
+        let link = directories.entry_by_record(low, header.record_number, ordinal)?;
         ensure!(link.parent == owner, "raw I30 parent differs");
         if link.namespace == 2 || (link.child == owner && link.name == [46]) {
             continue;
         }
-        let child = files
-            .find_record(
+        // One flag of the child is read where the source holds its row,
+        // not from a copy of the whole row.
+        let child_is_directory = files
+            .with_record(
                 link.child & 0x0000_ffff_ffff_ffff,
                 Some((link.child >> 48) as u16),
+                |child| Ok(child.is_directory),
             )?
             .context("raw I30 child is absent or stale")?;
         index_bytes = index_bytes
@@ -157,7 +173,7 @@ pub fn check_projected_directory_domain(
         );
         ensure!(
             expected
-                .insert(link.name, (link.child, child.is_directory))
+                .insert(link.name, (link.child, child_is_directory))
                 .is_none(),
             "duplicate raw directory name"
         );

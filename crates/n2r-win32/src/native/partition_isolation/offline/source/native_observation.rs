@@ -737,6 +737,7 @@ impl OfflineFrozenSource {
                 budget,
                 single_content_pass,
                 accountant,
+                false,
             )?;
             let txf_result =
                 crate::txf_native::observe_offline_bound_phase(&mut phase, lease.events);

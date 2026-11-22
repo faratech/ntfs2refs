@@ -413,6 +413,9 @@ pub struct PagedNativeObservation {
     // Set once `validate_domain_resources` has passed for these rows and this
     // header; cleared when the header is replaced.
     resources_validated: std::cell::Cell<bool>,
+    // Set where the opening left the check of every row to the comparison
+    // that decodes each of them next (`open_with_memory_for_comparison`).
+    validation_deferred: std::cell::Cell<bool>,
     reader: RefCell<Reader>,
     // File and namespace rows are written in separate phases. Independent
     // authenticated page caches prevent an identity join from reloading and
@@ -444,7 +447,7 @@ impl std::fmt::Debug for PagedNativeObservation {
 }
 impl PagedNativeObservation {
     pub fn open(path: &Path, sha256: &str, budget: NativeObservationBudget) -> io::Result<Self> {
-        Self::open_accounted(path, sha256, budget, None)
+        Self::open_accounted(path, sha256, budget, None, false)
     }
     pub(crate) fn open_with_memory(
         path: &Path,
@@ -452,13 +455,53 @@ impl PagedNativeObservation {
         budget: NativeObservationBudget,
         memory: memory::Memory,
     ) -> io::Result<Self> {
-        Self::open_accounted(path, sha256, budget, Some(memory))
+        Self::open_accounted(path, sha256, budget, Some(memory), false)
+    }
+    /// As [`Self::open_with_memory`], for the source observation of a
+    /// conversion, whose rows the comparison with the raw reading decodes
+    /// next, every one of them, and validates as it does
+    /// (`compare_domain`, through `validate_domain_resources_with_rows`).
+    ///
+    /// Opening checked every row too (its resource rules and its identity
+    /// closure), decoding each a first time for that alone; at the full
+    /// volume that was 143,580 rows decoded twice. In a run that verifies
+    /// once (`--verify fast`, outside a gate) the opening leaves that check
+    /// to the comparison, which makes it on the same single decoding of each
+    /// row, with the same refusals, before anything that depends on the
+    /// rows is formed of them: nothing reads a row in between (the TxF and
+    /// object-ID witnesses are taken of the selectors, the transaction
+    /// proof of the header). Every other run (`--verify thorough`, a
+    /// diagnosis, a recovery, `--recheck-everything`) checks the rows here,
+    /// as before.
+    pub(crate) fn open_with_memory_for_comparison(
+        path: &Path,
+        sha256: &str,
+        budget: NativeObservationBudget,
+        memory: memory::Memory,
+    ) -> io::Result<Self> {
+        let defer =
+            crate::verify_policy::verifies_once() && !crate::verify_policy::full_unremembered();
+        Self::open_accounted(path, sha256, budget, Some(memory), defer)
+    }
+    /// That a row's identities close over its request, as the opening holds
+    /// every row to.
+    fn identity_closure(&self, index: usize, row: &NativeObservationRow<'_>) -> io::Result<()> {
+        let request = &self.header.request;
+        require(
+            (request.has_paged_selectors()
+                || request.files.get(index) == Some(&row.request().identity))
+                && row.observation().identity == row.request().identity
+                && row.logical()?.identity == row.observation().identity
+                && row.namespace()?.identity == row.request().identity,
+            "native observation identity closure differs",
+        )
     }
     fn open_accounted(
         path: &Path,
         sha256: &str,
         budget: NativeObservationBudget,
         memory: Option<memory::Memory>,
+        defer_validation: bool,
     ) -> io::Result<Self> {
         budget.validate()?;
         let mut reader = Reader::open(path, sha256, PURPOSE, budget.pages)?;
@@ -670,6 +713,7 @@ impl PagedNativeObservation {
         )?;
         let mut result = Self {
             resources_validated: std::cell::Cell::new(false),
+            validation_deferred: std::cell::Cell::new(false),
             memory,
             reader: RefCell::new(reader),
             namespace_reader: RefCell::new(namespace_reader),
@@ -704,18 +748,15 @@ impl PagedNativeObservation {
         }
         // Each row's identities close over its request, checked on the same
         // decoding of the row that the resource validation makes (every row
-        // was decoded once for this and once more for that).
-        let paged_selectors = result.header.request.has_paged_selectors();
-        let requested = &result.header.request.files;
-        crate::attestation::validate_domain_resources_with_rows(&result, &mut |i, row| {
-            require(
-                (paged_selectors || requested.get(i) == Some(&row.request().identity))
-                    && row.observation().identity == row.request().identity
-                    && row.logical()?.identity == row.observation().identity
-                    && row.namespace()?.identity == row.request().identity,
-                "native observation identity closure differs",
-            )
-        })?;
+        // was decoded once for this and once more for that). Where both are
+        // left to the comparison, it makes them (`check_deferred_row`).
+        if defer_validation {
+            result.validation_deferred.set(true);
+        } else {
+            crate::attestation::validate_domain_resources_with_rows(&result, &mut |i, row| {
+                result.identity_closure(i, row)
+            })?;
+        }
         result.revalidate()?;
         if let Some(memory) = &mut result.memory {
             memory.close(&result.header, &result.files, &result.namespace)?;
@@ -863,6 +904,16 @@ impl PagedNativeObservation {
 impl NativeObservationDomain for PagedNativeObservation {
     fn resources_validated(&self) -> Option<&std::cell::Cell<bool>> {
         Some(&self.resources_validated)
+    }
+    fn validation_deferred(&self) -> bool {
+        self.validation_deferred.get() && !self.resources_validated.get()
+    }
+    fn check_deferred_row(&self, index: usize, row: &NativeObservationRow<'_>) -> io::Result<()> {
+        if self.validation_deferred.get() {
+            self.identity_closure(index, row)
+        } else {
+            Ok(())
+        }
     }
     fn header(&self) -> &Report {
         self.refreshed_header.as_ref().unwrap_or(&self.header)

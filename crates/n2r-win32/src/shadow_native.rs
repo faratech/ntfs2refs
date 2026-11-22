@@ -740,10 +740,15 @@ fn observe_read_back_while<T: Sync, U: Send, M>(
 /// and inline residual results, the residual expectations it was observed
 /// with, and the query reservation of its row with the peak it was paid for.
 struct ObservedBatch {
-    rows: Vec<(ObjectReport, Vec<([u8; 16], String)>)>,
+    rows: Vec<WalkedRow>,
     residuals: Vec<Vec<LayoutResidualExpectation>>,
-    leases: Vec<(Option<Box<dyn report_memory::ReportMemoryLease>>, u64)>,
+    leases: Vec<RowLease>,
 }
+/// One object's row in a walk, with the identity and digest of each residual
+/// tail read inline.
+type WalkedRow = (ObjectReport, Vec<([u8; 16], String)>);
+/// The query reservation of a row in a walk, and the peak it was paid for.
+type RowLease = (Option<Box<dyn report_memory::ReportMemoryLease>>, u64);
 
 /// The residual tails of objects `start..start + len` that a closing walk
 /// reads inline, while the walk's residual list is held: each object's run

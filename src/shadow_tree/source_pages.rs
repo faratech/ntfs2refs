@@ -710,9 +710,10 @@ struct GatheredReads<'a> {
     compared: Cell<Option<Result<Option<Vec<u8>>>>>,
     user_paths: Cell<Option<Result<Vec<Vec<String>>>>>,
     descriptor: Cell<Option<Result<StoredDescriptor>>>,
-    // Read only where the construction may name the object in a refusal of
-    // its case mark: a directory whose mark is carried over.
-    refused_path: Option<Option<Vec<String>>>,
+    // Whether the construction asked for a path to name the object by in
+    // a refusal (of its case mark): that path is not read beforehand, and
+    // such a refusal is made again in turn, where it is read.
+    wanted_refused_path: Cell<bool>,
     windows: bool,
     storage_hint_normalized: bool,
     is_windows_conversion: bool,
@@ -728,7 +729,6 @@ impl<'a> GatheredReads<'a> {
         rows: &SortedRecordStore,
         file: &ntfs::FileInventory,
         admission: SourceResourceAdmission,
-        carry_case_marks: bool,
     ) -> (Self, u64) {
         // `SortedRecordStore::find`, with the row's bytes taken and not
         // decoded: the same reads and lookups, counted as a decoding.
@@ -741,8 +741,6 @@ impl<'a> GatheredReads<'a> {
         })();
         let user_paths = live.user_paths(file);
         let descriptor = live.stored_descriptor(file, admission.budget.max_row_bytes);
-        let refused_path =
-            (carry_case_marks && file.is_directory).then(|| live.refused_object_path(file));
         // The row and what is read for it, the object made of them and its
         // text: each about as large as what it is made of, four times over.
         let read = |bytes: usize| bytes as u64;
@@ -778,7 +776,7 @@ impl<'a> GatheredReads<'a> {
                 compared: Cell::new(Some(compared)),
                 user_paths: Cell::new(Some(user_paths)),
                 descriptor: Cell::new(Some(descriptor)),
-                refused_path,
+                wanted_refused_path: Cell::new(false),
                 windows: live.windows(),
                 storage_hint_normalized: live.storage_hint_normalized(),
                 is_windows_conversion: live.is_windows_conversion(),
@@ -830,7 +828,10 @@ impl ObjectReads for GatheredReads<'_> {
             .unwrap_or_else(|| Err(asked_again("security descriptor")))
     }
     fn refused_object_path(&self, _: &ntfs::FileInventory) -> Option<Vec<String>> {
-        self.refused_path.clone().flatten()
+        // Asked only for the text of a refusal: the object is then built
+        // again in turn, where the path is read (`wanted_refused_path`).
+        self.wanted_refused_path.set(true);
+        None
     }
     fn windows(&self) -> bool {
         self.windows
@@ -1952,14 +1953,8 @@ impl SourceExpectedDomain {
                                 break;
                             }
                         }
-                        let (reads, workspace) = GatheredReads::gather(
-                            &live,
-                            once,
-                            rows,
-                            &file,
-                            admission,
-                            carry_case_marks,
-                        );
+                        let (reads, workspace) =
+                            GatheredReads::gather(&live, once, rows, &file, admission);
                         if workspace > AT_ONCE_OBJECT_BYTES {
                             // Its row is held until it is built, outside
                             // the batch's share: the batch ends with it, so
@@ -1997,6 +1992,12 @@ impl SourceExpectedDomain {
                             in_order::panic_text(panic.as_ref())
                         ))
                     });
+                    // A refusal whose text names the object by a path that
+                    // was not read beforehand is made again in turn, where
+                    // it is read: the same refusal, with its path.
+                    if built.is_err() && reads.wanted_refused_path.get() {
+                        return AtOnce::InTurn { ordinal, file };
+                    }
                     AtOnce::Built {
                         ordinal,
                         file,

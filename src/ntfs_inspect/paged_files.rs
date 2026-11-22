@@ -507,38 +507,42 @@ impl PagedRawFiles {
     /// again, it is decoded from the store. Directories, which the paths of
     /// other rows are built from, are copied as [`RootFileDomain::file`]
     /// copies them, and so is every row where rows written are not kept.
+    ///
+    /// The row is taken out of the decoded rows under one borrow, before
+    /// anything else is read: reading the store's index may ask for memory
+    /// that gives the decoded rows up. A row that is not held there (never
+    /// kept, or given up) is decoded from the store, as [`Self::file`] does.
     pub(super) fn take_file(&self, ordinal: u64) -> Result<FileInventory> {
-        if WrittenRows::keeps()
+        let taken = if WrittenRows::keeps()
             && let Ok(index) = usize::try_from(ordinal)
-            && self
-                .decoded
-                .state
-                .borrow()
+            && let Ok(mut decoded) = self.decoded.state.try_borrow_mut()
+            && decoded
                 .rows
                 .get(index)
                 .and_then(Option::as_ref)
                 .is_some_and(|row| !row.is_directory)
         {
-            let key = self.files.key(ordinal)?;
-            let number = u64::from_be_bytes(key[..8].try_into()?);
-            ensure!(
-                key == file_key(number),
-                "canonical ordinal key is not a file identity"
-            );
-            let row = self
-                .decoded
-                .state
-                .borrow_mut()
-                .take(index)
-                .context("the decoded row of the source file store disappeared")?;
-            ensure!(
-                row.record_number == number,
-                "the decoded row held for ordinal {ordinal} of the source file store is FILE {}, where the store's index has FILE {number}",
-                row.record_number
-            );
-            return Ok(Arc::unwrap_or_clone(row));
-        }
-        self.file(ordinal)
+            decoded.take(index)
+        } else {
+            None
+        };
+        let Some(row) = taken else {
+            return self.file(ordinal);
+        };
+        self.decoded.last_used.set(n2r_win32::evict::now());
+        // Held to the store's key at its ordinal, as a row served is.
+        let key = self.files.key(ordinal)?;
+        let number = u64::from_be_bytes(key[..8].try_into()?);
+        ensure!(
+            key == file_key(number),
+            "canonical ordinal key is not a file identity"
+        );
+        ensure!(
+            row.record_number == number,
+            "the decoded row held for ordinal {ordinal} of the source file store is FILE {}, where the store's index has FILE {number}",
+            row.record_number
+        );
+        Ok(Arc::unwrap_or_clone(row))
     }
     pub fn file_pin(&self) -> &RecordStorePin {
         self.files.pin()
@@ -990,7 +994,11 @@ impl PagedRawFiles {
             };
             if let Some(file) = held {
                 // Held to the same key, order, bitmaps and window as a
-                // decoded row, and kept where it is.
+                // decoded row, and kept where it is. The row is lent for
+                // that, not borrowed from the cache: reading the index may
+                // give the decoded rows up, and the rows after it are then
+                // decoded.
+                self.decoded.last_used.set(n2r_win32::evict::now());
                 self.check_complete_row(ordinal, &file, &mut previous)?;
                 continue;
             }

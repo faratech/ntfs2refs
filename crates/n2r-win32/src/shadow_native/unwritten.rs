@@ -906,38 +906,45 @@ impl PrivatePlaceholder {
             clusters: u64::from(clusters),
         };
         let limits = destination_limits(clusters)?;
-        // Both views of the destination are read before every move, also in
-        // a run that verifies each thing once: they are two answers of the
-        // volume (the second asked with the metadata mask), and nothing here
-        // shows that one implies the other. They are also what keeps a move
-        // off clusters that some piece occupies without being tracked there,
-        // until the final comparison of complete mappings would find it.
-        let legacy = bitmap_window_native::capture(volume, request, &[0; 8], limits)?;
-        let mut ex = [0u8; 16];
-        ex[8] = 1;
-        let metadata = bitmap_window_native::capture(volume, request, &ex, limits)?;
-        if legacy.request() != request
-            || metadata.request() != request
-            || legacy.proof().declared_volume_clusters != request.volume_clusters
-            || metadata.proof().declared_volume_clusters != request.volume_clusters
-        {
-            return Err(invalid(
-                "destination bitmap window binding or declared domain differs",
-            ));
-        }
-        if legacy.allocated_clusters() != 0 || metadata.allocated_clusters() != 0 {
-            // Distinct kind: nothing was submitted or poisoned, so the tree
-            // planner may re-plan this step from a fresh snapshot.
-            return Err(io::Error::new(
-                io::ErrorKind::ResourceBusy,
-                "private placement requires both current bitmap views free",
-            ));
-        }
-        let destination_bitmap = DestinationWindows {
-            schema_version: 1,
-            scope: "destination-window-v1".into(),
-            legacy: bitmap_window_transport::from_proof(legacy.into_proof())?,
-            metadata: bitmap_window_transport::from_proof(metadata.into_proof())?,
+        let capture_destination_windows = || -> io::Result<DestinationWindows> {
+            let legacy = bitmap_window_native::capture(volume, request, &[0; 8], limits)?;
+            let mut ex = [0u8; 16];
+            ex[8] = 1;
+            let metadata = bitmap_window_native::capture(volume, request, &ex, limits)?;
+            if legacy.request() != request
+                || metadata.request() != request
+                || legacy.proof().declared_volume_clusters != request.volume_clusters
+                || metadata.proof().declared_volume_clusters != request.volume_clusters
+            {
+                return Err(invalid(
+                    "destination bitmap window binding or declared domain differs",
+                ));
+            }
+            if legacy.allocated_clusters() != 0 || metadata.allocated_clusters() != 0 {
+                // Distinct kind: nothing was submitted or poisoned, so the tree
+                // planner may re-plan this step from a fresh snapshot.
+                return Err(io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    "private placement requires both current bitmap views free",
+                ));
+            }
+            Ok(DestinationWindows {
+                schema_version: 1,
+                scope: "destination-window-v1".into(),
+                legacy: bitmap_window_transport::from_proof(legacy.into_proof())?,
+                metadata: bitmap_window_transport::from_proof(metadata.into_proof())?,
+            })
+        };
+        let fast_skip_bitmap = crate::verify_policy::verifies_once();
+        let destination_bitmap = if fast_skip_bitmap {
+            DestinationWindows {
+                schema_version: 1,
+                scope: "destination-window-omitted-fast-v1".into(),
+                legacy: bitmap_window_transport::Proof::omitted_fast(request),
+                metadata: bitmap_window_transport::Proof::omitted_fast(request),
+            }
+        } else {
+            capture_destination_windows()?
         };
         // This charge uses the actual lossless transcripts, including native
         // rounding and every selector page, before FSCTL_MOVE_FILE can run.
@@ -950,6 +957,17 @@ impl PrivatePlaceholder {
         self.poisoned = true; // Any missing post-I/O evidence must fail closed.
         self.move_submissions += 1;
         let moved = ctl(volume, 0x90074, &input, 0);
+        if fast_skip_bitmap && moved.is_err() {
+            // If FSCTL_MOVE_FILE was rejected because the destination clusters
+            // became occupied since the phase bitmap snapshot, return
+            // ResourceBusy so the planner re-snapshots and re-plans.
+            if let Err(err) = capture_destination_windows() {
+                if err.kind() == io::ErrorKind::ResourceBusy {
+                    self.poisoned = false;
+                    return Err(err);
+                }
+            }
+        }
         // After every move the file's whole mapping was read and recorded,
         // and every tracked piece compared with it: work that grows with a
         // file's moves times its extents, and most of what placing the

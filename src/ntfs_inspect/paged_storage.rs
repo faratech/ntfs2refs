@@ -890,6 +890,18 @@ const BASE64_VALUES: [u8; 256] = {
 /// `bytes` as a JSON string of canonical padded base64: exactly what
 /// serializing [`Base64`] produces, written directly. The alphabet needs no
 /// JSON escaping.
+/// Prefix byte for raw (non-base64) chunks stored in `metadata_pages`.
+/// Legacy chunks are JSON strings and always begin with `b'"'` (`0x22`).
+const RAW_CHUNK_TAG: u8 = 0x00;
+
+pub(crate) fn encode_raw_chunk(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(1 + bytes.len())?;
+    out.push(RAW_CHUNK_TAG);
+    out.extend_from_slice(bytes);
+    Ok(out)
+}
+
 pub(crate) fn encode_json_base64(bytes: &[u8]) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     out.try_reserve_exact(bytes.len().div_ceil(3) * 4 + 2)?;
@@ -942,6 +954,16 @@ pub(crate) fn decode_base64_groups(input: &[u8], out: &mut Vec<u8>) -> bool {
 }
 
 fn decode(payload: &[u8], maximum: usize) -> Result<Vec<u8>> {
+    if let Some((&RAW_CHUNK_TAG, raw)) = payload.split_first() {
+        ensure!(
+            !raw.is_empty() && raw.len() <= maximum,
+            "source chunk exceeds working window"
+        );
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(raw.len())?;
+        bytes.extend_from_slice(raw);
+        return Ok(bytes);
+    }
     let text: &str = serde_json::from_slice(payload)?;
     let input = text.as_bytes();
     ensure!(
@@ -1066,7 +1088,7 @@ impl SourceRangeWriter {
             .as_mut()
             .context("source writer content hash absent")?
             .update(&self.body)?;
-        let payload = encode_json_base64(&self.body)?;
+        let payload = encode_raw_chunk(&self.body)?;
         // Reserve the full encoded row plus its own page and index frames.
         // Shared concurrent writers cannot overrun aggregate scratch first.
         let bytes = (payload.len() as u64)

@@ -54,6 +54,35 @@ pub struct Proof {
     pub queries: Vec<Query>,
 }
 
+impl Proof {
+    /// Minimal placeholder proof used when `--verify fast` (`verifies_once`)
+    /// omits per-move live destination bitmap ioctls in favor of the phase
+    /// bitmap snapshot and `FSCTL_MOVE_FILE`'s atomic free-cluster check.
+    pub(crate) fn omitted_fast(request: bitmap_window::Request) -> Self {
+        let empty = ByteBuffer {
+            codec: Codec::Raw,
+            decoded_bytes: 0,
+            decoded_sha256: String::new(),
+            data_hex: String::new(),
+        };
+        Self {
+            schema_version: 1,
+            encoding: "native-bitmap-window-omitted-fast-v1".into(),
+            window_schema_version: 1,
+            window_encoding: String::new(),
+            request,
+            template: empty.clone(),
+            declared_volume_clusters: request.volume_clusters,
+            window_bits: empty,
+            allocated_clusters: 0,
+            window_sha256: String::new(),
+            returned_bytes: 0,
+            whole_volume_complete: false,
+            queries: Vec::new(),
+        }
+    }
+}
+
 fn bad(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }

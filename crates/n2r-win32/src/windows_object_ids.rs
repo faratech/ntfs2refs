@@ -392,22 +392,28 @@ fn query(file: &File, code: u32, name: &'static str, capacity: usize) -> Windows
     }
 }
 fn info(file: &File, class: i32, length: usize, name: &'static str) -> WindowsObjectIdQuery {
-    let mut bytes = vec![0; length];
-    // SAFETY: exact bounded FILE_*_INFO output and a live no-follow handle.
-    let succeeded = unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            class,
-            bytes.as_mut_ptr().cast(),
-            length as u32,
-        )
-    } != 0;
-    let error = if succeeded {
-        None
-    } else {
-        bytes.clear();
-        Some(io::Error::last_os_error().raw_os_error().unwrap_or(31))
-    };
+    // FILE_ID_INFO and FILE_STANDARD_INFO hold 8-byte fields, and Windows
+    // refuses an output that is not aligned to them; a byte vector is so
+    // aligned only by the allocator's choice. The answer is written into the
+    // thread's 8-byte-aligned query buffer and copied out.
+    let (succeeded, error, bytes) = crate::query_scratch::with(length, |response| {
+        // SAFETY: exact bounded, 8-byte-aligned FILE_*_INFO output and a live
+        // no-follow handle; synchronous query, the pointer is not retained.
+        let succeeded = unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                class,
+                response.as_mut_ptr().cast(),
+                length as u32,
+            )
+        } != 0;
+        if succeeded {
+            (true, None, response.to_vec())
+        } else {
+            let error = io::Error::last_os_error().raw_os_error().unwrap_or(31);
+            (false, Some(error), Vec::new())
+        }
+    });
     WindowsObjectIdQuery {
         operation: name,
         code_or_class: class as u32,
@@ -544,4 +550,33 @@ fn validate_row(row: &WindowsObjectIdRow, serial: u64) -> io::Result<()> {
     }
     let _ = bytes(&row.object_id, 64)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::info;
+
+    #[test]
+    fn each_information_class_is_answered_in_full_from_the_aligned_buffer() {
+        let path =
+            std::env::temp_dir().join(format!("n2r-object-ids-info-{}.tmp", std::process::id()));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        for (class, length) in [(18, 24), (1, 24), (9, 8)] {
+            let query = info(&file, class, length, "test");
+            assert!(query.succeeded, "class {class}: {:?}", query.native_error);
+            assert_eq!(query.native_error, None);
+            assert_eq!(query.bytes.len(), length, "class {class}");
+        }
+        // FILE_STANDARD_INFO.NumberOfLinks: the answer itself, copied out.
+        let standard = info(&file, 1, 24, "test").bytes;
+        assert_eq!(u32::from_le_bytes(standard[16..20].try_into().unwrap()), 1);
+        drop(file);
+        let _ = std::fs::remove_file(&path);
+    }
 }

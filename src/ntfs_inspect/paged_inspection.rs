@@ -1021,7 +1021,11 @@ impl RowsAhead {
     }
     /// Writes the rows the worker has finished, in order; with `wait`,
     /// every row handed to it.
-    fn write_ready(&mut self, writer: &mut SortedRecordWriter, wait: bool) -> Result<()> {
+    pub(super) fn write_ready(
+        &mut self,
+        writer: &mut SortedRecordWriter,
+        wait: bool,
+    ) -> Result<()> {
         while self.write_next(writer, wait)? {}
         Ok(())
     }
@@ -1203,7 +1207,12 @@ fn inspect_paged_internal<R: Read + Seek>(
                 && resolver.window_loads() != windows_ahead
             {
                 windows_ahead = resolver.window_loads();
-                read_window_ahead(
+                // Reading ahead is a saving, never a reason for the scan
+                // to stop: a window whose reads cannot be found (its bits
+                // of the MFT bitmap cannot be read) is read as the scan
+                // asks, and the scan meets that store's error itself, in
+                // its own order, when it reads those bits.
+                if read_window_ahead(
                     prefetch,
                     &resolver,
                     bitmap.as_ref(),
@@ -1211,7 +1220,11 @@ fn inspect_paged_internal<R: Read + Seek>(
                     record_count,
                     policy.is_fast() && !preparation_only,
                     &mut reads_ahead,
-                )?;
+                )
+                .is_err()
+                {
+                    reads_ahead.clear();
+                }
             }
             // Declared before the record so the assembly lease drops only
             // after the assembled record and its resident values are gone.

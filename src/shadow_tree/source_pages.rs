@@ -227,6 +227,18 @@ fn stored_descriptor(
     Ok((stored, stored_sha256))
 }
 
+/// What a projection made in a run that verifies once
+/// ([`n2r_win32::verify_policy::verifies_once`]) leaves out of
+/// [`build_object`]: a stored descriptor decoded, checked and hashed again
+/// for another object of the same security ID (where spare memory holds
+/// the descriptors, [`stored_descriptor`]), and a Windows file's paths taken
+/// again for each of its streams. Only `derive_scoped` makes one, and only
+/// in such a run; a thorough run, a diagnosis and the comparison of a
+/// cached body with the current projection pass none.
+struct VerifiedOnce {
+    descriptors: Option<std::cell::RefCell<DescriptorCache>>,
+}
+
 /// The descriptors [`stored_descriptor`] has decoded, checked and hashed,
 /// by security ID, in the spare memory the projection could lease for them
 /// (`SourceScratch::lease_spare_ram`). A descriptor that does not fit in
@@ -385,8 +397,7 @@ fn compared_key(record_number: u64) -> [u8; 16] {
 /// security views and its directory's case mark are then those the
 /// comparison evaluated for it from the same held source and Windows rows,
 /// and the Windows row is not decoded again. Without it they are evaluated
-/// here, as every thorough run does. `descriptors` as in
-/// [`stored_descriptor`].
+/// here, as every thorough run does. `once` as in [`VerifiedOnce`].
 #[allow(clippy::too_many_arguments)]
 fn build_object(
     source: &PagedInspection,
@@ -398,7 +409,7 @@ fn build_object(
     aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
     object_ids: Option<&crate::object_id_disposition::DataObjectIds>,
     carry_case_marks: bool,
-    descriptors: Option<&std::cell::RefCell<DescriptorCache>>,
+    once: Option<&VerifiedOnce>,
 ) -> Result<(
     Object,
     Option<crate::ntfs_extended_attributes::WindowsKernelPurgeEaNormalization>,
@@ -499,8 +510,12 @@ fn build_object(
             file.record_number
         );
     }
-    let (stored, stored_sha256) =
-        stored_descriptor(source, file, admission.budget.max_row_bytes, descriptors)?;
+    let (stored, stored_sha256) = stored_descriptor(
+        source,
+        file,
+        admission.budget.max_row_bytes,
+        once.and_then(|once| once.descriptors.as_ref()),
+    )?;
     let case_mark_context = || {
         format!(
             "the case-sensitive mark of the directory at FILE {} ({})",
@@ -638,15 +653,24 @@ fn build_object(
                 == 0,
         "unsupported basic metadata"
     );
+    // This file's paths were taken from `aliases` above. A projection that
+    // verifies once does not take them again for each of its streams: the
+    // same derivation of the same held rows, which has just succeeded.
+    let paths_taken = once.is_some();
+    let classify = |stream: &ntfs::StreamInventory| match aliases {
+        Some(aliases) if paths_taken => {
+            ntfs_stream_plan::classify_stream_windows_domain_paths_taken(
+                source, file, stream, admission, aliases,
+            )
+        }
+        Some(aliases) => ntfs_stream_plan::classify_stream_windows_domain(
+            source, file, stream, admission, aliases,
+        ),
+        None => ntfs_stream_plan::classify_stream_domain(source, file, stream, admission),
+    };
     let (source_offset, source_extents, length, sha256, source_evidence, sparse) =
         if let Some(stream) = file.streams.iter().find(|s| s.name_utf16.is_empty()) {
-            let decision = if let Some(aliases) = aliases {
-                ntfs_stream_plan::classify_stream_windows_domain(
-                    source, file, stream, admission, aliases,
-                )?
-            } else {
-                ntfs_stream_plan::classify_stream_domain(source, file, stream, admission)?
-            };
+            let decision = classify(stream)?;
             let (offset, extents) = planned_stream_source(Some(&decision), resources)?;
             (
                 offset,
@@ -662,13 +686,7 @@ fn build_object(
     let mut named_streams = Vec::new();
     for stream in file.streams.iter().filter(|s| !s.name_utf16.is_empty()) {
         ensure!(!file.is_directory, "named directory streams unsupported");
-        let decision = if let Some(aliases) = aliases {
-            ntfs_stream_plan::classify_stream_windows_domain(
-                source, file, stream, admission, aliases,
-            )?
-        } else {
-            ntfs_stream_plan::classify_stream_domain(source, file, stream, admission)?
-        };
+        let decision = classify(stream)?;
         ensure!(
             decision.disposition != Disposition::Reject,
             "named source stream candidate refused"
@@ -1065,13 +1083,11 @@ impl SourceExpectedDomain {
         };
         let mut pending_objects: Vec<([u8; 16], Object)> =
             Vec::with_capacity(serialize_batch_limit);
-        // Each distinct descriptor decoded and checked once, in a run that
-        // verifies once and where spare memory is granted for it.
-        let descriptors = if n2r_win32::verify_policy::verifies_once() {
-            DescriptorCache::leased(scratch)
-        } else {
-            None
-        };
+        // What this projection leaves out of each object's construction in
+        // a run that verifies once (see `VerifiedOnce`).
+        let once = n2r_win32::verify_policy::verifies_once().then(|| VerifiedOnce {
+            descriptors: DescriptorCache::leased(scratch),
+        });
         let flush_encoded = |pending: &mut Vec<([u8; 16], Object)>,
                              objects: &mut ExternalSort,
                              names: &mut ExternalSort,
@@ -1138,7 +1154,7 @@ impl SourceExpectedDomain {
                 aliases,
                 object_ids,
                 carry_case_marks,
-                descriptors.as_ref(),
+                once.as_ref(),
             )?;
             if aliases
                 .map(|owner| owner.windows_txf_accounted(source, &file))
@@ -1282,7 +1298,7 @@ impl SourceExpectedDomain {
             &mut name_ordinal,
         )?;
         drop(_serialize_spare);
-        drop(descriptors);
+        drop(once);
         if let Some(aliases) = aliases {
             // Alias entries participate in the real destination collision
             // proof without becoming source objects or changing source counts.

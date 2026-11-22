@@ -373,6 +373,52 @@ pub(crate) fn source_snapshot_paged_scoped(
     snapshot
 }
 
+/// Layout-only metadata snapshot (skips both `BackupRead` and
+/// `GetKernelObjectSecurity`). Used only during `Mode::ObserveLayout` on the
+/// private shadow tree under `verifies_once()`, where every object's security
+/// descriptor was already restored and verified during shadow placement and
+/// will be verified in full again on the converted volume.
+pub(crate) fn source_snapshot_paged_layout_only(
+    file: &File,
+    require_case: bool,
+    extended_attributes: bool,
+    reparse: bool,
+) -> Snapshot {
+    let queries = [(0, 40), (1, 24), (18, 24), (9, 8)]
+        .into_iter()
+        .map(|(class, bytes)| query(file, class, bytes))
+        .collect();
+    let mut snapshot = Snapshot {
+        queries,
+        security: Vec::new(),
+        security_error: None,
+        kernel_security: None,
+        extended_attributes: None,
+        extended_attributes_error: None,
+        reparse: None,
+        directory_case_sensitivity: None,
+    };
+    if extended_attributes {
+        match crate::extended_attributes_native::capture(file) {
+            Ok(set) => snapshot.extended_attributes = Some(set),
+            Err(error) => snapshot.extended_attributes_error = Some(error.to_string()),
+        }
+    }
+    if reparse {
+        snapshot.reparse = Some(match crate::reparse_native::capture(file) {
+            Ok(point) => ReparseObservation { point, error: None },
+            Err(error) => ReparseObservation {
+                point: None,
+                error: Some(error.to_string()),
+            },
+        });
+    }
+    if require_case {
+        snapshot.directory_case_sensitivity = source_directory_case(file, &snapshot.queries);
+    }
+    snapshot
+}
+
 /// Only an object's two security views, the API's and the kernel's, each
 /// asked for with the row's bound as [`source_snapshot_paged`] asks for
 /// them: what a security check reads, and nothing else. Its `queries` are

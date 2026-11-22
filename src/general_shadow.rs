@@ -141,6 +141,10 @@ impl<'a> n2r_win32::shadow_native::input_domain::InputDomain for TreeInputs<'a> 
             .get(index)
             .ok_or_else(|| std::io::Error::other("canonical object ordinal absent"))
     }
+    /// Borrowed from the tree: nothing is reserved.
+    fn object_spare(&self, index: usize) -> Option<Self::Object> {
+        self.0.objects.get(index)
+    }
 }
 
 pub(crate) struct PagedInputs<'a>(pub &'a crate::shadow_tree::PagedExpectedTree);
@@ -253,6 +257,9 @@ impl<D: n2r_win32::shadow_native::input_domain::InputDomain>
     fn object(&self, index: usize) -> std::io::Result<Self::Object> {
         self.inner.object(index)
     }
+    fn object_spare(&self, index: usize) -> Option<Self::Object> {
+        self.inner.object_spare(index)
+    }
     fn input_digest_memo(
         &self,
     ) -> Option<&n2r_win32::shadow_native::input_domain::InputDigestMemo> {
@@ -344,6 +351,16 @@ impl n2r_win32::shadow_native::input_domain::InputDomain for PagedInputs<'_> {
                 .map(PagedInputObject::Legacy)
                 .map_err(std::io::Error::other)
         }
+    }
+    /// Only an admitted tree decodes from spare memory; a legacy one offers
+    /// nothing ahead.
+    fn object_spare(&self, index: usize) -> Option<Self::Object> {
+        if self.0.header().resource_admission.is_none() {
+            return None;
+        }
+        self.0
+            .object_leased_spare(index)
+            .map(PagedInputObject::Shared)
     }
     fn input_digest_memo(
         &self,

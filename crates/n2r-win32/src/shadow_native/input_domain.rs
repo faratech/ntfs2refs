@@ -136,6 +136,16 @@ pub trait InputDomain {
     type Object: ObjectInput;
     fn len(&self) -> usize;
     fn object(&self, index: usize) -> io::Result<Self::Object>;
+    /// Object `index` decoded from memory the run can do without, for a pass
+    /// that decodes ahead of the objects it is taking: `None` where that
+    /// memory is refused or the object does not decode, and the caller then
+    /// asks for it with [`Self::object`] in its turn, and is told there. A
+    /// domain whose decoding reserves nothing may decode it as `object`
+    /// does. The default offers nothing, so that decoding ahead never takes
+    /// memory the run needs.
+    fn object_spare(&self, _index: usize) -> Option<Self::Object> {
+        None
+    }
     /// An immutable domain may offer a place to keep its input digest. The
     /// default keeps nothing, so the digest is computed on every use.
     fn input_digest_memo(&self) -> Option<&InputDigestMemo> {
@@ -243,6 +253,10 @@ impl<'a, 'b> InputDomain for SliceInputs<'a, 'b> {
         self.0
             .get(index)
             .ok_or_else(|| io::Error::other("native input ordinal absent"))
+    }
+    /// Borrowed from the slice: nothing is reserved.
+    fn object_spare(&self, index: usize) -> Option<Self::Object> {
+        self.0.get(index)
     }
 }
 impl ObjectInput for &Input<'_> {

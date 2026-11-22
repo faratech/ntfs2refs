@@ -195,7 +195,6 @@ pub(super) fn normalize_geometry(
         &serde_json::to_vec_pretty(&intent)?,
     )?;
     let request = run.join("boot-geometry-request.json");
-    let result = run.join("boot-geometry-child-result.json");
     let _request_owner = write_new(
         &request,
         &serde_json::to_vec(
@@ -209,68 +208,120 @@ pub(super) fn normalize_geometry(
         run.join("boot-geometry-intent.json").display()
     );
     let powershell = current.join("System32\\WindowsPowerShell\\v1.0\\powershell.exe");
-    let status = if powershell.exists() {
-        Command::new(powershell)
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-            ])
-            .arg(&script)
-            .arg("-InputPath")
-            .arg(&request)
-            .arg("-OutputPath")
-            .arg(&result)
-            .creation_flags(0x0800_0000)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()?
-    } else {
-        // A recovery environment has no PowerShell (#115). diskpart asks the
-        // same NTFS driver to shrink the volume; everything is checked below
-        // exactly as after the PowerShell child.
-        shrink_with_diskpart(&current, run, &before.binding, remainder, &result)?
-    };
-    write_new(
-        &run.join("boot-geometry-child-exit.json"),
-        &serde_json::to_vec_pretty(
-            &serde_json::json!({"actual_exit_code":status.code(),"success":status.success(),"resize_retry_performed":false}),
-        )?,
-    )?;
-    // Always rediscover after an actual child exit, including refusal: a driver
-    // resize can have completed before a later provider observation failed.
-    let after = match discovery::discover(&before.volume_guid_path, role()) {
-        Ok(value) => value,
-        Err(error) => {
-            write_new(
-                &run.join("boot-geometry-after-error.json"),
-                &serde_json::to_vec_pretty(
-                    &serde_json::json!({"error":error.to_string(),"source_state_unknown":true,"preserve_external_intent":true}),
-                )?,
-            )?;
-            return Err(error.into());
+    // Windows' storage service has answered this shrink with a bare "Failed"
+    // and left the partition as it was, and resized it when asked again
+    // (#254). Such a failure is asked once more, after a short wait and with
+    // the source verified again to be exactly as it was; any other failure,
+    // or a second one, stops the run as it always did. Each attempt keeps
+    // its own records: the second one's names end in "-retry".
+    let mut retried = false;
+    let (status, reply, after, after_clean) = loop {
+        let attempt = if retried { "-retry" } else { "" };
+        let result = run.join(format!("boot-geometry-child-result{attempt}.json"));
+        let status = if powershell.exists() {
+            Command::new(&powershell)
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                ])
+                .arg(&script)
+                .arg("-InputPath")
+                .arg(&request)
+                .arg("-OutputPath")
+                .arg(&result)
+                .creation_flags(0x0800_0000)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()?
+        } else {
+            // A recovery environment has no PowerShell (#115). diskpart asks
+            // the same NTFS driver to shrink the volume; everything is checked
+            // below exactly as after the PowerShell child.
+            shrink_with_diskpart(&current, run, &before.binding, remainder, &result)?
+        };
+        write_new(
+            &run.join(format!("boot-geometry-child-exit{attempt}.json")),
+            &serde_json::to_vec_pretty(
+                &serde_json::json!({"actual_exit_code":status.code(),"success":status.success(),"resize_retry_performed":retried}),
+            )?,
+        )?;
+        // Always rediscover after an actual child exit, including refusal: a
+        // driver resize can have completed before a later provider
+        // observation failed.
+        let after = match discovery::discover(&before.volume_guid_path, role()) {
+            Ok(value) => value,
+            Err(error) => {
+                write_new(
+                    &run.join(format!("boot-geometry-after-error{attempt}.json")),
+                    &serde_json::to_vec_pretty(
+                        &serde_json::json!({"error":error.to_string(),"source_state_unknown":true,"preserve_external_intent":true}),
+                    )?,
+                )?;
+                return Err(error.into());
+            }
+        };
+        let after_clean =
+            n2r_win32::windows_boot_geometry::observe_clean(&after.binding, &mut events);
+        write_new(
+            &run.join(format!("boot-geometry-after{attempt}.json")),
+            &serde_json::to_vec_pretty(&serde_json::json!({
+            "source_after":after,"clean_native_after":after_clean.as_ref().ok(),"native_error":after_clean.as_ref().err().map(ToString::to_string),
+            "native_events":events,"conversion_baseline_not_yet_frozen":true}))?,
+        )?;
+        let after_clean = after_clean?;
+        let mut output = Vec::new();
+        File::open(&result)?
+            .take((1 << 20) + 1)
+            .read_to_end(&mut output)?;
+        ensure!(
+            output.len() <= 1 << 20,
+            "resize child report exceeds its bound"
+        );
+        let reply: serde_json::Value = serde_json::from_slice(&output)?;
+        let succeeded = status.success()
+            && reply.get("success").and_then(|value| value.as_bool()) == Some(true);
+        if succeeded
+            || retried
+            || !generic_storage_failure(&reply)
+            || !source_unchanged(&before, &clean, &after, &after_clean)
+        {
+            break (status, reply, after, after_clean);
         }
+        println!(
+            "Windows' storage service answered the NTFS shrink with a bare \"Failed\" and left the partition as it was; asking it once more in {} seconds.",
+            RETRY_WAIT.as_secs()
+        );
+        std::thread::sleep(RETRY_WAIT);
+        // The shrink goes through the NTFS driver: the source is held to
+        // what it was before it is asked again.
+        let again = discovery::discover(&before.volume_guid_path, role())
+            .map_err(anyhow::Error::from)
+            .and_then(|again| {
+                let again_clean =
+                    n2r_win32::windows_boot_geometry::observe_clean(&again.binding, &mut events)?;
+                Ok((again, again_clean))
+            });
+        let unchanged = again.as_ref().is_ok_and(|(again, again_clean)| {
+            source_unchanged(&before, &clean, again, again_clean)
+        });
+        write_new(
+            &run.join("boot-geometry-retry.json"),
+            &serde_json::to_vec_pretty(&serde_json::json!({
+            "first_error":reply.get("error"),"first_error_id":reply.get("error_id"),
+            "source_before_retry":again.as_ref().ok().map(|(again, _)| again),
+            "clean_native_before_retry":again.as_ref().ok().map(|(_, again_clean)| again_clean),
+            "native_error":again.as_ref().err().map(ToString::to_string),
+            "source_unchanged":unchanged,"resize_retry_performed":unchanged,"native_events":events}))?,
+        )?;
+        if !unchanged {
+            break (status, reply, after, after_clean);
+        }
+        retried = true;
     };
-    let after_clean = n2r_win32::windows_boot_geometry::observe_clean(&after.binding, &mut events);
-    write_new(
-        &run.join("boot-geometry-after.json"),
-        &serde_json::to_vec_pretty(&serde_json::json!({
-        "source_after":after,"clean_native_after":after_clean.as_ref().ok(),"native_error":after_clean.as_ref().err().map(ToString::to_string),
-        "native_events":events,"conversion_baseline_not_yet_frozen":true}))?,
-    )?;
-    let after_clean = after_clean?;
-    let mut output = Vec::new();
-    File::open(&result)?
-        .take((1 << 20) + 1)
-        .read_to_end(&mut output)?;
-    ensure!(
-        output.len() <= 1 << 20,
-        "resize child report exceeds its bound"
-    );
-    let reply: serde_json::Value = serde_json::from_slice(&output)?;
     ensure!(
         status.success() && reply.get("success").and_then(|value| value.as_bool()) == Some(true),
         "native NTFS geometry maintenance stopped: {}; preserve {} (NTFS may already be slightly smaller)",
@@ -330,6 +381,60 @@ pub(super) fn normalize_geometry(
     );
     Ok(after)
 }
+/// How long the storage service is left alone before a shrink it answered
+/// with a bare "Failed" is asked for again.
+const RETRY_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Whether the PowerShell child's report is of `Resize-Partition` failing
+/// with nothing more to say than "Failed": `MSFT_Partition.Resize`'s generic
+/// return value 4, which the storage service has given intermittently
+/// (#254). The error's identifier says so in every language; the English
+/// message alone ("Failed" and the activity ID, as observed) says it too.
+/// No other failure is retried, nor any of diskpart, whose report names it.
+fn generic_storage_failure(reply: &serde_json::Value) -> bool {
+    let text = |key: &str| reply.get(key).and_then(serde_json::Value::as_str);
+    if reply.get("success").and_then(serde_json::Value::as_bool) != Some(false)
+        || reply
+            .get("resize_attempted")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || reply.get("tool").is_some()
+    {
+        return false;
+    }
+    if text("error_id") == Some("StorageWMI 4,Resize-Partition") {
+        return true;
+    }
+    let mut lines = text("error").unwrap_or_default().lines();
+    lines.next().map(str::trim) == Some("Failed")
+        && lines
+            .next()
+            .is_some_and(|line| line.trim_start().starts_with("Activity ID:"))
+        && lines.all(|line| line.trim().is_empty())
+}
+
+/// Whether the source is exactly as it was before the shrink was asked for:
+/// the same partition of the same disk, the same GPT byte for byte, and the
+/// same clean NTFS of the same size.
+fn source_unchanged(
+    before: &n2r_win32::discovery::VolumeDiscovery,
+    clean: &n2r_win32::windows_boot_geometry::CleanNtfsGeometry,
+    after: &n2r_win32::discovery::VolumeDiscovery,
+    after_clean: &n2r_win32::windows_boot_geometry::CleanNtfsGeometry,
+) -> bool {
+    after.binding == before.binding
+        && after.filesystem == "NTFS"
+        && after.label == before.label
+        && after.volume_serial_low32 == before.volume_serial_low32
+        && after_clean.ntfs_serial == clean.ntfs_serial
+        && after_clean.bytes_per_cluster == clean.bytes_per_cluster
+        && after_clean.filesystem_bytes == clean.filesystem_bytes
+        && after_clean.probe.gpt_layout == clean.probe.gpt_layout
+        && after_clean.probe.device == clean.probe.device
+        && after_clean.probe.disk_length == clean.probe.disk_length
+        && after_clean.probe.alignment == clean.probe.alignment
+}
+
 /// Shrinks the source partition by `shrink_bytes` with diskpart, where
 /// PowerShell is not there, and writes the result where the PowerShell child
 /// writes its own: `{"success": …, "error": …}`. diskpart shrinks by whole
@@ -462,7 +567,7 @@ try{
  if(($before.disk|ConvertTo-Json -Compress)-cne($after.disk|ConvertTo-Json -Compress)-or($expected|ConvertTo-Json -Depth 8 -Compress)-cne($after.parts|ConvertTo-Json -Depth 8 -Compress)-or$after.source.volume_unique_id-cne$before.source.volume_unique_id){throw 'Driver resize changed disk/sibling identity or unexpected partition metadata'}
  Emit @{success=$true;resize_attempted=$attempted;before=$before;after=$after;supported_min=[long]$support.SizeMin;supported_max=[long]$support.SizeMax;requested_bytes=$target;raw_source_writes=$false;ntfs_driver_resize=$true;cancel_may_leave_smaller_healthy_ntfs=$true}
  exit 0
-}catch{$message=$_.Exception.Message;if($null-ne$request){try{$after=State}catch{}};Emit @{success=$false;resize_attempted=$attempted;before=$before;after=$after;error=$message.Substring(0,[Math]::Min(4096,$message.Length));raw_source_writes=$false;source_may_already_be_resized=$attempted};exit 1}
+}catch{$message=$_.Exception.Message;$id=[string]$_.FullyQualifiedErrorId;if($null-ne$request){try{$after=State}catch{}};Emit @{success=$false;resize_attempted=$attempted;before=$before;after=$after;error=$message.Substring(0,[Math]::Min(4096,$message.Length));error_id=$id.Substring(0,[Math]::Min(256,$id.Length));raw_source_writes=$false;source_may_already_be_resized=$attempted};exit 1}
 "#;
 
 pub(super) fn validate(binding: &GeneralDiskBinding) -> Result<()> {
@@ -636,6 +741,42 @@ mod tests {
         );
         // Shrinking to nothing is not an adjustment.
         assert!(geometry_decision(UNIT - 4096).is_err());
+    }
+
+    #[test]
+    fn only_a_bare_failed_from_the_storage_service_shrink_is_asked_again() {
+        let reply = |value: serde_json::Value| {
+            let mut reply = serde_json::json!({"success":false,"resize_attempted":true});
+            reply
+                .as_object_mut()
+                .unwrap()
+                .extend(value.as_object().unwrap().clone());
+            reply
+        };
+        // As observed (#254), and as its identifier says in any language.
+        let observed = "Failed\nActivity ID: {1479e018-7a0b-0002-2315-7a140b7add01}";
+        assert!(generic_storage_failure(&reply(
+            serde_json::json!({"error":observed})
+        )));
+        assert!(generic_storage_failure(&reply(
+            serde_json::json!({"error":"Fehlgeschlagen\r\nAktivitäts-ID: {x}","error_id":"StorageWMI 4,Resize-Partition"})
+        )));
+        assert!(generic_storage_failure(&reply(
+            serde_json::json!({"error":"Failed\r\nActivity ID: {x}\r\n","error_id":"StorageWMI 4,Resize-Partition"})
+        )));
+        // Every other failure stops the run as before.
+        for other in [
+            serde_json::json!({"error":"Size Not Supported\nActivity ID: {x}","error_id":"StorageWMI 4097,Resize-Partition"}),
+            serde_json::json!({"error":"Fehlgeschlagen\nAktivitäts-ID: {x}","error_id":"StorageWMI 4,Get-Volume"}),
+            serde_json::json!({"error":"Healthy mounted source NTFS binding changed"}),
+            serde_json::json!({"error":"Failed"}),
+            serde_json::json!({"error":"Failed\nActivity ID: {x}\nMore"}),
+            serde_json::json!({"error":observed,"resize_attempted":false}),
+            serde_json::json!({"error":observed,"success":true}),
+            serde_json::json!({"error":observed,"tool":"diskpart"}),
+        ] {
+            assert!(!generic_storage_failure(&reply(other.clone())), "{other}");
+        }
     }
 
     #[test]

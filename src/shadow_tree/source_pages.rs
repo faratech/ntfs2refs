@@ -1468,6 +1468,26 @@ impl Projecting<'_> {
     }
 }
 
+/// The most physical source ranges checked in spare memory (16 bytes each).
+const PHYSICAL_MEM_CAP: usize = 512 * 1024;
+/// Objects encoded at once by the serial loop's flush, and their spare memory.
+const SERIALIZE_BATCH: usize = 256;
+const SERIALIZE_BATCH_SPARE_BYTES: u64 = 16 * 1024 * 1024;
+/// A batch of objects built on helper threads: at most this many, and
+/// about this much workspace.
+const AT_ONCE_OBJECTS: usize = 512;
+const AT_ONCE_BATCH_BYTES: u64 = 16 << 20;
+/// An object whose reads and construction may take more is built in
+/// turn, under the projection's own row allowance.
+const AT_ONCE_OBJECT_BYTES: u64 = 4 << 20;
+/// The batch being built and the one being read beside it.
+const AT_ONCE_SPARE_BYTES: u64 = 2 * (AT_ONCE_BATCH_BYTES + AT_ONCE_OBJECT_BYTES);
+/// A batch of alias rows decoded on helper threads.
+const ALIAS_BATCH: usize = 4096;
+const ALIAS_BATCH_BYTES: u64 = 8 << 20;
+/// Two batches, each of which may end with a row past its share (an
+/// alias's paths: far less than a third more).
+const ALIAS_SPARE_BYTES: u64 = 3 * ALIAS_BATCH_BYTES;
 /// A source row a helper thread builds the object of, with what the
 /// thread that holds the source read for it.
 struct AtOnceJob<'a> {
@@ -1603,6 +1623,21 @@ impl SourceExpectedDomain {
         native.revalidate()?;
         expected.revalidate()?;
         Ok(())
+    }
+    /// What a projection reserves at the most in one reservation it cannot
+    /// do without: its row working allowance.
+    pub(crate) fn largest_working_reservation(admission: SourceResourceAdmission) -> u64 {
+        admission.budget.max_row_bytes.saturating_mul(8)
+    }
+    /// The spare memory a projection asks for beside its working memory,
+    /// at the most: the physical ranges, the encoding batch, the
+    /// helper batches of its objects and of its
+    /// aliases. Without it the projection does that work in turn.
+    pub(crate) fn spare_ram_bound() -> u64 {
+        (PHYSICAL_MEM_CAP as u64 * 16)
+            + SERIALIZE_BATCH_SPARE_BYTES
+            + AT_ONCE_SPARE_BYTES
+            + ALIAS_SPARE_BYTES
     }
     /// What a projection of `file_count` source rows under `admission`
     /// reserves in `scratch`, at the most, of memory it cannot do without:
@@ -1756,7 +1791,6 @@ impl SourceExpectedDomain {
         // Check physical source range non-overlap in spare RAM when available
         // (16 bytes per range; e.g. 200k ranges = 3.2 MiB), falling back to
         // on-disk ExternalSort if spare RAM is unavailable or capacity is exceeded.
-        const PHYSICAL_MEM_CAP: usize = 512 * 1024;
         let physical_hint = usize::try_from(source.allocation().physical_intervals)
             .unwrap_or(PHYSICAL_MEM_CAP)
             .clamp(64, PHYSICAL_MEM_CAP);
@@ -1807,8 +1841,6 @@ impl SourceExpectedDomain {
         // Parallelize JSON serialization and case-folded NameRow generation in
         // spare-RAM batches of up to 256 objects, falling back to single-object
         // inline encoding if spare RAM is unavailable.
-        const SERIALIZE_BATCH: usize = 256;
-        const SERIALIZE_BATCH_SPARE_BYTES: u64 = 16 * 1024 * 1024;
         let _serialize_spare = scratch.lease_spare_ram(SERIALIZE_BATCH_SPARE_BYTES).ok();
         let serialize_batch_limit = if _serialize_spare.is_some() {
             SERIALIZE_BATCH
@@ -1872,11 +1904,6 @@ impl SourceExpectedDomain {
         // the first refusal in the source's order ends the projection, as
         // in turn. Without the spare memory, a second core or that run, the
         // objects are built in turn, as they always were.
-        const AT_ONCE_OBJECTS: usize = 512;
-        const AT_ONCE_BATCH_BYTES: u64 = 16 << 20;
-        // An object whose reads and construction may take more is built in
-        // turn, under the projection's own row allowance.
-        const AT_ONCE_OBJECT_BYTES: u64 = 4 << 20;
         let helpers = std::thread::available_parallelism()
             .map_or(1, |n| n.get())
             .saturating_sub(1)
@@ -1884,7 +1911,7 @@ impl SourceExpectedDomain {
         let at_once = match (compared, once.as_ref()) {
             (Some(rows), Some(once)) if helpers >= 1 => scratch
                 // The batch being built and the one being read beside it.
-                .lease_spare_ram(2 * (AT_ONCE_BATCH_BYTES + AT_ONCE_OBJECT_BYTES))
+                .lease_spare_ram(AT_ONCE_SPARE_BYTES)
                 .ok()
                 .map(|workspace| (rows, once, workspace)),
             _ => None,
@@ -2042,11 +2069,9 @@ impl SourceExpectedDomain {
             // makes them), which go into the sort here in the domain's
             // order; the first refusal in that order ends it. Otherwise
             // each is decoded and pushed in turn, as before.
-            const ALIAS_BATCH: usize = 4096;
-            const ALIAS_BATCH_BYTES: u64 = 8 << 20;
             let record_limit = scratch.budget().record_bytes;
             let at_once = (n2r_win32::verify_policy::verifies_once() && helpers >= 1)
-                .then(|| scratch.lease_spare_ram(3 * ALIAS_BATCH_BYTES).ok())
+                .then(|| scratch.lease_spare_ram(ALIAS_SPARE_BYTES).ok())
                 .flatten();
             if let Some(_workspace) = at_once {
                 let end = aliases.len();

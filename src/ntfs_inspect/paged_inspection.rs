@@ -334,20 +334,28 @@ impl PagedInspection {
         self.files.release_inventory_resident_cache();
     }
     /// As [`Self::release_inventory_resident_cache`], before a pass that
-    /// reserves `working_bytes`: in a run that verifies once, the decoded
-    /// rows of the file store stay where, the rest released, both ledgers
-    /// have room for that beside everything they hold now
+    /// reserves `working_bytes` (no single reservation larger than
+    /// `largest_bytes`) and asks for `spare_bytes` of spare memory beside
+    /// it: in a run that verifies once, the decoded rows of the file store
+    /// stay where, the rest released, both ledgers have room for the
+    /// reservations beside everything they hold now
     /// (`SourceScratch::has_room_beside_caches` of `working`, the pass's
-    /// own scratch), so that no cache would be given up for it. Otherwise,
-    /// and in every other run, they go, as before.
+    /// own scratch), so that no cache would be given up for them, and the
+    /// spare memory would still be granted beside them and the rows
+    /// (`SourceScratch::spare_would_fit_beside`: spare memory gives no
+    /// cache up, and the pass is slower without it). Otherwise, and in
+    /// every other run, they go, as before.
     pub(crate) fn release_inventory_resident_cache_before(
         &mut self,
         working: &crate::ntfs_inspect::paged_storage::SourceScratch,
         working_bytes: u64,
+        largest_bytes: u64,
+        spare_bytes: u64,
     ) {
         self.files.release_inventory_resident_cache_keeping(|| {
             n2r_win32::verify_policy::verifies_once()
                 && working.has_room_beside_caches(working_bytes)
+                && working.spare_would_fit_beside(working_bytes, largest_bytes, spare_bytes)
         });
     }
     /// Whether this is the inspection made of a volume that is still in

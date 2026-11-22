@@ -1878,13 +1878,23 @@ fn security_snapshot_with_limit(file: &File, maximum: Option<u64>) -> Snapshot {
     }
 }
 fn repeat_snapshot(file: &File, previous: &Snapshot) -> Snapshot {
+    let layout_only = previous.kernel_security.is_none()
+        && previous.security.is_empty()
+        && previous.security_error.is_none();
     let maximum = previous.security.len().max(
         previous
             .kernel_security
             .as_ref()
             .map_or(0, |q| q.bytes.len()),
     );
-    let mut observation = if maximum > crate::attestation::MAX_SECURITY_BYTES {
+    let mut observation = if layout_only {
+        crate::attestation_native::source_snapshot_paged_layout_only(
+            file,
+            false,
+            previous.extended_attributes.is_some() || previous.extended_attributes_error.is_some(),
+            previous.reparse.is_some(),
+        )
+    } else if maximum > crate::attestation::MAX_SECURITY_BYTES {
         crate::attestation_native::source_snapshot_paged_scoped(
             file,
             false,

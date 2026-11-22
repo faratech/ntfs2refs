@@ -2005,7 +2005,10 @@ struct ReadAhead {
 }
 impl ReadAhead {
     /// A read that starts at most this far past the previous one reads ahead.
-    const BYTES: usize = 1024 * 1024;
+    /// Matches `MAX_IO` (4 MiB), which `AlignedBuffer::new()` already allocates,
+    /// so widening the window from 1 MiB to 4 MiB adds zero extra RAM while
+    /// cutting sequential virtual-SCSI read I/O calls by up to 4x.
+    const BYTES: usize = MAX_IO;
     fn clear(&mut self) {
         self.length = 0;
         self.last_end = 0;
@@ -5717,7 +5720,7 @@ mod tests {
     #[test]
     fn read_ahead_serves_ascending_ranges_and_never_returns_stale_bytes() {
         use std::os::windows::fs::FileExt;
-        let mut bytes: Vec<u8> = (0..3 * 1024 * 1024u32)
+        let mut bytes: Vec<u8> = (0..6 * 1024 * 1024u32)
             .map(|n| (n.wrapping_mul(2_654_435_761) >> 13) as u8)
             .collect();
         let mut frozen = frozen_over_file(&bytes, 4096);
@@ -5727,14 +5730,14 @@ mod tests {
             frozen.read_exact(&mut out).unwrap();
             out
         }
-        // Aligned and unaligned, with small and large gaps, one past a megabyte.
+        // Aligned and unaligned, with small and large gaps, one past a window.
         let ranges = [
             (0u64, 4096usize),
             (8192, 12288),
             (40_960, 4096),
             (300_001, 70_000),
-            (1_048_476, 8192),
-            (2_500_000, 300_000),
+            (4_194_204, 8192),
+            (5_500_000, 300_000),
         ];
         for (at, length) in ranges {
             assert_eq!(
@@ -5803,7 +5806,7 @@ mod tests {
         // The journaled target a recovery replays through: a write through
         // it is seen by a later read, where the window holds the range and
         // where it does not.
-        let (inside, outside) = (8192u64, 2 * 1024 * 1024u64);
+        let (inside, outside) = (8192u64, 5 * 1024 * 1024u64);
         let mut journaled = GeneralJournaledPartition {
             inner: frozen,
             policy: Some(WritePolicy {

@@ -1017,7 +1017,7 @@ impl<'source, 'observation, 'scope>
     fn submit_routed_asks(&mut self, mut asks: Vec<(u64, usize)>) -> Result<()> {
         const ROUTED_COALESCE_GAP: u64 = 64 * 1024;
         const ROUTED_COALESCE_MAX: u64 = 4 * 1024 * 1024;
-        if asks.is_empty() {
+        if asks.len() < 2 {
             return Ok(());
         }
         asks.sort_unstable();

@@ -321,6 +321,33 @@ fn create_link(source: &File, parent: &File, name: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// The hard links a pass made: each one listed with its file and its link
+/// count, or, where the links are made by the call alone (a run that
+/// verifies once, on the resource route), only how many. Nothing reads the
+/// list, and the source's own names list every one of them: on the full
+/// Windows volume it was some 15 MB of the metadata report, serialized and
+/// hashed twice into the run's event ledger.
+pub(super) struct MadeLinks {
+    pub(super) listed: Vec<serde_json::Value>,
+    pub(super) made: usize,
+}
+impl MadeLinks {
+    pub(super) fn listed(listed: Vec<serde_json::Value>) -> Self {
+        let made = listed.len();
+        Self { listed, made }
+    }
+    /// Records them in a metadata report: the list where there is one,
+    /// otherwise the count, and nothing where no link was made.
+    pub(super) fn record(self, report: &mut serde_json::Value) {
+        if !self.listed.is_empty() {
+            report["hard_links"] = self.listed.into();
+        } else if self.made != 0 {
+            report["hard_links_made"] = self.made.into();
+            report["hard_links_listed"] = false.into();
+        }
+    }
+}
+
 pub(super) fn create_owned(
     input: &[Input<'_>],
     handles: &BTreeMap<usize, File>,
@@ -332,7 +359,7 @@ pub(super) fn create_owned_domain(
     input: &impl InputDomain,
     handles: &BTreeMap<usize, File>,
 ) -> io::Result<Vec<serde_json::Value>> {
-    create_owned_domain_inner(input, handles, None, false)
+    create_owned_domain_inner(input, handles, None, false).map(|links| links.listed)
 }
 pub(super) fn create_owned_resource_domain(
     input: &impl InputDomain,
@@ -340,7 +367,7 @@ pub(super) fn create_owned_resource_domain(
     maximum_names: usize,
     root: &str,
     payer: &dyn report_memory::ReportMemoryAccountant,
-) -> io::Result<Vec<serde_json::Value>> {
+) -> io::Result<MadeLinks> {
     create_owned_domain_inner(input, handles, Some((maximum_names, root, payer)), false)
 }
 pub(super) fn reconcile_owned_resource_domain(
@@ -351,6 +378,7 @@ pub(super) fn reconcile_owned_resource_domain(
     payer: &dyn report_memory::ReportMemoryAccountant,
 ) -> io::Result<Vec<serde_json::Value>> {
     create_owned_domain_inner(input, handles, Some((maximum_names, root, payer)), true)
+        .map(|links| links.listed)
 }
 /// The directory entry a path names: its file identity and attributes, or
 /// None when there is no such entry. A name is unique in its directory, so
@@ -383,9 +411,9 @@ fn create_owned_domain_inner(
     handles: &BTreeMap<usize, File>,
     resources: Option<(usize, &str, &dyn report_memory::ReportMemoryAccountant)>,
     recovering: bool,
-) -> io::Result<Vec<serde_json::Value>> {
+) -> io::Result<MadeLinks> {
     if !input.any(|i| !i.additional_names.is_empty())? {
-        return Ok(Vec::new());
+        return Ok(MadeLinks::listed(Vec::new()));
     }
     if let Some((maximum_names, root, _)) = resources {
         validate_resource_domain_once(input, maximum_names, root, Names::Unicode)?;
@@ -455,10 +483,13 @@ fn create_owned_domain_inner(
     let link_file = |index: usize,
                      item: &Input<'_>,
                      before_mutation: &dyn Fn() -> io::Result<()>|
-     -> io::Result<Vec<serde_json::Value>> {
+     -> io::Result<(Vec<serde_json::Value>, usize)> {
         let mut created = Vec::new();
+        // The links made, listed in `created` or, made by the call alone,
+        // only counted (`MadeLinks`).
+        let mut made = 0usize;
         if item.additional_names.is_empty() {
-            return Ok(created);
+            return Ok((created, made));
         }
         let file = handles
             .get(&index)
@@ -496,13 +527,9 @@ fn create_owned_domain_inner(
                         format!("making hard link \\{}: {error}", path.join("\\")),
                     )
                 })?;
-                let expected =
+                current_links =
                     u32::try_from(number + 2).map_err(|_| invalid("hard-link count overflow"))?;
-                created.push(
-                    serde_json::json!({"components":path,"canonical_components":item.components,
-                    "file_id":&identity[8..24],"link_count":expected,"replace_if_exists":false}),
-                );
-                current_links = expected;
+                made += 1;
                 continue;
             }
             validate_open_type(parent, true)?;
@@ -591,6 +618,7 @@ fn create_owned_domain_inner(
                 serde_json::json!({"components":path,"canonical_components":item.components,
                 "file_id":&identity[8..24],"link_count":expected,"replace_if_exists":false}),
             );
+            made += 1;
             current_links = expected;
         }
         if layout::u32_at(&info(file, 1, 24)?, 16)? != count(item)?
@@ -600,9 +628,10 @@ fn create_owned_domain_inner(
                 "the file's complete hard-link count or identity differs once its names are made",
             ));
         }
-        Ok(created)
+        Ok((created, made))
     };
     let mut created = Vec::new();
+    let mut made = 0usize;
     change_objects(
         input,
         resources.filter(|_| !recovering).map(|(_, _, payer)| payer),
@@ -613,11 +642,16 @@ fn create_owned_domain_inner(
         |item| item.additional_names.len(),
         link_file,
         |index, linked| {
-            created.extend(linked.map_err(|error| {
+            let (listed, count) = linked.map_err(|error| {
                 super::cache_refresh::at_object(input, "hard-link creation", index, error)
-            })?);
+            })?;
+            created.extend(listed);
+            made += count;
             Ok(())
         },
     )?;
-    Ok(created)
+    Ok(MadeLinks {
+        listed: created,
+        made,
+    })
 }

@@ -572,7 +572,10 @@ fn complete_domain_body(
                 .ok_or_else(|| invalid("resource hard-link enumeration payer absent"))?,
         )?
     } else {
-        super::super::hard_links::create_owned_domain(input, &tree.metadata_targets)?
+        super::super::hard_links::MadeLinks::listed(super::super::hard_links::create_owned_domain(
+            input,
+            &tree.metadata_targets,
+        )?)
     };
     tree.require_source_excluded()?;
     crate::perf::step("metadata: create short-name links");
@@ -668,9 +671,7 @@ fn complete_domain_body(
         report["sparse_carrier_padding_bytes_readback"] = padding_read.into();
         report["sparse_tail_verification"]=serde_json::Value::Array(sparse_tails.into_iter().map(|(key,proof)|serde_json::json!({"object_index":key.object_index,"stream_name_utf16":key.name_utf16,"proof":proof})).collect());
     }
-    if !links.is_empty() {
-        report["hard_links"] = links.into();
-    }
+    links.record(&mut report);
     report["privileges"] =
         serde_json::to_value(tree.privileges.audit()).map_err(io::Error::other)?;
     if let Some(lease) = tree.partition_source.take() {

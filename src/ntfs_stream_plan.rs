@@ -575,18 +575,61 @@ pub(crate) fn classify_stream_windows_domain(
     classify_stream_domain_scoped(source, file, stream, admission, Some(aliases))
 }
 
-/// [`classify_stream_windows_domain`] for a caller that has itself just
-/// taken `aliases.user_paths(source, file)` of this same file and held
-/// source: that identical derivation is not made again for each stream.
-#[cfg(windows)]
-pub(crate) fn classify_stream_windows_domain_paths_taken(
-    source: &crate::ntfs_inspect::PagedInspection,
+/// What the classification of a stream reads of the held source besides
+/// the stream's own file: plain values, the same for every stream of it.
+#[derive(Clone, Debug)]
+pub(crate) struct StreamSourceFacts {
+    geometry: crate::ntfs_inspect::NtfsGeometry,
+    inventory_complete: bool,
+    mft_record_count: u64,
+    raw_identities: u64,
+    allocation_closed: bool,
+}
+impl StreamSourceFacts {
+    #[cfg(windows)]
+    pub(crate) fn of(source: &crate::ntfs_inspect::PagedInspection) -> Self {
+        use crate::ntfs_inspect::RootFileDomain;
+        Self {
+            geometry: source.header().geometry.clone(),
+            inventory_complete: source.header().inventory_complete,
+            mft_record_count: source.header().mft_record_count,
+            raw_identities: source.file_count(),
+            allocation_closed: source.allocation().status
+                == crate::ntfs_inspect::AllocationReconciliationStatus::ConsistentRawModel,
+        }
+    }
+}
+
+/// [`classify_stream_domain`] (with `windows`, [`classify_stream_windows_domain`])
+/// for a caller that has just derived the paths of `file` itself, from the
+/// same held source, with the derivation the classification would make of
+/// them: `paths_eligible` is
+/// [`crate::ntfs_attestation::extent_identity_paths_eligible`] of those
+/// paths. Neither the object's paths nor the canonical paths an
+/// extent-identity stream's selector walks are derived again; every other
+/// condition is checked as before. It reads nothing of the source but
+/// `facts`, so it may run on any thread.
+pub(crate) fn classify_stream_known_paths(
+    facts: &StreamSourceFacts,
     file: &FileInventory,
     stream: &StreamInventory,
     admission: n2r_win32::tree_resources::SourceResourceAdmission,
-    aliases: &crate::boot_alias::WindowsAliasDomain,
+    windows: bool,
+    paths_eligible: bool,
 ) -> Result<StreamDecision> {
-    classify_stream_domain_scoped(source, file, stream, admission, Some(aliases))
+    classify_stream_with(facts, file, stream, admission, windows, || {
+        // The data route's selector has no stream while the allocation is
+        // not closed (`extent_identity_stream_request_domain`).
+        if !windows && !facts.allocation_closed {
+            return Ok(None);
+        }
+        crate::ntfs_attestation::extent_identity_stream_request_known_paths(
+            &facts.geometry,
+            file,
+            stream,
+            paths_eligible,
+        )
+    })
 }
 
 #[cfg(windows)]
@@ -597,13 +640,42 @@ fn classify_stream_domain_scoped(
     admission: n2r_win32::tree_resources::SourceResourceAdmission,
     aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
 ) -> Result<StreamDecision> {
-    use crate::ntfs_inspect::RootFileDomain;
+    let facts = StreamSourceFacts::of(source);
+    classify_stream_with(&facts, file, stream, admission, aliases.is_some(), || {
+        if aliases.is_some() {
+            crate::ntfs_attestation::extent_identity_stream_request_windows_domain(
+                source, file, stream,
+            )
+        } else {
+            crate::ntfs_attestation::extent_identity_stream_request_domain(
+                source,
+                file,
+                stream,
+                facts.allocation_closed,
+                true,
+            )
+        }
+    })
+}
+
+/// The classification of one stream: `request` is the stream's
+/// extent-identity selector, asked only for a stream left unread under
+/// that policy (after, on the Windows route, the allocation is held to be
+/// closed).
+fn classify_stream_with(
+    facts: &StreamSourceFacts,
+    file: &FileInventory,
+    stream: &StreamInventory,
+    admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    windows: bool,
+    request: impl FnOnce() -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>>,
+) -> Result<StreamDecision> {
     admission.validate()?;
     ensure!(
-        source.header().inventory_complete
-            && admission.mft_records == source.header().mft_record_count
-            && admission.raw_identities == source.file_count()
-            && file.record_number < source.header().mft_record_count
+        facts.inventory_complete
+            && admission.mft_records == facts.mft_record_count
+            && admission.raw_identities == facts.raw_identities
+            && file.record_number < facts.mft_record_count
             && !file.is_directory
             && file.metadata_role == MetadataRole::OutsideExtendCandidate,
         "stream candidate differs from the complete admitted source domain"
@@ -615,24 +687,14 @@ fn classify_stream_domain_scoped(
             .is_some_and(n2r_win32::content_digest::is_hex),
         crate::ntfs_inspect::LogicalHashStatus::NotReadExtentIdentityV1 => {
             stream.logical_sha256.is_none()
-                && (if aliases.is_some() {
+                && (if windows {
                     ensure!(
-                    source.allocation().status
-                        == crate::ntfs_inspect::AllocationReconciliationStatus::ConsistentRawModel,
-                    "Windows stream allocation ownership is not closed"
-                );
-                    crate::ntfs_attestation::extent_identity_stream_request_windows_domain(
-                        source, file, stream,
-                    )?
+                        facts.allocation_closed,
+                        "Windows stream allocation ownership is not closed"
+                    );
+                    request()?
                 } else {
-                    crate::ntfs_attestation::extent_identity_stream_request_domain(
-                    source,
-                    file,
-                    stream,
-                    source.allocation().status
-                        == crate::ntfs_inspect::AllocationReconciliationStatus::ConsistentRawModel,
-                    true,
-                )?
+                    request()?
                 })
                 .is_some()
         }
@@ -642,13 +704,13 @@ fn classify_stream_domain_scoped(
         usize::try_from(admission.budget.max_row_bytes / std::mem::size_of::<Extent>() as u64)?;
     let resources = ResourceProfile::ResourceBoundedV4(Some(admission));
     let candidate = candidate_source(
-        &source.header().geometry,
+        &facts.geometry,
         file,
         stream,
         resources,
         complete,
         crate::ntfs_admission::compressed_stream_supported_with_geometry(
-            &source.header().geometry,
+            &facts.geometry,
             file,
             stream,
         ),

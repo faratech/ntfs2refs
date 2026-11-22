@@ -278,6 +278,33 @@ pub(crate) fn extent_identity_stream_request_observed<D: crate::ntfs_inspect::Ro
     extent_identity_stream_request_checked(&files.header().geometry, file, stream, || Ok(true))
 }
 
+/// The extent-identity selector of `stream` for a caller that has just
+/// derived the paths of `file` itself, from the same held source, with the
+/// derivation the selector would make (the canonical paths of a Windows
+/// volume, the user paths otherwise): `paths_eligible` is
+/// [`extent_identity_paths_eligible`] of them. The paths are not derived
+/// again; every other condition of the selector is checked as before.
+pub(crate) fn extent_identity_stream_request_known_paths(
+    geometry: &crate::ntfs_inspect::NtfsGeometry,
+    file: &FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+    paths_eligible: bool,
+) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
+    extent_identity_stream_request_checked(geometry, file, stream, || Ok(paths_eligible))
+}
+
+/// Whether an object at `paths` keeps extent evidence: it has a path and
+/// none of them is under System Volume Information.
+pub(crate) fn extent_identity_paths_eligible(paths: &[Vec<String>]) -> bool {
+    // These streams use the bounded system-payload copier, whose complete
+    // content baseline is still required. Ordinary data keeps extent evidence.
+    !(paths.is_empty()
+        || paths.iter().any(|path| {
+            path.first()
+                .is_some_and(|part| part.eq_ignore_ascii_case("System Volume Information"))
+        }))
+}
+
 /// The ReFS allocation unit data must be aligned to in order to stay in place.
 fn target_cluster() -> u64 {
     n2r_win32::target_cluster::bytes()
@@ -293,13 +320,7 @@ fn extent_identity_stream_request_with_paths(
         let Some(paths) = source_paths()? else {
             return Ok(false);
         };
-        // These streams use the bounded system-payload copier, whose complete
-        // content baseline is still required. Ordinary data keeps extent evidence.
-        Ok(!(paths.is_empty()
-            || paths.iter().any(|path| {
-                path.first()
-                    .is_some_and(|part| part.eq_ignore_ascii_case("System Volume Information"))
-            })))
+        Ok(extent_identity_paths_eligible(&paths))
     })
 }
 

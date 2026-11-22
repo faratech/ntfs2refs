@@ -237,12 +237,17 @@ fn stored_descriptor(
 /// ([`n2r_win32::verify_policy::verifies_once`]) leaves out of
 /// [`build_object`]: a stored descriptor decoded, checked and hashed again
 /// for another object of the same security ID (while the cache of them is
-/// held, [`DescriptorCache`]), and a Windows file's paths taken again for
-/// each of its streams. Only `derive_scoped` makes one, and only in such a
-/// run; a thorough run, a diagnosis and the comparison of a cached body
-/// with the current projection pass none.
+/// held, [`DescriptorCache`]); a file's paths taken again for each of its
+/// streams, and the canonical paths an extent-identity stream's selector
+/// walks again for its classification (the object's own paths, just
+/// derived from the same held source, stand for both); and that selector
+/// made again for the stream's evidence, which its classification has just
+/// established. Only `derive_scoped` makes one, and only in such a run; a
+/// thorough run, a diagnosis and the comparison of a cached body with the
+/// current projection pass none.
 struct VerifiedOnce {
     descriptors: Option<DescriptorCache>,
+    stream_facts: ntfs_stream_plan::StreamSourceFacts,
 }
 
 /// The descriptors [`stored_descriptor`] has decoded, checked and hashed,
@@ -336,6 +341,44 @@ fn stream_evidence(
                         )?
                     })
                     .is_some(),
+                "source extent-only stream is not eligible"
+            );
+            Ok(Some(
+                if n2r_win32::target_cluster::aligned(stream.logical_size) {
+                    SourceStreamEvidence::ExtentIdentityV1
+                } else {
+                    SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1
+                },
+            ))
+        }
+        _ => anyhow::bail!("source stream evidence is incomplete"),
+    }
+}
+/// [`stream_evidence`] of a stream that `decision`, its classification in
+/// this projection, has just admitted. A stream left unread under the
+/// extent-identity policy is admitted (any disposition but `Reject`) only
+/// where its classification found its digest absent and its selector
+/// eligible, on the same held source and paths: that selector is not made
+/// again here. A projection that verifies once calls this; every other
+/// calls `stream_evidence`.
+fn stream_evidence_classified(
+    stream: &ntfs::StreamInventory,
+    decision: &ntfs_stream_plan::StreamDecision,
+) -> Result<Option<SourceStreamEvidence>> {
+    match stream.logical_hash_status {
+        ntfs::LogicalHashStatus::Complete => {
+            ensure!(
+                stream
+                    .logical_sha256
+                    .as_deref()
+                    .is_some_and(n2r_win32::content_digest::is_hex),
+                "complete source stream digest absent"
+            );
+            Ok(None)
+        }
+        ntfs::LogicalHashStatus::NotReadExtentIdentityV1 => {
+            ensure!(
+                stream.logical_sha256.is_none() && decision.disposition != Disposition::Reject,
                 "source extent-only stream is not eligible"
             );
             Ok(Some(
@@ -457,6 +500,9 @@ fn build_object(
         !names.is_empty() && (!file.is_directory || names.len() == 1),
         "missing names or unsupported directory links"
     );
+    // Whether these paths keep extent evidence, as an extent-identity
+    // stream's selector would find of the same paths derived again.
+    let extent_paths_eligible = crate::ntfs_attestation::extent_identity_paths_eligible(&names);
     for name in &names {
         if let Some(part) = name
             .iter()
@@ -666,20 +712,32 @@ fn build_object(
                 == 0,
         "unsupported basic metadata"
     );
-    // This file's paths were taken from `aliases` above. A projection that
-    // verifies once does not take them again for each of its streams: the
-    // same derivation of the same held rows, which has just succeeded.
-    let paths_taken = once.is_some();
-    let classify = |stream: &ntfs::StreamInventory| match aliases {
-        Some(aliases) if paths_taken => {
-            ntfs_stream_plan::classify_stream_windows_domain_paths_taken(
-                source, file, stream, admission, aliases,
-            )
-        }
-        Some(aliases) => ntfs_stream_plan::classify_stream_windows_domain(
+    // This file's paths were taken above (from `aliases` on a Windows
+    // volume). A projection that verifies once does not take them again for
+    // each of its streams, nor the canonical paths an extent-identity
+    // stream's selector walks: the same derivation of the same held rows,
+    // which has just succeeded. Nor does it make that selector again for
+    // the stream's evidence: its classification has just made it.
+    let classify = |stream: &ntfs::StreamInventory| match (once, aliases) {
+        (Some(once), _) => ntfs_stream_plan::classify_stream_known_paths(
+            &once.stream_facts,
+            file,
+            stream,
+            admission,
+            aliases.is_some(),
+            extent_paths_eligible,
+        ),
+        (None, Some(aliases)) => ntfs_stream_plan::classify_stream_windows_domain(
             source, file, stream, admission, aliases,
         ),
-        None => ntfs_stream_plan::classify_stream_domain(source, file, stream, admission),
+        (None, None) => ntfs_stream_plan::classify_stream_domain(source, file, stream, admission),
+    };
+    let evidence = |stream: &ntfs::StreamInventory, decision: &ntfs_stream_plan::StreamDecision| {
+        if once.is_some() {
+            stream_evidence_classified(stream, decision)
+        } else {
+            stream_evidence(source, file, stream, aliases)
+        }
     };
     let (source_offset, source_extents, length, sha256, source_evidence, sparse) =
         if let Some(stream) = file.streams.iter().find(|s| s.name_utf16.is_empty()) {
@@ -690,7 +748,7 @@ fn build_object(
                 extents,
                 stream.logical_size,
                 stream.logical_sha256.clone(),
-                stream_evidence(source, file, stream, aliases)?,
+                evidence(stream, &decision)?,
                 decision.sparse,
             )
         } else {
@@ -712,7 +770,7 @@ fn build_object(
             source_extents: extents,
             length: stream.logical_size,
             sha256: stream.logical_sha256.clone(),
-            source_evidence: stream_evidence(source, file, stream, aliases)?,
+            source_evidence: evidence(stream, &decision)?,
             sparse: decision.sparse,
         });
     }
@@ -1100,6 +1158,7 @@ impl SourceExpectedDomain {
         // a run that verifies once (see `VerifiedOnce`).
         let once = n2r_win32::verify_policy::verifies_once().then(|| VerifiedOnce {
             descriptors: DescriptorCache::leased(scratch),
+            stream_facts: ntfs_stream_plan::StreamSourceFacts::of(source),
         });
         let flush_encoded = |pending: &mut Vec<([u8; 16], Object)>,
                              objects: &mut ExternalSort,

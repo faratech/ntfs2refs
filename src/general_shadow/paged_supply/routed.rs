@@ -1113,7 +1113,36 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                         {
                             continue;
                         }
-                        if let Some(place) = tail_place(&stream, offset, count) {
+                        let place = tail_place(&stream, offset, count).or_else(|| {
+                            use crate::ntfs_inspect::source_domain::RootFileDomain;
+                            bytes
+                                .raw_source()
+                                .find_record_shared(
+                                    object.record_number,
+                                    Some(object.sequence_number),
+                                )
+                                .ok()
+                                .flatten()
+                                .and_then(|file| {
+                                    let raw_stream = file
+                                        .streams
+                                        .iter()
+                                        .find(|s| s.name_utf16 == stream.name_utf16)?;
+                                    if raw_stream.resident || raw_stream.flags != 0 {
+                                        return None;
+                                    }
+                                    let end = offset.checked_add(count)?;
+                                    let run = raw_stream.extents.iter().find(|run| {
+                                        run.logical_offset <= offset
+                                            && run
+                                                .logical_offset
+                                                .checked_add(run.length)
+                                                .is_some_and(|stop| end <= stop)
+                                    })?;
+                                    run.physical_offset?.checked_add(offset - run.logical_offset)
+                                })
+                        });
+                        if let Some(place) = place {
                             asked_bytes += count;
                             asks.push((place, count as usize, index, stream_ordinal));
                         }

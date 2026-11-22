@@ -746,6 +746,9 @@ pub struct PagedSourceByteAdapterWithScope<'a, 'scope> {
     /// partition, which a stream's reads take where they lie wholly inside
     /// them ([`AheadReader`]); empty but where a caller offered them.
     read_ahead: Vec<(u64, Vec<u8>)>,
+    /// Bounded, evictable 1 MiB aligned page cache for small MFT record reads
+    /// during `prepare()` under `checks_once()`. Paid from `reserve_cache_ram`.
+    mft_cache: Option<n2r_win32::evict::Evictable<MftPageCache>>,
     _session_ram: crate::ntfs_inspect::paged_storage::SourceRamLease,
 }
 
@@ -799,6 +802,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
             logical_bytes: 0,
             poisoned: false,
             read_ahead: Vec::new(),
+            mft_cache: None,
             _session_ram: session_ram,
         })
     }
@@ -854,6 +858,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
             logical_bytes: 0,
             poisoned: false,
             read_ahead: Vec::new(),
+            mft_cache: None,
             _session_ram: session_ram,
         })
     }
@@ -893,7 +898,36 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
                     && stream.logical_sha256.as_deref() == identity.sha256,
                 "expected stream differs from the complete paged source",
             );
-            let session = if identity.allow_sparse {
+            let use_mft_cache = n2r_win32::verify_policy::checks_once()
+                && n2r_win32::verify_policy::open_gate().is_none()
+                && !matches!(self.source, BorrowedPagedSource::Partition { .. });
+            let session = if use_mft_cache {
+                let scratch = self.raw.metadata_scratch();
+                let byte_len = self.source.byte_len();
+                let mut reader = CachedMftReader::new(
+                    &mut self.source,
+                    &mut self.mft_cache,
+                    &scratch,
+                    byte_len,
+                )?;
+                if identity.allow_sparse {
+                    crate::ntfs_inspect::PlainStreamRangeSession::open_sparse_named_domain(
+                        &mut reader,
+                        self.raw,
+                        identity.record_number,
+                        identity.name_utf16,
+                        identity.length,
+                    )?
+                } else {
+                    crate::ntfs_inspect::PlainStreamRangeSession::open_named_domain(
+                        &mut reader,
+                        self.raw,
+                        identity.record_number,
+                        identity.name_utf16,
+                        identity.length,
+                    )?
+                }
+            } else if identity.allow_sparse {
                 crate::ntfs_inspect::PlainStreamRangeSession::open_sparse_named_domain(
                     &mut self.source,
                     self.raw,
@@ -1448,6 +1482,184 @@ impl<R: Read + Seek> Drop for AheadReader<'_, R> {
     fn drop(&mut self) {
         // The source stands where the session's last read ended, as it
         // would had every read been its own.
+        if !self.synced {
+            let _ = self.inner.seek(SeekFrom::Start(self.position));
+        }
+    }
+}
+
+/// 1 MiB aligned page size for caching small MFT record reads on a frozen
+/// dedicated source under `checks_once()`.
+const MFT_PAGE_BYTES: u64 = 1024 * 1024;
+/// Maximum cached 1 MiB pages (64 MiB cap; evicted LRU on miss or wholly via
+/// `n2r_win32::evict::Evictable` when the ledger needs memory).
+const MFT_CACHE_MAX_PAGES: usize = 64;
+/// Only cache small metadata/MFT reads (1 KiB–4 KiB records and small headers).
+const MFT_CACHE_MAX_READ: usize = 16 * 1024;
+
+struct MftPageCache {
+    // Declared before `leases` so buffers drop before their RAM leases return.
+    pages: std::collections::HashMap<u64, (u64, Vec<u8>)>,
+    tick: u64,
+    leases: Vec<crate::ntfs_inspect::paged_storage::SourceRamLease>,
+}
+
+impl MftPageCache {
+    fn new() -> Self {
+        Self {
+            pages: std::collections::HashMap::new(),
+            tick: 0,
+            leases: Vec::new(),
+        }
+    }
+    fn get_slice(&mut self, page_start: u64, offset_in_page: usize, out: &mut [u8]) -> bool {
+        if let Some((used, bytes)) = self.pages.get_mut(&page_start)
+            && offset_in_page + out.len() <= bytes.len()
+        {
+            self.tick += 1;
+            *used = self.tick;
+            out.copy_from_slice(&bytes[offset_in_page..offset_in_page + out.len()]);
+            return true;
+        }
+        false
+    }
+    fn take_lru_buffer(&mut self) -> Option<Vec<u8>> {
+        if self.pages.len() < MFT_CACHE_MAX_PAGES {
+            return None;
+        }
+        let (&oldest_key, _) = self.pages.iter().min_by_key(|(_, (used, _))| *used)?;
+        self.pages.remove(&oldest_key).map(|(_, buf)| buf)
+    }
+    fn insert(
+        &mut self,
+        page_start: u64,
+        bytes: Vec<u8>,
+        lease: Option<crate::ntfs_inspect::paged_storage::SourceRamLease>,
+    ) {
+        self.tick += 1;
+        let tick = self.tick;
+        self.pages.insert(page_start, (tick, bytes));
+        if let Some(lease) = lease {
+            self.leases.push(lease);
+        }
+    }
+}
+
+struct CachedMftReader<'r, R: Read + Seek> {
+    inner: &'r mut R,
+    cache: &'r mut Option<n2r_win32::evict::Evictable<MftPageCache>>,
+    scratch: &'r crate::ntfs_inspect::paged_storage::SourceScratch,
+    byte_len: u64,
+    position: u64,
+    synced: bool,
+}
+
+impl<'r, R: Read + Seek> CachedMftReader<'r, R> {
+    fn new(
+        inner: &'r mut R,
+        cache: &'r mut Option<n2r_win32::evict::Evictable<MftPageCache>>,
+        scratch: &'r crate::ntfs_inspect::paged_storage::SourceScratch,
+        byte_len: u64,
+    ) -> io::Result<Self> {
+        let position = inner.stream_position()?;
+        Ok(Self {
+            inner,
+            cache,
+            scratch,
+            byte_len,
+            position,
+            synced: true,
+        })
+    }
+}
+
+impl<R: Read + Seek> Read for CachedMftReader<'_, R> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let at = self.position;
+        if !output.is_empty() && output.len() <= MFT_CACHE_MAX_READ && at < self.byte_len {
+            let page_start = at / MFT_PAGE_BYTES * MFT_PAGE_BYTES;
+            let page_end = page_start.saturating_add(MFT_PAGE_BYTES).min(self.byte_len);
+            let read_end = at.saturating_add(output.len() as u64);
+            if read_end <= page_end {
+                let offset_in_page = (at - page_start) as usize;
+                // 1. Fast path: cache hit.
+                if let Some(evictable) = self.cache.as_ref()
+                    && let Some(mut guard) = evictable.get_mut()
+                    && guard.get_slice(page_start, offset_in_page, output)
+                {
+                    self.position = read_end;
+                    self.synced = false;
+                    return Ok(output.len());
+                }
+                // 2. Miss: try to reuse an LRU buffer if full, else lease cache RAM
+                //    outside any RefCell borrow so eviction can run safely.
+                let page_len = (page_end - page_start) as usize;
+                let reused_buf = self
+                    .cache
+                    .as_ref()
+                    .and_then(|ev| ev.get_mut().and_then(|mut g| g.take_lru_buffer()));
+                let (mut buf, new_lease) = if let Some(mut buf) = reused_buf {
+                    buf.resize(page_len, 0);
+                    (buf, None)
+                } else if let Ok(lease) = self.scratch.lease_cache_ram(MFT_PAGE_BYTES) {
+                    let mut buf = Vec::new();
+                    if buf.try_reserve_exact(page_len).is_ok() {
+                        buf.resize(page_len, 0);
+                        (buf, Some(lease))
+                    } else {
+                        (Vec::new(), None)
+                    }
+                } else {
+                    (Vec::new(), None)
+                };
+                if !buf.is_empty() {
+                    self.inner.seek(SeekFrom::Start(page_start))?;
+                    self.inner.read_exact(&mut buf)?;
+                    self.synced = false;
+                    output.copy_from_slice(&buf[offset_in_page..offset_in_page + output.len()]);
+                    self.position = read_end;
+                    let held = self.cache.as_ref().is_some_and(|ev| ev.is_held());
+                    if !held {
+                        let mut fresh = MftPageCache::new();
+                        fresh.insert(page_start, buf, new_lease);
+                        *self.cache = Some(n2r_win32::evict::Evictable::new(fresh));
+                    } else if let Some(evictable) = self.cache.as_ref()
+                        && let Some(mut guard) = evictable.get_mut()
+                    {
+                        guard.insert(page_start, buf, new_lease);
+                    }
+                    return Ok(output.len());
+                }
+            }
+        }
+        if !self.synced {
+            self.inner.seek(SeekFrom::Start(at))?;
+            self.synced = true;
+        }
+        let read = self.inner.read(output)?;
+        self.position = at + read as u64;
+        Ok(read)
+    }
+}
+
+impl<R: Read + Seek> Seek for CachedMftReader<'_, R> {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        if let SeekFrom::Start(at) = from {
+            self.position = at;
+            self.synced = false;
+            return Ok(at);
+        }
+        if !self.synced {
+            self.inner.seek(SeekFrom::Start(self.position))?;
+        }
+        self.position = self.inner.seek(from)?;
+        self.synced = true;
+        Ok(self.position)
+    }
+}
+
+impl<R: Read + Seek> Drop for CachedMftReader<'_, R> {
+    fn drop(&mut self) {
         if !self.synced {
             let _ = self.inner.seek(SeekFrom::Start(self.position));
         }

@@ -738,13 +738,19 @@ fn capture_selected_inner(
                 .offset
                 .checked_add(done)
                 .context("capture selected offset overflow")?;
-            let chunk = candidate.read_capture_chunk(at, &mut new_bytes[..count], true)?;
-            // The chunk's XXH3-128 comes with it: where the originals are
-            // read ahead it was made by the thread that read them. When the
-            // candidate chunk is byte-for-byte identical to the original
-            // (the common case for unchanged data), its XXH3-128 is identical
-            // to `original_xxh3` and no 4 KiB granule differs.
+            // Read the frozen source chunk first (from the multi-lane original
+            // prefetcher when active) so that under `checks_once()`, in-place
+            // routed spans in `read_capture_chunk_reusing_original` can reuse
+            // those already-read bytes without reading the same source offset
+            // a second time.
             let original_xxh3 = candidate.read_original_exact(at, &mut original, count)?;
+            let orig_reuse = n2r_win32::verify_policy::checks_once().then_some(&original[..count]);
+            let chunk = candidate.read_capture_chunk_reusing_original(
+                at,
+                &mut new_bytes[..count],
+                true,
+                orig_reuse,
+            )?;
             source_digest.update(original_xxh3);
             let chunk_identical = &original[..count] == chunk.bytes();
             let candidate_xxh3 = if chunk_identical {

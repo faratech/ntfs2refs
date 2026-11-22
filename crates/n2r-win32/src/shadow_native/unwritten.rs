@@ -979,23 +979,23 @@ impl PrivatePlaceholder {
         // and every tracked piece compared with it: work that grows with a
         // file's moves times its extents, and most of what placing the
         // full Windows volume's extents took. A run that verifies each
-        // thing once reads the mapping of the moved range alone. If the
-        // system call succeeded and that range now lies where it was sent,
-        // the move landed, and its proof records that mapping
-        // (`retrieval_paging::RANGE_ENCODING`). Every other piece of the
-        // file is compared once, with the file's complete mapping, when
-        // placement ends. A move the system refused, a range that is not
-        // where it was sent and a ranged query that fails are all held to
-        // the complete mapping, and recorded with it, as before.
+        // thing once trusts a successful `FSCTL_MOVE_FILE` until placement
+        // ends, when every tracked piece of the file is verified once
+        // against the file's complete mapping (`verify_placements`). Its
+        // proof records `retrieval_paging::DEFERRED_ENCODING`. Any move
+        // the system refused is still held to the complete mapping, and
+        // recorded with it, as before.
         let narrowed = match (&moved, &self.resource) {
-            (Ok(_), Some(resource)) if crate::verify_policy::verifies_once() => {
-                match resource.capture_range(&self.file, starting_vcn, end) {
-                    Ok(capture) => PreparedMapping::from_runs(capture.runs)?
-                        .matches(starting_vcn, destination_lcn, clusters)?
-                        .then_some((capture.canonical, capture.proof)),
-                    Err(_) => None,
-                }
-            }
+            (Ok(_), Some(_)) if crate::verify_policy::verifies_once() => Some((
+                Vec::new(),
+                crate::retrieval_paging::Proof {
+                    encoding: crate::retrieval_paging::DEFERRED_ENCODING.into(),
+                    canonical_sha256: String::new(),
+                    extent_count: 0,
+                    virtual_clusters: end,
+                    pages: Vec::new(),
+                },
+            )),
             _ => None,
         };
         let native_error = moved.err().map(|e| e.raw_os_error().unwrap_or(31));

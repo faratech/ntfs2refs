@@ -51,6 +51,12 @@ pub const ENCODING: &str = "assembled-zero-vcn-retrieval-v1";
 /// so a bound worked out for the complete form holds for this one.
 pub const RANGE_ENCODING: &str = "assembled-range-retrieval-v1";
 const _: () = assert!(RANGE_ENCODING.len() <= ENCODING.len());
+/// The encoding of a move proof whose per-move retrieval query was deferred
+/// under `verifies_once()` until the file's complete mapping is verified at
+/// the end of placement. No longer than [`ENCODING`], so every size bound
+/// worked out for the complete form holds for this one.
+pub const DEFERRED_ENCODING: &str = "deferred-to-final-retrieval-v1";
+const _: () = assert!(DEFERRED_ENCODING.len() <= ENCODING.len());
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PageProof {
     pub input: Vec<u8>,

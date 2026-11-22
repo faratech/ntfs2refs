@@ -21,10 +21,40 @@ use std::{
 /// Multi-lane sorted, coalesced prefetcher for non-monotonic COPY source reads
 /// during journal preparation. Opened with spare RAM; on refusal or read error
 /// the caller falls back cleanly to `source_lane`.
+///
+/// The preparing thread waited for each batch while the lanes read it. Where
+/// a second batch's memory is granted (spare RAM), the batch that follows is
+/// read on a thread of its own, through the same lanes, while the preparing
+/// thread uses the one it has: the batch a refill at its first row would read
+/// (the same rows, from the same offsets), which the refill then takes
+/// without waiting for the lanes. Where that memory is not granted, or the
+/// batch read ahead is not the one asked for, a batch is read when it is
+/// asked for, as before.
 struct CopyPrefetch {
-    lanes: Vec<GeneralFrozenLane>,
+    /// `None` while the thread reading ahead has them, and for good where
+    /// that thread failed: its rows are then read through `source_lane`.
+    lanes: Option<Vec<GeneralFrozenLane>>,
     cache: VecDeque<(u64, Vec<u8>)>,
+    /// The batch being read ahead. Its thread gives the lanes back, with the
+    /// batch, or none where a lane failed to read.
+    ahead: Option<std::thread::JoinHandle<(Vec<GeneralFrozenLane>, Option<CopyBatch>)>>,
+    /// Where the scan for the batch after the cached one begins.
+    next_scan: Option<u64>,
+    /// The second batch's memory: without it nothing is read ahead.
+    ahead_ram: Option<crate::artifact_arena::ArenaRamLease>,
     _ram: crate::artifact_arena::ArenaRamLease,
+}
+
+/// A batch of COPY rows' source bytes, by row ordinal, in ordinal order.
+type CopyBatch = Vec<(u64, Vec<u8>)>;
+
+impl Drop for CopyPrefetch {
+    /// The batch being read ahead ends before the lanes and the memory go.
+    fn drop(&mut self) {
+        if let Some(ahead) = self.ahead.take() {
+            let _ = ahead.join();
+        }
+    }
 }
 
 const COPY_PREFETCH_MAX_LANES: usize = 4;
@@ -98,61 +128,170 @@ impl CopyPrefetch {
         if lanes.len() < 2 {
             return None;
         }
+        let ahead_ram = arena.reserve_spare_ram(COPY_PREFETCH_MAX_BATCH_BYTES).ok();
         Some(Self {
-            lanes,
+            lanes: Some(lanes),
             cache: VecDeque::new(),
+            ahead: None,
+            next_scan: None,
+            ahead_ram,
             _ram: ram,
         })
     }
 
+    /// Fills the cache with the batch that begins with the COPY row
+    /// `start_ordinal`: the one read ahead where it holds that row, and
+    /// otherwise read now. Then starts reading the batch after it.
     fn refill(
         &mut self,
         index: &crate::general_shadow::capture_index::ClosedCaptureIndex,
         start_ordinal: u64,
     ) {
         self.cache.clear();
-        let mut items: Vec<(u64, u64, u64)> = Vec::new();
-        let mut total_bytes = 0u64;
-        let scan_end = start_ordinal
-            .saturating_add(COPY_PREFETCH_MAX_SCAN)
-            .min(index.len());
-        for ordinal in start_ordinal..scan_end {
-            let Ok(row) = index.range(ordinal) else {
+        if let Some(batch) = self.take_ahead()
+            && batch.iter().any(|(ordinal, _)| *ordinal == start_ordinal)
+        {
+            self.cache.extend(batch);
+            self.read_ahead(index);
+            return;
+        }
+        self.next_scan = None;
+        let Some((spans, stopped)) =
+            plan_copy_batch(index.len(), |ordinal| index.range(ordinal), start_ordinal)
+        else {
+            return;
+        };
+        let Some(lanes) = self.lanes.as_mut() else {
+            return;
+        };
+        let Some(batch) = read_copy_spans(lanes, &spans) else {
+            return;
+        };
+        self.cache.extend(batch);
+        self.next_scan = Some(stopped);
+        self.read_ahead(index);
+    }
+
+    /// The batch read ahead, once its thread is done, and the lanes back.
+    fn take_ahead(&mut self) -> Option<CopyBatch> {
+        let (lanes, batch) = self.ahead.take()?.join().ok()?;
+        self.lanes = Some(lanes);
+        batch
+    }
+
+    /// Starts reading, on a thread of its own, the batch a refill at the
+    /// first COPY row from `next_scan` on would read, where the memory for a
+    /// second batch is held.
+    fn read_ahead(&mut self, index: &crate::general_shadow::capture_index::ClosedCaptureIndex) {
+        if self.ahead_ram.is_none() || self.ahead.is_some() {
+            return;
+        }
+        let Some(from) = self.next_scan.take() else {
+            return;
+        };
+        let range = |ordinal| index.range(ordinal);
+        let Some(first) = first_copy_row(index.len(), range, from) else {
+            return;
+        };
+        let Some((spans, stopped)) = plan_copy_batch(index.len(), range, first) else {
+            return;
+        };
+        let Some(mut lanes) = self.lanes.take() else {
+            return;
+        };
+        // A thread that cannot be started takes the lanes with it: the rows
+        // are then read through `source_lane`, as where a lane fails.
+        if let Ok(ahead) = std::thread::Builder::new()
+            .name("n2r-copy-read-ahead".into())
+            .spawn(move || {
+                let _sampled = n2r_win32::stack_sampler::helper();
+                let batch = read_copy_spans(&mut lanes, &spans);
+                (lanes, batch)
+            })
+        {
+            self.ahead = Some(ahead);
+            self.next_scan = Some(stopped);
+        }
+    }
+}
+
+/// The first COPY row from `from` on, within the rows a batch scans.
+fn first_copy_row(
+    len: u64,
+    range: impl Fn(u64) -> Result<CaptureIndexRange>,
+    from: u64,
+) -> Option<u64> {
+    let scan_end = from.saturating_add(COPY_PREFETCH_MAX_SCAN).min(len);
+    (from..scan_end)
+        .map_while(|ordinal| range(ordinal).ok().map(|row| (ordinal, row)))
+        .find(|(_, row)| row.copy_source_offset.is_some())
+        .map(|(ordinal, _)| ordinal)
+}
+
+/// The coalesced spans of the batch of COPY rows a refill at
+/// `start_ordinal` reads, and the ordinal its scan stopped at, where the next
+/// batch's scan begins. `None` where there are fewer than two such rows or
+/// the first is too long to prefetch.
+fn plan_copy_batch(
+    len: u64,
+    range: impl Fn(u64) -> Result<CaptureIndexRange>,
+    start_ordinal: u64,
+) -> Option<(Vec<CopySpan>, u64)> {
+    let mut items: Vec<(u64, u64, u64)> = Vec::new();
+    let mut total_bytes = 0u64;
+    let scan_end = start_ordinal
+        .saturating_add(COPY_PREFETCH_MAX_SCAN)
+        .min(len);
+    let mut stopped = scan_end;
+    for ordinal in start_ordinal..scan_end {
+        let Ok(row) = range(ordinal) else {
+            stopped = ordinal;
+            break;
+        };
+        if let Some(source_offset) = row.copy_source_offset {
+            if row.length > COPY_PREFETCH_MAX_SPAN {
+                if items.is_empty() {
+                    return None;
+                }
+                stopped = ordinal;
                 break;
-            };
-            if let Some(source_offset) = row.copy_source_offset {
-                if row.length > COPY_PREFETCH_MAX_SPAN {
-                    if items.is_empty() {
-                        return;
-                    }
-                    break;
-                }
-                if total_bytes.saturating_add(row.length) > COPY_PREFETCH_MAX_BATCH_BYTES
-                    && !items.is_empty()
-                {
-                    break;
-                }
-                total_bytes = total_bytes.saturating_add(row.length);
-                items.push((source_offset, row.length, ordinal));
-                if items.len() >= COPY_PREFETCH_MAX_ROWS {
-                    break;
-                }
+            }
+            if total_bytes.saturating_add(row.length) > COPY_PREFETCH_MAX_BATCH_BYTES
+                && !items.is_empty()
+            {
+                stopped = ordinal;
+                break;
+            }
+            total_bytes = total_bytes.saturating_add(row.length);
+            items.push((source_offset, row.length, ordinal));
+            if items.len() >= COPY_PREFETCH_MAX_ROWS {
+                stopped = ordinal + 1;
+                break;
             }
         }
-        if items.len() < 2 {
-            return;
-        }
-        let spans = coalesce_copy_spans(items);
-        if spans.is_empty() {
-            return;
-        }
-        let lane_count = self.lanes.len();
+    }
+    if items.len() < 2 {
+        return None;
+    }
+    let spans = coalesce_copy_spans(items);
+    if spans.is_empty() {
+        return None;
+    }
+    Some((spans, stopped))
+}
+
+/// Reads `spans` across `lanes`, in parallel, into each member row's bytes,
+/// in ordinal order. `None` where a lane fails to read.
+fn read_copy_spans(lanes: &mut [GeneralFrozenLane], spans: &[CopySpan]) -> Option<CopyBatch> {
+    if lanes.is_empty() {
+        return None;
+    }
+    {
+        let lane_count = lanes.len();
         let mut results: Vec<io::Result<Vec<(u64, Vec<u8>)>>> =
             (0..lane_count).map(|_| Ok(Vec::new())).collect();
         std::thread::scope(|scope| {
-            for ((lane_idx, lane), slot) in
-                self.lanes.iter_mut().enumerate().zip(results.iter_mut())
-            {
+            for ((lane_idx, lane), slot) in lanes.iter_mut().enumerate().zip(results.iter_mut()) {
                 let spans = &spans;
                 scope.spawn(move || {
                     let mut buf = Vec::new();
@@ -181,11 +320,11 @@ impl CopyPrefetch {
         for res in results {
             match res {
                 Ok(mut part) => combined.append(&mut part),
-                Err(_) => return,
+                Err(_) => return None,
             }
         }
         combined.sort_unstable_by_key(|(ordinal, _)| *ordinal);
-        self.cache.extend(combined);
+        Some(combined)
     }
 }
 
@@ -590,6 +729,85 @@ impl<'a> ProtectedCapturedCandidate<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Rows one after another from offset 1 MiB on; `Some(source)` makes a
+    /// COPY row.
+    fn rows(spec: &[(u64, Option<u64>)]) -> Vec<CaptureIndexRange> {
+        let mut offset = 1 << 20;
+        spec.iter()
+            .map(|&(length, copy_source_offset)| {
+                let row = CaptureIndexRange {
+                    offset,
+                    length,
+                    packed_offset: 0,
+                    new_is_zero: false,
+                    old_is_zero: false,
+                    old_is_source_free: false,
+                    copy_source_offset,
+                };
+                offset += length;
+                row
+            })
+            .collect()
+    }
+
+    fn members(spans: &[CopySpan]) -> Vec<u64> {
+        let mut members: Vec<u64> = spans
+            .iter()
+            .flat_map(|span| span.members.iter().map(|member| member.0))
+            .collect();
+        members.sort_unstable();
+        members
+    }
+
+    #[test]
+    fn batches_follow_one_another_and_stop_where_a_refill_stops() {
+        const MIB: u64 = 1024 * 1024;
+        let table = rows(&[
+            (4096, None),
+            (4096, Some(0)),
+            (8192, None),
+            (8192, Some(64 * 1024)),
+            (5 * MIB, Some(128 * 1024)),
+            (4096, Some(0)),
+            (4096, Some(4096)),
+        ]);
+        let len = table.len() as u64;
+        let range = |ordinal: u64| Ok(table[usize::try_from(ordinal).unwrap()]);
+        assert_eq!(first_copy_row(len, range, 0), Some(1));
+        let (spans, stopped) = plan_copy_batch(len, range, 1).unwrap();
+        assert_eq!(members(&spans), vec![1, 3]);
+        assert_eq!(stopped, 4, "a COPY row too long to prefetch ends the batch");
+        assert_eq!(first_copy_row(len, range, stopped), Some(4));
+        assert!(
+            plan_copy_batch(len, range, 4).is_none(),
+            "and is read through the source lane"
+        );
+        let (spans, stopped) = plan_copy_batch(len, range, 5).unwrap();
+        assert_eq!(members(&spans), vec![5, 6]);
+        assert_eq!(stopped, len);
+        assert_eq!(first_copy_row(len, range, stopped), None);
+
+        // A batch holds at most COPY_PREFETCH_MAX_ROWS rows and about
+        // COPY_PREFETCH_MAX_BATCH_BYTES bytes; the next begins where it ends.
+        let many = rows(&vec![(4096, Some(0)); 300]);
+        let range = |ordinal: u64| Ok(many[usize::try_from(ordinal).unwrap()]);
+        let (spans, stopped) = plan_copy_batch(300, range, 0).unwrap();
+        assert_eq!(members(&spans), (0..256).collect::<Vec<_>>());
+        assert_eq!(stopped, 256);
+        let (spans, _) = plan_copy_batch(300, range, stopped).unwrap();
+        assert_eq!(members(&spans), (256..300).collect::<Vec<_>>());
+        let large = rows(&vec![(4 * MIB, Some(0)); 6]);
+        let range = |ordinal: u64| Ok(large[usize::try_from(ordinal).unwrap()]);
+        let (spans, stopped) = plan_copy_batch(6, range, 0).unwrap();
+        assert_eq!(members(&spans), vec![0, 1, 2, 3]);
+        assert_eq!(stopped, 4);
+
+        // A lone COPY row is not prefetched.
+        let lone = rows(&[(4096, Some(0)), (4096, None)]);
+        let range = |ordinal: u64| Ok(lone[usize::try_from(ordinal).unwrap()]);
+        assert!(plan_copy_batch(2, range, 0).is_none());
+    }
 
     #[test]
     fn copy_span_coalescing_sorts_bridges_small_gaps_and_respects_span_cap() {

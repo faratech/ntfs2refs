@@ -1208,6 +1208,13 @@ impl SourceExpectedDomain {
         // Hashes only select bounded on-disk comparison buckets. Equality is
         // ALWAYS the full folded string; distinct hash-colliding names remain
         // valid, and no bucket-size cap or resident whole-name set exists.
+        //
+        // The last name of a bucket (nearly every name is alone in its
+        // bucket) is compared with no other. A run that verifies once does
+        // not decode its row only to drop it: the rows are those this pass
+        // has just serialized into the store, which its writer framed and
+        // which is held. Every other run decodes every row, as before.
+        let decode_every_row = !n2r_win32::verify_policy::verifies_once();
         let mut start = 0u64;
         while start < name_store.len() {
             let prefix: [u8; 8] = name_store.key(start)?[..8].try_into()?;
@@ -1216,6 +1223,9 @@ impl SourceExpectedDomain {
                 end += 1;
             }
             for a in start..end {
+                if a + 1 == end && !decode_every_row {
+                    break;
+                }
                 let left: NameRow = name_store.get(a)?;
                 for b in a + 1..end {
                     let right: NameRow = name_store.get(b)?;

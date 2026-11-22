@@ -188,6 +188,16 @@ enum EvidenceTail {
     Allocation,
     Bitmap,
 }
+/// A directory whose index was walked: its row, the evidence made of it so
+/// far and what of the evidence is still to be made.
+#[cfg(windows)]
+struct ReadIndex {
+    header: SourceDirectoryHeader,
+    evidence: Sha256,
+    tail: Vec<EvidenceTail>,
+    allocation: Option<HeldAttribute>,
+    bitmap: Option<HeldAttribute>,
+}
 /// A directory whose row is not written yet: its digest is being made, or
 /// a directory before it waits for its own.
 #[cfg(windows)]
@@ -452,17 +462,40 @@ impl PagedNamespaceCapture {
     ) -> Result<()> {
         ensure!(!self.failed, "paged namespace capture is poisoned");
         self.failed = true;
-        self.read_record(reader, record, number, geometry)?;
+        let index = match self.read_record(reader, record, number, geometry) {
+            Ok(index) => index,
+            Err(error) => {
+                // The rows of the directories before this one that still
+                // wait for their digests are written first: an error of
+                // theirs is the one met first, as when each directory's row
+                // was written as its index was read.
+                self.write_ready(true)?;
+                return Err(error);
+            }
+        };
+        if let Some(index) = index {
+            self.queue_directory(
+                index.header,
+                index.evidence,
+                &index.tail,
+                index.allocation,
+                index.bitmap,
+            )?;
+            self.previous_directory = Some(number);
+        }
         self.failed = false;
         Ok(())
     }
+    /// Reads the record's names and, for a directory, walks its index:
+    /// what is returned is the directory's row, to be written once its
+    /// evidence is made ([`Self::queue_directory`]).
     fn read_record<R: Read + Seek>(
         &mut self,
         reader: &mut R,
         record: &Record,
         number: u64,
         geometry: &NtfsGeometry,
-    ) -> Result<()> {
+    ) -> Result<Option<ReadIndex>> {
         ensure!(
             record.base == 0 && !record.attributes.iter().any(|a| a.report.type_code == 0x20),
             "namespace requires fully assembled base records"
@@ -486,7 +519,7 @@ impl PagedNamespaceCapture {
             )?);
         }
         if record.flags & 2 == 0 {
-            return Ok(());
+            return Ok(None);
         }
         ensure!(
             number < 1 << 48
@@ -726,8 +759,8 @@ impl PagedNamespaceCapture {
             summary.entries == ordinal,
             "namespace entry capture incomplete"
         );
-        self.queue_directory(
-            SourceDirectoryHeader {
+        Ok(Some(ReadIndex {
+            header: SourceDirectoryHeader {
                 record_number: number,
                 sequence_number: record.sequence,
                 entries: ordinal,
@@ -735,12 +768,10 @@ impl PagedNamespaceCapture {
                 evidence_sha256: String::new(),
             },
             evidence,
-            &tail,
-            held_allocation,
-            held_bitmap,
-        )?;
-        self.previous_directory = Some(number);
-        Ok(())
+            tail,
+            allocation: held_allocation,
+            bitmap: held_bitmap,
+        }))
     }
     /// Writes the directory's row once its evidence is made: here, or by
     /// the worker from `evidence` and the held bytes `tail` names, after

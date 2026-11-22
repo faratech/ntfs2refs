@@ -848,6 +848,24 @@ impl Write for SemanticHash {
         self.bytes = next;
         Ok(total)
     }
+    // The JSON writer hands its text over in pieces of a few bytes, several
+    // for each element of a byte array. A piece that fits in the pending
+    // block, within the budget, is copied there at once; any other goes
+    // through `write`, which takes all of it or refuses it.
+    #[inline]
+    fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        if bytes.len() <= Self::BLOCK - self.pending.len()
+            && let Some(next) = self
+                .bytes
+                .checked_add(bytes.len() as u64)
+                .filter(|n| *n <= self.maximum)
+        {
+            self.pending.extend_from_slice(bytes);
+            self.bytes = next;
+            return Ok(());
+        }
+        self.write(bytes).map(|_| ())
+    }
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
@@ -3050,6 +3068,25 @@ mod created_tests {
             named_streams: Vec::new(),
             sparse: None,
         }
+    }
+
+    /// Pieces of any size, across the digest's blocks, give the digest of
+    /// the whole, and a piece past the budget is refused as it always was.
+    #[test]
+    fn the_semantic_digest_takes_pieces_and_refuses_past_its_budget() {
+        let text: Vec<u8> = (0..200_000u32).map(|n| b'a' + (n % 26) as u8).collect();
+        let mut whole = SemanticHash::new(1 << 20).unwrap();
+        for piece in text.chunks(7) {
+            whole.write_all(piece).unwrap();
+        }
+        assert_eq!(whole.finish().unwrap(), hex::encode(Sha256::digest(&text)));
+        let mut small = SemanticHash::new(10).unwrap();
+        small.write_all(b"0123456789").unwrap();
+        let refused = small.write_all(b"x").unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "legacy expected-tree JSON exceeds pinned byte budget"
+        );
     }
 
     /// What a creation keeps of its pages for an opening in a run that

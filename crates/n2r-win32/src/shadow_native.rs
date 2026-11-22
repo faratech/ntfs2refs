@@ -253,22 +253,28 @@ fn gather_batch<O, L>(
 }
 
 /// [`gather_batch`] for the batch after one that is still held, gathered
-/// while helpers observe that one: every object is paid for as one beside
-/// others (`pay` is told it is not the first), and whatever fails or is
-/// refused ends the batch, which may then be empty. The objects it did not
-/// take are gathered again after the batches before them are taken, and the
-/// first of them as the first of a batch, with every rule of
+/// while helpers observe that one, from memory the run can do without
+/// alone: every object is decoded from spare memory (`decode` answers
+/// `None` where that is refused or the object does not decode, as
+/// [`InputDomain::object_spare`] does) and its workspace paid for as one
+/// beside others (`pay` is told it is not the first). Whatever is refused or
+/// fails ends the batch, which may then be empty. The objects it did not
+/// take are gathered in their turn once the batches before them are taken,
+/// the first of them as the first of a batch, with every rule of
 /// [`gather_batch`].
 fn gather_ahead<O, L>(
     indexes: std::ops::Range<usize>,
-    mut decode: impl FnMut(usize) -> io::Result<O>,
+    mut decode: impl FnMut(usize) -> Option<O>,
     mut pay: impl FnMut(&O, bool) -> io::Result<L>,
 ) -> (Vec<O>, Vec<L>) {
     let mut objects = Vec::with_capacity(indexes.len());
     let mut leases = Vec::with_capacity(indexes.len());
     for index in indexes {
-        match decode(index).and_then(|object| pay(&object, false).map(|lease| (object, lease))) {
-            Ok((object, lease)) => {
+        let Some(object) = decode(index) else {
+            break;
+        };
+        match pay(&object, false) {
+            Ok(lease) => {
                 objects.push(object);
                 leases.push(lease);
             }
@@ -7083,12 +7089,16 @@ fn run_role_content_domain_accounted(
         // While the helpers observe one batch, this thread takes the batch
         // before it (writes its residual results and keeps its rows, in
         // order) and gathers the batch after it, which it did in between
-        // batches with the helpers idle. A batch gathered ahead is paid for
-        // from spare memory alone, and what is refused or fails there only
-        // ends it: those objects are gathered again once the batches before
-        // them are taken, the first as the first of its batch. The rows, their
-        // order and the failure reported (a batch's own, after the batches
-        // before it are taken) are as before.
+        // batches with the helpers idle. A batch gathered ahead takes only
+        // memory the run can do without: each object is decoded from spare
+        // memory (`InputDomain::object_spare`, which a domain that cannot
+        // decode so does not offer) and its row workspace is spare too.
+        // Where spare memory is refused, or an object fails there, the batch
+        // ends: those objects are gathered in their turn once the batches
+        // before them are taken, the first as the first of its batch, from
+        // the memory the run needs, as before. The rows, their order and the
+        // failure reported (a batch's own, after the batches before it are
+        // taken) are as before.
         const BATCH: usize = PARALLEL_BATCH;
         let pay = |start: usize, item: &Input<'_>, first: bool| {
             let peak = if memory_accountant.is_some() {
@@ -7142,8 +7152,8 @@ fn run_role_content_domain_accounted(
                     .map(|(owner, residuals)| (owner.input(), residuals.as_slice()))
                     .collect();
                 // Only a batch observed on helpers overlaps the next, and only
-                // while the run has memory to spare: decoding objects ahead
-                // holds their decoding leases a batch longer.
+                // while the run has memory to spare: the objects decoded
+                // ahead hold their spare leases a batch longer.
                 let ahead_wanted = several_cores
                     && items.len() >= 2 * crate::ordered_observation::RUN
                     && memory_accountant.is_none_or(|payer| payer.has_memory_to_spare());
@@ -7166,7 +7176,7 @@ fn run_role_content_domain_accounted(
                             .then(|| {
                                 let (owners, leases) = gather_ahead(
                                     after..(after + BATCH).min(input.len()),
-                                    |index| input.object(index),
+                                    |index| input.object_spare(index),
                                     |owner, first| pay(after, &owner.input(), first),
                                 );
                                 let residuals = assign_residuals(
@@ -7476,35 +7486,65 @@ mod tests {
     #[test]
     fn a_batch_gathered_ahead_is_paid_from_spare_memory_and_ends_where_it_fails() {
         // No object is told it is the first of its batch.
-        let (objects, firsts) = gather_ahead(4..8, |index| Ok(index), |_: &usize, first| Ok(first));
+        let (objects, firsts) = gather_ahead(4..8, Some, |_: &usize, first| Ok(first));
         assert_eq!(objects, [4, 5, 6, 7]);
         assert_eq!(firsts, [false; 4]);
-        // A refusal or a failure ends the batch, the first object's too,
-        // and is not an error.
-        let (objects, _) = gather_ahead(
-            0..8,
-            |index| Ok(index),
-            |object: &usize, _| {
-                if *object == 3 {
-                    Err(invalid("no spare memory"))
-                } else {
-                    Ok(())
-                }
-            },
-        );
+        // A workspace refused, or an object not decoded from spare memory,
+        // ends the batch, the first object's too, and is not an error.
+        let (objects, _) = gather_ahead(0..8, Some, |object: &usize, _| {
+            if *object == 3 {
+                Err(invalid("no spare memory"))
+            } else {
+                Ok(())
+            }
+        });
         assert_eq!(objects, [0, 1, 2]);
         let (objects, _) = gather_ahead(
             0..8,
-            |index| {
-                if index == 0 {
-                    Err(invalid("cannot decode"))
-                } else {
-                    Ok(index)
-                }
-            },
+            |index| (index != 5).then_some(index),
             |_: &usize, _| Ok(()),
         );
+        assert_eq!(objects, [0, 1, 2, 3, 4]);
+        let (objects, _) = gather_ahead(0..8, |_| None::<usize>, |_: &usize, _| Ok(()));
         assert!(objects.is_empty());
+        // A domain that does not say it can decode from spare memory offers
+        // nothing ahead; one whose decoding reserves nothing does.
+        struct Unspared;
+        impl input_domain::InputDomain for Unspared {
+            type Object = &'static Input<'static>;
+            fn len(&self) -> usize {
+                1
+            }
+            fn object(&self, _: usize) -> io::Result<Self::Object> {
+                Err(invalid("not asked"))
+            }
+        }
+        assert!(input_domain::InputDomain::object_spare(&Unspared, 0).is_none());
+        let components = vec!["held".to_owned()];
+        let inputs = [Input {
+            components: &components,
+            additional_names: &[],
+            directory: true,
+            times: [0; 4],
+            attributes: 16,
+            security: &[],
+            expected_api_security: None,
+            extended_attributes: None,
+            reparse: None,
+            case_sensitive: None,
+            payload: &[],
+            expected_length: None,
+            expected_sha256: None,
+            source_offset: None,
+            source_runs: Vec::new(),
+            named_streams: Vec::new(),
+            sparse: None,
+        }];
+        let slice = input_domain::SliceInputs(&inputs);
+        let held =
+            input_domain::InputDomain::object_spare(&slice, 0).expect("a slice hands it out");
+        assert_eq!(held.components, ["held"]);
+        assert!(input_domain::InputDomain::object_spare(&slice, 1).is_none());
     }
 
     #[test]

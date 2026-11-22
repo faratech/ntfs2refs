@@ -533,10 +533,13 @@ fn validate_walked_identities(
 /// link's attributes. So the parent is neither opened nor examined here,
 /// the link's path on its volume is not asked for (where it lies is what
 /// the listing holds), and its reparse point is read by itself
-/// ([`reparse_native::capture_held_readonly`]). `attributes` are the link's
-/// as the caller read them through `alias` in its basic information; they
-/// stand for the attribute-tag query, which asked for the same attributes
-/// and for the tag that the point read here carries.
+/// ([`reparse_native::capture_held_readonly`]). `attributes` reads the
+/// link's attributes through `alias`, where the attribute-tag query was
+/// made (the caller reads them in its basic information, which it holds to
+/// the link's times and attributes once this has checked the link): they
+/// stand for that query, which asked for the same attributes and for the
+/// tag that the point read here carries. The checks are made, and the first
+/// failure reported, in the order of [`verify_owned_in_with_known_canonical`].
 ///
 /// The caller must hold the volume READ_ONLY, have opened `alias` without
 /// FILE_FLAG_OVERLAPPED, and hold the link to its parent's listing.
@@ -544,7 +547,7 @@ pub fn verify_walked(
     parent_file_id_info: [u8; 24],
     canonical_file_id_info: [u8; 24],
     alias: &File,
-    attributes: u32,
+    attributes: impl FnOnce() -> io::Result<u32>,
     directory: bool,
     alias_component: &[u16],
     relative_target_component: &[u16],
@@ -559,6 +562,7 @@ pub fn verify_walked(
     }
     let id = information::<24>(alias, 18).map_err(|e| of(ALIAS, e))?;
     let standard = information::<24>(alias, 1).map_err(|e| of(ALIAS, e))?;
+    let attributes = attributes().map_err(|e| of(ALIAS, e))?;
     let links = u32::from_le_bytes(standard[16..20].try_into().unwrap());
     if id[..8] == [0; 8]
         || id[8..] == [0; 16]

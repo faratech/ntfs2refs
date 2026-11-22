@@ -2556,56 +2556,53 @@ impl PagedExpectedTree {
         mut more: impl FnMut(&Object) -> bool,
     ) -> Result<Vec<LeasedExpectedObject>> {
         let mut objects = vec![self.object_leased(first)?];
-        let (Some(arena), Some(admission)) = (&self.arena, self.resource_admission) else {
-            return Ok(objects);
-        };
-        let row = admission.budget.max_row_bytes;
         for index in first + 1..self.len() {
             if !objects.last().is_some_and(|object| more(object)) {
                 break;
             }
-            // The workspace of `reserve_decode_ram`, and then what
-            // `object_leased` keeps of it.
-            let compact = self.directory[index].bytes;
-            let Some(workspace) = compact
-                .checked_mul(8)
-                .and_then(|n| n.checked_add(u64::from(self.budget.max_page_bytes) * 3))
-                .and_then(|n| n.checked_add(DECODED_OBJECT_ALLOWANCE))
-                .filter(|_| compact <= row)
-            else {
+            let Some(object) = self.object_leased_spare(index) else {
                 break;
             };
-            let Ok(mut ram) = arena.reserve_spare_ram(workspace) else {
-                break;
-            };
-            let Ok(object) = self.decode_object(index) else {
-                break;
-            };
-            let Some(keep) = object_memory_bytes(&object, 0, row)
-                .ok()
-                .and_then(|bytes| bytes.checked_mul(3))
-            else {
-                break;
-            };
-            let more_ram = match keep.checked_sub(ram.bytes()) {
-                Some(beyond) if beyond > 0 => match arena.reserve_spare_ram(beyond) {
-                    Ok(lease) => Some(lease),
-                    Err(_) => break,
-                },
-                _ => {
-                    if ram.shrink_to(keep).is_err() {
-                        break;
-                    }
-                    None
-                }
-            };
-            objects.push(LeasedExpectedObject {
-                object,
-                _ram: ram,
-                _more: more_ram,
-            });
+            objects.push(object);
         }
         Ok(objects)
+    }
+    /// Object `index` leased as [`Self::object_leased`] leases it, with the
+    /// same workspace and the same lease on what it keeps, but from memory
+    /// the pass can do without (`ArtifactArena::reserve_spare_ram`). `None`
+    /// where the ledger has no spare room for it, where it does not decode,
+    /// and where this tree has no shared memory owner: the caller then asks
+    /// for it with [`Self::object_leased`] in its turn, and is told there.
+    pub fn object_leased_spare(&self, index: usize) -> Option<LeasedExpectedObject> {
+        let (Some(arena), Some(admission)) = (&self.arena, self.resource_admission) else {
+            return None;
+        };
+        let row = admission.budget.max_row_bytes;
+        // The workspace of `reserve_decode_ram`, and then what
+        // `object_leased` keeps of it.
+        let compact = self.directory.get(index)?.bytes;
+        let workspace = compact
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(u64::from(self.budget.max_page_bytes) * 3))
+            .and_then(|n| n.checked_add(DECODED_OBJECT_ALLOWANCE))
+            .filter(|_| compact <= row)?;
+        let mut ram = arena.reserve_spare_ram(workspace).ok()?;
+        let object = self.decode_object(index).ok()?;
+        let keep = object_memory_bytes(&object, 0, row)
+            .ok()
+            .and_then(|bytes| bytes.checked_mul(3))?;
+        let more_ram = match keep.checked_sub(ram.bytes()) {
+            Some(beyond) if beyond > 0 => Some(arena.reserve_spare_ram(beyond).ok()?),
+            _ => {
+                ram.shrink_to(keep).ok()?;
+                None
+            }
+        };
+        Some(LeasedExpectedObject {
+            object,
+            _ram: ram,
+            _more: more_ram,
+        })
     }
     /// Snapshot only: no file reads, allocations or per-record logging. These
     /// counters are diagnostic and never replace authentication/owner checks.

@@ -2063,14 +2063,37 @@ impl ResourceSourceContext {
                     if let (Some(aliases), Some(number)) =
                         (&windows_aliases, blocker.file_record_number)
                     {
-                        let file = raw
-                            .find_record(number, None)?
-                            .context("Windows alias blocker identity absent")?;
-                        ensure!(
-                            file.names.iter().any(|name| name.namespace == 2),
-                            "Windows alias blocker has no DOS source name"
-                        );
-                        let _ = aliases.user_paths(&raw, &file)?;
+                        // The comparison above derived the alias paths of
+                        // every ordinary object (one outside the NTFS
+                        // internals: its record is 16 or later and outside
+                        // $Extend) and refused the run where it could not.
+                        // A run that verifies once does not derive them
+                        // again for each of its short names (112,609 at the
+                        // full Windows volume), nor copy the object for it.
+                        let derived = if n2r_win32::verify_policy::verifies_once() {
+                            raw.with_record(number, None, |file| {
+                                ensure!(
+                                    file.names.iter().any(|name| name.namespace == 2),
+                                    "Windows alias blocker has no DOS source name"
+                                );
+                                Ok(file.record_number >= 16
+                                    && file.metadata_role
+                                        == ntfs_inspect::MetadataRole::OutsideExtendCandidate)
+                            })?
+                            .context("Windows alias blocker identity absent")?
+                        } else {
+                            false
+                        };
+                        if !derived {
+                            let file = raw
+                                .find_record(number, None)?
+                                .context("Windows alias blocker identity absent")?;
+                            ensure!(
+                                file.names.iter().any(|name| name.namespace == 2),
+                                "Windows alias blocker has no DOS source name"
+                            );
+                            let _ = aliases.user_paths(&raw, &file)?;
+                        }
                         true
                     } else {
                         false

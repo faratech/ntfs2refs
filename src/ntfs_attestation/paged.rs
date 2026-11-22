@@ -184,21 +184,12 @@ impl<'a> PagedObservationRequest<'a> {
             let mut plain_streams = Vec::new();
             if self.policy.is_fast() {
                 for stream in &file.streams {
-                    let selector = if self.windows_paths {
-                        super::extent_identity_stream_request_windows_domain(
-                            self.source,
-                            file,
-                            stream,
-                        )?
-                    } else {
-                        super::extent_identity_stream_request_domain(
-                            self.source,
-                            file,
-                            stream,
-                            true,
-                            true,
-                        )?
-                    };
+                    let selector = super::extent_identity_stream_request_observed(
+                        self.source,
+                        file,
+                        stream,
+                        self.windows_paths,
+                    )?;
                     if let Some(selector) = selector {
                         row.extent_identity_streams.push(selector);
                     }

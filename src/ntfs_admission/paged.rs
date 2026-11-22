@@ -497,16 +497,15 @@ fn ordinary_user_issues_scoped(
                 .as_deref()
                 .is_some_and(n2r_win32::content_digest::is_hex),
             crate::ntfs_inspect::LogicalHashStatus::NotReadExtentIdentityV1 => {
+                // The object's paths were derived above; a run that verifies
+                // once does not derive them again for each such stream.
                 stream.logical_sha256.is_none()
-                    && (if aliases.is_some() {
-                        crate::ntfs_attestation::extent_identity_stream_request_windows_domain(
-                            source, file, stream,
-                        )?
-                    } else {
-                        crate::ntfs_attestation::extent_identity_stream_request_domain(
-                            source, file, stream, true, true,
-                        )?
-                    })
+                    && crate::ntfs_attestation::extent_identity_stream_request_observed(
+                        source,
+                        file,
+                        stream,
+                        aliases.is_some(),
+                    )?
                     .is_some()
             }
             // Still to be read. (A stream the inspection could not read has

@@ -190,6 +190,41 @@ pub(crate) fn extent_identity_stream_request_windows_domain(
     })
 }
 
+/// The extent-identity selector of `stream` for the observation of the frozen
+/// source through Windows and its comparison with the raw reading:
+/// [`extent_identity_stream_request_windows_domain`] where `windows_paths`,
+/// otherwise [`extent_identity_stream_request_domain`] with both closures.
+///
+/// A stream the inspection marked `NotReadExtentIdentityV1` was found
+/// eligible by that same function, its paths included, on the same held
+/// source, when its stream evidence was decided (the inspection's step
+/// "decide stream evidence"): the paths are derived from names and parents
+/// that the step left as they were. In a run that verifies once they are
+/// not derived again for it here, once for the observation's selector, once
+/// for the comparison's and once more for each of the comparison's checks
+/// of it; every other condition of the selector is checked again, and every
+/// object's own paths are still derived by the admission of the comparison.
+/// Every other run, and every other stream, derives them as before.
+#[cfg(windows)]
+pub(crate) fn extent_identity_stream_request_observed(
+    files: &impl crate::ntfs_inspect::RootFileDomain,
+    file: &FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+    windows_paths: bool,
+) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
+    let decided = n2r_win32::verify_policy::verifies_once()
+        && stream.logical_hash_status
+            == crate::ntfs_inspect::LogicalHashStatus::NotReadExtentIdentityV1;
+    if !decided {
+        return if windows_paths {
+            extent_identity_stream_request_windows_domain(files, file, stream)
+        } else {
+            extent_identity_stream_request_domain(files, file, stream, true, true)
+        };
+    }
+    extent_identity_stream_request_checked(&files.header().geometry, file, stream, || Ok(true))
+}
+
 /// The ReFS allocation unit data must be aligned to in order to stay in place.
 fn target_cluster() -> u64 {
     n2r_win32::target_cluster::bytes()
@@ -200,6 +235,28 @@ fn extent_identity_stream_request_with_paths(
     file: &FileInventory,
     stream: &crate::ntfs_inspect::StreamInventory,
     source_paths: impl FnOnce() -> Result<Option<Vec<Vec<String>>>>,
+) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
+    extent_identity_stream_request_checked(geometry, file, stream, || {
+        let Some(paths) = source_paths()? else {
+            return Ok(false);
+        };
+        // These streams use the bounded system-payload copier, whose complete
+        // content baseline is still required. Ordinary data keeps extent evidence.
+        Ok(!(paths.is_empty()
+            || paths.iter().any(|path| {
+                path.first()
+                    .is_some_and(|part| part.eq_ignore_ascii_case("System Volume Information"))
+            })))
+    })
+}
+
+/// The selector of a stream whose paths `paths_eligible` says are those of
+/// a stream that keeps extent evidence.
+fn extent_identity_stream_request_checked(
+    geometry: &crate::ntfs_inspect::NtfsGeometry,
+    file: &FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+    paths_eligible: impl FnOnce() -> Result<bool>,
 ) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
     use crate::ntfs_inspect::MetadataRole;
     let target = target_cluster();
@@ -238,17 +295,7 @@ fn extent_identity_stream_request_with_paths(
     {
         return Ok(None);
     }
-    let Some(paths) = source_paths()? else {
-        return Ok(None);
-    };
-    // These streams use the bounded system-payload copier, whose complete
-    // content baseline is still required. Ordinary data keeps extent evidence.
-    if paths.is_empty()
-        || paths.iter().any(|path| {
-            path.first()
-                .is_some_and(|part| part.eq_ignore_ascii_case("System Volume Information"))
-        })
-    {
+    if !paths_eligible()? {
         return Ok(None);
     }
     ensure!(

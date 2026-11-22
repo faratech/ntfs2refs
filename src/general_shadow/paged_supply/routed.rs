@@ -1542,13 +1542,19 @@ impl RoutedSupplyOwner<'_, '_, '_> {
         // taken here in order. Otherwise `held` is one object and nothing is
         // handed to a batch.
         let arena = observes_at_once(self.bytes, self.template, self.at_once && !reread);
+        // When `reread` is false under `verifies_once()`, no bytes are read or
+        // written between the opening and closing stream checks, so repeating
+        // the exact same retrieval-pointer and metadata queries on the same
+        // held handle is redundant; the frozen shadow walk verifies every
+        // stream's final mapping again before capture.
+        let observe_closing = reread || !n2r_win32::verify_policy::verifies_once();
         (|| -> Result<()> {
         let mut first = 0usize;
         while first < self.expected.len() {
             failing_object.set(first);
             supply_progress(&self.progress,Phase::PayloadVerification,0,first,self.expected.len(),self.bytes.logical_bytes_read()-before_reads,None);
             let held = objects_from(self.expected, first, arena.is_some())?;
-            let mut batch = StreamsAtOnce::new(&held, first, true, arena.as_ref());
+            let mut batch = StreamsAtOnce::new(&held, first, observe_closing, arena.as_ref());
             for (index, object) in (first..).zip(&held) {
                 if index > first {
                     failing_object.set(index);
@@ -1697,26 +1703,28 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                     if walk_source {
                         self.bytes.finish_stream()?;
                     }
-                    // The workspace of the closing observation's mapping
-                    // queries. Where a batch's helper made them, they ran under
-                    // what the batch reserved for the stream, which `seen`
-                    // holds until the stream is done.
-                    let _closing_native_ram = if seen
-                        .as_ref()
-                        .is_some_and(SupplyStreamSeen::closing_observed)
-                    {
-                        None
-                    } else {
-                        Some(self.bytes.lease_working_ram(
-                            self.template
-                                .supply_stream_workspace_bytes(index, stream.name_utf16)?,
-                        )?)
-                    };
-                    ensure!(
-                        *summary
-                            == closing_stream(self.template, index, object, stream, seen.as_mut())?,
-                        "native stream mapping changed during routed verification"
-                    );
+                    if observe_closing {
+                        // The workspace of the closing observation's mapping
+                        // queries. Where a batch's helper made them, they ran under
+                        // what the batch reserved for the stream, which `seen`
+                        // holds until the stream is done.
+                        let _closing_native_ram = if seen
+                            .as_ref()
+                            .is_some_and(SupplyStreamSeen::closing_observed)
+                        {
+                            None
+                        } else {
+                            Some(self.bytes.lease_working_ram(
+                                self.template
+                                    .supply_stream_workspace_bytes(index, stream.name_utf16)?,
+                            )?)
+                        };
+                        ensure!(
+                            *summary
+                                == closing_stream(self.template, index, object, stream, seen.as_mut())?,
+                            "native stream mapping changed during routed verification"
+                        );
+                    }
                     if !n2r_win32::verify_policy::verifies_once() {
                         ensure!(
                             route_decision(

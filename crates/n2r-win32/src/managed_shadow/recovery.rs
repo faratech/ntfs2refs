@@ -357,21 +357,30 @@ pub fn reattach_existing(
 /// completed, when nothing needs that volume any more; the file is not
 /// deleted. Returns whether a detach was done.
 ///
-/// Whether it is attached is asked on a query-only handle, which is closed
-/// before the detach: Windows detaches only when no other handle to the
-/// virtual disk is open. The detach goes first through the read-only handle
-/// that detached in the soak (#175). A forward recovery in the recovery
-/// environment had that open or detach refused with Access is denied, which
-/// of the two was not recorded (#182); then the detach is tried again,
-/// that handle closed, through one opened with `VIRTUAL_DISK_ACCESS_DETACH`
-/// and no write access, which Windows documents for a handle to a
-/// permanently attached virtual disk. A failure names each step tried.
+/// Whether it is attached is read from Windows' list of the images it has
+/// attached, which opens nothing (#182): a forward recovery in the recovery
+/// environment, after the power was cut under its run, had the open of the
+/// image that asked it refused with Access is denied, in the recovery and
+/// again in the session after it, and so never came to a detach or to an
+/// answer. A recovery of that kind does not attach the working volume
+/// again, and an attachment does not outlive the restart after the cut, so
+/// there the image was most likely not attached at all; why Windows refused
+/// to open the image a cut left behind is not known, and it is not opened
+/// here to find out. Only where the list cannot answer is the image asked
+/// itself, on a query-only handle closed before any detach (Windows
+/// detaches only when no other handle to the virtual disk is open).
+///
+/// The detach goes first through the read-only handle that detached in the
+/// soak (#175); where that is refused, it is tried again, that handle
+/// closed, through one opened with `VIRTUAL_DISK_ACCESS_DETACH` and no write
+/// access, which Windows documents for a handle to a permanently attached
+/// virtual disk. A failure names each step tried.
 pub fn detach_left_behind(path: &Path) -> io::Result<bool> {
     let name = left_behind_name(path)?;
     let mut privileges = Privileges::enable_for(&["SeManageVolumePrivilege"])
         .map_err(|e| operation_error("enable SeManageVolumePrivilege to detach", e))?;
-    // Not attached: nothing to do. The query handle is closed on return.
-    if !left_behind_attached(&name)? {
+    // Not attached: nothing to do, and the image was not opened.
+    if !left_behind_attached(path, &name)? {
         privileges.restore()?;
         return Ok(false);
     }
@@ -379,10 +388,11 @@ pub fn detach_left_behind(path: &Path) -> io::Result<bool> {
         detach_through(&name, LeftBehindOpen::Detach)
             .map_err(|second| io::Error::new(second.kind(), format!("{first}; then {second}")))
     })?;
-    if left_behind_attached(&name)? {
-        return Err(invalid(
-            "the working volume is still attached after the detach",
-        ));
+    if left_behind_attached(path, &name)? {
+        return Err(invalid(&format!(
+            "{}: still attached after the detach (Windows lists it among its attached virtual disks)",
+            path.display()
+        )));
     }
     privileges.restore()?;
     Ok(true)
@@ -463,17 +473,91 @@ fn left_behind_name(path: &Path) -> io::Result<Vec<u16>> {
     )
 }
 
-/// Whether Windows has this image attached, from a query-only handle that is
-/// closed before this returns.
-fn left_behind_attached(name: &[u16]) -> io::Result<bool> {
-    let handle = open_left_behind(name, LeftBehindOpen::Query)?;
+/// Whether Windows has this image attached: from its list of attached
+/// images, which opens nothing; only where that cannot tell, from a
+/// query-only handle to the image that is closed before this returns.
+fn left_behind_attached(path: &Path, name: &[u16]) -> io::Result<bool> {
+    let unanswered = match attached_image_paths() {
+        Ok(listed) => match listed_as_attached(&listed, path) {
+            Ok(answer) => return Ok(answer),
+            Err(why) => why,
+        },
+        Err(error) => error.to_string(),
+    };
+    let handle = open_left_behind(name, LeftBehindOpen::Query).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "the list of attached virtual disks could not tell whether {} is attached ({unanswered}); then {error}",
+                path.display()
+            ),
+        )
+    })?;
     Ok(handle.physical_number().is_ok())
+}
+
+/// Whether `path` is among the attached images `listed`: by its name,
+/// ignoring case, or else by its identity on its volume, where Windows lists
+/// an image of the same file name under another name of the same file
+/// (another drive letter, the device form). An error says why that could
+/// not be told. Only file attributes are read, never the image.
+fn listed_as_attached(listed: &[PathBuf], path: &Path) -> Result<bool, String> {
+    let own = path.to_string_lossy().to_lowercase();
+    if listed
+        .iter()
+        .any(|image| image.to_string_lossy().to_lowercase() == own)
+    {
+        return Ok(true);
+    }
+    let same_name: Vec<&PathBuf> = listed
+        .iter()
+        .filter(|image| {
+            image
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("shadow.vhdx"))
+        })
+        .collect();
+    if same_name.is_empty() {
+        return Ok(false);
+    }
+    let identity = image_identity(path)
+        .map_err(|error| format!("the identity of {} was not read: {error}", path.display()))?;
+    let mut unread = Vec::new();
+    for image in same_name {
+        match image_identity(image) {
+            Ok(other) if other == identity => return Ok(true),
+            Ok(_) => {}
+            Err(error) => unread.push(format!("{}: {error}", image.display())),
+        }
+    }
+    if unread.is_empty() {
+        Ok(false)
+    } else {
+        Err(format!(
+            "the identity of an attached image of the same name was not read ({})",
+            unread.join("; ")
+        ))
+    }
+}
+
+/// The volume serial number and file ID of an image, from a handle that may
+/// read its attributes only: it neither conflicts with the virtual disk
+/// driver's own handle nor reads the image.
+fn image_identity(path: &Path) -> io::Result<String> {
+    let file = OpenOptions::new()
+        .access_mode(0x80) // FILE_READ_ATTRIBUTES
+        .share_mode(7) // FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+        .custom_flags(0x0200_0000 | 0x0020_0000) // BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+        .open(path)?;
+    crate::file_storage::file_id_info(&file)
 }
 
 /// How a left-behind working volume is opened. None opens it for writing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LeftBehindOpen {
-    /// Version 2, query-only and read-only: to ask whether it is attached.
+    /// Version 2, query-only and read-only: to ask whether it is attached,
+    /// where Windows' list of attached images could not tell.
     Query,
     /// Version 2, read-only, no access mask: the handle #175's detach used,
     /// which detached in the soak.
@@ -593,6 +677,45 @@ mod left_behind_tests {
         assert!(phases[1].contains("read-only for detach"));
         assert!(phases[2].contains("VIRTUAL_DISK_ACCESS_DETACH"));
         assert!(phases[0] != phases[1] && phases[1] != phases[2]);
+    }
+
+    #[test]
+    fn whether_it_is_attached_is_read_from_the_list_without_opening_the_image() {
+        let work = tempfile::tempdir().unwrap();
+        let run = work.path().join("run");
+        let other = work.path().join("other");
+        fs::create_dir_all(&run).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        let shadow = run.join("shadow.vhdx");
+        fs::write(&shadow, b"image").unwrap();
+        // Listed under its own name, in another case: attached.
+        let upper = PathBuf::from(shadow.to_string_lossy().to_uppercase());
+        assert_eq!(listed_as_attached(&[upper], &shadow), Ok(true));
+        // Nothing of that name listed: not attached, and nothing is read.
+        let unrelated = [PathBuf::from("Z:\\vm\\disk.vhdx")];
+        assert_eq!(listed_as_attached(&unrelated, &shadow), Ok(false));
+        assert_eq!(
+            listed_as_attached(&unrelated, &work.path().join("absent\\shadow.vhdx")),
+            Ok(false)
+        );
+        // Another run's image of the same name: not this one.
+        let others = other.join("shadow.vhdx");
+        fs::write(&others, b"image").unwrap();
+        assert_eq!(listed_as_attached(&[others.clone()], &shadow), Ok(false));
+        // The same file under another name (as another letter or the device
+        // form would be): attached.
+        let linked = work.path().join("linked");
+        fs::create_dir_all(&linked).unwrap();
+        fs::hard_link(&shadow, linked.join("shadow.vhdx")).unwrap();
+        assert_eq!(
+            listed_as_attached(&[others, linked.join("shadow.vhdx")], &shadow),
+            Ok(true)
+        );
+        // An image of the same name that cannot be looked at: not known,
+        // and said why.
+        let gone = [work.path().join("gone\\shadow.vhdx")];
+        let why = listed_as_attached(&gone, &shadow).unwrap_err();
+        assert!(why.contains("gone"), "{why}");
     }
 
     #[test]

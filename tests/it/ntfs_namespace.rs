@@ -472,7 +472,15 @@ fn checks_order_and_case_collisions_with_volume_upcase() {
         object(16, false, vec![a.clone()]),
         object(17, false, vec![b.clone()]),
     ];
-    assert!(ns::reconcile(&files, &[directory(&[a, b])], &upcase()).is_err());
+    // Two objects whose names differ only by case are refused by both
+    // names (#103).
+    let refused = ns::reconcile(&files, &[directory(&[a, b])], &upcase())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("differ only by case, \"Name\" and \"NAME\""),
+        "{refused}"
+    );
 }
 #[test]
 fn rejects_link_count_and_nonindexed_objects() {

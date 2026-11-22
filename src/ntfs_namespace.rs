@@ -167,6 +167,19 @@ pub fn parse_directory_with_geometry(
     })
 }
 
+/// Two names of one directory, of two objects, that are equal once case is
+/// folded: the directory is case-sensitive (#103). A decision about names
+/// that were read in full, not a structure that could not be read, so a
+/// refusal; it gives the directory's MFT record and both names.
+fn case_collision(parent: u64, first: &[u16], second: &[u16]) -> anyhow::Error {
+    anyhow::Error::new(n2r_win32::refusal::Refusal(format!(
+        "the directory at MFT record {} holds two names that differ only by case, {:?} and {:?}: it is case-sensitive, and two such names are not carried over, whether or not the converter sets the directory's case-sensitive mark on the new volume. Rename one of them and turn case sensitivity off with `fsutil file setCaseSensitiveInfo <directory> disable`",
+        parent & 0x0000_ffff_ffff_ffff,
+        String::from_utf16_lossy(first),
+        String::from_utf16_lossy(second)
+    )))
+}
+
 fn compare(a: &[u16], b: &[u16], upcase: &[u16]) -> Ordering {
     a.iter()
         .map(|c| upcase[usize::from(*c)])
@@ -282,20 +295,26 @@ pub fn reconcile(
             owner.is_directory && seen_directories.insert(dir.reference),
             "duplicate/non-directory I30 owner"
         );
-        let mut previous: Option<&[u16]> = None;
+        let mut previous: Option<(&[u16], u64)> = None;
         for entry in &dir.entries {
             index_entries += 1;
             ensure!(
                 index_entries <= MAX_ENTRIES,
                 "global index entry limit exceeded"
             );
-            if let Some(p) = previous {
-                ensure!(
-                    compare(p, &entry.name, upcase) == Ordering::Less,
-                    "directory B-tree keys unordered or case-colliding"
-                );
+            if let Some((name, child)) = previous {
+                match compare(name, &entry.name, upcase) {
+                    Ordering::Less => {}
+                    // Two objects whose names are equal once case is folded
+                    // are refused by both names, as the paged reconciliation
+                    // refuses them (#103).
+                    Ordering::Equal if name != entry.name.as_slice() && child != entry.child => {
+                        return Err(case_collision(dir.reference, name, &entry.name));
+                    }
+                    _ => anyhow::bail!("directory B-tree keys unordered or case-colliding"),
+                }
             }
-            previous = Some(&entry.name);
+            previous = Some((&entry.name, entry.child));
             ensure!(entry.parent == dir.reference, "misrouted index parent");
             let child = objects
                 .get(&entry.child)
@@ -564,14 +583,7 @@ fn reconcile_joined(
                         // Two names of one directory that are equal once case
                         // is folded: the directory is case-sensitive.
                         if entry.name != name.name_utf16 && entry.child != id {
-                            // A decision about names that were read in
-                            // full, not a structure that could not be read.
-                            return Err(anyhow::Error::new(n2r_win32::refusal::Refusal(format!(
-                                "the directory at MFT record {} holds two names that differ only by case, {:?} and {:?}: it is case-sensitive, and two such names are not carried over, whether or not the converter sets the directory's case-sensitive mark on the new volume. Rename one of them and turn case sensitivity off with `fsutil file setCaseSensitiveInfo <directory> disable`",
-                                parent & 0x0000_ffff_ffff_ffff,
-                                String::from_utf16_lossy(&entry.name),
-                                String::from_utf16_lossy(&name.name_utf16)
-                            ))));
+                            return Err(case_collision(parent, &entry.name, &name.name_utf16));
                         }
                         ensure!(
                             entry.parent == parent

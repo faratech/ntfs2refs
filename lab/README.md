@@ -512,6 +512,17 @@ the boot harness keeps too).
   `ntfs2refs-recovery-*`, a virtual disk under one detached first. They are
   the attempts' own scratch; the verdict's `working_volume` says what went
   and what could not be removed.
+- Windows has two minutes to show the working volume (`N2R_SCRATCH`) under
+  a letter. Where it does not, its disk is looked for by the working disk's
+  size: one that is offline or read-only is brought online and writable,
+  and its volume is given a letter; `before.working_disk` in the verdict
+  says what was seen and what was changed, and an attempt that still finds
+  no volume says whether the disk was there (#228). After a restore the
+  attempt waits, up to a minute, until Hyper-V shows the restored drives
+  (`restored_drive_view_settled`, and `drives_at_start` is what the VM
+  started with); a drive add refused for its place is tried again for half
+  a minute, and a DVD drive at the place of a disk to be returned is moved
+  out of the way.
 - `-Diagnose` runs with `--diagnose`: `C:` has to come back as NTFS.
 - `-HoldAt <point>` arms that hold (`crates/n2r-win32/src/lab_hold.rs`) for
   the converter in the environment and turns the VM off when the converter
@@ -535,6 +546,10 @@ the boot harness keeps too).
 - `-Reattach`, when the attempt ends, however it ends, shuts the VM down and
   gives it back the disks and the media, each in its place, and the device
   it started from.
+- Once Windows is back, the verdict's `after.run_images` says of every
+  virtual disk in the run's folder whether that Windows has it attached, or
+  why Windows would not say (a finished run or recovery detaches its working
+  volume, #182).
 - `-Hold` stops at a command prompt in the environment instead
   (`held-in-the-environment`), to be typed into with `Send-VmKeys.ps1`.
 

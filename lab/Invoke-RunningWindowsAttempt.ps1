@@ -164,29 +164,98 @@ function Save-DetachedDisks($Disks, $Dvds, [string]$FirstBootPath) {
         first_boot_path = $FirstBootPath }
     $record | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Get-DetachedDiskRecord) -Encoding UTF8
 }
+# Hyper-V's view of a VM's drives lags behind a checkpoint restore, a
+# turn-off and a change of its drives for a few seconds (#228): an add made
+# then was refused ("the specified location is in use" one second after a
+# restore; a minute later the same add took a free location). An add or a
+# move refused for its location is tried again, for up to half a minute;
+# any other error is not.
+function Invoke-DriveChange([scriptblock]$Change) {
+    for ($try = 1; ; $try++) {
+        try { return (& $Change) }
+        catch {
+            if ($try -ge 30 -or "$($_.Exception.Message)" -notmatch 'location') { throw }
+            Start-Sleep -Seconds 1
+        }
+    }
+}
+# Waits, up to half a minute, for Hyper-V to show a disk it was just given.
+function Wait-AttachedDrive([string]$Path) {
+    for ($try = 0; $try -lt 15; $try++) {
+        $drive = Get-VMHardDiskDrive -VM (Get-LabVm) | Where-Object Path -EQ $Path | Select-Object -First 1
+        if ($drive) { return $drive }
+        Start-Sleep -Seconds 2
+    }
+    return $null
+}
+# The drives of the VM as one line each: place and file.
+function Get-DriveView {
+    @(@(Get-VMHardDiskDrive -VM (Get-LabVm)) + @(Get-VMDvdDrive -VM (Get-LabVm)) |
+        ForEach-Object { '{0}/{1}/{2}|{3}' -f $_.ControllerType, $_.ControllerNumber, $_.ControllerLocation, $_.Path } | Sort-Object)
+}
+# A restore makes a new differencing disk for every disk of the checkpoint,
+# so the drives read just after Restore-VMSnapshot can still be the ones from
+# before it: the second running-Windows case of a round, restored a second
+# after the previous case had given its disks back, found the working disk
+# attached in that view, did not attach it, and started Windows without it
+# (#228). This waits, up to a minute, until the view differs from the one
+# before the restore and reads the same twice in a row; whether it did is
+# returned.
+function Wait-RestoredDriveView([string[]]$Before) {
+    $deadline = (Get-Date).AddMinutes(1); $last = $null
+    while ($true) {
+        $view = Get-DriveView
+        if ($last -and ($view -join "`n") -eq ($last -join "`n") -and ($view -join "`n") -ne ($Before -join "`n")) { return $true }
+        if ((Get-Date) -ge $deadline) { return $false }
+        $last = $view; Start-Sleep -Seconds 2
+    }
+}
 # Before a checkpoint is restored: the differencing disks only, as the boot
 # harness returns them. With -Everything (for -Reattach): every disk that is
 # still there, the installation media, and the device the VM started from.
+# A place is taken by a DVD drive as well as by a disk: the use test gives
+# the media back, and where it went to the first free place, that was the
+# place of a detached disk, which could then not return ("no available
+# locations were found on the disk controller", #228). Such a DVD drive is
+# taken out first; with -Everything its media goes back to its own place
+# below, and before a restore the checkpoint has its own. A disk that could
+# not be returned at the end of an attempt (-Everything) stays on the
+# record, for the next attempt that restores a checkpoint to return first.
 function Restore-DetachedDisks([switch]$Everything) {
     $record = Read-DetachedDiskRecord
     if (-not $record) { return 0 }
-    $returned = 0
+    $returned = 0; $left = @()
     foreach ($disk in @($record.disks)) {
         if (-not $disk -or -not $disk.path -or -not (Test-Path -LiteralPath $disk.path)) { continue }
         if (-not $Everything -and $disk.path -notlike '*.avhdx') { continue }
         $drives = @(Get-VMHardDiskDrive -VM (Get-LabVm))
-        if (($drives | Where-Object { $_.ControllerNumber -eq $disk.controller_number -and $_.ControllerLocation -eq $disk.controller_location }) -or ($drives | Where-Object Path -EQ $disk.path)) { continue }
+        if ($drives | Where-Object Path -EQ $disk.path) { continue }
+        if ($drives | Where-Object { $_.ControllerNumber -eq $disk.controller_number -and $_.ControllerLocation -eq $disk.controller_location }) {
+            Say "could not return $(Split-Path -Leaf $disk.path) to the VM: another disk is at its place, $($disk.controller_number)/$($disk.controller_location)"
+            if ($Everything) { $left += $disk }
+            continue
+        }
+        foreach ($media in @(Get-VMDvdDrive -VM (Get-LabVm) | Where-Object { $_.ControllerNumber -eq $disk.controller_number -and $_.ControllerLocation -eq $disk.controller_location })) {
+            Say "a DVD drive ($(if ($media.Path) { Split-Path -Leaf $media.Path } else { 'empty' })) is at the place of $(Split-Path -Leaf $disk.path), $($disk.controller_number)/$($disk.controller_location): taken out first"
+            try { $media | Remove-VMDvdDrive -ErrorAction Stop } catch { Say "the DVD drive could not be taken out: $($_.Exception.Message)" }
+        }
         try {
-            Add-VMHardDiskDrive -VM (Get-LabVm) -ControllerType SCSI -ControllerNumber $disk.controller_number -ControllerLocation $disk.controller_location -Path $disk.path -ErrorAction Stop
+            Invoke-DriveChange { Add-VMHardDiskDrive -VM (Get-LabVm) -ControllerType SCSI -ControllerNumber $disk.controller_number -ControllerLocation $disk.controller_location -Path $disk.path -ErrorAction Stop }
             $returned++
-        } catch { Say "could not return $(Split-Path -Leaf $disk.path) to the VM: $($_.Exception.Message)" }
+        } catch {
+            Say "could not return $(Split-Path -Leaf $disk.path) to the VM: $($_.Exception.Message)"
+            if ($Everything) { $left += $disk }
+        }
     }
     if ($Everything) {
         foreach ($dvd in @($record.dvds)) {
             if (-not $dvd -or -not $dvd.path -or -not (Test-Path -LiteralPath $dvd.path)) { continue }
             if (Get-VMDvdDrive -VM (Get-LabVm) | Where-Object Path -EQ $dvd.path) { continue }
+            # Its own place, or the first free one where a disk has that now.
+            $taken = @(Get-VMHardDiskDrive -VM (Get-LabVm)) + @(Get-VMDvdDrive -VM (Get-LabVm)) | Where-Object { $_.ControllerNumber -eq $dvd.controller_number -and $_.ControllerLocation -eq $dvd.controller_location }
             try {
-                Add-VMDvdDrive -VM (Get-LabVm) -ControllerNumber $dvd.controller_number -ControllerLocation $dvd.controller_location -Path $dvd.path -ErrorAction Stop
+                if ($taken) { Invoke-DriveChange { Add-VMDvdDrive -VM (Get-LabVm) -Path $dvd.path -ErrorAction Stop } }
+                else { Invoke-DriveChange { Add-VMDvdDrive -VM (Get-LabVm) -ControllerNumber $dvd.controller_number -ControllerLocation $dvd.controller_location -Path $dvd.path -ErrorAction Stop } }
                 $returned++
             } catch { Say "could not return the installation media $(Split-Path -Leaf $dvd.path) to the VM: $($_.Exception.Message)" }
         }
@@ -195,8 +264,9 @@ function Restore-DetachedDisks([switch]$Everything) {
             if ($first) { try { Set-VMFirmware -VM (Get-LabVm) -FirstBootDevice $first -ErrorAction Stop } catch { Say "could not make $(Split-Path -Leaf $record.first_boot_path) the first boot device again: $($_.Exception.Message)" } }
         }
     }
-    # The record is spent whether or not every disk could be returned.
-    [ordered]@{ vm_id = $VmId; attempt = $record.attempt; disks = @(); returned = $returned; returned_utc = [DateTime]::UtcNow.ToString('o') } |
+    # The record is spent but for the disks that could not be returned.
+    [ordered]@{ vm_id = $VmId; attempt = $record.attempt; returned = $returned; returned_utc = [DateTime]::UtcNow.ToString('o')
+        disks = @($left | ForEach-Object { [ordered]@{ path = $_.path; controller_number = $_.controller_number; controller_location = $_.controller_location } }) } |
         ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Get-DetachedDiskRecord) -Encoding UTF8
     return $returned
 }
@@ -250,27 +320,39 @@ try {
         $returned = Restore-DetachedDisks
         if ($returned) { Say "returned $returned disk(s) an earlier attempt detached; the restore discards them with that attempt's state" }
         Say "restoring checkpoint '$($snapshots[0].Name)'"
+        $viewBefore = Get-DriveView
         Restore-VMSnapshot -VMSnapshot $snapshots[0] -Confirm:$false
         $vm = Get-LabVm
         if ($vm.State -eq 'Saved') { Remove-VMSavedState -VM $vm; $vm = Get-LabVm }
         if ($vm.State -ne 'Off') { Stop-VM -VM $vm -TurnOff -Force; $vm = Get-LabVm }
         $verdict.restored_checkpoint = $snapshots[0].Name
+        $verdict.restored_drive_view_settled = Wait-RestoredDriveView $viewBefore
+        if (-not $verdict.restored_drive_view_settled) { Say 'a minute after the restore Hyper-V still showed the drives as before it, or they kept changing: going on with what it shows now' }
+        $vm = Get-LabVm
     }
     Set-VMMemory -VM $vm -DynamicMemoryEnabled $false -StartupBytes ($MemoryGB * 1GB)
     $drives = @(Get-VMHardDiskDrive -VM $vm)
     $disk0 = $drives | Where-Object { $_.ControllerNumber -eq 0 -and $_.ControllerLocation -eq 0 }
     $scratch = $drives | Where-Object { $_.Path -like '*\scratch.vhdx' } | Select-Object -First 1
     if (-not $scratch -and (Test-Path -LiteralPath $ScratchVhdx)) {
-        Add-VMHardDiskDrive -VM $vm -ControllerType SCSI -Path $ScratchVhdx
+        Invoke-DriveChange { Add-VMHardDiskDrive -VM (Get-LabVm) -ControllerType SCSI -Path $ScratchVhdx -ErrorAction Stop }
+        $scratch = Wait-AttachedDrive $ScratchVhdx
         $drives = @(Get-VMHardDiskDrive -VM $vm)
-        $scratch = $drives | Where-Object { $_.Path -eq $ScratchVhdx }
     }
-    if (-not $disk0 -or -not $scratch) { throw 'the VM needs its disk0 and a scratch.vhdx attached' }
+    if (-not $disk0) { throw 'the VM has no disk at SCSI 0/0, its own Windows (disk0)' }
+    if (-not $scratch) { throw "the VM has no working disk (scratch.vhdx) attached, and $ScratchVhdx $(if (Test-Path -LiteralPath $ScratchVhdx) { 'did not show as attached after it was added' } else { 'does not exist' })" }
     # The boot partition's disk: a 1 GB VHDX beside the working disk, made once
     # and kept (FAT32 inside, made in the guest below).
     $bootVhdx = Join-Path (Split-Path -Parent $scratch.Path) 'boot.vhdx'
     if (-not (Test-Path -LiteralPath $bootVhdx)) { $null = New-VHD -Path $bootVhdx -SizeBytes 1GB -Dynamic }
-    if (-not ($drives | Where-Object Path -eq $bootVhdx)) { Add-VMHardDiskDrive -VM $vm -ControllerType SCSI -Path $bootVhdx; $drives = @(Get-VMHardDiskDrive -VM $vm) }
+    if (-not ($drives | Where-Object Path -eq $bootVhdx)) {
+        Invoke-DriveChange { Add-VMHardDiskDrive -VM (Get-LabVm) -ControllerType SCSI -Path $bootVhdx -ErrorAction Stop }
+        if (-not (Wait-AttachedDrive $bootVhdx)) { throw "the boot partition's disk $bootVhdx did not show as attached after it was added" }
+        $drives = @(Get-VMHardDiskDrive -VM $vm)
+    }
+    # The guest finds the working disk by its size where Windows does not
+    # show its volume under a letter (#228).
+    $scratchBytes = (Get-VHD -Path $scratch.Path).Size
     $others = @($drives | Where-Object { $_.Path -ne $disk0.Path -and $_.Path -ne $scratch.Path -and $_.Path -ne $bootVhdx })
     $detached = @($others | ForEach-Object { $_.Path })
     Set-Content -LiteralPath (Join-Path $records 'detached-disks.json') -Value ($detached | ConvertTo-Json) -Encoding utf8
@@ -283,23 +365,70 @@ try {
     if ($Image -ne 'media') { Get-VMDvdDrive -VM $vm | Remove-VMDvdDrive }
     elseif (-not $dvd) { Add-VMDvdDrive -VM $vm -Path 'C:\Users\mfara\Downloads\Windows11_Client_x64_en-us_26300_9457.iso' }
     Set-VMFirmware -VM $vm -FirstBootDevice $disk0
+    # What the VM starts with, as Hyper-V shows it.
+    $verdict.drives_at_start = Get-DriveView
     Say "starting the VM's own Windows (disk0), working disk $($scratch.Path)"
     Start-VM -VM $vm
     $session = Wait-Guest 15
     if (-not $session) { throw 'the VM''s own Windows did not answer' }
     $restartedAt = $null
     try {
-        $before = Invoke-Command -Session $session -ScriptBlock {
+        $before = Invoke-Command -Session $session -ArgumentList $scratchBytes -ScriptBlock {
+            param($scratchBytes)
             $c = Get-Volume -DriveLetter C
-            $scratch = Get-Volume | Where-Object FileSystemLabel -eq 'N2R_SCRATCH' | Select-Object -First 1
+            # The working volume: labelled N2R_SCRATCH, under a letter. Where
+            # Windows does not show it so (#228: the second case of a round on
+            # one VM found none), its disk is looked for by its size, apart
+            # from the Windows disk, and what it is is said; a disk that is
+            # offline or read-only is brought online and writable, and a
+            # volume without a letter is given one, each once, while Windows
+            # has two minutes to show the volume.
+            $windowsDisk = (Get-Partition -DriveLetter C).DiskNumber
+            $first = ''; $state = ''; $changed = @(); $done = @{}
+            $began = Get-Date; $deadline = $began.AddMinutes(2)
+            while ($true) {
+                $scratch = Get-Volume | Where-Object { $_.FileSystemLabel -eq 'N2R_SCRATCH' -and "$($_.DriveLetter)" -match '^[A-Za-z]$' } | Select-Object -First 1
+                if ($scratch) { break }
+                $disks = @(Get-Disk | Where-Object { $_.Size -eq $scratchBytes -and $_.Number -ne $windowsDisk })
+                if ($disks.Count -ne 1) {
+                    $state = "$($disks.Count) disks of the working disk's size ($scratchBytes bytes) besides the Windows disk: $(if ($disks.Count) { 'which is the working disk is not known' } else { 'the working disk is not attached' })"
+                } else {
+                    $disk = $disks[0]
+                    $parts = @(Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue | ForEach-Object {
+                            $volume = $_ | Get-Volume -ErrorAction SilentlyContinue
+                            "partition $($_.PartitionNumber) ($($_.Type)): letter '$($_.DriveLetter)', hidden $($_.IsHidden), no default letter $($_.NoDefaultDriveLetter), volume '$($volume.FileSystemLabel)' $($volume.FileSystem) $($volume.HealthStatus)" })
+                    $state = "disk $($disk.Number): offline $($disk.IsOffline)$(if ($disk.IsOffline) { " ($($disk.OfflineReason))" }), read-only $($disk.IsReadOnly), $($disk.PartitionStyle); $(if ($parts) { $parts -join '; ' } else { 'no partitions shown' })"
+                    $part = @(Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue | Where-Object { ($_ | Get-Volume -ErrorAction SilentlyContinue).FileSystemLabel -eq 'N2R_SCRATCH' }) | Select-Object -First 1
+                    $repair = if ($disk.IsOffline -and -not $done.online) { 'online' }
+                        elseif ($disk.IsReadOnly -and -not $done.writable) { 'writable' }
+                        elseif ($part -and "$($part.DriveLetter)" -notmatch '^[A-Za-z]$' -and -not $done.letter) { 'letter' }
+                    if ($repair) {
+                        if (-not $first) { $first = $state }
+                        $done[$repair] = $true
+                        try {
+                            switch ($repair) {
+                                'online' { Set-Disk -Number $disk.Number -IsOffline $false -ErrorAction Stop; $changed += "disk $($disk.Number) was offline ($($disk.OfflineReason)): brought online" }
+                                'writable' { Set-Disk -Number $disk.Number -IsReadOnly $false -ErrorAction Stop; $changed += "disk $($disk.Number) was read-only: made writable" }
+                                'letter' { $part | Add-PartitionAccessPath -AssignDriveLetter -ErrorAction Stop; $changed += "partition $($part.PartitionNumber) of disk $($disk.Number) had no letter: given one" }
+                            }
+                        } catch { $changed += "disk $($disk.Number): making it $repair failed: $($_.Exception.Message)" }
+                        continue
+                    }
+                }
+                if (-not $first) { $first = $state }
+                if ((Get-Date) -ge $deadline) { break }
+                Start-Sleep -Seconds 5
+            }
             $serial = ((cmd /c 'vol C:') | Select-String 'Serial Number').ToString().Split(' ')[-1]
-            [pscustomobject]@{ filesystem = [string]$c.FileSystem; serial = $serial; scratch = "$($scratch.DriveLetter):"; scratch_fs = [string]$scratch.FileSystem
-                build = (Get-CimInstance Win32_OperatingSystem).BuildNumber; free_gb = [Math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB, 1) }
+            [pscustomobject]@{ filesystem = [string]$c.FileSystem; serial = $serial; scratch = if ($scratch) { "$($scratch.DriveLetter):" } else { '' }; scratch_fs = [string]$scratch.FileSystem
+                build = (Get-CimInstance Win32_OperatingSystem).BuildNumber; free_gb = [Math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB, 1)
+                working_disk = [ordered]@{ seconds = [int]((Get-Date) - $began).TotalSeconds; first_seen = $first; last_seen = $state; changed = $changed } }
         }
         $verdict.before = $before
         Say "running Windows: C: is $($before.filesystem), serial $($before.serial), build $($before.build); working disk $($before.scratch); RAM free $($before.free_gb) GB"
+        if ($before.working_disk.first_seen) { Say "the working volume was not under a letter when Windows came up ($($before.working_disk.first_seen)); after $($before.working_disk.seconds) s: $(if (@($before.working_disk.changed).Count) { @($before.working_disk.changed) -join '; ' } else { 'nothing changed by the harness' })" }
         if ($before.filesystem -ne 'NTFS') { throw "C: is $($before.filesystem), not NTFS" }
-        if ($before.scratch -notmatch '^[A-Z]:$') { throw 'the running Windows has no volume labelled N2R_SCRATCH under a letter: the working disk is not there' }
+        if ($before.scratch -notmatch '^[A-Z]:$') { throw "the running Windows has no volume labelled N2R_SCRATCH under a letter after $($before.working_disk.seconds) s: $($before.working_disk.last_seen)" }
         # What earlier attempts left on the working volume: their run folders
         # and the folders their recoveries and cancellations wrote beside
         # them. A virtual disk under one that Windows still has attached is
@@ -447,15 +576,28 @@ try {
             foreach ($leaf in 'converter-output.txt', 'converter-errors.txt', 'recover-forward-output.txt', 'recover-rollback-output.txt', 'recover-command.json', 'recover-command.done.json') {
                 try { Copy-Item -FromSession $back -LiteralPath "$($found.staging)\$leaf" -Destination $records -ErrorAction Stop } catch { }
             }
-            $after = Invoke-Command -Session $back -ScriptBlock {
+            $after = Invoke-Command -Session $back -ArgumentList (Split-Path -Parent $found.staging) -ScriptBlock {
+                param($run)
                 $c = Get-Volume -DriveLetter C
                 $bcd = (& bcdedit.exe /enum '{bootmgr}' 2>&1 | Out-String)
                 $refs = (& "$env:SystemRoot\System32\fsutil.exe" fsinfo refsinfo C: 2>&1 | Out-String)
+                # Whether this Windows has the run's virtual disks attached
+                # (#182): a run folder cannot be removed while one is, and a
+                # finished run or recovery detaches its working volume. What
+                # Windows answers for each, or why it would not.
+                $images = @(Get-ChildItem -LiteralPath $run -Recurse -Force -Filter '*.vhdx' -ErrorAction SilentlyContinue | ForEach-Object {
+                    $image = $_.FullName
+                    try { [pscustomobject]@{ path = $image; attached = [bool](Get-DiskImage -ImagePath $image -ErrorAction Stop).Attached } }
+                    catch { [pscustomobject]@{ path = $image; error = "$($_.Exception.Message)" } }
+                })
                 [pscustomobject]@{ filesystem = [string]$c.FileSystem; health = [string]$c.HealthStatus; cluster_bytes = $c.AllocationUnitSize; bootmgr = $bcd; refsinfo = $refs
-                    boot_utc = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o') }
+                    boot_utc = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o'); run_images = $images }
             }
             $verdict.after = $after
             Say "back in Windows: C: is $($after.filesystem), health $($after.health)"
+            foreach ($image in @($after.run_images)) {
+                Say "the run's $(Split-Path -Leaf $image.path) ($($image.path)): $(if ($image.error) { "Windows did not say whether it is attached: $($image.error)" } elseif ($image.attached) { 'ATTACHED' } else { 'not attached' })"
+            }
             $expected = if ($Diagnose) { 'NTFS' } else { 'ReFS' }
             $converterEnded = if ($report -match 'The converter ended with exit code: (\d+)') { [int]$Matches[1] } else { -1 }
             $verdict.converter_exit = $converterEnded
@@ -490,9 +632,16 @@ try {
         if ($Acceptance -and $after.filesystem -eq 'ReFS' -and $verdict.outcome -in 'PASSED', 'CUT-RECOVERED-TO-REFS') {
             # Coming back is not the same as going on being used and serviced.
             # (The installation media comes back for the use test, whose Setup scan reads it.)
+            # At the place it had: the first free place was that of a disk the
+            # attempt had detached, which then could not return (#228).
             if ($dvd -and -not (Get-VMDvdDrive -VM (Get-LabVm) | Where-Object Path -EQ $dvd)) {
-                try { Add-VMDvdDrive -VM (Get-LabVm) -Path $dvd; Say "installation media attached again for the use test: $dvd" }
-                catch { Say "the installation media could not be attached again: $($_.Exception.Message)" }
+                $place = $dvdDrives | Where-Object Path -EQ $dvd | Select-Object -First 1
+                $taken = $place -and (@(Get-VMHardDiskDrive -VM (Get-LabVm)) + @(Get-VMDvdDrive -VM (Get-LabVm)) | Where-Object { $_.ControllerNumber -eq $place.ControllerNumber -and $_.ControllerLocation -eq $place.ControllerLocation })
+                try {
+                    if ($place -and -not $taken) { Invoke-DriveChange { Add-VMDvdDrive -VM (Get-LabVm) -ControllerNumber $place.ControllerNumber -ControllerLocation $place.ControllerLocation -Path $dvd -ErrorAction Stop } }
+                    else { Invoke-DriveChange { Add-VMDvdDrive -VM (Get-LabVm) -Path $dvd -ErrorAction Stop } }
+                    Say "installation media attached again for the use test: $dvd"
+                } catch { Say "the installation media could not be attached again: $($_.Exception.Message)" }
             }
             $use = Invoke-WindowsUseTest 'ReFS' | Select-Object -Last 1
             $verdict.acceptance = $use

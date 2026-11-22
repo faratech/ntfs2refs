@@ -698,10 +698,13 @@ fn old_zero_unread_selected(
 }
 
 /// The workspace of a journal's preparation, in buffers of [`BUFFER`] bytes:
-/// the read and compare buffers, two for each of the five file-wide digests'
-/// workers, two for each of the two workers of the rows' own digests, and one
-/// for those workers' lists and the rows whose digests are owed.
-pub(super) const PREPARATION_BUFFERS: u64 = 17;
+/// the read and compare buffers (2); two for each of the five file-wide
+/// digests' workers (10), of which the journal body's `HashedBehind` holds
+/// two of 4 MiB (6 more); two for each of the three workers of the rows' own
+/// digests, the OLD, NEW and read-back check records (6); and one for those
+/// workers' lists and the rows whose digests are owed (1). It counted 17,
+/// some 8 MiB short of what the preparation holds.
+pub(super) const PREPARATION_BUFFERS: u64 = 25;
 
 /// A row whose payloads are in the journal and whose descriptor waits for
 /// their digests.

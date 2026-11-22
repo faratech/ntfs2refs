@@ -545,6 +545,13 @@ impl PagedNativeObservation {
         let chunk_at = |reader: &mut Reader, at: u64| -> io::Result<((u8, u64, u64), usize)> {
             if written_here {
                 reader.with_record(at, |key, payload| {
+                    if let Some((&RAW_CHUNK_TAG, raw)) = payload.split_first() {
+                        require(
+                            raw.len() <= budget.chunk_bytes(),
+                            "noncanonical native observation chunk",
+                        )?;
+                        return Ok((decode_key(key)?, raw.len()));
+                    }
                     require(
                         payload.len() >= 2 && payload.len().is_multiple_of(2),
                         "noncanonical native observation chunk",

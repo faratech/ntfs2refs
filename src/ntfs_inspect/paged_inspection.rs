@@ -1280,18 +1280,17 @@ fn inspect_paged_internal<R: Read + Seek>(
     if policy.is_fast() && !preparation_only {
         let mut output =
             SortedRecordWriter::new(&root.join("hashed-files"), *b"N2RFILE1", &scratch)?;
+        let _working = scratch.lease_ram(
+            budget
+                .record_bytes
+                .checked_mul(8)
+                .and_then(|n| {
+                    n.checked_add(LARGE_STREAM_HASH_BYTES as u64 + STREAM_HASH_BUFFER_BYTES as u64)
+                })
+                .context("raw hashing working memory overflow")?,
+        )?;
+        let mut rows_ahead = RowsAhead::new(&scratch, budget.record_bytes);
         for ordinal in 0..files.file_count() {
-            let _working = scratch.lease_ram(
-                budget
-                    .record_bytes
-                    .checked_mul(8)
-                    .and_then(|n| {
-                        n.checked_add(
-                            LARGE_STREAM_HASH_BYTES as u64 + STREAM_HASH_BUFFER_BYTES as u64,
-                        )
-                    })
-                    .context("raw hashing working memory overflow")?,
-            )?;
             let mut file = files.file(ordinal)?;
             for index in 0..file.streams.len() {
                 if file.streams[index].logical_hash_status != LogicalHashStatus::NotComputed {
@@ -1356,8 +1355,10 @@ fn inspect_paged_internal<R: Read + Seek>(
                 file.streams[index].logical_hash_status = status;
                 file.streams[index].logical_sha256 = digest;
             }
-            output.push(file_key(file.record_number), &file)?;
+            let record_number = file.record_number;
+            rows_ahead.push(&mut output, record_number, file)?;
         }
+        rows_ahead.finish(&mut output)?;
         files.replace_files(&output.finish()?)?;
     }
     n2r_win32::perf::step("NTFS: reconcile security");

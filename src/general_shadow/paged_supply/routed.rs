@@ -952,6 +952,274 @@ fn supplied_tail_key(object: u64, stream: u64) -> [u8; 16] {
     out
 }
 
+/// Tails within this many bytes of each other on the disk are read as one
+/// span, the bytes between them too.
+const TAIL_COALESCE_GAP: u64 = 64 * 1024;
+/// The longest span one lane read makes.
+const TAIL_COALESCE_MAX: u64 = 1024 * 1024;
+
+/// The lane reads of `asks` (each a tail's place on the disk and its length,
+/// sorted by place): neighbours within [`TAIL_COALESCE_GAP`] are read as one
+/// span of at most [`TAIL_COALESCE_MAX`] bytes, gaps included, as long as
+/// every span's bytes, gaps included, stay within `limit`. Each span is its
+/// start, its length and the end of its tails in `asks`.
+///
+/// A span holds the bytes between its tails as well as theirs, and all of a
+/// batch's spans are read at once (#265): counting only the tails let 8,192
+/// of them, merged across gaps of up to 64 KiB, hold some 528 MiB against
+/// the 16 MiB reserved for them. Here a merge is made only where what it
+/// adds, with every tail still to come counted at its own length, fits
+/// `limit`; a tail that may not be merged starts a span of its own. Where
+/// the tails alone fit `limit`, every tail is read. A tail that would not
+/// fit even alone is not asked for (its stream reads it as before).
+fn tail_spans(asks: &[(u64, u32)], limit: u64) -> Vec<(u64, u64, usize)> {
+    let mut remaining: u64 = asks.iter().map(|&(_, count)| u64::from(count)).sum();
+    let mut total = 0u64;
+    let mut spans = Vec::new();
+    let mut next = 0usize;
+    while next < asks.len() {
+        let (start, count) = asks[next];
+        let count = u64::from(count);
+        remaining -= count;
+        if total.saturating_add(count) > limit {
+            break;
+        }
+        total += count;
+        let mut end = start.saturating_add(count);
+        next += 1;
+        while next < asks.len() {
+            let (place, count) = asks[next];
+            let count = u64::from(count);
+            if place > end.saturating_add(TAIL_COALESCE_GAP) {
+                break;
+            }
+            let merged_end = end.max(place.saturating_add(count));
+            if merged_end - start > TAIL_COALESCE_MAX {
+                break;
+            }
+            let added = merged_end - end;
+            let rest = remaining - count;
+            if total.saturating_add(added).saturating_add(rest) > limit {
+                break;
+            }
+            total += added;
+            remaining = rest;
+            end = merged_end;
+            next += 1;
+        }
+        spans.push((start, end - start, next));
+    }
+    spans
+}
+
+/// One lane read of a batch's tails, and how many of the batch's tails are
+/// still to take bytes from it: its bytes are let go with the last.
+struct TailSpan {
+    ticket: Option<u64>,
+    bytes: Option<Vec<u8>>,
+    left: u32,
+}
+/// Where one stream's tail lies in the lane reads of its batch.
+struct TailSlot {
+    index: usize,
+    ordinal: usize,
+    place: u64,
+    count: u32,
+    span: u32,
+    rel: u32,
+}
+/// No span: the tail was not asked for.
+const NO_SPAN: u32 = u32::MAX;
+
+/// The tails of one batch asked of the source's lanes, in the order the pass
+/// takes their streams, and the lease of the spans' bytes beyond what
+/// [`super::super::source_backed::tails_ahead`] reserved for a batch.
+struct TailBatchReads {
+    spans: Vec<TailSpan>,
+    slots: Vec<TailSlot>,
+    next: usize,
+    _beyond: Option<crate::artifact_arena::ArenaRamLease>,
+}
+impl TailBatchReads {
+    /// Asks the lanes for the tail of every stream of `held` (the first of
+    /// which is object `first`) that the plan materializes, as many as one
+    /// batch takes ([`TAIL_BATCH`], [`TAIL_BATCH_BYTES`] of tails), in their
+    /// order on the disk.
+    ///
+    /// The spans' bytes, gaps included, are held to what is leased for
+    /// them: [`TAIL_BATCH_BYTES`], reserved with the lanes, and what the
+    /// spans need beyond that where the ledger grants it as spare memory.
+    /// Where it does not, the spans are coalesced within
+    /// [`TAIL_BATCH_BYTES`] ([`tail_spans`]). Every span is asked at once,
+    /// so what the lanes read and hold, in their results too, is never more
+    /// than that.
+    fn ask(
+        reads: &mut super::super::source_backed::original_prefetch::LaneReads,
+        arena: Option<&crate::artifact_arena::ArtifactArena>,
+        bytes: &PagedSourceByteAdapterWithScope<'_, '_>,
+        held: &[LeasedExpectedObject],
+        first: usize,
+        planned: &MaterializedPlan,
+    ) -> Self {
+        let cluster = n2r_win32::target_cluster::bytes();
+        let mut slots = Vec::new();
+        let mut asked_bytes = 0u64;
+        for (index, object) in (first..).zip(held) {
+            if object.directory || system(object) {
+                continue;
+            }
+            for (stream_ordinal, stream) in object.data_streams().enumerate() {
+                let offset = stream.length / cluster * cluster;
+                let count = stream.length - offset;
+                if count == 0
+                    || !planned.contains_key(&(index, stream_ordinal))
+                    || slots.len() >= TAIL_BATCH
+                    || asked_bytes + count > TAIL_BATCH_BYTES
+                {
+                    continue;
+                }
+                let place = tail_place(&stream, offset, count).or_else(|| {
+                    use crate::ntfs_inspect::source_domain::RootFileDomain;
+                    bytes
+                        .raw_source()
+                        .find_record_shared(object.record_number, Some(object.sequence_number))
+                        .ok()
+                        .flatten()
+                        .and_then(|file| {
+                            let raw_stream = file
+                                .streams
+                                .iter()
+                                .find(|s| s.name_utf16 == stream.name_utf16)?;
+                            if raw_stream.resident || raw_stream.flags != 0 {
+                                return None;
+                            }
+                            let end = offset.checked_add(count)?;
+                            let run = raw_stream.extents.iter().find(|run| {
+                                run.logical_offset <= offset
+                                    && run
+                                        .logical_offset
+                                        .checked_add(run.length)
+                                        .is_some_and(|stop| end <= stop)
+                            })?;
+                            run.physical_offset?
+                                .checked_add(offset - run.logical_offset)
+                        })
+                });
+                if let (Some(place), Ok(count)) = (place, u32::try_from(count)) {
+                    asked_bytes += u64::from(count);
+                    slots.push(TailSlot {
+                        index,
+                        ordinal: stream_ordinal,
+                        place,
+                        count,
+                        span: NO_SPAN,
+                        rel: 0,
+                    });
+                }
+            }
+        }
+        // The slots in their order on the disk.
+        let mut order: Vec<u32> = (0..slots.len() as u32).collect();
+        order.sort_unstable_by_key(|&slot| (slots[slot as usize].place, slot));
+        let sorted: Vec<(u64, u32)> = order
+            .iter()
+            .map(|&slot| (slots[slot as usize].place, slots[slot as usize].count))
+            .collect();
+        let mut spans = tail_spans(&sorted, u64::MAX);
+        let total: u64 = spans.iter().map(|&(_, length, _)| length).sum();
+        let mut beyond = None;
+        if total > TAIL_BATCH_BYTES {
+            match arena.map(|arena| arena.reserve_spare_ram(total - TAIL_BATCH_BYTES)) {
+                Some(Ok(lease)) => beyond = Some(lease),
+                _ => spans = tail_spans(&sorted, TAIL_BATCH_BYTES),
+            }
+        }
+        drop(sorted);
+        let mut batch = Self {
+            spans: Vec::with_capacity(spans.len()),
+            slots,
+            next: 0,
+            _beyond: beyond,
+        };
+        let mut member = 0usize;
+        for (start, length, end) in spans {
+            let span = batch.spans.len() as u32;
+            let ticket = usize::try_from(length)
+                .ok()
+                .map(|length| reads.ask(start, length));
+            let mut left = 0u32;
+            for &slot in &order[member..end] {
+                let slot = &mut batch.slots[slot as usize];
+                if ticket.is_some() {
+                    slot.span = span;
+                    slot.rel = (slot.place - start) as u32;
+                    left += 1;
+                }
+            }
+            member = end;
+            batch.spans.push(TailSpan {
+                ticket,
+                bytes: None,
+                left,
+            });
+        }
+        batch
+    }
+
+    /// The tail of stream `ordinal` of object `index`, where it was asked
+    /// for and read: its place on the partition and its bytes. Called for
+    /// the streams in the order the pass takes them. The bytes of a span are
+    /// let go once its last tail has been taken.
+    fn take(
+        &mut self,
+        reads: &mut super::super::source_backed::original_prefetch::LaneReads,
+        index: usize,
+        ordinal: usize,
+    ) -> Option<(u64, Vec<u8>)> {
+        while self
+            .slots
+            .get(self.next)
+            .is_some_and(|slot| (slot.index, slot.ordinal) < (index, ordinal))
+        {
+            self.next += 1;
+        }
+        let slot = self
+            .slots
+            .get(self.next)
+            .filter(|slot| (slot.index, slot.ordinal) == (index, ordinal))?;
+        self.next += 1;
+        let span = self.spans.get_mut(slot.span as usize)?;
+        if span.bytes.is_none()
+            && let Some(ticket) = span.ticket.take()
+            && let Ok(bytes) = reads.take(ticket)
+        {
+            span.bytes = Some(bytes);
+        }
+        let (rel, count) = (slot.rel as usize, slot.count as usize);
+        let tail = span
+            .bytes
+            .as_ref()
+            .filter(|bytes| rel + count <= bytes.len())
+            .map(|bytes| (slot.place, bytes[rel..rel + count].to_vec()));
+        span.left = span.left.saturating_sub(1);
+        if span.left == 0 {
+            span.bytes = None;
+        }
+        tail
+    }
+
+    /// Takes back what was asked and not taken (every tail asked for is
+    /// taken by its stream; should one not have been, its bytes are not
+    /// kept past its batch).
+    fn finish(self, reads: &mut super::super::source_backed::original_prefetch::LaneReads) {
+        for span in self.spans {
+            if let Some(ticket) = span.ticket {
+                let _ = reads.take(ticket);
+            }
+        }
+    }
+}
+
 pub(crate) fn prepare<'a, 'source, 'scope>(
     bytes: &'a mut PagedSourceByteAdapterWithScope<'source, 'scope>,
     expected: &'a PagedExpectedTree,
@@ -1072,6 +1340,14 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
         None
     };
     let cluster = n2r_win32::target_cluster::bytes();
+    // What the spans of a batch need beyond what `tails_ahead` reserved is
+    // asked of this ledger as spare memory.
+    let tail_arena = ahead.as_ref().and_then(|_| {
+        bytes
+            .metadata_scratch()
+            .artifact_group()
+            .map(|group| group.arena().clone())
+    });
     (|| -> Result<()> {
         let mut first = 0usize;
         while first < expected.len() {
@@ -1087,95 +1363,20 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
             } else {
                 vec![expected.object_leased(first)?]
             };
-            // Coalesce sorted tail reads across gaps <= 64 KiB into <= 1 MiB
-            // spans so 91k tiny 4 KiB tail reads collapse into a few thousand
-            // sequential multi-lane reads.
-            const TAIL_COALESCE_GAP: u64 = 64 * 1024;
-            const TAIL_COALESCE_MAX: u64 = 1024 * 1024;
-            let mut group_tickets: Vec<(Option<u64>, Option<Vec<u8>>)> = Vec::new();
-            let mut tickets: std::collections::BTreeMap<(usize, usize), (usize, usize, usize, u64)> =
-                std::collections::BTreeMap::new();
-            if let Some(reads) = ahead.as_mut() {
-                let mut asks = Vec::new();
-                let mut asked_bytes = 0u64;
-                for (index, object) in (first..).zip(&held) {
-                    if object.directory || system(object) {
-                        continue;
-                    }
-                    for (stream_ordinal, stream) in object.data_streams().enumerate() {
-                        let offset = stream.length / cluster * cluster;
-                        let count = stream.length - offset;
-                        if count == 0
-                            || !materialized_streams.contains_key(&(index, stream_ordinal))
-                            || asks.len() >= TAIL_BATCH
-                            || asked_bytes + count > TAIL_BATCH_BYTES
-                        {
-                            continue;
-                        }
-                        let place = tail_place(&stream, offset, count).or_else(|| {
-                            use crate::ntfs_inspect::source_domain::RootFileDomain;
-                            bytes
-                                .raw_source()
-                                .find_record_shared(
-                                    object.record_number,
-                                    Some(object.sequence_number),
-                                )
-                                .ok()
-                                .flatten()
-                                .and_then(|file| {
-                                    let raw_stream = file
-                                        .streams
-                                        .iter()
-                                        .find(|s| s.name_utf16 == stream.name_utf16)?;
-                                    if raw_stream.resident || raw_stream.flags != 0 {
-                                        return None;
-                                    }
-                                    let end = offset.checked_add(count)?;
-                                    let run = raw_stream.extents.iter().find(|run| {
-                                        run.logical_offset <= offset
-                                            && run
-                                                .logical_offset
-                                                .checked_add(run.length)
-                                                .is_some_and(|stop| end <= stop)
-                                    })?;
-                                    run.physical_offset?.checked_add(offset - run.logical_offset)
-                                })
-                        });
-                        if let Some(place) = place {
-                            asked_bytes += count;
-                            asks.push((place, count as usize, index, stream_ordinal));
-                        }
-                    }
-                }
-                asks.sort_unstable();
-                let mut cursor = 0usize;
-                while cursor < asks.len() {
-                    let span_start = asks[cursor].0;
-                    let mut span_end = span_start + asks[cursor].1 as u64;
-                    let group_start_idx = cursor;
-                    cursor += 1;
-                    while cursor < asks.len() {
-                        let (next_place, next_count, _, _) = asks[cursor];
-                        if next_place > span_end.saturating_add(TAIL_COALESCE_GAP) {
-                            break;
-                        }
-                        let next_end = next_place + next_count as u64;
-                        let merged_end = span_end.max(next_end);
-                        if merged_end - span_start > TAIL_COALESCE_MAX {
-                            break;
-                        }
-                        span_end = merged_end;
-                        cursor += 1;
-                    }
-                    let span_len = (span_end - span_start) as usize;
-                    let group_id = group_tickets.len();
-                    group_tickets.push((Some(reads.ask(span_start, span_len)), None));
-                    for &(place, count, index, stream_ordinal) in &asks[group_start_idx..cursor] {
-                        let rel = (place - span_start) as usize;
-                        tickets.insert((index, stream_ordinal), (group_id, rel, count, place));
-                    }
-                }
-            }
+            // The tails of the batch's materialized streams are asked of the
+            // lanes at once, in their order on the disk, coalesced into spans
+            // whose bytes, gaps included, stay within what is leased for them.
+            let mut tail_reads = match ahead.as_mut() {
+                Some(reads) => Some(TailBatchReads::ask(
+                    reads,
+                    tail_arena.as_ref(),
+                    bytes,
+                    &held,
+                    first,
+                    &materialized_streams,
+                )),
+                None => None,
+            };
             struct PendingTailWrite<'o> {
                 object_index: usize,
                 name: &'o [u16],
@@ -1237,21 +1438,10 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                     }
                     // A read ahead that failed is left to the adapter to make
                     // again, and to report if it fails there too.
-                    if let (Some(reads), Some((group_id, rel, count, place))) =
-                        (ahead.as_mut(), tickets.remove(&(index, stream_ordinal)))
+                    if let (Some(reads), Some(batch)) = (ahead.as_mut(), tail_reads.as_mut())
+                        && let Some((place, tail)) = batch.take(reads, index, stream_ordinal)
                     {
-                        let entry = &mut group_tickets[group_id];
-                        if entry.1.is_none()
-                            && let Some(ticket) = entry.0.take()
-                            && let Ok(span_bytes) = reads.take(ticket)
-                        {
-                            entry.1 = Some(span_bytes);
-                        }
-                        if let Some(span_bytes) = entry.1.as_ref()
-                            && rel + count <= span_bytes.len()
-                        {
-                            bytes.offer_read_ahead(place, span_bytes[rel..rel + count].to_vec());
-                        }
+                        bytes.offer_read_ahead(place, tail);
                     }
                     // What was offered is withdrawn once the stream's windows
                     // are done, whether or not they were materialized.
@@ -1426,14 +1616,8 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                 }
             }
             flush_pending(template, &mut pending_tails)?;
-            // Every tail asked for was taken by its stream; should one not
-            // have been, its bytes are not kept past its batch.
-            if let Some(reads) = ahead.as_mut() {
-                for (ticket, _) in group_tickets {
-                    if let Some(ticket) = ticket {
-                        let _ = reads.take(ticket);
-                    }
-                }
+            if let (Some(reads), Some(batch)) = (ahead.as_mut(), tail_reads.take()) {
+                batch.finish(reads);
             }
             first += held.len();
         }
@@ -1917,5 +2101,63 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(refusal.contains("--verify thorough"), "{refusal}");
+    }
+
+    fn span_bytes(spans: &[(u64, u64, usize)]) -> u64 {
+        spans.iter().map(|&(_, length, _)| length).sum()
+    }
+
+    /// #265: a batch's spans held the gaps between its tails as well as the
+    /// tails, against a lease of the tails alone.
+    #[test]
+    fn a_batchs_spans_hold_their_gaps_within_what_is_leased() {
+        const KIB: u64 = 1024;
+        // 8,192 tails of 2 KiB, each 63 KiB after the one before: merged
+        // across the gaps (into spans of up to 1 MiB) they are read as
+        // nearly 500 MiB.
+        let asks: Vec<(u64, u32)> = (0..8192u64).map(|n| (n * 65 * KIB, 2048)).collect();
+        let tails: u64 = asks.iter().map(|&(_, count)| u64::from(count)).sum();
+        let unbounded = tail_spans(&asks, u64::MAX);
+        assert!(span_bytes(&unbounded) > 450 * 1024 * KIB);
+        // Held to the lease, every tail is still read and the gaps merged
+        // only as far as they fit.
+        let limit = 16 * 1024 * KIB;
+        let bounded = tail_spans(&asks, limit);
+        assert!(span_bytes(&bounded) <= limit, "{}", span_bytes(&bounded));
+        assert!(span_bytes(&bounded) >= tails);
+        assert_eq!(bounded.last().map(|span| span.2), Some(asks.len()));
+        // Every tail lies wholly inside its span.
+        let mut member = 0;
+        for &(start, length, end) in &bounded {
+            for &(place, count) in &asks[member..end] {
+                assert!(place >= start && place + u64::from(count) <= start + length);
+            }
+            member = end;
+        }
+        // The tails alone at the limit: each is read by itself.
+        let exact = tail_spans(&asks, tails);
+        assert_eq!(span_bytes(&exact), tails);
+        assert_eq!(exact.len(), asks.len());
+    }
+
+    #[test]
+    fn spans_merge_neighbours_up_to_their_longest_and_no_further() {
+        // Two neighbours 1 KiB apart are one span; one beyond the gap is not.
+        let asks = [(0u64, 4096u32), (5120, 4096), (5120 + 4096 + 65537, 4096)];
+        assert_eq!(
+            tail_spans(&asks, u64::MAX),
+            vec![(0, 9216, 2), (5120 + 4096 + 65537, 4096, 3)]
+        );
+        // No span is longer than TAIL_COALESCE_MAX.
+        let asks: Vec<(u64, u32)> = (0..600u64).map(|n| (n * 4096, 4096)).collect();
+        let spans = tail_spans(&asks, u64::MAX);
+        assert!(
+            spans
+                .iter()
+                .all(|&(_, length, _)| length <= TAIL_COALESCE_MAX)
+        );
+        assert_eq!(span_bytes(&spans), 600 * 4096);
+        // A tail that does not fit at all is not asked for.
+        assert_eq!(tail_spans(&[(0, 4096), (1 << 30, 4096)], 6000).len(), 1);
     }
 }

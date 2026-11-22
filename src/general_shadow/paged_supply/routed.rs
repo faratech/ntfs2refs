@@ -1088,9 +1088,14 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
             } else {
                 vec![expected.object_leased(first)?]
             };
-            // For each stream of the batch whose tail was asked for: its
-            // ticket and the tail's place.
-            let mut tickets = std::collections::BTreeMap::new();
+            // Coalesce sorted tail reads across gaps <= 64 KiB into <= 1 MiB
+            // spans so 91k tiny 4 KiB tail reads collapse into a few thousand
+            // sequential multi-lane reads.
+            const TAIL_COALESCE_GAP: u64 = 64 * 1024;
+            const TAIL_COALESCE_MAX: u64 = 1024 * 1024;
+            let mut group_tickets: Vec<(Option<u64>, Option<Vec<u8>>)> = Vec::new();
+            let mut tickets: std::collections::BTreeMap<(usize, usize), (usize, usize, usize, u64)> =
+                std::collections::BTreeMap::new();
             if let Some(reads) = ahead.as_mut() {
                 let mut asks = Vec::new();
                 let mut asked_bytes = 0u64;
@@ -1115,8 +1120,31 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                     }
                 }
                 asks.sort_unstable();
-                for (place, count, index, stream_ordinal) in asks {
-                    tickets.insert((index, stream_ordinal), (reads.ask(place, count), place));
+                let mut cursor = 0usize;
+                while cursor < asks.len() {
+                    let span_start = asks[cursor].0;
+                    let mut span_end = span_start + asks[cursor].1 as u64;
+                    let group_start_idx = cursor;
+                    cursor += 1;
+                    while cursor < asks.len() {
+                        let (next_place, next_count, _, _) = asks[cursor];
+                        if next_place < span_end || next_place - span_end > TAIL_COALESCE_GAP {
+                            break;
+                        }
+                        let next_end = next_place + next_count as u64;
+                        if next_end - span_start > TAIL_COALESCE_MAX {
+                            break;
+                        }
+                        span_end = next_end;
+                        cursor += 1;
+                    }
+                    let span_len = (span_end - span_start) as usize;
+                    let group_id = group_tickets.len();
+                    group_tickets.push((Some(reads.ask(span_start, span_len)), None));
+                    for &(place, count, index, stream_ordinal) in &asks[group_start_idx..cursor] {
+                        let rel = (place - span_start) as usize;
+                        tickets.insert((index, stream_ordinal), (group_id, rel, count, place));
+                    }
                 }
             }
             struct PendingTailWrite<'o> {
@@ -1180,11 +1208,21 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                     }
                     // A read ahead that failed is left to the adapter to make
                     // again, and to report if it fails there too.
-                    if let (Some(reads), Some((ticket, place))) =
+                    if let (Some(reads), Some((group_id, rel, count, place))) =
                         (ahead.as_mut(), tickets.remove(&(index, stream_ordinal)))
-                        && let Ok(read) = reads.take(ticket)
                     {
-                        bytes.offer_read_ahead(place, read);
+                        let entry = &mut group_tickets[group_id];
+                        if entry.1.is_none()
+                            && let Some(ticket) = entry.0.take()
+                            && let Ok(span_bytes) = reads.take(ticket)
+                        {
+                            entry.1 = Some(span_bytes);
+                        }
+                        if let Some(span_bytes) = entry.1.as_ref()
+                            && rel + count <= span_bytes.len()
+                        {
+                            bytes.offer_read_ahead(place, span_bytes[rel..rel + count].to_vec());
+                        }
                     }
                     // What was offered is withdrawn once the stream's windows
                     // are done, whether or not they were materialized.
@@ -1362,8 +1400,10 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
             // Every tail asked for was taken by its stream; should one not
             // have been, its bytes are not kept past its batch.
             if let Some(reads) = ahead.as_mut() {
-                for (ticket, _) in std::mem::take(&mut tickets).into_values() {
-                    let _ = reads.take(ticket);
+                for (ticket, _) in group_tickets {
+                    if let Some(ticket) = ticket {
+                        let _ = reads.take(ticket);
+                    }
                 }
             }
             first += held.len();

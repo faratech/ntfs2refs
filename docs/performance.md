@@ -246,6 +246,22 @@ generation in `derive source projection` (`expected-preparation` 22.1 →
 | 1-in-10 Windows fixture (`perf-final-clean-f10`, VM with 24 GB) | 120.6 s | 120.0 s | identical listing |
 | Lived-in data volume, 23,137 objects (`perf-final-lived-in`, `-Check -Acceptance`) | 49.2 s | 47.1 s | −4.3%; `check and run: agree`, all acceptance checks passed, identical listing |
 
+A sixth round (`perf/breakthrough-waves`, Waves 26–27) added an evictable 1 MiB
+aligned `$MFT` page cache (64 MiB cap leased via `reserve_cache_ram`) for
+stream opens under `--verify fast` plus a raw last-extent tail hint for
+non-resident `< 4 KiB` tails (`plan and supply payloads` 30.9 → 20.0 s,
+`shadow-placement` `device read`s 91,471 → 3,687 / −96%), and enabled
+source-lane `AheadReader` for `DirectReadReceipt` reads alongside 4-lane
+`RoutedPrefetch` with 64 KiB gap coalescing (`compare shadow with source`
+49.2 → 44.3 s, `protected-target-capture` 85.6 → 81.8 s, `device read`s
+108,298 → 34,761 / −68%; total run `device read`s 299,813 → 138,513 / −54%):
+
+| Run | Previous (`perf-ultra`) | After (`perf-bt`) | Change |
+|---|---|---|---|
+| The full Windows volume, converted and started from ReFS (`perf-bt-clean-full`, VM with 24 GB) | 547 s (9.11 min) | 546 s (9.09 min) | −59.2% (2.45×) vs `r10-base-full`; −10.9 s in `plan and supply payloads`, −4.9 s in `compare shadow with source`; `BOOTED-ON-REFS`, identical listing |
+| 1-in-10 Windows fixture (`perf-bt-f10`, VM with 24 GB) | 120.6 s | 118.3 s | −48.6% vs `g3a-fixture10`, identical listing |
+| Lived-in data volume, 23,137 objects (`perf-bt-lived-in`, `-Check -Acceptance`) | 49.2 s | 47.0 s | −4.5%; `check and run: agree`, all acceptance checks passed, identical listing |
+
 ## A partition on the Windows disk, through a restart
 
 A 6 GiB partition of 505 objects beside C: on Windows Server 2025, working

@@ -217,6 +217,8 @@ impl<'a> PagedSourceByteAdapter<'a> {
             logical_bytes: 0,
             poisoned: false,
             read_ahead: Vec::new(),
+            read_ahead_from_source_lanes: false,
+            mft_cache: None,
             _session_ram: session_ram,
         })
     }

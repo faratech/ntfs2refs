@@ -2,7 +2,7 @@
 name = "ntfs2refs"
 version = "0.0.2"
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.100"
 description = "Converts an NTFS volume to ReFS in place"
 publish = false
 default-run = "ntfs2refs"
@@ -18,7 +18,7 @@ hex = "0.4"
 ntfs = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 n2r-win32 = { path = "crates/n2r-win32" }
 

@@ -75,9 +75,11 @@ pub(crate) fn digest_frozen_chunks_at_depth(
 }
 
 /// The digests of `chunks`, read by `image` on this thread and by each of
-/// `lanes` on a thread of its own, in chunk order. Where `cancel` is set,
-/// no lane claims another chunk and the call fails: a cancelled read never
-/// returns digests.
+/// `lanes` on a thread of its own, in chunk order. Nearby ascending small
+/// chunks (gap ≤ 64 KiB, combined span ≤ 1 MiB) are coalesced into one read
+/// and sliced in memory before hashing, preserving exact per-chunk digests.
+/// Where `cancel` is set, no lane claims another span and the call fails: a
+/// cancelled read never returns digests.
 pub(crate) fn digest_chunks_lanes<R: Read + Seek, L: Read + Seek + Send>(
     image: &mut R,
     lanes: &mut [L],
@@ -91,12 +93,47 @@ pub(crate) fn digest_chunks_lanes<R: Read + Seek, L: Read + Seek + Send>(
             .all(|chunk| (1..=MAX_CHUNK_BYTES).contains(&chunk.length)),
         "parallel digest chunk must be between one byte and 4MiB"
     );
-    let largest = chunks.iter().map(|chunk| chunk.length).max().unwrap_or(0);
+    const BRIDGE: u64 = 64 * 1024;
+    const COALESCE_MAX: usize = 1024 * 1024;
+    struct ReadSpan {
+        start: u64,
+        length: usize,
+        first: usize,
+        last: usize,
+    }
+    let mut spans: Vec<ReadSpan> = Vec::with_capacity(chunks.len());
+    let mut i = 0;
+    while i < chunks.len() {
+        let first = i;
+        let start = chunks[i].offset;
+        let mut end = start.saturating_add(chunks[i].length as u64);
+        i += 1;
+        while i < chunks.len() {
+            let next = chunks[i];
+            if next.offset < end || next.offset - end > BRIDGE {
+                break;
+            }
+            let next_end = next.offset.saturating_add(next.length as u64);
+            if next_end - start > COALESCE_MAX as u64 {
+                break;
+            }
+            end = next_end;
+            i += 1;
+        }
+        spans.push(ReadSpan {
+            start,
+            length: (end - start) as usize,
+            first,
+            last: i,
+        });
+    }
+    let largest = spans.iter().map(|span| span.length).max().unwrap_or(0);
     let next = AtomicUsize::new(0);
     let failed = AtomicBool::new(false);
     fn lane<T: Read + Seek>(
         reader: &mut T,
         chunks: &[Chunk],
+        spans: &[ReadSpan],
         largest: usize,
         next: &AtomicUsize,
         failed: &AtomicBool,
@@ -109,19 +146,23 @@ pub(crate) fn digest_chunks_lanes<R: Read + Seek, L: Read + Seek + Send>(
                 failed.store(true, Ordering::Release);
                 return Err(anyhow!("the read was given up"));
             }
-            let position = next.fetch_add(1, Ordering::AcqRel);
-            let Some(chunk) = chunks.get(position) else {
+            let span_index = next.fetch_add(1, Ordering::AcqRel);
+            let Some(span) = spans.get(span_index) else {
                 break;
             };
-            let bytes = &mut buffer[..chunk.length];
+            let bytes = &mut buffer[..span.length];
             let read = reader
-                .seek(SeekFrom::Start(chunk.offset))
+                .seek(SeekFrom::Start(span.start))
                 .and_then(|_| reader.read_exact(bytes));
             if let Err(error) = read {
                 failed.store(true, Ordering::Release);
                 return Err(error.into());
             }
-            digests.push((position, xxh3_128(bytes)));
+            for position in span.first..span.last {
+                let chunk = chunks[position];
+                let from = (chunk.offset - span.start) as usize;
+                digests.push((position, xxh3_128(&bytes[from..from + chunk.length])));
+            }
         }
         Ok(digests)
     }
@@ -131,11 +172,11 @@ pub(crate) fn digest_chunks_lanes<R: Read + Seek, L: Read + Seek + Send>(
             .map(|reader| {
                 scope.spawn(|| {
                     let _sampled = n2r_win32::stack_sampler::helper();
-                    lane(reader, chunks, largest, &next, &failed, cancel)
+                    lane(reader, chunks, &spans, largest, &next, &failed, cancel)
                 })
             })
             .collect();
-        let mut found = lane(image, chunks, largest, &next, &failed, cancel)?;
+        let mut found = lane(image, chunks, &spans, largest, &next, &failed, cancel)?;
         for other in others {
             found.extend(
                 other

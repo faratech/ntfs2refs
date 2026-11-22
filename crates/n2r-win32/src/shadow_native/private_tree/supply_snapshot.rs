@@ -60,7 +60,7 @@ impl NativeFile {
             .map(|p| p.readonly_supply_mapping_fingerprint(&duplicate, prepaid))
             .transpose()?
             .flatten();
-        if Metadata::capture(&duplicate)? != metadata {
+        if !crate::verify_policy::verifies_once() && Metadata::capture(&duplicate)? != metadata {
             return Err(invalid(
                 "supply snapshot metadata changed during map capture",
             ));
@@ -125,15 +125,19 @@ pub(super) fn observe_prepaid(
         },
         Ok((native, native_sparse)) => SnapshotSeen {
             captured: Ok(()),
-            revalidated: (|| {
-                if let Some(file) = &native {
-                    file.revalidate(primary, true)?;
-                }
-                if let Some(file) = &native_sparse {
-                    file.revalidate(None, true)?;
-                }
+            revalidated: if crate::verify_policy::verifies_once() {
                 Ok(())
-            })(),
+            } else {
+                (|| {
+                    if let Some(file) = &native {
+                        file.revalidate(primary, true)?;
+                    }
+                    if let Some(file) = &native_sparse {
+                        file.revalidate(None, true)?;
+                    }
+                    Ok(())
+                })()
+            },
         },
     }
 }

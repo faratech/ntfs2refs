@@ -286,52 +286,44 @@ impl ExternalSort {
     pub fn push(&mut self, key: [u8; 16], value: &impl Serialize) -> Result<()> {
         ensure!(!self.poisoned, "source sort is poisoned");
         self.poisoned = true;
-        let mut count = Count(0);
-        serde_json::to_writer(&mut count, value)?;
+        let limit = self.scratch.budget().record_bytes;
+        let mut json = Vec::new();
+        serde_json::to_writer(
+            &mut Exact {
+                bytes: &mut json,
+                remaining: limit,
+            },
+            value,
+        )?;
+        json.shrink_to_fit();
+        let len = json.len() as u64;
         ensure!(
-            count.0 > 0 && count.0 <= self.scratch.budget().record_bytes,
+            len > 0 && len <= limit,
             "source sort row exceeds admitted working record bytes"
         );
         if self.batch.len() == self.batch_capacity
             || self
                 .batch_payload
-                .checked_add(count.0)
+                .checked_add(len)
                 .is_none_or(|n| n > self.batch_payload_limit)
         {
             self.spill()?;
         }
-        let singleton = count.0 > self.batch_payload_limit;
-        if !singleton && !self.admit(count.0, self.batch.is_empty())? {
+        let singleton = len > self.batch_payload_limit;
+        if !singleton && !self.admit(len, self.batch.is_empty())? {
             // No room to grow: what the batch holds goes to a run, and the
             // row starts the next batch in the memory already leased.
             self.spill()?;
             ensure!(
-                self.admit(count.0, true)?,
+                self.admit(len, true)?,
                 "source sort row was refused the RAM its empty batch needs"
             );
         }
         let singleton_ram = if singleton {
-            Some(self.scratch.lease_ram(count.0)?)
+            Some(self.scratch.lease_ram(len)?)
         } else {
             None
         };
-        let mut json = Vec::new();
-        json.try_reserve_exact(usize::try_from(count.0)?)?;
-        ensure!(
-            json.capacity() as u64 <= count.0,
-            "source sort row capacity exceeds RAM lease"
-        );
-        serde_json::to_writer(
-            &mut Exact {
-                bytes: &mut json,
-                remaining: count.0,
-            },
-            value,
-        )?;
-        ensure!(
-            json.len() as u64 == count.0 && json.capacity() as u64 <= count.0,
-            "source sort serialization/capacity changed between bounded passes"
-        );
         self.records = self
             .records
             .checked_add(1)
@@ -339,7 +331,7 @@ impl ExternalSort {
         if singleton {
             let path = self.next_path()?;
             let mut writer = SortedRecordWriter::new(&path, self.purpose, &self.scratch)?;
-            writer.push_json(key, &json)?;
+            writer.push_trusted_json(key, &json)?;
             let pin = writer.finish()?;
             drop(json);
             drop(singleton_ram);
@@ -348,7 +340,7 @@ impl ExternalSort {
         } else {
             self.batch_payload = self
                 .batch_payload
-                .checked_add(count.0)
+                .checked_add(len)
                 .context("sort RAM overflow")?;
             self.batch.push(Row { key, json });
         }
@@ -391,7 +383,7 @@ impl ExternalSort {
         let path = self.next_path()?;
         let mut writer = SortedRecordWriter::new(&path, self.purpose, &self.scratch)?;
         for row in &self.batch {
-            writer.push_json(row.key, &row.json)?;
+            writer.push_trusted_json(row.key, &row.json)?;
         }
         let pin = writer.finish()?;
         self.batch.clear();

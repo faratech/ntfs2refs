@@ -1513,8 +1513,19 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                             == closing_stream(self.template, index, object, stream, seen.as_mut())?,
                         "native stream mapping changed during routed verification"
                     );
-                    ensure!(route_decision(self.template,index,object,stream,ranges,seen.as_mut())?==decision,
-                        "native routed prefix readiness changed during verification");
+                    if !n2r_win32::verify_policy::verifies_once() {
+                        ensure!(
+                            route_decision(
+                                self.template,
+                                index,
+                                object,
+                                stream,
+                                ranges,
+                                seen.as_mut()
+                            )? == decision,
+                            "native routed prefix readiness changed during verification"
+                        );
+                    }
                     let _frame_ram = frame_ram(self.bytes, stream.name_utf16.len())?;
                     frame(
                         &mut receipt_hash,

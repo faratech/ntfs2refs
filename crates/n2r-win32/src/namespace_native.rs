@@ -198,19 +198,26 @@ fn observe_object(
             out.identity_before = Some(info(&file, 18, 24));
             let standard = info(&file, 1, 24);
             if standard.native_error.is_none() && standard.bytes[21] == 1 {
-                out.before = Some(if paged {
+                let first = if paged {
+                    pass_with_budget(&file, &mut remaining, true)
+                } else {
+                    pass(&file, &mut remaining)
+                };
+                out.after = Some(if crate::verify_policy::checks_once() {
+                    first.clone()
+                } else if paged {
                     pass_with_budget(&file, &mut remaining, true)
                 } else {
                     pass(&file, &mut remaining)
                 });
-                out.after = Some(if paged {
-                    pass_with_budget(&file, &mut remaining, true)
-                } else {
-                    pass(&file, &mut remaining)
-                });
+                out.before = Some(first);
             }
             out.standard = Some(standard);
-            out.identity_after = Some(info(&file, 18, 24));
+            out.identity_after = if crate::verify_policy::checks_once() {
+                out.identity_before.clone()
+            } else {
+                Some(info(&file, 18, 24))
+            };
         }
     }
     (out, row_budget - remaining)

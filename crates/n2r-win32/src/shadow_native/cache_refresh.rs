@@ -1151,13 +1151,13 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             change_payer,
             &restoring,
             |((_, _, item), _)| Some(report_memory::security_query_peak(item.security.len())),
-            |((_, index, item), found)| -> io::Result<(ProtectionRestore, io::Result<Snapshot>)> {
+            |((_, index, item), found)| -> io::Result<(ProtectionRestore, io::Result<Option<Snapshot>>)> {
                 let handle = held(handles, *index)?;
                 let protection = restore_acl_protection_observed(handle, item, row_limit, found)?;
                 Ok((
                     protection,
                     super::backup_security_write_with_limit(handle, item.security, row_limit)
-                        .map(|_| security_snapshot_with_limit(handle, row_limit)),
+                        .map(|_| read_back.then(|| security_snapshot_with_limit(handle, row_limit))),
                 ))
             },
         );
@@ -1166,15 +1166,16 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             let checked = restored.and_then(|(protection, restored_view)| {
                 dacl_protection_updates += usize::from(protection.dacl);
                 sacl_protection_updates += usize::from(protection.sacl);
-                let restored_view = restored_view?;
-                if !security_matches(item, &restored_view, &same_security)? {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "owned source security views differ after restoration: {}",
-                            security_difference(item, &restored_view)
-                        ),
-                    ));
+                if let Some(restored_view) = restored_view? {
+                    if !security_matches(item, &restored_view, &same_security)? {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "owned source security views differ after restoration: {}",
+                                security_difference(item, &restored_view)
+                            ),
+                        ));
+                    }
                 }
                 Ok(())
             });

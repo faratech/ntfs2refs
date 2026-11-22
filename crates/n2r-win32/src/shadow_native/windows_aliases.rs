@@ -1162,8 +1162,10 @@ impl StagedWindowsAliases {
                     named_streams: Vec::new(),
                     sparse: None,
                 };
-                super::create(&pending.path, &initial, 0, None)?;
-                Some(super::open(&pending.path, entry.directory, true)?)
+                match super::create_returning_file(&pending.path, &initial, 0, None)? {
+                    Some(file) => Some(file),
+                    None => Some(super::open(&pending.path, entry.directory, true)?),
+                }
             };
             let file = created
                 .as_ref()

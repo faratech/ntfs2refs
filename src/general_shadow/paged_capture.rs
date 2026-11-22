@@ -752,8 +752,8 @@ fn capture_selected_inner(
                     continue;
                 }
                 let destination = at + local as u64;
-                let new_zero = new.iter().all(|b| *b == 0);
-                let was_zero = old.iter().all(|b| *b == 0);
+                let new_zero = is_all_zero(new);
+                let was_zero = is_all_zero(old);
                 let ownership = allocation.granule(destination)?;
                 let free = budget.selected_capacity_policy.allows_source_free()
                     && ownership.is_source_free;
@@ -1065,4 +1065,16 @@ fn capture_selected_inner(
         summary,
         scope_identity: scope.map(|scope| scope.capture_identity()),
     })
+}
+
+#[inline]
+fn is_all_zero(bytes: &[u8]) -> bool {
+    let mut chunks = bytes.chunks_exact(16);
+    for chunk in chunks.by_ref() {
+        let word = u128::from_ne_bytes(chunk.try_into().unwrap());
+        if word != 0 {
+            return false;
+        }
+    }
+    chunks.remainder().iter().all(|&b| b == 0)
 }

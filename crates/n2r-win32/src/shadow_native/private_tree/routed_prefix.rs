@@ -234,25 +234,27 @@ fn capture(
     {
         return Err(bad("routed prefix integrity must remain disabled"));
     }
-    let after = snapshot(file);
-    let after_sd = security(file)?;
-    let after_mapping = crate::stream_native::retrieval_capture_resource(file, row)?;
-    let after_storage =
-        initialized_regions::capture_initialized(file, prefix, 2, row).map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!("routed prefix second initialized-region observation {path:?}: {e}"),
-            )
-        })?;
-    if before != after
-        || sd != after_sd
-        || mapping.canonical != after_mapping.canonical
-        || !storage.same_transcript(&after_storage)
-        || !crate::file_storage::held_at_guid_path(file, path)?
-    {
-        return Err(bad(
-            "private routed prefix metadata/security/mapping/validity changed during observation",
-        ));
+    if !crate::verify_policy::verifies_once() {
+        let after = snapshot(file);
+        let after_sd = security(file)?;
+        let after_mapping = crate::stream_native::retrieval_capture_resource(file, row)?;
+        let after_storage = initialized_regions::capture_initialized(file, prefix, 2, row)
+            .map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!("routed prefix second initialized-region observation {path:?}: {e}"),
+                )
+            })?;
+        if before != after
+            || sd != after_sd
+            || mapping.canonical != after_mapping.canonical
+            || !storage.same_transcript(&after_storage)
+            || !crate::file_storage::held_at_guid_path(file, path)?
+        {
+            return Err(bad(
+                "private routed prefix metadata/security/mapping/validity changed during observation",
+            ));
+        }
     }
     // Noncached validity is normalized after exact before/after query checks.
     // Cached-valid bits/row segmentation and mutable tail times do not enter

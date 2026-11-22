@@ -3240,12 +3240,12 @@ fn descriptor_checked(bytes: &[u8], maximum: Option<u64>) -> io::Result<Vec<u64>
     }
     Ok(aligned)
 }
-fn create(
+fn create_returning_file(
     path: &str,
     i: &Input<'_>,
     index: usize,
     payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
-) -> io::Result<()> {
+) -> io::Result<Option<File>> {
     let mut sd = descriptor(i.security)?;
     let sa = SECURITY_ATTRIBUTES {
         nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -3258,7 +3258,8 @@ fn create(
         check(unsafe { CreateDirectoryW(name.as_ptr(), &sa) })?;
         // Before anything is made inside it: a directory made in a marked
         // one takes the mark from it.
-        return settle_new_directory_case(path, i);
+        settle_new_directory_case(path, i)?;
+        return Ok(None);
     }
     let h = unsafe {
         CreateFileW(
@@ -3284,6 +3285,15 @@ fn create(
         f.write_all(i.payload)?;
     }
     crate::verify_policy::flush_working_file(&f)?;
+    Ok(Some(f))
+}
+fn create(
+    path: &str,
+    i: &Input<'_>,
+    index: usize,
+    payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
+) -> io::Result<()> {
+    let _ = create_returning_file(path, i, index, payload_writer)?;
     Ok(())
 }
 fn basic(file: &File, i: &Input<'_>) -> io::Result<()> {
@@ -4196,7 +4206,10 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
                 return Err(invalid("paged residual expected EOF absent"));
             }
             let sha = hex::encode(Sha256::digest(&buffer));
-            if sha != expected.sha256 || repeat_snapshot(&file, after_stream) != *after_stream {
+            if sha != expected.sha256
+                || (!crate::verify_policy::verifies_once()
+                    && repeat_snapshot(&file, after_stream) != *after_stream)
+            {
                 return Err(invalid("paged residual content/metadata differs"));
             }
             Ok((id, sha))
@@ -6226,10 +6239,15 @@ fn run_role_content_domain_accounted(
                     vec![],
                 )
             };
-        let after = capture_metadata(&h, i);
-        if before != after {
-            return Err(invalid("shadow metadata changed during observation"));
-        }
+        let after = if readonly_object_access && crate::verify_policy::verifies_once() {
+            before.clone()
+        } else {
+            let after = capture_metadata(&h, i);
+            if before != after {
+                return Err(invalid("shadow metadata changed during observation"));
+            }
+            after
+        };
         let streams = if i.directory {
             vec![]
         } else {

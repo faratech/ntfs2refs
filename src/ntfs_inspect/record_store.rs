@@ -197,6 +197,15 @@ impl SortedRecordWriter {
     /// Preserve an already encoded spill/merge row exactly. Validation does
     /// not allocate a serde Value tree; partial writes poison this owner.
     pub fn push_json(&mut self, key: [u8; 16], payload: &[u8]) -> Result<()> {
+        let mut parser = serde_json::Deserializer::from_slice(payload);
+        let _ = serde::de::IgnoredAny::deserialize(&mut parser)?;
+        parser.end()?;
+        self.push_trusted_json(key, payload)
+    }
+
+    /// Preserve an in-process JSON row already produced by `serde_json::to_writer`
+    /// without re-parsing it through `IgnoredAny`.
+    pub(crate) fn push_trusted_json(&mut self, key: [u8; 16], payload: &[u8]) -> Result<()> {
         ensure!(!self.poisoned, "record writer is poisoned");
         self.poisoned = true;
         ensure!(
@@ -205,9 +214,6 @@ impl SortedRecordWriter {
                 && payload.len() as u64 <= self.maximum_record_bytes,
             "encoded record key/length exceeds complete resource domain"
         );
-        let mut parser = serde_json::Deserializer::from_slice(payload);
-        let _ = serde::de::IgnoredAny::deserialize(&mut parser)?;
-        parser.end()?;
         let length = payload.len() as u64;
         let end = self
             .bytes

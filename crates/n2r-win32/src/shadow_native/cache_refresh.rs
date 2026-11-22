@@ -31,6 +31,16 @@ fn held(handles: &BTreeMap<usize, File>, index: usize) -> io::Result<&File> {
         .ok_or_else(|| io::Error::other(format!("no handle is held for object {index}")))
 }
 
+/// Whether owned metadata completion snapshots each file's mapping before it
+/// restores metadata and reads everything back at its end: a recovery, and a
+/// run that does not verify each thing once (`--verify thorough`,
+/// `--diagnose`, `--recheck-everything`). Such a run flushes the shadow
+/// volume before the snapshot, so that it and the read-back both see the
+/// mapping the supplied payloads settle on.
+fn reads_metadata_back(recovering: bool, verifies_once: bool) -> bool {
+    recovering || !verifies_once
+}
+
 /// The file identity recorded for an object when its handle was first read.
 fn identity_of(identities: &BTreeMap<usize, Vec<u8>>, index: usize) -> io::Result<&Vec<u8>> {
     identities.get(&index).ok_or_else(|| {
@@ -680,6 +690,28 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             .with_pass(pass),
         )
     };
+    // Under "verify once" the final read-back pass is skipped on a non-recovering
+    // run, so Pass 0 does not need to query FSCTL_GET_RETRIEVAL_POINTERS or hash
+    // retrieval maps solely for `mappings`.
+    let read_back = reads_metadata_back(recovering, crate::verify_policy::verifies_once());
+    if read_back {
+        // The mapping of every file is taken below and held, at the final
+        // read-back, to the mapping it has then: after the volume flush that
+        // ends metadata restoration. The payload supply writes the shadow's
+        // files through the cache (`verify_policy::shadow_file_flags`, no
+        // write-through under `check_once`), and ReFS gives a written range
+        // that has no cluster yet (a file shorter than a cluster and too long
+        // to be kept resident, about 2 KiB on 4 KiB clusters) its cluster only
+        // when the range is written out. Without this flush the snapshot saw
+        // such a file before its cluster was allocated and the read-back
+        // after: every one of them failed with "payload mapping changed"
+        // (lab, --verify thorough and --diagnose). The volume is flushed
+        // first, as a run with `--recheck-everything` (write-through, every
+        // file flushed) has it, so both sides see the settled mapping.
+        crate::perf::step("metadata: flush supplied payloads");
+        input.before_mutation(0)?;
+        crate::perf::flush(crate::perf::Point::VolumeFlush, volume)?;
+    }
     crate::perf::step("metadata: check objects and names");
     // What is asked of an object's handle: queries only, which one thread
     // made for one object after another. The objects of a batch are asked on
@@ -694,10 +726,6 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     // changed, on a shadow that is discarded. A recovery takes over what an
     // interrupted run left and changes one object at a time, as before.
     let change_payer = if recovering { None } else { enumeration_payer };
-    // Under "verify once" the final read-back pass is skipped on a non-recovering
-    // run, so Pass 0 does not need to query FSCTL_GET_RETRIEVAL_POINTERS or hash
-    // retrieval maps solely for `mappings`.
-    let read_back = recovering || !crate::verify_policy::verifies_once();
     let handle_shape = |(index, item): &(usize, Input<'_>)| {
         let handle = handles
             .get(index)
@@ -2184,6 +2212,17 @@ mod tests {
         // SAFETY: `sd` was allocated by the conversion and is not used again.
         unsafe { LocalFree(sd) };
         bytes
+    }
+
+    /// A thorough run, a diagnosis and a recovery snapshot the mappings and
+    /// so flush the supplied payloads first; a run that verifies once takes
+    /// no snapshot and is left as it was.
+    #[test]
+    fn the_mapping_snapshot_is_taken_where_the_metadata_is_read_back() {
+        assert!(reads_metadata_back(false, false));
+        assert!(reads_metadata_back(true, false));
+        assert!(reads_metadata_back(true, true));
+        assert!(!reads_metadata_back(false, true));
     }
 
     #[test]

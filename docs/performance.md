@@ -228,6 +228,24 @@ reads (≤64 KiB gap, ≤1 MiB span) in routed payload supply:
 | 1-in-10 Windows fixture (`perf-ultra-fixture10`, VM with 24 GB) | 127.7 s | 120.6 s | −5.6% (−47.6% vs `g3a-fixture10`), identical listing |
 | Lived-in data volume, 23,137 objects (`perf-ultra-lived-in`, `-Check -Acceptance`) | 56.2 s | 49.2 s | `check and run: agree`, all acceptance checks passed, identical listing |
 
+A fifth round (`perf/final-waves`, Waves 22, 25a, 25b) parallelized per-row
+metadata, security-view, stream-mapping and directory-case comparison in
+`compare raw and Windows views` in spare-RAM batches of 256 objects
+(`source-preparation` 97.3 → 92.6 s; `compare raw and Windows views` 17.9 →
+16.6 s), skipped redundant `BackupRead` and `GetKernelObjectSecurity` calls
+during the closing shadow layout walk under `--verify fast` (keeping full
+security verification on the converted volume and under `--verify thorough`;
+`walk shadow (closing)` 29.8 → 27.8 s, `protected-target-capture` 88.9 →
+85.6 s), and parallelized `Object` JSON encoding and case-folded `NameRow`
+generation in `derive source projection` (`expected-preparation` 22.1 →
+21.3 s):
+
+| Run | Previous (`perf-ultra`) | After (`perf-final`) | Change |
+|---|---|---|---|
+| The full Windows volume, converted and started from ReFS (`perf-final-clean-full`, VM with 24 GB) | 547 s (9.11 min) | 554 s (9.24 min; −11.8 s across the 4 targeted stages, +15 s ReFS `restore security` jitter) | `BOOTED-ON-REFS`, identical listing |
+| 1-in-10 Windows fixture (`perf-final-clean-f10`, VM with 24 GB) | 120.6 s | 120.0 s | identical listing |
+| Lived-in data volume, 23,137 objects (`perf-final-lived-in`, `-Check -Acceptance`) | 49.2 s | 47.1 s | −4.3%; `check and run: agree`, all acceptance checks passed, identical listing |
+
 ## A partition on the Windows disk, through a restart
 
 A 6 GiB partition of 505 objects beside C: on Windows Server 2025, working

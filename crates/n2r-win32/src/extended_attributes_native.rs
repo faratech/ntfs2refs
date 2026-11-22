@@ -158,11 +158,11 @@ fn capture_into(file: &File, storage: &mut [u64]) -> Result<Set, Error> {
     // u64 storage supplies alignment as well as a strict fixed response bound.
     let mut complete = false;
     for call in 0..=extended_attributes::MAX_ENTRIES {
-        storage.fill(0);
         let mut status_block = IO_STATUS_BLOCK::default();
         status_block.Anonymous.Status = QUERY_STATUS_SENTINEL;
         // SAFETY: synchronous handle checked above; buffers are live, aligned,
-        // initialized and bounded. No filter/index requests partial named data.
+        // initialized (zeroed on allocation) and bounded; the parser only reads
+        // `status_block.Information` bytes written by the kernel on success.
         let status = unsafe {
             NtQueryEaFile(
                 file.as_raw_handle(),

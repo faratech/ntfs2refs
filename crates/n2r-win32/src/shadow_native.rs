@@ -3281,6 +3281,18 @@ fn create_returning_file(
     index: usize,
     payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
 ) -> io::Result<Option<File>> {
+    create_returning_file_inner(path, i, index, payload_writer, false)
+}
+fn create_alias_returning_file(path: &str, i: &Input<'_>) -> io::Result<Option<File>> {
+    create_returning_file_inner(path, i, 0, None, crate::verify_policy::verifies_once())
+}
+fn create_returning_file_inner(
+    path: &str,
+    i: &Input<'_>,
+    index: usize,
+    payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
+    skip_integrity: bool,
+) -> io::Result<Option<File>> {
     let mut sd = descriptor(i.security)?;
     let sa = SECURITY_ATTRIBUTES {
         nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -3313,7 +3325,9 @@ fn create_returning_file(
     // SAFETY: unique handle ownership is transferred to File.
     let mut f = unsafe { File::from_raw_handle(h) };
     suppress_access(&f)?;
-    ctl(&f, 0x9c280, &[0; 8], 0)?;
+    if !skip_integrity {
+        ctl(&f, 0x9c280, &[0; 8], 0)?;
+    }
     if let Some(writer) = payload_writer {
         writer(index, &mut f)?;
     } else {
@@ -3332,6 +3346,12 @@ fn create(
     Ok(())
 }
 fn basic(file: &File, i: &Input<'_>) -> io::Result<()> {
+    basic_with_reparse_check(file, i, true)
+}
+fn basic_without_reparse_check(file: &File, i: &Input<'_>) -> io::Result<()> {
+    basic_with_reparse_check(file, i, false)
+}
+fn basic_with_reparse_check(file: &File, i: &Input<'_>, check_reparse: bool) -> io::Result<()> {
     let mut b = [0u64; 5];
     b[..4].copy_from_slice(&i.times);
     b[4] = i.attributes as u64;
@@ -3344,7 +3364,7 @@ fn basic(file: &File, i: &Input<'_>) -> io::Result<()> {
         b[4] &= !0x200;
     }
     if let Some(point) = i.reparse {
-        if crate::reparse_native::capture(file)?.as_ref() != Some(point) {
+        if check_reparse && crate::reparse_native::capture(file)?.as_ref() != Some(point) {
             return Err(invalid("reparse data differs before basic metadata"));
         }
         b[4] &= !0x400;
@@ -3362,7 +3382,7 @@ fn basic(file: &File, i: &Input<'_>) -> io::Result<()> {
             return Err(invalid("basic metadata changed managed sparse state"));
         }
     }
-    if let Some(point) = i.reparse {
+    if check_reparse && let Some(point) = i.reparse {
         if crate::reparse_native::capture(file)?.as_ref() != Some(point) {
             return Err(invalid("basic metadata changed reparse data"));
         }
@@ -6526,19 +6546,50 @@ fn run_role_content_domain_accounted(
             initialized_region_bytes,
         )?;
         let mut residual_results = Vec::with_capacity(residuals.len());
+        // Read `expected.length + 1` bytes into a thread-local scratch buffer
+        // in one `ReadFile` call: getting exactly `expected.length` bytes
+        // simultaneously proves EOF without a second `ReadFile` syscall or
+        // per-file heap allocation.
+        let read_residual_sha =
+            |file: &mut File, offset: u64, length: usize| -> io::Result<String> {
+                thread_local! {
+                    static RESIDUAL_SCRATCH: std::cell::RefCell<Vec<u8>> =
+                        const { std::cell::RefCell::new(Vec::new()) };
+                }
+                file.seek(SeekFrom::Start(offset))?;
+                RESIDUAL_SCRATCH.with(|cell| {
+                    let mut scratch = cell.borrow_mut();
+                    let want = length + 1;
+                    if scratch.len() < want {
+                        scratch.resize(want, 0);
+                    }
+                    let mut got = 0usize;
+                    while got < want {
+                        let n = file.read(&mut scratch[got..want])?;
+                        if n == 0 {
+                            break;
+                        }
+                        got += n;
+                    }
+                    if got < length {
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "paged residual truncated before expected length",
+                        ));
+                    }
+                    if got > length {
+                        return Err(invalid("paged residual expected EOF absent"));
+                    }
+                    Ok(hex::encode(Sha256::digest(&scratch[..length])))
+                })
+            };
         for expected in residuals {
             if expected.stream_name_utf16.is_empty() {
                 let id: [u8; 16] = query_bytes(&before, 18, 24)?[8..24]
                     .try_into()
                     .map_err(|_| invalid("paged residual file identity length differs"))?;
-                h.seek(SeekFrom::Start(expected.logical_offset))?;
-                let mut buffer = vec![0u8; expected.length as usize];
-                h.read_exact(&mut buffer)?;
-                let mut eof_probe = [0u8; 1];
-                if h.read(&mut eof_probe)? != 0 {
-                    return Err(invalid("paged residual expected EOF absent"));
-                }
-                let sha = hex::encode(Sha256::digest(&buffer));
+                let sha =
+                    read_residual_sha(&mut h, expected.logical_offset, expected.length as usize)?;
                 if sha != expected.sha256 {
                     return Err(invalid("paged residual content/metadata differs"));
                 }
@@ -6558,14 +6609,11 @@ fn run_role_content_domain_accounted(
                         "paged residual identity/metadata changed before read",
                     ));
                 }
-                file.seek(SeekFrom::Start(expected.logical_offset))?;
-                let mut buffer = vec![0u8; expected.length as usize];
-                file.read_exact(&mut buffer)?;
-                let mut eof_probe = [0u8; 1];
-                if file.read(&mut eof_probe)? != 0 {
-                    return Err(invalid("paged residual expected EOF absent"));
-                }
-                let sha = hex::encode(Sha256::digest(&buffer));
+                let sha = read_residual_sha(
+                    &mut file,
+                    expected.logical_offset,
+                    expected.length as usize,
+                )?;
                 if sha != expected.sha256 {
                     return Err(invalid("paged residual content/metadata differs"));
                 }

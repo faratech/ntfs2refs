@@ -1079,11 +1079,10 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
             // ends before it, and it is the first of the next.
             failing_object.set(first);
             let held = if ahead.is_some() {
-                let (mut objects, mut streams) = (0usize, 0usize);
-                expected.objects_leased_at_once(first, |object| {
+                let mut objects = 0usize;
+                expected.objects_leased_at_once(first, |_object| {
                     objects += 1;
-                    streams += object.data_streams().count();
-                    objects < TAIL_BATCH && streams < TAIL_BATCH
+                    objects < TAIL_BATCH
                 })?
             } else {
                 vec![expected.object_leased(first)?]
@@ -1157,14 +1156,15 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                     cursor += 1;
                     while cursor < asks.len() {
                         let (next_place, next_count, _, _) = asks[cursor];
-                        if next_place < span_end || next_place - span_end > TAIL_COALESCE_GAP {
+                        if next_place > span_end.saturating_add(TAIL_COALESCE_GAP) {
                             break;
                         }
                         let next_end = next_place + next_count as u64;
-                        if next_end - span_start > TAIL_COALESCE_MAX {
+                        let merged_end = span_end.max(next_end);
+                        if merged_end - span_start > TAIL_COALESCE_MAX {
                             break;
                         }
-                        span_end = next_end;
+                        span_end = merged_end;
                         cursor += 1;
                     }
                     let span_len = (span_end - span_start) as usize;

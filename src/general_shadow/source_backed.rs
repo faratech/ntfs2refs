@@ -1319,7 +1319,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
 
 /// The most tails one batch of a pass that reads tails ahead has asked
 /// for, and the most objects it holds.
-pub(crate) const TAIL_BATCH: usize = 1024;
+pub(crate) const TAIL_BATCH: usize = 8192;
 /// The most bytes of tails one batch has read ahead and holds.
 pub(crate) const TAIL_BATCH_BYTES: u64 = 16 * 1024 * 1024;
 /// What a batch's lists hold for each tail read ahead: its ticket, its
@@ -1512,9 +1512,9 @@ impl<R: Read + Seek> Drop for AheadReader<'_, R> {
 /// 1 MiB aligned page size for caching small MFT record reads on a frozen
 /// dedicated source under `checks_once()`.
 const MFT_PAGE_BYTES: u64 = 1024 * 1024;
-/// Maximum cached 1 MiB pages (64 MiB cap; evicted LRU on miss or wholly via
+/// Maximum cached 1 MiB pages (128 MiB cap; evicted LRU on miss or wholly via
 /// `n2r_win32::evict::Evictable` when the ledger needs memory).
-const MFT_CACHE_MAX_PAGES: usize = 64;
+const MFT_CACHE_MAX_PAGES: usize = 128;
 /// Only cache small metadata/MFT reads (1 KiB–4 KiB records and small headers).
 const MFT_CACHE_MAX_READ: usize = 16 * 1024;
 

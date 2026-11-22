@@ -629,6 +629,15 @@ impl<'source, 'observation, 'scope>
         output: &mut [u8],
         direct: bool,
     ) -> Result<(usize, Option<crate::ntfs_inspect::DirectReadReceipt>)> {
+        self.read_observed_with_original(output, direct, None)
+    }
+
+    fn read_observed_with_original(
+        &mut self,
+        output: &mut [u8],
+        direct: bool,
+        original_at_position: Option<&[u8]>,
+    ) -> Result<(usize, Option<crate::ntfs_inspect::DirectReadReceipt>)> {
         ensure!(!self.poisoned, "poisoned paged candidate cannot read");
         if output.is_empty() || self.position == self.length {
             return Ok((0, None));
@@ -678,23 +687,45 @@ impl<'source, 'observation, 'scope>
                 .logical_offset
                 .checked_add(self.position - route.target_physical_offset)
                 .context("candidate logical offset overflow")?;
-            let receipt = if direct {
-                Some(self.bytes.read_with_direct_receipts(
-                    &identity,
-                    logical,
-                    &mut output[..count],
-                )?)
+            // Under check-once, when the caller has just read the frozen source
+            // at this exact offset into `original_at_position` and the routed
+            // stream lies in place at `self.position`, reuse those bytes instead
+            // of reading the same source offset a second time.
+            let reused_in_place = if let Some(orig) = original_at_position {
+                if self
+                    .bytes
+                    .source_physical_for(&identity, logical, count as u64)?
+                    == Some(self.position)
+                {
+                    output[..count].copy_from_slice(&orig[..count]);
+                    true
+                } else {
+                    false
+                }
             } else {
-                self.bytes
-                    .read_into(&identity, logical, &mut output[..count])?;
-                None
+                false
             };
-            self.counts.source_logical_bytes = self
-                .counts
-                .source_logical_bytes
-                .checked_add(count as u64)
-                .context("candidate source byte count overflow")?;
-            receipt
+            if reused_in_place {
+                None
+            } else {
+                let receipt = if direct {
+                    Some(self.bytes.read_with_direct_receipts(
+                        &identity,
+                        logical,
+                        &mut output[..count],
+                    )?)
+                } else {
+                    self.bytes
+                        .read_into(&identity, logical, &mut output[..count])?;
+                    None
+                };
+                self.counts.source_logical_bytes = self
+                    .counts
+                    .source_logical_bytes
+                    .checked_add(count as u64)
+                    .context("candidate source byte count overflow")?;
+                receipt
+            }
         } else {
             let reused = if let Some(observer) = &mut self.closing_shadow {
                 observer.read_shadow_exact(self.shadow, self.position, &mut output[..count])?
@@ -729,10 +760,26 @@ impl<'source, 'observation, 'scope>
         output: &'buffer mut [u8],
         direct: bool,
     ) -> Result<PagedCandidateChunk<'buffer>> {
+        self.read_capture_chunk_reusing_original(offset, output, direct, None)
+    }
+
+    pub(crate) fn read_capture_chunk_reusing_original<'buffer>(
+        &mut self,
+        offset: u64,
+        output: &'buffer mut [u8],
+        direct: bool,
+        original: Option<&[u8]>,
+    ) -> Result<PagedCandidateChunk<'buffer>> {
         ensure!(
             !self.poisoned && output.len() <= CHUNK,
             "candidate chunk exceeds bounded actual read window"
         );
+        if let Some(orig) = original {
+            ensure!(
+                orig.len() == output.len(),
+                "capture original reuse slice length differs"
+            );
+        }
         // The returned chunk owns its span Vec independently of `self`.
         // Its lease also covers the transient direct receipt and Vec growth
         // before any spans are allocated.
@@ -746,7 +793,9 @@ impl<'source, 'observation, 'scope>
             let mut done = 0;
             let mut spans = CandidateReadSpans::new();
             while done < output.len() {
-                let (count, receipt) = self.read_observed(&mut output[done..], direct)?;
+                let orig_slice = original.map(|o| &o[done..]);
+                let (count, receipt) =
+                    self.read_observed_with_original(&mut output[done..], direct, orig_slice)?;
                 ensure!(
                     count != 0,
                     "candidate capture chunk ended before requested bytes"

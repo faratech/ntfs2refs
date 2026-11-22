@@ -1107,18 +1107,33 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 })
             })
             .collect();
+        // On a freshly created private shadow tree under `verifies_once()`,
+        // every object still holds the constructor's SYSTEM-only DACL, so skip
+        // the redundant `BackupRead` + `security_matches` pre-check and fetch
+        // only the kernel security descriptor needed for protection flags.
+        let fresh_fast_security =
+            !recovering && crate::verify_policy::verifies_once() && row_limit.is_some();
         let found = super::each_at_once(
             change_payer,
             &items,
             |(_, _, item)| Some(report_memory::security_query_peak(item.security.len())),
             |(_, index, _)| -> io::Result<Snapshot> {
                 let handle = held(handles, *index)?;
-                if info(handle, 18, 24)? != *identity_of(&identities, *index)? {
+                if (!fresh_fast_security || !crate::verify_policy::checks_once())
+                    && info(handle, 18, 24)? != *identity_of(&identities, *index)?
+                {
                     return Err(invalid(
                         "owned identity changed before security restoration",
                     ));
                 }
-                Ok(security_snapshot_with_limit(handle, row_limit))
+                if fresh_fast_security {
+                    let max_bytes = usize::try_from(row_limit.unwrap()).unwrap_or(usize::MAX);
+                    Ok(crate::attestation_native::kernel_security_snapshot_paged(
+                        handle, max_bytes,
+                    ))
+                } else {
+                    Ok(security_snapshot_with_limit(handle, row_limit))
+                }
             },
         );
         // An object whose descriptor differs keeps the views just read: its
@@ -1132,7 +1147,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         for (object, found) in items.iter().zip(found) {
             let (slot, _, item) = object;
             let differs = found.and_then(|found| {
-                if security_matches(item, &found, &same_security)? {
+                if !fresh_fast_security && security_matches(item, &found, &same_security)? {
                     return Ok(None);
                 }
                 // One before the protection change, one before the
@@ -1147,9 +1162,10 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 Err(error) => failures[*slot] = Some(error),
             }
         }
-        let restored = super::each_at_once(
+        let restored = super::each_at_once_bounded(
             change_payer,
             &restoring,
+            4,
             |((_, _, item), _)| Some(report_memory::security_query_peak(item.security.len())),
             |((_, index, item), found)| -> io::Result<(ProtectionRestore, io::Result<Option<Snapshot>>)> {
                 let handle = held(handles, *index)?;

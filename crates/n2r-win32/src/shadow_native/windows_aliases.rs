@@ -638,7 +638,17 @@ impl VerifiedWindowsAliases {
         payer: &dyn report_memory::ReportMemoryAccountant,
         same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     ) -> io::Result<ObservedWindowsAliases> {
-        self.observe_readonly_target(input, volume, payer, same, false)
+        self.observe_readonly_target(input, volume, payer, same, false, None)
+    }
+    pub(crate) fn observe_readonly_volume_with_known_canonicals(
+        &self,
+        input: &impl InputDomain,
+        volume: &File,
+        payer: &dyn report_memory::ReportMemoryAccountant,
+        same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        known_canonicals: Option<&dyn Fn(usize) -> io::Result<[u8; 24]>>,
+    ) -> io::Result<ObservedWindowsAliases> {
+        self.observe_readonly_target(input, volume, payer, same, false, known_canonicals)
     }
     pub fn observe_converted_readonly_volume(
         &self,
@@ -647,7 +657,7 @@ impl VerifiedWindowsAliases {
         payer: &dyn report_memory::ReportMemoryAccountant,
         same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     ) -> io::Result<ObservedWindowsAliases> {
-        self.observe_readonly_target(input, volume, payer, same, true)
+        self.observe_readonly_target(input, volume, payer, same, true, None)
     }
     fn observe_readonly_target(
         &self,
@@ -656,6 +666,7 @@ impl VerifiedWindowsAliases {
         payer: &dyn report_memory::ReportMemoryAccountant,
         same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
         converted: bool,
+        known_canonicals: Option<&dyn Fn(usize) -> io::Result<[u8; 24]>>,
     ) -> io::Result<ObservedWindowsAliases> {
         self.require_input(input)?;
         let binding = if converted {
@@ -720,16 +731,22 @@ impl VerifiedWindowsAliases {
             let probes: Vec<_> = entries
                 .iter()
                 .zip(&canonicals)
-                .map(|(entry, canonical)| AliasProbe {
-                    components: &entry.components,
-                    canonical_components: &entry.canonical_components,
-                    directory: entry.directory,
-                    attributes: entry.attributes,
-                    point: &entry.point,
-                    canonical,
-                    known_canonical_id: None,
+                .map(|(entry, canonical)| -> io::Result<AliasProbe<'_>> {
+                    let known_canonical_id = match known_canonicals {
+                        Some(lookup) => Some(lookup(entry.canonical_object_index)?),
+                        None => None,
+                    };
+                    Ok(AliasProbe {
+                        components: &entry.components,
+                        canonical_components: &entry.canonical_components,
+                        directory: entry.directory,
+                        attributes: entry.attributes,
+                        point: &entry.point,
+                        canonical,
+                        known_canonical_id,
+                    })
                 })
-                .collect();
+                .collect::<io::Result<Vec<_>>>()?;
             let natives = probe_aliases(&root, &probes, self.maximum_row_bytes, payer, DIFFERS)?;
             for ((entry, probe), native) in entries.iter().zip(&probes).zip(natives) {
                 if native.observed.parent_file_id_info != entry.parent_file_id_info

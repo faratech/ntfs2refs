@@ -291,6 +291,16 @@ fn each_at_once<T: Sync, U: Send>(
     workspace: impl Fn(&T) -> Option<u64>,
     work: impl Fn(&T) -> U + Sync,
 ) -> Vec<U> {
+    each_at_once_bounded(payer, items, usize::MAX, workspace, work)
+}
+
+fn each_at_once_bounded<T: Sync, U: Send>(
+    payer: Option<&dyn report_memory::ReportMemoryAccountant>,
+    items: &[T],
+    max_threads: usize,
+    workspace: impl Fn(&T) -> Option<u64>,
+    work: impl Fn(&T) -> U + Sync,
+) -> Vec<U> {
     let mut paid = Vec::new();
     let mut helpers = Vec::new();
     if let Some(payer) = payer {
@@ -302,6 +312,7 @@ fn each_at_once<T: Sync, U: Send>(
         }
         let wanted = std::thread::available_parallelism()
             .map_or(1, |cores| cores.get())
+            .min(max_threads)
             .min(paid.len().div_ceil(crate::ordered_observation::RUN));
         while wanted >= 2 && helpers.len() < wanted {
             match payer.reserve_spare(HELPER_THREAD_BYTES) {
@@ -490,9 +501,14 @@ fn change_objects<D: InputDomain, A: Send>(
                 Err(error) => outcomes[slot] = Some(Err(error)),
             }
         }
-        let changed = each_at_once(
+        // ReFS serializes metadata B-tree mutations internally; capping
+        // concurrent metadata-writing helpers to 4 avoids kernel lock
+        // contention across 16 cores while keeping throughput high.
+        const METADATA_WRITE_THREADS: usize = 4;
+        let changed = each_at_once_bounded(
             Some(payer),
             &items,
+            METADATA_WRITE_THREADS,
             |_| Some(workspace),
             |(_, index, view)| change(*index, view, &|| Ok(())),
         );
@@ -3495,8 +3511,16 @@ pub(crate) fn observe_general_layout_readonly_domain_with_windows_aliases(
         Some(aliases),
         None,
     )?;
-    let observed =
-        aliases.observe_readonly_volume(input, protected.volume(), memory, &same_security)?;
+    let lookup = |index: usize| report.native.objects.identity(index);
+    let known = crate::verify_policy::verifies_once()
+        .then_some(&lookup as &dyn Fn(usize) -> io::Result<[u8; 24]>);
+    let observed = aliases.observe_readonly_volume_with_known_canonicals(
+        input,
+        protected.volume(),
+        memory,
+        &same_security,
+        known,
+    )?;
     Ok((report, observed))
 }
 
@@ -4039,8 +4063,16 @@ pub(crate) fn observe_general_layout_residuals_paged_readonly_domain_with_memory
             Some(memory),
             Some(aliases),
         )?;
-    let observed =
-        aliases.observe_readonly_volume(input, protected.volume(), memory, &same_security)?;
+    let lookup = |index: usize| report.native.objects.identity(index);
+    let known = crate::verify_policy::verifies_once()
+        .then_some(&lookup as &dyn Fn(usize) -> io::Result<[u8; 24]>);
+    let observed = aliases.observe_readonly_volume_with_known_canonicals(
+        input,
+        protected.volume(),
+        memory,
+        &same_security,
+        known,
+    )?;
     Ok((report, observed))
 }
 

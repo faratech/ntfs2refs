@@ -211,6 +211,23 @@ offloaded `SemanticHash`'s 1.5 GB SHA-256 onto a background worker thread
 | The full Windows volume, converted and started from ReFS (`perf-deep-full-system`, VM with 24 GB) | 615 s (10.25 min) | 611 s (10.19 min) | −54.3% (2.19×) vs `r10-base-full`; `BOOTED-ON-REFS`, identical listing |
 | 1-in-10 Windows fixture (`perf-deep-fixture10`, VM with 24 GB) | 133.6 s | 127.7 s | −4.4%, identical listing |
 
+A fourth round (`perf/ultra-waves`, Waves 17–20) coalesced nearby prefetch
+chunks (≤64 KiB gap, ≤4 MiB span) inside `OriginalPrefetch` (`compare shadow
+with source` 58.2 → 49.9 s; lane reads 102,048 → 40,020), applied fast
+kernel-only security and the 4-thread ReFS metadata-write cap to short-name
+link creation and restoration (`metadata: restore the short-name links'
+metadata` 29.0 → 14.2 s, `restore security` 19.2 → 10.2 s, `restore times and
+attributes` 19.3 → 15.6 s), skipped the redundant shadow-volume alias re-probe
+under `--verify fast` (deferring to `resource-protected-verification` before
+handoff; `walk shadow (closing)` 41.6 → 29.8 s), and coalesced sorted tail
+reads (≤64 KiB gap, ≤1 MiB span) in routed payload supply:
+
+| Run | Previous (`perf-deep`) | After (`perf-ultra`) | Change |
+|---|---|---|---|
+| The full Windows volume, converted and started from ReFS (`perf-ultra-full-system`, VM with 24 GB) | 611 s (10.19 min) | 547 s (9.11 min) | −10.6% vs `perf-deep`, −59.1% (2.45×) vs `r10-base-full`; `BOOTED-ON-REFS`, identical listing |
+| 1-in-10 Windows fixture (`perf-ultra-fixture10`, VM with 24 GB) | 127.7 s | 120.6 s | −5.6% (−47.6% vs `g3a-fixture10`), identical listing |
+| Lived-in data volume, 23,137 objects (`perf-ultra-lived-in`, `-Check -Acceptance`) | 56.2 s | 49.2 s | `check and run: agree`, all acceptance checks passed, identical listing |
+
 ## A partition on the Windows disk, through a restart
 
 A 6 GiB partition of 505 objects beside C: on Windows Server 2025, working

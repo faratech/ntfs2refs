@@ -1691,13 +1691,6 @@ fn validate_domain_resources_now(
     domain: &impl NativeObservationDomain,
     each_row: &mut EachValidatedRow<'_>,
 ) -> io::Result<()> {
-    // A domain that left the check of its rows to this validation makes it
-    // on each row before the caller sees the row, as its opening did.
-    let mut checked = |index: usize, row: &NativeObservationRow<'_>| -> io::Result<()> {
-        domain.check_deferred_row(index, row)?;
-        each_row(index, row)
-    };
-    let each_row: &mut EachValidatedRow<'_> = &mut checked;
     let h = domain.header();
     if domain.is_paged()
         && h.schema_version == 16
@@ -1712,9 +1705,13 @@ fn validate_domain_resources_now(
         return validate_regular_paged_resources(domain, domain.len(), each_row);
     }
     // The irregular forms keep their own validator; the caller's rows are
-    // read for it first, as they were before it.
+    // read for it first, as they were before it. A domain that left the
+    // check of its rows to this validation makes its own check of each row
+    // before the caller sees it, as its opening did.
     for index in 0..domain.len() {
-        each_row(index, &domain.row_view(index)?)?;
+        let row = domain.row_view(index)?;
+        domain.check_deferred_row(index, &row)?;
+        each_row(index, &row)?;
     }
     validate_domain_resources_irregular(domain)
 }
@@ -1873,9 +1870,19 @@ fn validate_regular_paged_resources(
         bitmap_evidence_bytes: 0,
         namespace_evidence_bytes: 0,
     };
+    // A domain that left the check of its rows to this validation (made on
+    // the decoding of the comparison that follows its opening) makes every
+    // check of a row before the caller compares it, as its opening made
+    // them before anything was compared: a malformed row is refused with
+    // the same message. What holds of the domain as a whole (its totals,
+    // its complete identity set) is checked after its last row, as always.
+    let deferred = domain.validation_deferred();
     for index in 0..count {
         let owner = domain.row_view(index)?;
-        each_row(index, &owner)?;
+        domain.check_deferred_row(index, &owner)?;
+        if !deferred {
+            each_row(index, &owner)?;
+        }
         let row = owner.request();
         validate_request_row(&header.request, &row)?;
         let flags = mark_native_identity(&mut identities, row.identity.reference(), 1, count)?;
@@ -2097,6 +2104,14 @@ fn validate_regular_paged_resources(
             (owner.namespace()?.identity.reference(), 8),
         ] {
             mark_native_identity(&mut identities, identity, bit, count)?;
+        }
+        if deferred {
+            // This row's own bounds, refused below for the domain, are
+            // refused before it is compared.
+            if bad_logical || bad_observation || bad_namespace {
+                return Err(invalid());
+            }
+            each_row(index, &owner)?;
         }
     }
     // The header says exactly which content reads the rows skipped.

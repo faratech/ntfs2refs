@@ -84,7 +84,7 @@ fn peak(row: usize, path: usize) -> io::Result<u64> {
             (row as u64)
                 .checked_mul(4)
                 .ok_or_else(|| bad("routed prefix RAM overflow"))?,
-            4 * 1024 * 1024,
+            512 * 1024,
         )?,
         (path as u64)
             .checked_mul(16)

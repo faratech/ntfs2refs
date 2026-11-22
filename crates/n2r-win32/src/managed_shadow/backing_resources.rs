@@ -234,7 +234,7 @@ impl BackingResourceGuard {
         // floor of gigabytes. A few samples a second cannot let that floor be
         // crossed; one before every small write cost more than the writes.
         static PACED: crate::verify_policy::Paced = crate::verify_policy::Paced::new();
-        if !PACED.due(250) {
+        if !PACED.due(2000) {
             return Ok(());
         }
         let observed = self.observe(operation_bytes)?;

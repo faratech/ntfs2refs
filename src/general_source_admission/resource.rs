@@ -61,6 +61,8 @@ struct MetadataPin {
     held: File,
     #[serde(skip)]
     arena_lease: Option<ArtifactLease>,
+    #[serde(skip)]
+    last_full: n2r_win32::verify_policy::LastFull,
 }
 /// An object whose 8.3 short names are not carried over.
 #[derive(Serialize)]
@@ -489,6 +491,7 @@ fn save(
         sha256: hash,
         held,
         arena_lease,
+        last_full: n2r_win32::verify_policy::LastFull::new(),
     });
     Ok(())
 }
@@ -2776,8 +2779,8 @@ impl ResourceSourceContext {
                     && pin.held.metadata()?.file_attributes() & 0x400 == 0,
                 "held source metadata identity changed"
             );
-            // Held open since it was hashed; re-read only when a full check is due.
-            if !n2r_win32::verify_policy::full_unremembered() {
+            // Held open since it was hashed; re-read at most once per gate.
+            if !n2r_win32::verify_policy::full(&pin.last_full) {
                 continue;
             }
             let mut file = pin.held.try_clone()?;

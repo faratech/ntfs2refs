@@ -353,12 +353,7 @@ impl VerifiedWindowsAliases {
         let plan_digest = aliases.semantic_sha256()?;
         let input_digest = super::private_tree::metadata::input_digest_domain(input)?;
         let root = format!("{}\\", pair.source.volume_path()?);
-        let workspace = admission
-            .budget
-            .max_row_bytes
-            .checked_mul(8)
-            .and_then(|n| n.checked_add(4 << 20))
-            .ok_or_else(|| invalid("recovered alias workspace overflow"))?;
+        let workspace = report_memory::alias_peak(admission.budget.max_row_bytes)?;
         let _working = payer.reserve(workspace)?;
         let count = aliases.len();
         let mut bytes = 4096u64;
@@ -652,11 +647,7 @@ impl VerifiedWindowsAliases {
                 ));
             }
         }
-        let work = self
-            .maximum_row_bytes
-            .checked_mul(8)
-            .and_then(|n| n.checked_add(4 << 20))
-            .ok_or_else(|| invalid("alias readonly workspace overflow"))?;
+        let work = report_memory::alias_peak(self.maximum_row_bytes)?;
         let _working = payer.reserve(work)?;
         let mut privileges = Privileges::enable_for(&["SeBackupPrivilege", "SeSecurityPrivilege"])?;
         let mut events = Vec::new();
@@ -1085,11 +1076,8 @@ impl StagedWindowsAliases {
         let root = format!("{}\\", pair.shadow.volume_path()?);
         let plan_digest = aliases.semantic_sha256()?;
         let input_digest = super::private_tree::metadata::input_digest_domain(input)?;
-        let workspace = admission
-            .budget
-            .max_row_bytes
-            .checked_mul(8)
-            .and_then(|n| n.checked_add(crate::windows_alias_native::WORKSPACE_BYTES))
+        let workspace = report_memory::alias_peak(admission.budget.max_row_bytes)?
+            .checked_add(crate::windows_alias_native::WORKSPACE_BYTES)
             .ok_or_else(|| invalid("alias row workspace overflow"))?;
         let working = payer.reserve(workspace)?;
         let mut bytes = 4096u64;
@@ -1657,10 +1645,6 @@ impl StagedWindowsAliases {
                 super::metadata_snapshot_with_limit(file, &expected, Some(maximum_row_bytes))
             }))
         };
-        // A link's snapshot, and the workspace of installing its point.
-        let workspace_of_one = report_memory::alias_peak(maximum_row_bytes)?
-            .checked_add(crate::windows_alias_native::WORKSPACE_BYTES)
-            .ok_or_else(|| invalid("alias restoration workspace overflow"))?;
         let payer = Arc::clone(&self.payer);
         let mut provisional_aliases = 0usize;
         let mut done = 0u64;
@@ -1756,7 +1740,12 @@ impl StagedWindowsAliases {
             let restored: Vec<io::Result<Option<Snapshot>>> = super::each_at_once(
                 Some(&*payer),
                 &links,
-                |_| Some(workspace_of_one),
+                |link| {
+                    Some(
+                        report_memory::security_query_peak(link.canonical.security.len())
+                            .saturating_add(crate::windows_alias_native::WORKSPACE_BYTES),
+                    )
+                },
                 &restore_one,
             );
             for (link, restored) in links.iter().zip(restored) {

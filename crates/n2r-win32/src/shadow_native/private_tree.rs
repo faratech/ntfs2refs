@@ -344,6 +344,7 @@ impl PrivateTree {
     )> {
         let mut result = BTreeMap::new();
         let mut tails = Vec::new();
+        let had_work = !self.sparse_targets.is_empty() || self.carrier_directory.is_some();
         for (key, target) in std::mem::take(&mut self.sparse_targets) {
             self.before_backing_mutation(crate::target_cluster::bytes())?;
             let (file, tail) = target.finish(self.files.remove(&key))?;
@@ -356,8 +357,10 @@ impl PrivateTree {
             self.before_backing_mutation(0)?;
             directory.retire()?;
         }
-        self.before_backing_mutation(0)?;
-        crate::perf::flush(crate::perf::Point::VolumeFlush, &self.volume)?;
+        if had_work || !crate::verify_policy::checks_once() {
+            self.before_backing_mutation(0)?;
+            crate::perf::flush(crate::perf::Point::VolumeFlush, &self.volume)?;
+        }
         Ok((result, tails))
     }
     fn file_by_slot(&self, slot: usize) -> io::Result<&unwritten::PrivatePlaceholder> {
@@ -1375,8 +1378,8 @@ impl PrivateTree {
         // to this process for the whole construction; a change to either is
         // still caught within the interval, and always at the end of a stage.
         static PACED: crate::verify_policy::Paced = crate::verify_policy::Paced::new();
-        const INTERVAL_MS: u64 = 250;
-        if self.partition_source.is_none() && !PACED.due(INTERVAL_MS) {
+        const INTERVAL_MS: u64 = 2000;
+        if !PACED.due(INTERVAL_MS) {
             return Ok(());
         }
         let result = self.require_source_excluded_now();
@@ -2632,8 +2635,10 @@ fn allocate_domain_with_memory(
         super::cache_refresh::at_object(input, "shadow allocation", failing_object.get(), error)
     })?;
     allocation_progress(1, input.len() as u64);
-    input.before_mutation(0)?;
-    crate::perf::flush(crate::perf::Point::VolumeFlush, &volume)?;
+    if !crate::verify_policy::checks_once() {
+        input.before_mutation(0)?;
+        crate::perf::flush(crate::perf::Point::VolumeFlush, &volume)?;
+    }
     let mut stream_slots = BTreeMap::new();
     let mut next = input.len();
     for key in files.keys() {

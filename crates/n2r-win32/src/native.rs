@@ -1187,7 +1187,8 @@ pub(crate) fn general_disk_state(
         // answer (four WMI queries) is refreshed every two seconds rather
         // than on every state query.
         static PACED: crate::verify_policy::Paced = crate::verify_policy::Paced::new();
-        if PACED.due(2000) {
+        static LAST_FULL: crate::verify_policy::LastFull = crate::verify_policy::LastFull::new();
+        if PACED.due_once_per_gate(15_000, &LAST_FULL) {
             let _timed = crate::perf::scope(crate::perf::Point::DetachedRoles);
             offline_windows::require_detached_roles(disk, binding, events)?;
             PACED.passed();

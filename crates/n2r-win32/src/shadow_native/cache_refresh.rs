@@ -679,7 +679,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         let shapes = super::each_at_once(
             enumeration_payer,
             &items,
-            |(_, item)| row_limit.and_then(|limit| report_memory::row_peak(item, limit).ok()),
+            |(_, item)| report_memory::handle_shape_peak(item).ok(),
             handle_shape,
         );
         let mut asked = items.iter().zip(shapes);
@@ -1032,7 +1032,6 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     } else {
         1
     };
-    let snapshot_workspace = row_limit.and_then(|limit| report_memory::alias_peak(limit).ok());
     let mut security_order = ordered
         .iter()
         .filter(|(_, _, flags)| *flags & DIRECTORY != 0)
@@ -1111,7 +1110,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         let found = super::each_at_once(
             change_payer,
             &items,
-            |_| snapshot_workspace,
+            |(_, _, item)| Some(report_memory::security_query_peak(item.security.len())),
             |(_, index, _)| -> io::Result<Snapshot> {
                 let handle = held(handles, *index)?;
                 if info(handle, 18, 24)? != *identity_of(&identities, *index)? {
@@ -1151,7 +1150,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         let restored = super::each_at_once(
             change_payer,
             &restoring,
-            |_| snapshot_workspace,
+            |((_, _, item), _)| Some(report_memory::security_query_peak(item.security.len())),
             |((_, index, item), found)| -> io::Result<(ProtectionRestore, io::Result<Snapshot>)> {
                 let handle = held(handles, *index)?;
                 let protection = restore_acl_protection_observed(handle, item, row_limit, found)?;

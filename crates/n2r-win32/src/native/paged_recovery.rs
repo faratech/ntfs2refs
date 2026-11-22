@@ -1833,17 +1833,26 @@ impl GeneralFrozenPartition {
         let modified = journal.metadata()?.modified()?;
         check_clear_lifecycle(journal)?;
         // The journal's body and the source's OLD bytes are on different
-        // disks and are both gigabytes: hash the one on a second thread while
-        // this one reads and hashes the other.
+        // disks and are both gigabytes: hash the journal body and verify its
+        // descriptor index on a second thread while this one reads and hashes
+        // the source's OLD bytes.
         let (body, old_bytes) = {
             let expected = pins.immutable_sha256;
             let algorithm = pins.digest;
             let length = facts.journal_length - BODY;
             let journal = &mut *journal;
+            let policy_ref = &policy;
             std::thread::scope(|scope| {
-                let body = scope.spawn(move || {
+                let body = scope.spawn(move || -> io::Result<[u8; 32]> {
                     let _sampled = crate::stack_sampler::helper();
-                    crate::bulk_digest::journal_body(algorithm, journal, BODY, length, &expected)
+                    let body = crate::bulk_digest::journal_body(
+                        algorithm, journal, BODY, length, &expected,
+                    )?;
+                    if body != expected {
+                        return Err(invalid("fresh held journal immutable body differs"));
+                    }
+                    verify_index_against_journal(journal, policy_ref, pins)?;
+                    Ok(body)
                 });
                 let old_bytes = self.with_read_ahead(|source| {
                     let actual = selected_digest_reaching(
@@ -1861,11 +1870,7 @@ impl GeneralFrozenPartition {
                 (body.join(), old_bytes)
             })
         };
-        let body = body.map_err(|_| io::Error::other("journal hashing thread panicked"))??;
-        if body != pins.immutable_sha256 {
-            return Err(invalid("fresh held journal immutable body differs"));
-        }
-        verify_index_against_journal(journal, &policy, pins)?;
+        let _body = body.map_err(|_| io::Error::other("journal hashing thread panicked"))??;
         old_bytes?;
         if self.state(events)? != before {
             return Err(invalid(

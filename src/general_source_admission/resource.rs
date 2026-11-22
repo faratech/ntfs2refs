@@ -1259,6 +1259,34 @@ impl ResourceSourceContext {
             } else {
                 None
             };
+            // A run that verifies once reads the source fingerprint the first
+            // time on read lanes of the frozen source, on a thread of its own,
+            // beside the work below that neither reads the source through
+            // them nor needs the digest (the short-name plan, the backup boot
+            // sector, log and label, the selection of objects and the target
+            // security preflight). The read is joined before the volume is
+            // mounted for its observation through Windows and before anything
+            // takes the digest; it is the digest `hash` makes of the same
+            // chunks. Without the spare memory for the lanes and the copy of
+            // the ranges, a lane, or a thread, it is read in place below, as
+            // every other run reads it.
+            let early_fingerprint =
+                if n2r_win32::verify_policy::verifies_once() && reopened_cache.is_none() {
+                    n2r_win32::perf::step("build source fingerprint and start its read");
+                    let fingerprint = PagedSourceFingerprint::for_inspection(
+                        &raw,
+                        length,
+                        policy,
+                        &output.join("fingerprint"),
+                    )?;
+                    fingerprint.validate_inspection_reads(&read_coverage)?;
+                    let reading = fingerprint
+                        .lane_reread(source)?
+                        .and_then(|(lanes, ram)| lanes.start().ok().map(|read| (read, ram)));
+                    Some((fingerprint, reading))
+                } else {
+                    None
+                };
             n2r_win32::perf::step("plan short-name links");
             let mut windows_aliases = if binding.layout_profile
                 == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
@@ -1310,33 +1338,46 @@ impl ResourceSourceContext {
                 &mut metadata,
                 &mut reservations,
             )?;
-            n2r_win32::perf::step("build and read source fingerprint");
-            let fingerprint = if let Some(cache) = reopened_cache.as_mut() {
-                cache
-                    .fingerprint
-                    .take()
-                    .context("cached fingerprint owner already consumed")?
+            let (fingerprint, fingerprint_reading) = if let Some(early) = early_fingerprint {
+                early
             } else {
-                PagedSourceFingerprint::for_inspection(
-                    &raw,
-                    length,
-                    policy,
-                    &output.join("fingerprint"),
-                )?
+                n2r_win32::perf::step("build and read source fingerprint");
+                let fingerprint = if let Some(cache) = reopened_cache.as_mut() {
+                    cache
+                        .fingerprint
+                        .take()
+                        .context("cached fingerprint owner already consumed")?
+                } else {
+                    PagedSourceFingerprint::for_inspection(
+                        &raw,
+                        length,
+                        policy,
+                        &output.join("fingerprint"),
+                    )?
+                };
+                fingerprint.validate_inspection_reads(&read_coverage)?;
+                (fingerprint, None)
             };
-            fingerprint.validate_inspection_reads(&read_coverage)?;
             *phase = "source-fingerprint";
-            let source_sha = fingerprint.hash(&mut source)?;
-            save(
-                output,
-                "source-frozen.json",
-                &serde_json::json!({"binding":binding,"source_sha256":source_sha,
-            "inspection_sha256":inspection_sha,"fingerprint":fingerprint.pins(),"scope":fingerprint.report(),
-            "state":before,"freeze_observation":source.freeze_observation(),"source_payload_writes":0}),
-                &scratch,
-                &mut metadata,
-                &mut reservations,
-            )?;
+            // Read here unless it is being read on lanes (joined below).
+            let mut source_sha = None;
+            if fingerprint_reading.is_none() {
+                if reopened_cache.is_none() && n2r_win32::verify_policy::verifies_once() {
+                    n2r_win32::perf::step("read source fingerprint");
+                }
+                let hash = fingerprint.hash(&mut source)?;
+                save(
+                    output,
+                    "source-frozen.json",
+                    &serde_json::json!({"binding":binding,"source_sha256":hash,
+                "inspection_sha256":inspection_sha,"fingerprint":fingerprint.pins(),"scope":fingerprint.report(),
+                "state":before,"freeze_observation":source.freeze_observation(),"source_payload_writes":0}),
+                    &scratch,
+                    &mut metadata,
+                    &mut reservations,
+                )?;
+                source_sha = Some(hash);
+            }
             n2r_win32::perf::step("verify backup boot sector, log and label");
             let backups = ntfs_backup::verify_domain(&mut source, length, &raw)?;
             let log = ntfs_log::verify_domain(&mut source, &raw)?;
@@ -1373,6 +1414,26 @@ impl ResourceSourceContext {
                     "raw Windows source security exceeds the pure target-construction profile; see source-raw-target-security-preflight.json; native source diagnostics were not started"
                 );
             }
+            // The fingerprint read on lanes ends before the volume is mounted.
+            if let Some((read, _ram)) = fingerprint_reading {
+                n2r_win32::perf::step("join source fingerprint read");
+                *phase = "source-fingerprint";
+                let hash = read.finish()?;
+                // As `hash` ends: its range stores are still as written.
+                fingerprint.revalidate()?;
+                save(
+                    output,
+                    "source-frozen.json",
+                    &serde_json::json!({"binding":binding,"source_sha256":hash,
+                "inspection_sha256":inspection_sha,"fingerprint":fingerprint.pins(),"scope":fingerprint.report(),
+                "state":before,"freeze_observation":source.freeze_observation(),"source_payload_writes":0}),
+                    &scratch,
+                    &mut metadata,
+                    &mut reservations,
+                )?;
+                source_sha = Some(hash);
+            }
+            let source_sha = source_sha.context("the source fingerprint was not read")?;
             *phase = "source-observation";
             if let Some((arena, _, _)) = &groups {
                 arena.require_native_allocation(admission)?;

@@ -321,9 +321,9 @@ fn create_link(source: &File, parent: &File, name: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// The hard links a pass made: each one listed with its file and its link
-/// count, or, where the links are made by the call alone (a run that
-/// verifies once, on the resource route), only how many. Nothing reads the
+/// The hard links a pass made: on the lab route each one listed with its
+/// file and its link count; on a resource route (a conversion, in either
+/// verify mode, and its recovery) only how many. Nothing reads the
 /// list, and the source's own names list every one of them: on the full
 /// Windows volume it was some 15 MB of the metadata report, serialized and
 /// hashed twice into the run's event ledger.
@@ -376,9 +376,9 @@ pub(super) fn reconcile_owned_resource_domain(
     maximum_names: usize,
     root: &str,
     payer: &dyn report_memory::ReportMemoryAccountant,
-) -> io::Result<Vec<serde_json::Value>> {
+) -> io::Result<usize> {
     create_owned_domain_inner(input, handles, Some((maximum_names, root, payer)), true)
-        .map(|links| links.listed)
+        .map(|links| links.made)
 }
 /// The directory entry a path names: its file identity and attributes, or
 /// None when there is no such entry. A name is unique in its directory, so
@@ -614,10 +614,16 @@ fn create_owned_domain_inner(
                     "created hard-link namespace does not refer to its canonical file",
                 ));
             }
-            created.push(
-                serde_json::json!({"components":path,"canonical_components":item.components,
-                "file_id":&identity[8..24],"link_count":expected,"replace_if_exists":false}),
-            );
+            // A resource route only counts the links it makes: a listing of
+            // every one of them (some 15 MB on the full Windows volume) grew
+            // with the number of files and was held without a lease. Nothing
+            // reads it, and the source's own names list every link.
+            if resources.is_none() {
+                created.push(
+                    serde_json::json!({"components":path,"canonical_components":item.components,
+                    "file_id":&identity[8..24],"link_count":expected,"replace_if_exists":false}),
+                );
+            }
             made += 1;
             current_links = expected;
         }

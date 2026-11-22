@@ -72,7 +72,7 @@ pub(super) fn restore_acl_protection_with_limit(
     restore_acl_protection_observed(file, item, maximum, &actual)
 }
 /// [`restore_acl_protection_with_limit`] where the object's security views
-/// Restore DACL/SACL protection flags on an object whose current security
+/// are already at hand: restore DACL/SACL protection flags on an object whose current security
 /// views were just read through `file`, and nothing has changed the object
 /// since: the protection is set from the kernel descriptor of that observation
 /// instead of one read again.

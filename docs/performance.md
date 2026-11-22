@@ -176,6 +176,25 @@ Where the full volume's 642 s go:
 | Expected tree | 52 | 26 | raw binary chunks & single-pass `ExternalSort` |
 | Gate before first write | 61 | 19 | |
 
+A follow-up round (`perf/next-waves`, Waves 6–11) reused routed payload tail
+SHA-256 digests to skip redundant source tail re-reads (`capture source tails`
+20.8 → 0.4 s), parallelized tail materialization in `PrivateTree` (`plan and
+supply payloads` 35.0 → 29.9 s), added shadow read-ahead and a 4-lane sorted
+coalesced COPY prefetcher in journal preparation (`native-journal-preparation`
+49.1 → 41.5 s; device reads 87,173 → 1,771), reordered converted verification
+under `--verify fast` to reuse verified canonical `FileIdInfo`s (`check
+recovered alias links` 25.8 → 16.1 s), added an overlapped async apply write
+queue (`QD = 4`, verified with VM power-cut recovery), pipelined MFT
+stream-evidence serialization with `RowsAhead` (`source-preparation` 113.8 →
+93.4 s), and moved physical-range overlap checks to spare RAM with `xxh3` name
+buckets (`expected-preparation` 25.3 → 23.4 s):
+
+| Run | Previous (`perf-final`) | After (`perf-v2`) | Change |
+|---|---|---|---|
+| The full Windows volume, converted and started from ReFS (`perf-v2-full-system`, VM with 24 GB) | 642 s (10.7 min) | 615 s (10.25 min) | −4.2% vs `perf-final`, −54% (2.17×) vs `r10-base-full`; `BOOTED-ON-REFS`, identical listing |
+| Lived-in data volume, 23,137 objects (`perf-v2-lived-in`, `-Check -Acceptance`) | 53 s | 50.1 s | `check and run: agree`, all acceptance checks passed, identical listing |
+| 100,000 files, `--memory-limit 1240` (`perf-v2-files-100k-mid2`, VM with 24 GB) | 189 s | 222.6 s | 1,049 MiB peak memory, identical listing (within ReFS metadata variance) |
+
 ## A partition on the Windows disk, through a restart
 
 A 6 GiB partition of 505 objects beside C: on Windows Server 2025, working

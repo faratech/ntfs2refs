@@ -733,7 +733,8 @@ fn compare_domain_with_header(
         file: std::sync::Arc<crate::ntfs_inspect::FileInventory>,
         role: Option<String>,
         descriptor: Result<std::sync::Arc<[u8]>>,
-        observation: n2r_win32::attestation::Observation,
+        // A share of the row's decoded observation, not a copy of it.
+        observation: std::sync::Arc<n2r_win32::attestation::Observation>,
         logical_data: Check,
         evidence: crate::ntfs_data_attestation::LogicalEvidence,
         namespace: Option<Check>,
@@ -1057,7 +1058,7 @@ fn compare_domain_with_header(
                     file,
                     role,
                     descriptor,
-                    observation: observation.clone(),
+                    observation: native_row.observation_shared(),
                     logical_data,
                     evidence,
                     namespace,

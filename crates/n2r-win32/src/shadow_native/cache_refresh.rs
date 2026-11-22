@@ -1393,7 +1393,11 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         |_| 1,
         |index, item, before_mutation| -> io::Result<()> {
             let handle = held(handles, index)?;
-            if info(handle, 18, 24)? != *identity_of(&identities, index)? {
+            if (recovering
+                || !crate::verify_policy::checks_once()
+                || !crate::verify_policy::verifies_once())
+                && info(handle, 18, 24)? != *identity_of(&identities, index)?
+            {
                 return Err(invalid("owned identity changed before basic restoration"));
             }
             if !recovering || !basic_matches(item, &info(handle, 0, 40)?) {

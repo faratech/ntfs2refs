@@ -667,30 +667,37 @@ impl PrivatePlaceholder {
             self.valid_prefix = self.valid_prefix.max(offset + written as u64);
         }
         crate::verify_policy::flush_working_file(&self.file)?;
-        let mut check = [0u8; 65536];
-        self.file.seek(SeekFrom::Start(offset))?;
-        let mut read = 0;
-        while read < data.len() {
-            let n = self.file.read(&mut check[read..data.len()])?;
-            if n == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "private exception readback ended",
-                ));
+        // Under verify-once on the unhashed path, the closing shadow walk reads
+        // every materialized tail back from the frozen READ_ONLY volume and
+        // verifies its SHA-256 against the source, so re-reading from the
+        // page cache and querying FileStandardInfo on every tail write is
+        // redundant. Thorough runs and hashed writes keep the immediate readback.
+        if digest || !crate::verify_policy::verifies_once() {
+            let mut check = [0u8; 65536];
+            self.file.seek(SeekFrom::Start(offset))?;
+            let mut read = 0;
+            while read < data.len() {
+                let n = self.file.read(&mut check[read..data.len()])?;
+                if n == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "private exception readback ended",
+                    ));
+                }
+                read += n;
+                self.readback_bytes += n as u64;
             }
-            read += n;
-            self.readback_bytes += n as u64;
-        }
-        if &check[..data.len()] != data {
-            return Err(invalid("private exception readback differs"));
-        }
-        let standard = super::info(&self.file, 1, 24)?;
-        if crate::layout::u64_at(&standard, 8)? != self.bytes
-            || crate::layout::u32_at(&standard, 16)? != 1
-            || standard[20] != 0
-            || standard[21] != 0
-        {
-            return Err(invalid("private exception changed file shape"));
+            if &check[..data.len()] != data {
+                return Err(invalid("private exception readback differs"));
+            }
+            let standard = super::info(&self.file, 1, 24)?;
+            if crate::layout::u64_at(&standard, 8)? != self.bytes
+                || crate::layout::u32_at(&standard, 16)? != 1
+                || standard[20] != 0
+                || standard[21] != 0
+            {
+                return Err(invalid("private exception changed file shape"));
+            }
         }
         // Under verify-once, routed payload supply observes the stream's complete
         // retrieval map immediately after materializing it, so querying all

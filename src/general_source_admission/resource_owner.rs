@@ -255,6 +255,11 @@ impl ResourceSourceReadLane {
             Self::Partition(lane) => lane.byte_len(),
         }
     }
+    pub(crate) fn set_read_ahead(&mut self, enabled: bool) {
+        if let Self::Dedicated(owner) = self {
+            owner.set_read_ahead(enabled);
+        }
+    }
     pub(crate) fn dedicated_state(
         &self,
         events: &mut Vec<NativeEvent>,

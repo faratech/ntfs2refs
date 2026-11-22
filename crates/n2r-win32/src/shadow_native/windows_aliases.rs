@@ -171,43 +171,40 @@ fn probe_alias_unnamed(
             .collect::<Vec<_>>(),
     )?;
     let expected = probe.expected();
-    // The verification above has just read the link's point through this
-    // handle, on a volume that is read-only, and held it to the point its
-    // target's name makes. In a run that verifies once, and in the recovery
-    // of one (`repeats_once_as_verified`), that reading stands for the
-    // snapshot's own: the snapshot does not ask for the point again and
-    // carries the one verified, which is then held to the point this probe
-    // expects, as before. A thorough run, the recovery of one and a run with
-    // `--recheck-everything` read it again, as before.
+    // The verification above has just checked the link's FileIdInfo,
+    // FileStandardInfo (link count == 1, delete pending == 0, directory flag,
+    // non-directory EOF == 0), FileAttributeTagInfo and reparse point on this
+    // same handle, on a read-only volume. In a run that verifies once (and in
+    // the recovery of one), only FileBasicInfo and security remain to be read.
     let snapshot = if crate::verify_policy::verifies_once()
         || crate::verify_policy::repeats_once_as_verified()
     {
-        let mut snapshot = super::metadata_snapshot_with_limit(
-            &alias,
-            &Input {
-                reparse: None,
-                ..probe.expected()
-            },
-            Some(maximum_row_bytes),
-        );
-        snapshot.reparse = Some(crate::attestation::ReparseObservation {
-            point: Some(observed.point.clone()),
-            error: None,
+        let basic = super::info(&alias, 0, 40)?;
+        if !super::basic_matches(&expected, &basic) || observed.point != *probe.point {
+            return Err(invalid(differs));
+        }
+        let mut snapshot = super::security_snapshot_with_limit(&alias, Some(maximum_row_bytes));
+        snapshot.queries.push(crate::attestation::Query {
+            class: 18,
+            bytes: observed.alias_file_id_info.to_vec(),
+            native_error: None,
         });
         snapshot
     } else {
-        super::metadata_snapshot_with_limit(&alias, &expected, Some(maximum_row_bytes))
+        let snapshot =
+            super::metadata_snapshot_with_limit(&alias, &expected, Some(maximum_row_bytes));
+        let standard = super::query_bytes(&snapshot, 1, 24)?;
+        if !super::basic_matches(&expected, super::query_bytes(&snapshot, 0, 40)?)
+            || !super::reparse_matches(&expected, &snapshot)?
+            || layout::u32_at(standard, 16)? != 1
+            || standard[20] != 0
+            || standard[21] != u8::from(probe.directory)
+            || (!probe.directory && layout::u64_at(standard, 8)? != 0)
+        {
+            return Err(invalid(differs));
+        }
+        snapshot
     };
-    let standard = super::query_bytes(&snapshot, 1, 24)?;
-    if !super::basic_matches(&expected, super::query_bytes(&snapshot, 0, 40)?)
-        || !super::reparse_matches(&expected, &snapshot)?
-        || layout::u32_at(standard, 16)? != 1
-        || standard[20] != 0
-        || standard[21] != u8::from(probe.directory)
-        || (!probe.directory && layout::u64_at(standard, 8)? != 0)
-    {
-        return Err(invalid(differs));
-    }
     if !probe.directory {
         super::streams::exact_list(&stream_info(&alias)?, &expected)?;
     }

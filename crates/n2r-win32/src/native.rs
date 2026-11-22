@@ -4587,7 +4587,7 @@ impl GeneralFrozenPartition {
     }
     /// Turning it on starts a fresh pass and turning it off drops the
     /// window; setting it to what it already is changes nothing.
-    pub(crate) fn set_read_ahead(&mut self, enabled: bool) {
+    pub fn set_read_ahead(&mut self, enabled: bool) {
         if self.ahead.enabled != enabled {
             self.ahead.enabled = enabled;
             self.ahead.clear();

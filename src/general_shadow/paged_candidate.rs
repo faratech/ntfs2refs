@@ -443,8 +443,10 @@ pub struct PagedSourceBackedCandidateWithScope<'source, 'observation, 'scope> {
     // dropped: before the source's read scope closes.
     originals_ahead: Option<OriginalPrefetch>,
     // Multi-lane prefetcher for non-in-place routed source spans within each
-    // 4 MiB capture chunk. Dropped before `bytes.finish()` and scope close.
+    // 4 MiB capture chunk or across a window of upcoming compared ranges.
+    // Dropped before `bytes.finish()` and scope close.
     routed_ahead: Option<super::source_backed::original_prefetch::LaneReads>,
+    routed_window_active: bool,
     poisoned: bool,
     _ram: SourceRamLease,
 }
@@ -496,6 +498,7 @@ impl<'source, 'observation, 'scope>
             closing_source: None,
             originals_ahead: None,
             routed_ahead: None,
+            routed_window_active: false,
             poisoned: false,
             _ram: ram,
         })
@@ -792,7 +795,10 @@ impl<'source, 'observation, 'scope>
         } else {
             0
         })?;
-        self.prefetch_routed_chunk(offset, output.len(), original.is_some())?;
+        let manage_routed = !self.routed_window_active;
+        if manage_routed {
+            self.prefetch_routed_chunk(offset, output.len(), original.is_some())?;
+        }
         let result: Result<CandidateReadSpans> = (|| {
             self.seek(SeekFrom::Start(offset))?;
             let mut done = 0;
@@ -812,7 +818,9 @@ impl<'source, 'observation, 'scope>
             }
             Ok(spans)
         })();
-        self.bytes.withdraw_read_ahead(drop);
+        if manage_routed {
+            self.bytes.withdraw_read_ahead(drop);
+        }
         if result.is_err() {
             self.poisoned = true;
         }
@@ -925,6 +933,38 @@ impl<'source, 'observation, 'scope>
     /// chunk (`offset..offset + length`) across multiple source read lanes,
     /// sorting by source physical offset and coalescing gaps <= 64 KiB into
     /// <= 4 MiB sequential reads.
+    /// Prefetches non-in-place routed source spans across a window of upcoming
+    /// compared ranges (`ranges`) across multiple source read lanes, sorting by
+    /// source physical offset and coalescing gaps <= 64 KiB into <= 4 MiB
+    /// sequential reads. Eliminates single-extent synchronous `DeviceRead`
+    /// fallbacks across adjacent compared ranges.
+    pub(crate) fn prefetch_routed_window(
+        &mut self,
+        ranges: &[(u64, u64)],
+        reusing_original: bool,
+    ) -> Result<()> {
+        self.bytes.withdraw_read_ahead(drop);
+        self.routed_window_active = false;
+        if self.routed_ahead.is_none() || ranges.is_empty() {
+            return Ok(());
+        }
+        let mut asks: Vec<(u64, usize)> = Vec::new();
+        for &(offset, length) in ranges {
+            if length == 0 {
+                continue;
+            }
+            self.collect_routed_asks(offset, length, reusing_original, &mut asks)?;
+        }
+        self.submit_routed_asks(asks)?;
+        self.routed_window_active = true;
+        Ok(())
+    }
+
+    pub(crate) fn clear_routed_window(&mut self) {
+        self.bytes.withdraw_read_ahead(drop);
+        self.routed_window_active = false;
+    }
+
     fn prefetch_routed_chunk(
         &mut self,
         offset: u64,
@@ -934,12 +974,21 @@ impl<'source, 'observation, 'scope>
         if self.routed_ahead.is_none() || length == 0 {
             return Ok(());
         }
-        const ROUTED_COALESCE_GAP: u64 = 64 * 1024;
-        const ROUTED_COALESCE_MAX: u64 = 4 * 1024 * 1024;
-        let end = offset
-            .checked_add(length as u64)
-            .context("routed prefetch end overflow")?;
         let mut asks: Vec<(u64, usize)> = Vec::new();
+        self.collect_routed_asks(offset, length as u64, reusing_original, &mut asks)?;
+        self.submit_routed_asks(asks)
+    }
+
+    fn collect_routed_asks(
+        &mut self,
+        offset: u64,
+        length: u64,
+        reusing_original: bool,
+        asks: &mut Vec<(u64, usize)>,
+    ) -> Result<()> {
+        let end = offset
+            .checked_add(length)
+            .context("routed prefetch end overflow")?;
         let mut cursor = offset;
         while cursor < end {
             let (route, boundary) = self.routes.locate(cursor)?;
@@ -961,7 +1010,6 @@ impl<'source, 'observation, 'scope>
                 }
                 if let Some((_, object)) = self.object.as_ref()
                     && let Some(stream) = object.stream(&route.stream_name_utf16)
-                    && stream.sparse.is_none()
                     && let Some(logical) = route
                         .logical_offset
                         .checked_add(cursor - route.target_physical_offset)
@@ -1003,7 +1051,13 @@ impl<'source, 'observation, 'scope>
             }
             cursor += count as u64;
         }
-        if asks.len() < 2 {
+        Ok(())
+    }
+
+    fn submit_routed_asks(&mut self, mut asks: Vec<(u64, usize)>) -> Result<()> {
+        const ROUTED_COALESCE_GAP: u64 = 64 * 1024;
+        const ROUTED_COALESCE_MAX: u64 = 4 * 1024 * 1024;
+        if asks.is_empty() {
             return Ok(());
         }
         asks.sort_unstable();

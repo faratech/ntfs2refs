@@ -719,29 +719,7 @@ fn capture_selected_inner(
     // the comparison, on a lane of their own; the same chunks, in this order.
     candidate.read_originals_ahead(selection.store.len(), |ordinal| selection.range(ordinal))?;
     candidate.set_shadow_read_ahead(true);
-    let checks_once = n2r_win32::verify_policy::checks_once();
-    let mut routed_window_end = 0u64;
-    let mut upcoming_ranges: Vec<(u64, u64)> = Vec::new();
     for ordinal in 0..selection.store.len() {
-        if ordinal >= routed_window_end {
-            upcoming_ranges.clear();
-            let mut window_bytes = 0u64;
-            let mut next = ordinal;
-            while next < selection.store.len() && upcoming_ranges.len() < 512 {
-                let r = selection.range(next)?;
-                if !upcoming_ranges.is_empty()
-                    && window_bytes.saturating_add(r.length)
-                        > super::source_backed::TAIL_BATCH_BYTES
-                {
-                    break;
-                }
-                upcoming_ranges.push((r.offset, r.length));
-                window_bytes = window_bytes.saturating_add(r.length);
-                next += 1;
-            }
-            candidate.prefetch_routed_window(&upcoming_ranges, checks_once)?;
-            routed_window_end = next;
-        }
         let selected = selection.range(ordinal)?;
         candidate.set_shadow_read_ahead_reach(
             selected
@@ -1035,7 +1013,6 @@ fn capture_selected_inner(
             add(&mut compared, count as u64)?;
         }
     }
-    candidate.clear_routed_window();
     ensure!(
         compared == selection.bytes && index.packed_bytes() == packed,
         "capture comparison/index/backing accounting differs"

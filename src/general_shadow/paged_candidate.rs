@@ -443,10 +443,8 @@ pub struct PagedSourceBackedCandidateWithScope<'source, 'observation, 'scope> {
     // dropped: before the source's read scope closes.
     originals_ahead: Option<OriginalPrefetch>,
     // Multi-lane prefetcher for non-in-place routed source spans within each
-    // 4 MiB capture chunk or across a window of upcoming compared ranges.
-    // Dropped before `bytes.finish()` and scope close.
+    // 4 MiB capture chunk. Dropped before `bytes.finish()` and scope close.
     routed_ahead: Option<super::source_backed::original_prefetch::LaneReads>,
-    routed_window_active: bool,
     poisoned: bool,
     _ram: SourceRamLease,
 }
@@ -498,7 +496,6 @@ impl<'source, 'observation, 'scope>
             closing_source: None,
             originals_ahead: None,
             routed_ahead: None,
-            routed_window_active: false,
             poisoned: false,
             _ram: ram,
         })
@@ -795,10 +792,7 @@ impl<'source, 'observation, 'scope>
         } else {
             0
         })?;
-        let manage_routed = !self.routed_window_active;
-        if manage_routed {
-            self.prefetch_routed_chunk(offset, output.len(), original.is_some())?;
-        }
+        self.prefetch_routed_chunk(offset, output.len(), original.is_some())?;
         let result: Result<CandidateReadSpans> = (|| {
             self.seek(SeekFrom::Start(offset))?;
             let mut done = 0;
@@ -818,9 +812,7 @@ impl<'source, 'observation, 'scope>
             }
             Ok(spans)
         })();
-        if manage_routed {
-            self.bytes.withdraw_read_ahead(drop);
-        }
+        self.bytes.withdraw_read_ahead(drop);
         if result.is_err() {
             self.poisoned = true;
         }
@@ -933,38 +925,6 @@ impl<'source, 'observation, 'scope>
     /// chunk (`offset..offset + length`) across multiple source read lanes,
     /// sorting by source physical offset and coalescing gaps <= 64 KiB into
     /// <= 4 MiB sequential reads.
-    /// Prefetches non-in-place routed source spans across a window of upcoming
-    /// compared ranges (`ranges`) across multiple source read lanes, sorting by
-    /// source physical offset and coalescing gaps <= 64 KiB into <= 4 MiB
-    /// sequential reads. Eliminates single-extent synchronous `DeviceRead`
-    /// fallbacks across adjacent compared ranges.
-    pub(crate) fn prefetch_routed_window(
-        &mut self,
-        ranges: &[(u64, u64)],
-        reusing_original: bool,
-    ) -> Result<()> {
-        self.bytes.withdraw_read_ahead(drop);
-        self.routed_window_active = false;
-        if self.routed_ahead.is_none() || ranges.is_empty() {
-            return Ok(());
-        }
-        let mut asks: Vec<(u64, usize)> = Vec::new();
-        for &(offset, length) in ranges {
-            if length == 0 {
-                continue;
-            }
-            self.collect_routed_asks(offset, length, reusing_original, &mut asks)?;
-        }
-        self.submit_routed_asks(asks)?;
-        self.routed_window_active = true;
-        Ok(())
-    }
-
-    pub(crate) fn clear_routed_window(&mut self) {
-        self.bytes.withdraw_read_ahead(drop);
-        self.routed_window_active = false;
-    }
-
     fn prefetch_routed_chunk(
         &mut self,
         offset: u64,

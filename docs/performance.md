@@ -195,6 +195,22 @@ buckets (`expected-preparation` 25.3 → 23.4 s):
 | Lived-in data volume, 23,137 objects (`perf-v2-lived-in`, `-Check -Acceptance`) | 53 s | 50.1 s | `check and run: agree`, all acceptance checks passed, identical listing |
 | 100,000 files, `--memory-limit 1240` (`perf-v2-files-100k-mid2`, VM with 24 GB) | 189 s | 222.6 s | 1,049 MiB peak memory, identical listing (within ReFS metadata variance) |
 
+A third round (`perf/deep-waves`, Waves 12–16) reused verified canonical
+`FileIdInfo`s in the shadow closing walk, reused already-read source bytes for
+in-place routed spans during capture compare, staged 4 MiB journal batches in
+spare RAM for single sequential write + byte-exact read-back, skipped redundant
+`BackupRead` pre-reads on freshly created shadow objects while capping ReFS
+metadata-write helpers to 4 threads (`restore security` 26.6 → 19.2 s,
+`restore times and attributes` 33.1 → 19.3 s), skipped duplicate closing stream
+re-queries in `verify payloads` under `--verify fast` (15.7 → 8.9 s), and
+offloaded `SemanticHash`'s 1.5 GB SHA-256 onto a background worker thread
+(`build expected tree` 11.4 → 10.0 s):
+
+| Run | Previous (`perf-v2`) | After (`perf-deep`) | Change |
+|---|---|---|---|
+| The full Windows volume, converted and started from ReFS (`perf-deep-full-system`, VM with 24 GB) | 615 s (10.25 min) | 611 s (10.19 min) | −54.3% (2.19×) vs `r10-base-full`; `BOOTED-ON-REFS`, identical listing |
+| 1-in-10 Windows fixture (`perf-deep-fixture10`, VM with 24 GB) | 133.6 s | 127.7 s | −4.4%, identical listing |
+
 ## A partition on the Windows disk, through a restart
 
 A 6 GiB partition of 505 objects beside C: on Windows Server 2025, working

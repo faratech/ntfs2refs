@@ -562,12 +562,18 @@ impl PagedMftResolver {
                     "physical extension ordinal {ordinal} file lookup requires {file_work} bytes"
                 )
             })?;
+            // Whether each record is there is asked of the rows the store
+            // holds: neither is copied for it.
             ensure!(
                 bitmap_allocated(actual.record_number)?
                     && files.allocated_record(actual.record_number)?
                     && files.extension_record(actual.record_number)?
-                    && files.find_record(actual.record_number, None)?.is_none()
-                    && files.find_record(base, Some(sequence))?.is_some(),
+                    && files
+                        .with_record(actual.record_number, None, |_| Ok(()))?
+                        .is_none()
+                    && files
+                        .with_record(base, Some(sequence), |_| Ok(()))?
+                        .is_some(),
                 "extension allocation/base ownership does not match canonical files"
             );
         }
@@ -689,14 +695,19 @@ impl PagedMftResolver {
             let _ram = self.scratch.lease_ram(bytes).with_context(|| {
                 format!("canonical FILE ordinal {ordinal} requires {bytes} bytes")
             })?;
-            let file = files.file(ordinal)?;
-            ensure!(
-                file.base_file_reference == 0
-                    && bitmap_allocated(file.record_number)?
-                    && files.allocated_record(file.record_number)?
-                    && !files.extension_record(file.record_number)?,
-                "canonical record allocation/extension overlap"
-            );
+            // The row the store holds is lent, not copied: a copy of each
+            // row was a heap allocation for each of its names, streams and
+            // attributes, to read four fields of it.
+            files.with_file(ordinal, |file| {
+                ensure!(
+                    file.base_file_reference == 0
+                        && bitmap_allocated(file.record_number)?
+                        && files.allocated_record(file.record_number)?
+                        && !files.extension_record(file.record_number)?,
+                    "canonical record allocation/extension overlap"
+                );
+                Ok(())
+            })?;
         }
         consumed.revalidate()?;
         physical.revalidate()?;

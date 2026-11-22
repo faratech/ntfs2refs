@@ -262,6 +262,25 @@ source-lane `AheadReader` for `DirectReadReceipt` reads alongside 4-lane
 | 1-in-10 Windows fixture (`perf-bt-f10`, VM with 24 GB) | 120.6 s | 118.3 s | −48.6% vs `g3a-fixture10`, identical listing |
 | Lived-in data volume, 23,137 objects (`perf-bt-lived-in`, `-Check -Acceptance`) | 49.2 s | 47.0 s | −4.5%; `check and run: agree`, all acceptance checks passed, identical listing |
 
+A seventh round (`perf/wave30-33`, Waves 30–33) read out-of-window `$MFT`
+`ATTRIBUTE_LIST` extension records directly without evicting the sequential
+scan's multi-MiB window (`NTFS: scan MFT records` 25.1 → 14.3 s,
+`source-preparation` 93.9 → 85.6 s, `source-preparation` `device read`
+15.39 → 1.59 GB / −90%, total run `device read` cut by 13.8 GB to 20.17 GB),
+skipped `GetKernelObjectSecurity` pre-reads on freshly created shadow objects
+(depth ≥ 2) and short-name links under `--verify fast` (`metadata: restore
+security` 19.0 → 7.5 s), widened `GeneralFrozenPartition::ReadAhead` from 1 MiB
+to 4 MiB (`MAX_IO`, zero extra RAM; `native-journal-preparation` 43.1 → 39.1 s,
+`source-apply-before-handoff` 50.0 → 47.2 s), and deferred per-move
+`FSCTL_GET_RETRIEVAL_POINTERS` queries on successful moves under `--verify
+fast` to the end-of-placement complete mapping check:
+
+| Run | Previous (`perf-bt`) | After (`perf-w30-33`) | Change |
+|---|---|---|---|
+| The full Windows volume, converted and started from ReFS (`perf-w30-33-full`, VM with 24 GB) | 546 s (9.09 min) | 541.5 s (9.02 min) | −59.5% (2.47×) vs `r10-base-full`; −13.8 GB total `device read`, −10.8 s in `NTFS: scan MFT records`, −11.5 s in `restore security`, −4.0 s in `native-journal-preparation`; `BOOTED-ON-REFS`, identical listing |
+| 1-in-10 Windows fixture (`perf-w30-33-1in10`, VM with 24 GB) | 118.3 s | 124.9 s | identical listing (ReFS metadata variance) |
+| Lived-in data volume, 23,137 objects (`perf-w30-33-lived-in`, `-Check -Acceptance`) | 47.0 s | 49.7 s | `check and run: agree`, all acceptance checks passed, identical listing |
+
 ## A partition on the Windows disk, through a restart
 
 A 6 GiB partition of 505 objects beside C: on Windows Server 2025, working

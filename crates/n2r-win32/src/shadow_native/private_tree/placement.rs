@@ -168,9 +168,13 @@ struct Counters {
 fn zero_count(value: &usize) -> bool {
     *value == 0
 }
-/// Counts a verified move whose proof holds the mapping of its range only.
+/// Counts a verified move whose proof holds the mapping of its range only
+/// or defers retrieval verification to the end-of-placement complete check.
 fn count_proof_form(counters: &mut Counters, proof: &serde_json::Value) {
-    if proof["mapping_page_proof"]["encoding"] == crate::retrieval_paging::RANGE_ENCODING {
+    let encoding = &proof["mapping_page_proof"]["encoding"];
+    if encoding == crate::retrieval_paging::RANGE_ENCODING
+        || encoding == crate::retrieval_paging::DEFERRED_ENCODING
+    {
         counters.moved_range_proofs += 1;
     }
 }

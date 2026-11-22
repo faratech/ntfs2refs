@@ -1694,14 +1694,10 @@ impl StagedWindowsAliases {
             }
             let expected = restored_link(entry, &link.canonical, link.temporary);
             if crate::verify_policy::verifies_once() {
-                let max_bytes = usize::try_from(maximum_row_bytes).unwrap_or(usize::MAX);
-                let kernel =
-                    crate::attestation_native::kernel_security_snapshot_paged(file, max_bytes);
-                super::cache_refresh::restore_acl_protection_observed(
+                super::cache_refresh::restore_acl_protection_fresh(
                     file,
                     &expected,
                     Some(maximum_row_bytes),
-                    &kernel,
                 )?;
             } else {
                 super::cache_refresh::restore_acl_protection_with_limit(

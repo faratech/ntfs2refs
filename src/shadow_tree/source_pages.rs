@@ -184,7 +184,7 @@ fn stored_descriptor(
     source: &PagedInspection,
     file: &ntfs::FileInventory,
     maximum_bytes: u64,
-    cache: Option<&std::cell::RefCell<DescriptorCache>>,
+    cache: Option<&DescriptorCache>,
 ) -> Result<(Vec<u8>, String)> {
     let binding = source
         .security()
@@ -194,15 +194,20 @@ fn stored_descriptor(
         binding.sequence_number == file.sequence_number,
         "source descriptor sequence differs"
     );
-    if let (Some(id), Some(cache)) = (binding.security_id, cache)
-        && let Some(held) = cache.borrow().by_id.get(&id)
+    if let (Some(id), Some(held)) = (binding.security_id, cache.and_then(|cache| cache.0.get()))
+        && let Some(held) = held.by_id.get(&id)
     {
         ensure!(
             held.descriptor_sha256 == binding.descriptor_sha256,
             "source descriptor binding hash differs"
         );
         let mut stored = Vec::new();
-        stored.try_reserve_exact(held.stored.len())?;
+        stored.try_reserve_exact(held.stored.len()).with_context(|| {
+            format!(
+                "copying the stored security descriptor {id} of FILE {} from the projection's cache",
+                file.record_number
+            )
+        })?;
         stored.extend_from_slice(&held.stored);
         return Ok((stored, held.stored_sha256.clone()));
     }
@@ -219,10 +224,11 @@ fn stored_descriptor(
     let stored = hex::decode(&value.descriptor.relative_hex)?;
     n2r_win32::security_descriptor::validate_with_limit(&stored, maximum_bytes)?;
     let stored_sha256 = hex::encode(Sha256::digest(&stored));
-    if let (Some(id), Some(cache)) = (binding.security_id, cache) {
-        cache
-            .borrow_mut()
-            .keep(id, value.descriptor.sha256, &stored, &stored_sha256);
+    if let (Some(id), Some(mut held)) = (
+        binding.security_id,
+        cache.and_then(|cache| cache.0.get_mut()),
+    ) {
+        held.keep(id, value.descriptor.sha256, &stored, &stored_sha256);
     }
     Ok((stored, stored_sha256))
 }
@@ -230,24 +236,28 @@ fn stored_descriptor(
 /// What a projection made in a run that verifies once
 /// ([`n2r_win32::verify_policy::verifies_once`]) leaves out of
 /// [`build_object`]: a stored descriptor decoded, checked and hashed again
-/// for another object of the same security ID (where spare memory holds
-/// the descriptors, [`stored_descriptor`]), and a Windows file's paths taken
-/// again for each of its streams. Only `derive_scoped` makes one, and only
-/// in such a run; a thorough run, a diagnosis and the comparison of a
-/// cached body with the current projection pass none.
+/// for another object of the same security ID (while the cache of them is
+/// held, [`DescriptorCache`]), and a Windows file's paths taken again for
+/// each of its streams. Only `derive_scoped` makes one, and only in such a
+/// run; a thorough run, a diagnosis and the comparison of a cached body
+/// with the current projection pass none.
 struct VerifiedOnce {
-    descriptors: Option<std::cell::RefCell<DescriptorCache>>,
+    descriptors: Option<DescriptorCache>,
 }
 
 /// The descriptors [`stored_descriptor`] has decoded, checked and hashed,
-/// by security ID, in the spare memory the projection could lease for them
-/// (`SourceScratch::lease_spare_ram`). A descriptor that does not fit in
-/// what is left of the lease is not kept: it is read again for the next
-/// object that names it, as without the cache. The lease is fixed, so the
-/// cache does not grow with the number of objects.
-struct DescriptorCache {
+/// by security ID: a cache of the run ([`n2r_win32::evict::Evictable`]),
+/// paid for by a fixed lease of cache memory
+/// (`SourceScratch::lease_cache_ram`) and given up with it when memory is
+/// short. Nothing depends on it: a descriptor it does not hold, because it
+/// was given up or the lease is full, is read, checked and hashed again as
+/// without it. The lease is fixed, so it does not grow with the number of
+/// objects.
+struct DescriptorCache(n2r_win32::evict::Evictable<HeldDescriptors>);
+struct HeldDescriptors {
     by_id: std::collections::HashMap<u32, HeldDescriptor>,
     bytes: u64,
+    // Returned after the descriptors it pays for, when this is given up.
     _lease: SourceRamLease,
 }
 struct HeldDescriptor {
@@ -258,14 +268,17 @@ struct HeldDescriptor {
 }
 impl DescriptorCache {
     const LEASE_BYTES: u64 = 8 * 1024 * 1024;
-    fn leased(scratch: &SourceScratch) -> Option<std::cell::RefCell<Self>> {
-        let lease = scratch.lease_spare_ram(Self::LEASE_BYTES).ok()?;
-        Some(std::cell::RefCell::new(Self {
+    /// The cache, where the run's memory has room for it now.
+    fn leased(scratch: &SourceScratch) -> Option<Self> {
+        let lease = scratch.lease_cache_ram(Self::LEASE_BYTES).ok()?;
+        Some(Self(n2r_win32::evict::Evictable::new(HeldDescriptors {
             by_id: std::collections::HashMap::new(),
             bytes: 0,
             _lease: lease,
-        }))
+        })))
     }
+}
+impl HeldDescriptors {
     fn keep(&mut self, id: u32, descriptor_sha256: String, stored: &[u8], stored_sha256: &str) {
         // The strings and bytes, and the entry with the table's room for
         // it (a table holds at most twice its entries' room as it grows).
@@ -275,7 +288,7 @@ impl DescriptorCache {
         let Some(total) = self
             .bytes
             .checked_add(bytes)
-            .filter(|total| *total <= Self::LEASE_BYTES)
+            .filter(|total| *total <= DescriptorCache::LEASE_BYTES)
         else {
             return;
         };
@@ -1665,20 +1678,25 @@ mod descriptor_cache_tests {
             )
             .unwrap();
         let scratch = SourceScratch::new_in_arena(budget, group).unwrap();
-        let mut cache = DescriptorCache::leased(&scratch)
-            .expect("spare memory for the cache")
-            .into_inner();
+        let cache = DescriptorCache::leased(&scratch).expect("memory for the cache");
         let stored: Vec<u8> = (0..4096u32).map(|n| n as u8).collect();
-        for id in 0..4096u32 {
-            cache.keep(id, "ab".repeat(32), &stored, &"cd".repeat(32));
+        {
+            let mut held = cache.0.get_mut().unwrap();
+            for id in 0..4096u32 {
+                held.keep(id, "ab".repeat(32), &stored, &"cd".repeat(32));
+            }
+            assert!(held.bytes <= DescriptorCache::LEASE_BYTES);
+            let kept = held.by_id.len();
+            assert!((1024..2048).contains(&kept), "{kept}");
+            let first = &held.by_id[&0];
+            assert_eq!(first.stored, stored);
+            assert_eq!(first.descriptor_sha256, "ab".repeat(32));
+            assert_eq!(first.stored_sha256, "cd".repeat(32));
+            assert!(!held.by_id.contains_key(&(kept as u32)));
         }
-        assert!(cache.bytes <= DescriptorCache::LEASE_BYTES);
-        let kept = cache.by_id.len();
-        assert!((1024..2048).contains(&kept), "{kept}");
-        let held = &cache.by_id[&0];
-        assert_eq!(held.stored, stored);
-        assert_eq!(held.descriptor_sha256, "ab".repeat(32));
-        assert_eq!(held.stored_sha256, "cd".repeat(32));
-        assert!(!cache.by_id.contains_key(&(kept as u32)));
+        // A cache of the run: given up when memory is short, and done
+        // without from then on.
+        cache.0.clear();
+        assert!(cache.0.get().is_none() && cache.0.get_mut().is_none());
     }
 }

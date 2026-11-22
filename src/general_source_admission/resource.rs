@@ -1243,6 +1243,13 @@ impl ResourceSourceContext {
                 refuse_short_names(&raw)?;
             }
             let inspection_sha = raw.canonical_sha256()?;
+            // Every object's paths are derived several times below (the
+            // short-name plan, the selector's count, the comparison and the
+            // admission policy), each through every directory above it. A
+            // run that verifies once remembers each directory's step of
+            // those walks, in a cache, until the comparison's gates are made.
+            let directory_paths = n2r_win32::verify_policy::verifies_once()
+                .then(|| ntfs_admission::paged::hold_directory_paths(&raw));
             let storage_hint_ram = if binding.layout_profile
                 == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
             {
@@ -2392,6 +2399,7 @@ impl ResourceSourceContext {
                 source_views["native_observation_origin"] = serde_json::to_value(native.origin())?;
             }
             let source_views_sha = json_sha(&source_views, scratch.budget().scratch_bytes / 2)?;
+            drop(directory_paths);
             n2r_win32::perf::step("reopen comparison stores");
             let rows = SortedRecordStore::open(&rows_pin, &scratch)?;
             let unresolved = SortedRecordStore::open(&unresolved_pin, &scratch)?;

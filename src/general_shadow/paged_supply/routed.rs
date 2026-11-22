@@ -1592,11 +1592,20 @@ struct PendingRecord<'o> {
 /// a stream is that does not wait.
 ///
 /// A stream whose range does not wait (several intervals, a longer one, a
-/// sparse stream) is written while the tails before it wait: each stream is
-/// written to its own file, a tail into the clusters its file was given
-/// when it was made, so the order of the writes to different files does not
-/// change what any of them holds; a batch's writes were made at once on
-/// helper threads, in no order, before.
+/// sparse stream) is written while the tails before it wait. Each stream is
+/// written to its own file, and nothing reads another's between, so the
+/// order of writes to different files does not change what any file holds.
+/// It may change where a file's last cluster lands: that cluster can be
+/// unallocated until its tail is written (`routed_prefix::capture` leaves
+/// such a suffix out of the prefix), and ReFS then places it in a free
+/// cluster of its choosing. That order was never fixed, since a batch's
+/// writes were already made at once on helper threads in no order, and
+/// nothing depends on it: the walk of the frozen shadow captures every
+/// stream's mapping where it lies and holds it to its expected allocation,
+/// reads each tail back there against the digest of the source's bytes, and
+/// the capture and the journal take the shadow's bytes from wherever they
+/// are. What is converted is the same; only which free cluster of the
+/// shadow holds a tail can differ, as it could between two runs before.
 struct PendingTails<'o> {
     writes: Vec<PendingTailWrite<'o>>,
     records: Vec<PendingRecord<'o>>,
@@ -2339,10 +2348,14 @@ impl RoutedSupplyOwner<'_, '_, '_> {
         self.template.require_system_payloads_complete()?;
         phase(self.bytes, self.expected, self.template)?;
         let before_reads = self.bytes.logical_bytes_read();
-        // Every byte materialized on the shadow was read back and held to
-        // the source's when it was written (`prepare`), and a stream with a
-        // digest is read in full on the converted volume after the apply.
-        // Under "verify once" this pass therefore reads no payload.
+        // Every byte materialized on the shadow was written from the bytes
+        // read from the source. A thorough run reads each range back and
+        // holds it to them as it is written (`prepare`); under "verify once"
+        // that read-back is left out (`initialize_at_unhashed`), and the walk
+        // of the frozen shadow reads every materialized tail back against the
+        // digest of the source's bytes, while a stream with a digest is read
+        // in full on the converted volume after the apply. Under "verify
+        // once" this pass therefore reads no payload.
         let reread = self.reread;
         // Nor, under "verify once" (owner decision D2, #251), does it walk
         // the source's side of each stream again: opening the stream's
@@ -2370,14 +2383,17 @@ impl RoutedSupplyOwner<'_, '_, '_> {
         // integrity) and that again, all held to what the planning pass of
         // this process had observed of the same held file. Every stream's
         // file stays held by this process and nothing else can write to the
-        // shadow; what this process wrote since the plan (the materialized
-        // ranges) was read back as it was written; and the walk of the
-        // frozen shadow (`walk shadow (closing)`) captures every stream's
+        // shadow. What this process wrote since the plan (the materialized
+        // ranges) was not read back as it was written in such a run; what
+        // covers it, and every stream's mapping, is the walk of the frozen
+        // shadow (`walk shadow (closing)`): it captures every stream's
         // complete mapping, both initialized-region views and its integrity
         // again, holds each mapping to its expected allocation and reads
-        // every materialized tail back against its digest, before the
-        // capture is compared with the source and the gate re-reads the
-        // source's mappings against its fingerprint. The counts and the plan
+        // every materialized tail back against the digest of the source's
+        // bytes, before the capture is compared with the source (and a
+        // stream with a digest is read in full on the converted volume after
+        // the apply); the gate re-reads the source's mappings against its
+        // fingerprint. The counts and the plan
         // digest are then the plan's, and the ordered receipt digest is the
         // one the planning pass framed of the same streams with the same
         // fields ([`scan_plan`]); the receipt is the one this pass made.

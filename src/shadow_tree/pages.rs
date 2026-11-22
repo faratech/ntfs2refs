@@ -268,6 +268,66 @@ impl n2r_win32::evict::Evict for DecodedCache {
         taken.is_some()
     }
 }
+impl DecodedCache {
+    /// An empty cache, registered as a cache of this thread.
+    fn registered() -> std::rc::Rc<Self> {
+        let decoded = std::rc::Rc::new(Self(
+            RefCell::new(DecodedObjects::default()),
+            std::cell::Cell::new(n2r_win32::evict::now()),
+        ));
+        n2r_win32::evict::register(&decoded);
+        decoded
+    }
+    /// Keeps `object`, object `index` of a tree of `len` objects, where the
+    /// arena can spare the memory for it (see [`DecodedObjects`]).
+    fn keep(
+        &self,
+        arena: &crate::artifact_arena::ArtifactArena,
+        row_limit: u64,
+        len: usize,
+        index: usize,
+        object: &Arc<Object>,
+    ) {
+        self.1.set(n2r_win32::evict::now());
+        let mut decoded = self.0.borrow_mut();
+        if decoded.rows.get(index).is_some_and(Option::is_some) {
+            return;
+        }
+        if decoded.refused_for > 0 {
+            decoded.refused_for -= 1;
+            return;
+        }
+        let Ok(mut bytes) = object_memory_bytes(object, 0, row_limit) else {
+            return;
+        };
+        let slots = decoded.rows.is_empty();
+        if slots {
+            bytes = bytes.saturating_add((len * std::mem::size_of::<Option<Arc<Object>>>()) as u64);
+        }
+        if decoded.unspent < bytes {
+            let block = DECODED_BLOCK_BYTES.max(bytes);
+            match arena.reserve_optional_ram(block) {
+                Ok(lease) => {
+                    decoded.leases.push(lease);
+                    decoded.unspent += block;
+                }
+                Err(_) => {
+                    decoded.refused_for = DECODED_RETRY_OBJECTS;
+                    return;
+                }
+            }
+        }
+        if slots {
+            if decoded.rows.try_reserve_exact(len).is_err() {
+                decoded.refused_for = DECODED_RETRY_OBJECTS;
+                return;
+            }
+            decoded.rows.resize_with(len, || None);
+        }
+        decoded.unspent -= bytes;
+        decoded.rows[index] = Some(Arc::clone(object));
+    }
+}
 const DECODED_BLOCK_BYTES: u64 = 16 * 1024 * 1024;
 const DECODED_RETRY_OBJECTS: u32 = 4096;
 
@@ -1168,6 +1228,18 @@ impl CompactObjects {
 struct CreationView<'a, T: ExpectedObjectDomain> {
     tree: &'a T,
     compact: &'a RefCell<Result<CompactObjects>>,
+    prefill: Option<Prefill<'a>>,
+}
+/// Where the objects a creation decodes are kept for the tree that opens
+/// its pages next (see [`PagedExpectedTree::create_and_open_with_resources_in_group`]):
+/// the cache, the arena that pays for what it keeps, the row budget an
+/// object is held to and the number of objects of the tree.
+#[derive(Clone, Copy)]
+struct Prefill<'a> {
+    cache: &'a DecodedCache,
+    arena: &'a crate::artifact_arena::ArtifactArena,
+    row_limit: u64,
+    len: usize,
 }
 impl<T: ExpectedObjectDomain> Serialize for CreationView<'_, T> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
@@ -1178,6 +1250,7 @@ impl<T: ExpectedObjectDomain> Serialize for CreationView<'_, T> {
             &CreationObjects {
                 tree: self.tree,
                 compact: self.compact,
+                prefill: self.prefill,
             },
         )?;
         fields.serialize_field("logical_bytes", &self.tree.logical_bytes())?;
@@ -1191,6 +1264,7 @@ impl<T: ExpectedObjectDomain> Serialize for CreationView<'_, T> {
 struct CreationObjects<'a, T: ExpectedObjectDomain> {
     tree: &'a T,
     compact: &'a RefCell<Result<CompactObjects>>,
+    prefill: Option<Prefill<'a>>,
 }
 impl<T: ExpectedObjectDomain> Serialize for CreationObjects<'_, T> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
@@ -1198,7 +1272,7 @@ impl<T: ExpectedObjectDomain> Serialize for CreationObjects<'_, T> {
         let mut sequence = serializer.serialize_seq(Some(count))?;
         for index in 0..count {
             let object = self.tree.object(index).map_err(S::Error::custom)?;
-            {
+            let written = {
                 let mut compact = self.compact.borrow_mut();
                 let written = match compact.as_mut() {
                     Ok(pages) => pages.write(index, &object),
@@ -1209,8 +1283,21 @@ impl<T: ExpectedObjectDomain> Serialize for CreationObjects<'_, T> {
                     // The writer goes with it: nothing certifies a prefix.
                     *compact = Err(error);
                 }
-            }
+                compact.is_ok()
+            };
             sequence.serialize_element(object.as_ref())?;
+            // The object as its pages now hold it: what decoding them would
+            // give, kept for the tree that opens them. (A copy is never made
+            // for this: an object the tree lends is not kept.)
+            if let (true, Some(prefill), Cow::Owned(object)) = (written, self.prefill, object) {
+                prefill.cache.keep(
+                    prefill.arena,
+                    prefill.row_limit,
+                    prefill.len,
+                    index,
+                    &Arc::new(object),
+                );
+            }
         }
         sequence.end()
     }
@@ -1222,6 +1309,41 @@ impl PagedExpectedTree {
         path: &Path,
         admission: n2r_win32::tree_resources::SourceResourceAdmission,
         group: &crate::artifact_arena::ArtifactGroupPermit,
+    ) -> Result<(
+        ExpectedTreePageReceipt,
+        crate::artifact_arena::ArtifactLease,
+    )> {
+        Self::create_in_group(tree, path, admission, group, None)
+    }
+    /// [`Self::create_with_resources_in_group`] and then
+    /// [`Self::open_created_with_resources_in_group`] of what it wrote.
+    ///
+    /// In a run that verifies once, the opening derives nothing of the
+    /// pages again, and decodes none of the objects: the objects the
+    /// creation decoded to write them are kept for the opened tree as its
+    /// decoded objects, as the opening's own pass over them used to keep
+    /// them (the same optional memory, the same cache, given up the same
+    /// way when memory is short). They are the objects whose JSON the pages
+    /// hold, so they are what decoding the pages gives. Where the opening
+    /// derives the pages' facts again, it starts from an empty cache, as
+    /// always.
+    pub fn create_and_open_with_resources_in_group(
+        tree: &impl ExpectedObjectDomain,
+        path: &Path,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        group: &crate::artifact_arena::ArtifactGroupPermit,
+    ) -> Result<Self> {
+        let decoded = n2r_win32::verify_policy::verifies_once().then(DecodedCache::registered);
+        let (receipt, artifact) =
+            Self::create_in_group(tree, path, admission, group, decoded.as_deref())?;
+        Self::open_created_in_group(path, &receipt, admission, group, artifact, decoded)
+    }
+    fn create_in_group(
+        tree: &impl ExpectedObjectDomain,
+        path: &Path,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        group: &crate::artifact_arena::ArtifactGroupPermit,
+        decoded: Option<&DecodedCache>,
     ) -> Result<(
         ExpectedTreePageReceipt,
         crate::artifact_arena::ArtifactLease,
@@ -1244,7 +1366,14 @@ impl PagedExpectedTree {
             .context("expected writer RAM overflow")?;
         let _ram = group.arena().reserve_ram(working)?;
         let permit = group.reserve_file(path, admission.expected_page_budget()?.max_file_bytes)?;
-        let receipt = Self::create_with_resources(tree, permit.path(), admission)?;
+        let prefill = decoded.map(|cache| Prefill {
+            cache,
+            arena: group.arena(),
+            row_limit: admission.budget.max_row_bytes,
+            len: tree.object_count(),
+        });
+        let receipt =
+            Self::create_with_resources_prefilled(tree, permit.path(), admission, prefill)?;
         let artifact = permit.verify_closed(&receipt.file_sha256)?;
         Ok((receipt, artifact))
     }
@@ -1267,12 +1396,20 @@ impl PagedExpectedTree {
         budget: PageBudget,
         semantic_byte_budget: u64,
     ) -> Result<ExpectedTreePageReceipt> {
-        Self::create_domain(tree, path, budget, semantic_byte_budget, None)
+        Self::create_domain(tree, path, budget, semantic_byte_budget, None, None)
     }
     pub fn create_with_resources(
         tree: &impl ExpectedObjectDomain,
         path: &Path,
         admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    ) -> Result<ExpectedTreePageReceipt> {
+        Self::create_with_resources_prefilled(tree, path, admission, None)
+    }
+    fn create_with_resources_prefilled(
+        tree: &impl ExpectedObjectDomain,
+        path: &Path,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        prefill: Option<Prefill<'_>>,
     ) -> Result<ExpectedTreePageReceipt> {
         admission.validate()?;
         ensure!(
@@ -1291,6 +1428,7 @@ impl PagedExpectedTree {
             admission.expected_page_budget()?,
             admission.semantic_byte_budget(),
             Some(admission),
+            prefill,
         )
     }
     fn create_domain(
@@ -1299,6 +1437,7 @@ impl PagedExpectedTree {
         budget: PageBudget,
         semantic_byte_budget: u64,
         resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+        prefill: Option<Prefill<'_>>,
     ) -> Result<ExpectedTreePageReceipt> {
         budget.validate()?;
         ensure!(
@@ -1352,6 +1491,7 @@ impl PagedExpectedTree {
                 &CreationView {
                     tree,
                     compact: &compact,
+                    prefill,
                 },
             )?;
             let semantic_sha256 = semantic.finish()?;
@@ -1482,6 +1622,16 @@ impl PagedExpectedTree {
         group: &crate::artifact_arena::ArtifactGroupPermit,
         artifact: crate::artifact_arena::ArtifactLease,
     ) -> Result<Self> {
+        Self::open_created_in_group(path, receipt, admission, group, artifact, None)
+    }
+    fn open_created_in_group(
+        path: &Path,
+        receipt: &ExpectedTreePageReceipt,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        group: &crate::artifact_arena::ArtifactGroupPermit,
+        artifact: crate::artifact_arena::ArtifactLease,
+        decoded: Option<std::rc::Rc<DecodedCache>>,
+    ) -> Result<Self> {
         admission.validate()?;
         ensure!(
             group.group() == crate::artifact_arena::ArtifactGroup::Expected
@@ -1503,7 +1653,7 @@ impl PagedExpectedTree {
                 artifact: Some(artifact),
                 reopened: None,
             }),
-            receipt.created.as_ref(),
+            receipt.created.as_ref().map(|created| (created, decoded)),
         )
     }
     fn open_domain(
@@ -1812,7 +1962,9 @@ impl PagedExpectedTree {
         resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
         allow_original_source_header: bool,
         mut memory: Option<ExpectedMemoryOwner>,
-        created: Option<&CreatedHere>,
+        // What the creation of this file derived of it, and the objects it
+        // decoded, kept for this tree where those facts are taken.
+        created: Option<(&CreatedHere, Option<std::rc::Rc<DecodedCache>>)>,
     ) -> Result<Self> {
         ensure!(
             (1..=i64::MAX as u64).contains(&semantic_byte_budget),
@@ -2057,14 +2209,7 @@ impl PagedExpectedTree {
             alias_projection: RefCell::new(None),
             alias_projection_lookups: Cell::new(0),
             input_digest: n2r_win32::shadow_native::input_domain::InputDigestMemo::new(),
-            decoded: {
-                let decoded = std::rc::Rc::new(DecodedCache(
-                    RefCell::new(DecodedObjects::default()),
-                    std::cell::Cell::new(n2r_win32::evict::now()),
-                ));
-                n2r_win32::evict::register(&decoded);
-                decoded
-            },
+            decoded: DecodedCache::registered(),
             header,
             counts: ExpectedTreePageCounts::default(),
             file_sha256: file_sha256.into(),
@@ -2090,7 +2235,9 @@ impl PagedExpectedTree {
         // The file this process's creation has just written, pinned by what
         // that creation derived of it: in a run that verifies once, those
         // stand for deriving them again (see `CreatedHere`).
-        let created = created.filter(|created| {
+        // Where they are not taken, the objects the creation decoded are
+        // given up here, before the opening decodes them again.
+        let created = created.filter(|(created, _)| {
             n2r_win32::verify_policy::verifies_once()
                 && !allow_original_source_header
                 && view.reader.borrow().written_by_this_process()
@@ -2101,9 +2248,12 @@ impl PagedExpectedTree {
                 && created.resource_admission == view.resource_admission
                 && created.counts.objects == view.header.total_objects
         });
-        if let Some(created) = created {
+        if let Some((created, decoded)) = created {
             view.semantic_sha256 = created.semantic_sha256.clone();
             view.counts = created.counts;
+            if let Some(decoded) = decoded {
+                view.decoded = decoded;
+            }
         } else {
             let counts = Cell::new(ExpectedTreePageCounts::default());
             let mut semantic = SemanticHash::new(semantic_byte_budget)?;
@@ -2487,45 +2637,13 @@ impl PagedExpectedTree {
         let (Some(arena), Some(admission)) = (&self.arena, self.resource_admission) else {
             return;
         };
-        self.decoded.1.set(n2r_win32::evict::now());
-        let mut decoded = self.decoded.0.borrow_mut();
-        if decoded.rows.get(index).is_some_and(Option::is_some) {
-            return;
-        }
-        if decoded.refused_for > 0 {
-            decoded.refused_for -= 1;
-            return;
-        }
-        let Ok(mut bytes) = object_memory_bytes(object, 0, admission.budget.max_row_bytes) else {
-            return;
-        };
-        let slots = decoded.rows.is_empty();
-        if slots {
-            bytes = bytes
-                .saturating_add((self.len() * std::mem::size_of::<Option<Arc<Object>>>()) as u64);
-        }
-        if decoded.unspent < bytes {
-            let block = DECODED_BLOCK_BYTES.max(bytes);
-            match arena.reserve_optional_ram(block) {
-                Ok(lease) => {
-                    decoded.leases.push(lease);
-                    decoded.unspent += block;
-                }
-                Err(_) => {
-                    decoded.refused_for = DECODED_RETRY_OBJECTS;
-                    return;
-                }
-            }
-        }
-        if slots {
-            if decoded.rows.try_reserve_exact(self.len()).is_err() {
-                decoded.refused_for = DECODED_RETRY_OBJECTS;
-                return;
-            }
-            decoded.rows.resize_with(self.len(), || None);
-        }
-        decoded.unspent -= bytes;
-        decoded.rows[index] = Some(Arc::clone(object));
+        self.decoded.keep(
+            arena,
+            admission.budget.max_row_bytes,
+            self.len(),
+            index,
+            object,
+        );
     }
     fn decode_object(&self, index: usize) -> Result<Arc<Object>> {
         ensure!(
@@ -2988,6 +3106,110 @@ mod created_tests {
 
         let written = serde_json::to_value(&receipt).unwrap();
         assert!(!written.as_object().unwrap().contains_key("created"));
+    }
+
+    /// The objects a creation keeps for the tree that opens its pages are
+    /// what decoding those pages gives, ordinal by ordinal, and keeping them
+    /// changes nothing of the legacy JSON or of the pages written.
+    #[test]
+    fn the_objects_a_creation_keeps_are_those_its_pages_decode_to() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut objects = vec![object(5, &[], true), object(40, &["a"], true)];
+        for record in 0..200u64 {
+            objects.push(object(64 + record, &["a", &format!("f{record}")], false));
+        }
+        let tree = ExpectedTree {
+            profile: "test-profile".into(),
+            logical_bytes: 1000,
+            internal_replacement_pending: Vec::new(),
+            objects,
+        };
+        let budget = PageBudget {
+            max_page_bytes: 64 * 1024,
+            max_records_per_page: 1024,
+            max_records: 4096,
+            max_pages: 1024,
+            max_file_bytes: 64 * 1024 * 1024,
+        };
+        let first = directory.path().join("first.pages");
+        let receipt = PagedExpectedTree::create(&tree, &first, budget).unwrap();
+        // A tree that hands out objects of its own, as a projection does.
+        let source = PagedExpectedTree::open(
+            &first,
+            &receipt.file_sha256,
+            &receipt.semantic_sha256,
+            budget,
+        )
+        .unwrap();
+        let ledger = directory.path().join("ledger");
+        std::fs::create_dir(&ledger).unwrap();
+        let arena = crate::artifact_arena::ArtifactArena::new(
+            &ledger,
+            n2r_win32::tree_resources::ResourceBudget {
+                schema_version: 1,
+                ram_bytes: 256 * 1024 * 1024,
+                scratch_bytes: 256 * 1024 * 1024,
+                page_bytes: 65536,
+                max_row_bytes: 65536,
+                retained_index_bytes: 16 * 1024 * 1024,
+                handle_slots: 1024,
+            },
+            &[],
+        )
+        .unwrap();
+        let cache = DecodedCache::registered();
+        let wire = wire_budget(budget).unwrap();
+        let second = directory.path().join("second.pages");
+        let header = HeaderRef {
+            schema_version: 2,
+            profile: source.profile(),
+            logical_bytes: source.logical_bytes(),
+            internal_replacement_pending: source.internal_replacement_pending(),
+            total_objects: source.len() as u64,
+            resource_admission: None,
+        };
+        let compact = RefCell::new(CompactObjects::begin(
+            &second,
+            wire,
+            &header,
+            budget.max_file_bytes,
+            Some(65536),
+        ));
+        let mut json = Vec::new();
+        serde_json::to_writer_pretty(
+            &mut json,
+            &CreationView {
+                tree: &source,
+                compact: &compact,
+                prefill: Some(Prefill {
+                    cache: &cache,
+                    arena: &arena,
+                    row_limit: 65536,
+                    len: source.len(),
+                }),
+            },
+        )
+        .unwrap();
+        assert_eq!(json, serde_json::to_vec_pretty(&tree).unwrap());
+        let CompactObjects { writer, counts, .. } = compact.into_inner().unwrap();
+        assert_eq!(counts, receipt.created.as_ref().unwrap().counts);
+        let summary = writer.finish().unwrap();
+        let reopened = PagedExpectedTree::open_with_limits(
+            &second,
+            &summary.sha256,
+            &receipt.semantic_sha256,
+            wire,
+            budget.max_file_bytes,
+        )
+        .unwrap();
+        let kept = cache.0.borrow();
+        assert_eq!(kept.rows.len(), tree.objects.len());
+        assert!(!kept.leases.is_empty());
+        for (index, expected) in tree.objects.iter().enumerate() {
+            let held = kept.rows[index].as_deref().expect("every object kept");
+            assert_eq!(held, expected);
+            assert_eq!(*held, reopened.object(index).unwrap());
+        }
     }
 }
 

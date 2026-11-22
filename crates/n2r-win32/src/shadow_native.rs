@@ -2976,6 +2976,115 @@ pub(crate) fn create_fresh(
     Ok(file)
 }
 
+/// OBJECT_ATTRIBUTES, for [`create_directory_held`].
+#[repr(C)]
+struct ObjectAttributes {
+    length: u32,
+    root_directory: windows_sys::Win32::Foundation::HANDLE,
+    object_name: *const windows_sys::Win32::Foundation::UNICODE_STRING,
+    attributes: u32,
+    security_descriptor: *mut core::ffi::c_void,
+    security_quality_of_service: *mut core::ffi::c_void,
+}
+
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    fn NtCreateFile(
+        handle: *mut windows_sys::Win32::Foundation::HANDLE,
+        access: u32,
+        attributes: *const ObjectAttributes,
+        status: *mut windows_sys::Win32::System::IO::IO_STATUS_BLOCK,
+        allocation: *const i64,
+        file_attributes: u32,
+        share: u32,
+        disposition: u32,
+        options: u32,
+        extended_attributes: *const core::ffi::c_void,
+        extended_attributes_length: u32,
+    ) -> i32;
+    fn RtlNtStatusToDosError(status: i32) -> u32;
+}
+
+/// A new directory made with `security` and opened with `access` by one
+/// call, as `CreateDirectoryW` makes it and [`open`] then opens it again
+/// (shared for reading and writing, for backup, never following a reparse
+/// point, synchronous): one create where there were two and a close. A
+/// name that exists is refused, as `CreateDirectoryW` refuses it.
+///
+/// `None` where `path` is not in the extended-length form (`\\?\`), which
+/// is the only one whose NT name is the path itself: the caller then makes
+/// the directory the old way.
+fn create_directory_held(
+    path: &str,
+    security: *mut core::ffi::c_void,
+    access: u32,
+) -> io::Result<Option<File>> {
+    const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+    const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
+    const FILE_CREATE: u32 = 2;
+    const FILE_CREATED: usize = 2;
+    // FILE_DIRECTORY_FILE, FILE_SYNCHRONOUS_IO_NONALERT,
+    // FILE_OPEN_FOR_BACKUP_INTENT, FILE_OPEN_REPARSE_POINT.
+    const OPTIONS: u32 = 0x1 | 0x20 | 0x4000 | 0x0020_0000;
+    let Some(rest) = path.strip_prefix(r"\\?\") else {
+        return Ok(None);
+    };
+    let name: Vec<u16> = r"\??\".encode_utf16().chain(rest.encode_utf16()).collect();
+    let bytes = name
+        .len()
+        .checked_mul(2)
+        .and_then(|bytes| u16::try_from(bytes).ok())
+        .ok_or_else(|| invalid("a new directory's path exceeds a native name"))?;
+    let object_name = windows_sys::Win32::Foundation::UNICODE_STRING {
+        Length: bytes,
+        MaximumLength: bytes,
+        Buffer: name.as_ptr().cast_mut(),
+    };
+    let attributes = ObjectAttributes {
+        length: mem::size_of::<ObjectAttributes>() as u32,
+        root_directory: ptr::null_mut(),
+        object_name: &object_name,
+        attributes: OBJ_CASE_INSENSITIVE,
+        security_descriptor: security,
+        security_quality_of_service: ptr::null_mut(),
+    };
+    let mut handle = ptr::null_mut();
+    let mut status_block = windows_sys::Win32::System::IO::IO_STATUS_BLOCK::default();
+    // SAFETY: the name, its counted string and the attributes are live for
+    // the synchronous call; the descriptor is the caller's validated one or
+    // null; the handle is written only on success.
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            access,
+            &attributes,
+            &mut status_block,
+            ptr::null(),
+            FILE_ATTRIBUTE_NORMAL,
+            3,
+            FILE_CREATE,
+            OPTIONS,
+            ptr::null(),
+            0,
+        )
+    };
+    if status < 0 {
+        // SAFETY: a pure status translation.
+        return Err(io::Error::from_raw_os_error(
+            unsafe { RtlNtStatusToDosError(status) } as i32,
+        ));
+    }
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        return Err(invalid("a new directory's create returned no handle"));
+    }
+    // SAFETY: unique ownership of the handle just returned.
+    let file = unsafe { File::from_raw_handle(handle) };
+    if status_block.Information != FILE_CREATED {
+        return Err(invalid("a new directory was opened, not created"));
+    }
+    Ok(Some(file))
+}
+
 fn open(path: &str, directory: bool, write: bool) -> io::Result<File> {
     let f = File::options()
         // Metadata handles need WRITE_DAC/WRITE_OWNER, never DELETE. Retaining
@@ -3504,10 +3613,16 @@ fn create_returning_file(
     index: usize,
     payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
 ) -> io::Result<Option<File>> {
-    create_returning_file_inner(path, i, index, payload_writer, false)
+    create_returning_file_inner(path, i, index, payload_writer, false, false)
 }
+/// A short-name link made empty, and its handle. In a run that verifies
+/// once, a directory link is made and opened by one call
+/// ([`create_directory_held`]) and comes back with the handle that
+/// [`open`] would have opened on it, held to the same type; otherwise it
+/// comes back without one, for the caller to open.
 fn create_alias_returning_file(path: &str, i: &Input<'_>) -> io::Result<Option<File>> {
-    create_returning_file_inner(path, i, 0, None, crate::verify_policy::verifies_once())
+    let once = crate::verify_policy::verifies_once();
+    create_returning_file_inner(path, i, 0, None, once, once)
 }
 fn create_returning_file_inner(
     path: &str,
@@ -3515,6 +3630,7 @@ fn create_returning_file_inner(
     index: usize,
     payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
     skip_integrity: bool,
+    hold_directory: bool,
 ) -> io::Result<Option<File>> {
     let mut sd = descriptor(i.security)?;
     let sa = SECURITY_ATTRIBUTES {
@@ -3523,6 +3639,17 @@ fn create_returning_file_inner(
         bInheritHandle: 0,
     };
     let name = wide(path);
+    if i.directory
+        && hold_directory
+        && i.case_sensitive.is_none()
+        && let Some(directory) =
+            create_directory_held(path, sd.as_mut_ptr().cast(), METADATA_WRITE_ACCESS)?
+    {
+        // What `open(path, true, true)` makes of the handle it opens.
+        suppress_access(&directory)?;
+        validate_open_type(&directory, true)?;
+        return Ok(Some(directory));
+    }
     if i.directory {
         // SAFETY: NUL-terminated bounded path, live validated descriptor.
         check(unsafe { CreateDirectoryW(name.as_ptr(), &sa) })?;
@@ -7294,6 +7421,32 @@ mod tests {
         let (_, firsts) =
             gather_batch(0..3, |index| Ok(index), |_: &usize, first| Ok(first)).unwrap();
         assert_eq!(firsts, [true, false, false]);
+    }
+
+    #[test]
+    fn a_directory_is_made_and_held_by_one_call_and_an_existing_name_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = format!(r"\\?\{}\made", temp.path().display());
+        // SYNCHRONIZE, READ_CONTROL, FILE_READ_ATTRIBUTES,
+        // FILE_WRITE_ATTRIBUTES and FILE_LIST_DIRECTORY: what an unprivileged
+        // test may ask of a directory it makes.
+        let access = 0x0012_0181;
+        let made = create_directory_held(&path, ptr::null_mut(), access)
+            .unwrap()
+            .expect("an extended-length path is made by one call");
+        suppress_access(&made).unwrap();
+        validate_open_type(&made, true).unwrap();
+        let again = create_directory_held(&path, ptr::null_mut(), access).unwrap_err();
+        assert_eq!(again.raw_os_error(), Some(183), "{again}");
+        let plain = temp.path().join("plain").display().to_string();
+        assert!(
+            create_directory_held(&plain, ptr::null_mut(), access)
+                .unwrap()
+                .is_none()
+        );
+        assert!(!std::path::Path::new(&plain).exists());
+        drop(made);
+        assert!(temp.path().join("made").is_dir());
     }
 
     #[test]

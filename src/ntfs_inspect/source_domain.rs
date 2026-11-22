@@ -198,6 +198,23 @@ pub trait RootDirectoryDomain {
         directory_ordinal: u64,
         entry_ordinal: u64,
     ) -> Result<crate::ntfs_namespace::Link>;
+    /// Lookup an entry when the caller already decoded the parent directory's
+    /// `SourceDirectoryHeader`, avoiding redundant header JSON decodes on
+    /// every binary-search probe.
+    fn entry_by_record(
+        &self,
+        directory_ordinal: u64,
+        _record_number: u64,
+        entry_ordinal: u64,
+    ) -> Result<crate::ntfs_namespace::Link> {
+        self.entry(directory_ordinal, entry_ordinal)
+    }
+    /// Sequential entry access by global ordinal in `(record_number, entry)`
+    /// order. Returns `Ok(None)` when the domain does not expose a flat
+    /// sequential entry table.
+    fn entry_at(&self, _global_ordinal: u64) -> Result<Option<crate::ntfs_namespace::Link>> {
+        Ok(None)
+    }
     fn upcase(&self) -> &dyn SourceMetadataRange;
     fn revalidate(&self) -> Result<()>;
 }

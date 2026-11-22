@@ -510,7 +510,11 @@ fn reconcile_domains_with_link_counter_hint(
             let mut found = false;
             while low < high {
                 let middle = low + (high - low) / 2;
-                let entry = directories.entry(parent_ordinal, middle)?;
+                let entry = directories.entry_by_record(
+                    parent_ordinal,
+                    parent_header.record_number,
+                    middle,
+                )?;
                 match compare(&entry.name, &name.name_utf16, &upcase) {
                     Ordering::Less => low = middle + 1,
                     Ordering::Greater => high = middle,
@@ -546,12 +550,17 @@ fn reconcile_domains_with_link_counter_hint(
         file_directories == directories.directory_count(),
         "directory coverage differs"
     );
+    let mut global_entry_ordinal = 0u64;
     for ordinal in 0..directories.directory_count() {
         let header = directories.directory(ordinal)?;
         let id = header.record_number | (u64::from(header.sequence_number) << 48);
         let mut previous: Option<Vec<u16>> = None;
         for position in 0..header.entries {
-            let entry = directories.entry(ordinal, position)?;
+            let entry = match directories.entry_at(global_entry_ordinal)? {
+                Some(entry) => entry,
+                None => directories.entry_by_record(ordinal, header.record_number, position)?,
+            };
+            global_entry_ordinal += 1;
             ensure!(
                 entry.parent == id
                     && entry.namespace <= 3

@@ -158,8 +158,15 @@ fn add(a: u64, b: u64) -> io::Result<u64> {
 /// its allocator or its admission has no batch to pay for, and neither has
 /// one whose handle slots have no room for the helpers' duplicates.
 pub(super) fn payer(tree: &PrivateTree) -> Option<Arc<dyn ReportMemoryAccountant>> {
+    payer_beside(tree, 1)
+}
+
+/// [`payer`] for a batch whose helpers may observe while those of
+/// `batches - 1` other batches do: the handle slots must have room for the
+/// duplicates of all of them at once.
+fn payer_beside(tree: &PrivateTree, batches: usize) -> Option<Arc<dyn ReportMemoryAccountant>> {
     let threads = std::thread::available_parallelism().map_or(1, |cores| cores.get());
-    if !supply_snapshot::handles_admit_helpers(tree, threads) {
+    if !supply_snapshot::handles_admit_helpers(tree, threads.checked_mul(batches)?) {
         return None;
     }
     Some(tree.memory.as_ref()?.payer())
@@ -317,14 +324,16 @@ struct Prepared<'tree> {
 }
 
 /// Everything the calling thread does for a batch before its helpers start.
+/// `batches` is how many batches' helpers may observe at once ([`payer_beside`]).
 fn prepare_batch<'tree>(
     tree: &'tree PrivateTree,
+    batches: usize,
     streams: &[SupplyStreamRequest<'_>],
     maximum_range_bytes: u64,
     closing: bool,
     wants_route: impl Fn(usize, &[(SupplyKind, SupplyRange)]) -> Option<u64>,
 ) -> Option<Prepared<'tree>> {
-    let payer = payer(tree)?;
+    let payer = payer_beside(tree, batches)?;
     let mut ready: Vec<Ready<'_>> = Vec::new();
     for (slot, request) in streams.iter().enumerate() {
         match prepare(
@@ -358,7 +367,7 @@ pub(super) fn observe(
     closing: bool,
     wants_route: impl Fn(usize, &[(SupplyKind, SupplyRange)]) -> Option<u64>,
 ) -> Vec<SupplyStreamSeen> {
-    match prepare_batch(tree, streams, maximum_range_bytes, closing, wants_route) {
+    match prepare_batch(tree, 1, streams, maximum_range_bytes, closing, wants_route) {
         Some(prepared) => observe_prepared(prepared),
         None => Vec::new(),
     }
@@ -368,7 +377,12 @@ pub(super) fn observe(
 /// caller joins later: the calling thread makes the batch ready here, as
 /// `observe` does, and goes on with its own work while the helpers make the
 /// observations. `None` where the tree takes its streams one at a time, or
-/// no thread could be started (the batch's reservations are then returned).
+/// no thread could be started or its stack was not granted as spare memory
+/// (the batch's reservations are then returned).
+///
+/// The caller may meanwhile hand a batch of its own to helpers
+/// ([`observe`]), so this batch is handed over only where the tree's handle
+/// slots have room for both batches' helpers' duplicates at once.
 pub(super) fn observe_ahead<'scope, 'tree: 'scope>(
     scope: &'scope std::thread::Scope<'scope, '_>,
     tree: &'tree PrivateTree,
@@ -377,11 +391,18 @@ pub(super) fn observe_ahead<'scope, 'tree: 'scope>(
     closing: bool,
     wants_route: impl Fn(usize, &[(SupplyKind, SupplyRange)]) -> Option<u64>,
 ) -> Option<std::thread::ScopedJoinHandle<'scope, Vec<SupplyStreamSeen>>> {
-    let prepared = prepare_batch(tree, streams, maximum_range_bytes, closing, wants_route)?;
+    let prepared = prepare_batch(tree, 2, streams, maximum_range_bytes, closing, wants_route)?;
+    // The thread's stack, and the query buffer it keeps where it works on
+    // streams itself (`each_at_once` without helpers), as a helper's are.
+    let thread = prepared
+        .payer
+        .reserve_spare(crate::shadow_native::HELPER_THREAD_BYTES)
+        .ok()?;
     std::thread::Builder::new()
         .name("n2r-supply-observe-ahead".into())
         .spawn_scoped(scope, move || {
             let _sampled = crate::stack_sampler::helper();
+            let _thread = thread;
             observe_prepared(prepared)
         })
         .ok()

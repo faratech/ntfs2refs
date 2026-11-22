@@ -1642,6 +1642,7 @@ impl PrivateTree {
                 .and_then(|n| n.checked_add(self.metadata_targets.len() as u64))
                 .and_then(|n| n.checked_add(u64::from(self.carrier_directory.is_some())))
                 .and_then(|n| n.checked_add(u64::from(self.dedicated_source.is_some())))
+                .and_then(|n| n.checked_add(u64::from(self.shadow_root.get().is_some())))
                 // Volume, privilege leases and temporary native control opens.
                 .and_then(|n| n.checked_add(8))
                 .ok_or_else(|| invalid("native owned handle count overflow"))?;

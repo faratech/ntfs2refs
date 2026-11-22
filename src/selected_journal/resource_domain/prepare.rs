@@ -1344,7 +1344,9 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: PreparedJournal>(
     // writes each batch (and reads it back where batches are) while this one
     // stages the next. Without it, or for a journal written through a cache
     // of its own, this thread writes them, as before.
-    let read_back = hashed_as_written(f) == Some(true);
+    // Decided once, here, for the writing thread and for this one alike.
+    let hashing = hashed_as_written(f);
+    let read_back = hashing == Some(true);
     let writing = if stage.is_some() && file.plain_handle().is_some() {
         WriterMemory::lease(domain, read_back)
     } else {
@@ -1367,6 +1369,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: PreparedJournal>(
             capture_witness,
             read_back_buffers,
             need_whole,
+            hashing,
             reach,
             stage,
             None,
@@ -1399,6 +1402,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: PreparedJournal>(
             capture_witness,
             read_back_buffers,
             need_whole,
+            hashing,
             reach,
             stage,
             writer,
@@ -1445,7 +1449,8 @@ impl WriterMemory {
 
 /// The body of [`prepare_inner`]: writes the journal through `file`, staging
 /// rows in `stage` where it is given, and handing the staged batches to
-/// `writer` where there is one.
+/// `writer` where there is one. `hashing` is [`hashed_as_written`], as
+/// `prepare_inner` decided it for the writer too.
 #[allow(clippy::too_many_arguments)]
 fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     domain: &ResourceJournalDomain<'_>,
@@ -1458,6 +1463,7 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     capture_witness: Option<&CaptureRevalidation<'_>>,
     read_back_buffers: usize,
     need_whole: bool,
+    hashing: Option<bool>,
     mut reach: impl FnMut(&mut R, u64),
     mut stage: Option<(Vec<u8>, crate::ntfs_inspect::paged_storage::SourceRamLease)>,
     mut writer: Option<stage_writer::StageWriter<'_, '_>>,
@@ -1494,7 +1500,7 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     // Every digest of a journal this build writes, and its ticket's, is
     // BLAKE3 (`n2r_win32::bulk_digest`); the ticket says so.
     let algorithm = Algorithm::WRITTEN;
-    let mut written = if let Some(read_back) = hashed_as_written(f) {
+    let mut written = if let Some(read_back) = hashing {
         let whole = if need_whole {
             let mut whole = burst_pin_hash(algorithm, read_back_buffers)?;
             whole.update(&vec![0u8; usize::try_from(f.body_offset)?])?;

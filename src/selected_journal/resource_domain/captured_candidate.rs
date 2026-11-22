@@ -83,6 +83,7 @@ impl<'a> ProtectedCapturedCandidate<'a> {
             source_lane.dedicated_state(events)? == source_before,
             "captured-candidate source lane differs from the real frozen source"
         );
+        source_lane.set_read_ahead(true);
         let image_length = domain.facts().image_length;
         ensure!(
             source.byte_len() == image_length

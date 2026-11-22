@@ -31,9 +31,9 @@ const SPAN: usize = n2r_win32::BorrowedPagedWriter::MAX_WRITE;
 /// Spans each reader may hold, read or being read, beside those hashed.
 const AHEAD: usize = 2;
 
-/// The memory the pass holds beyond the caller's: each reader's buffers and
-/// the extra handle's own aligned buffer.
-const WORKSPACE: u64 = ((2 * AHEAD + 1) * SPAN) as u64;
+/// The memory the pass holds beyond the caller's: each reader's buffers,
+/// the extra handle's own aligned buffer, and the digest worker's two buffers.
+const WORKSPACE: u64 = ((2 * AHEAD + 3) * SPAN) as u64;
 
 /// What a read-back with two reads outstanding holds: the spare memory that
 /// pays for it, both readers' buffers, and the second read handle.
@@ -253,7 +253,7 @@ fn read_spans<R: Read + Seek>(
 /// Hashes the oldest span outstanding, when its reader has read it: each
 /// range's frame where the range begins, then the range's bytes.
 fn hash_next(
-    aggregate: &mut crate::selected_journal::PinHash,
+    aggregate: &mut n2r_win32::bulk_digest::HashedBehind,
     lanes: &[Lane],
     pending: &mut VecDeque<Span>,
     consumed: &mut u64,
@@ -269,13 +269,11 @@ fn hash_next(
     let start = span.start();
     for piece in &span.pieces {
         if let Some((offset, length)) = piece.frame {
-            frame(aggregate, &SelectedRange { offset, length })?;
+            aggregate.update(&offset.to_le_bytes())?;
+            aggregate.update(&length.to_le_bytes())?;
         }
         let from = usize::try_from(piece.offset - start)?;
-        // A megabyte at a time, as the aggregate takes them.
-        for bytes in buffer[from..from + usize::try_from(piece.length)?].chunks(BUFFER) {
-            aggregate.update(bytes)?;
-        }
+        aggregate.update(&buffer[from..from + usize::try_from(piece.length)?])?;
     }
     // A reader that stopped needs no buffer back.
     let _ = lanes[side].free.send(buffer);
@@ -301,22 +299,24 @@ pub(super) fn check_selected_two_handles(
         buffers,
         mut lane,
     } = two;
-    let mut aggregate = aggregate_pin_hash(algorithm)?;
+    let mut aggregate = n2r_win32::bulk_digest::HashedBehind::new(algorithm, SPAN)?;
     if let Some(one) = hash_two_readers(
         (target, "writer's handle"),
         (&mut lane, "second read handle"),
         u64::from(domain.facts.range_count),
         |ordinal| {
             domain
-                .row(ordinal)
-                .map(|row| (row.capture.offset, row.capture.length))
+                .capture()
+                .index()
+                .range(ordinal)
+                .map(|range| (range.offset, range.length))
         },
         buffers,
         &mut aggregate,
     )? {
         return Ok(Err(one));
     }
-    let digest = finish(aggregate)?;
+    let digest = aggregate.finish()?;
     ensure!(
         digest == expected,
         "fresh apply actual selected target digest differs"
@@ -335,7 +335,7 @@ fn hash_two_readers<A: Read + Seek + Send, B: Read + Seek + Send>(
     range_count: u64,
     mut range: impl FnMut(u64) -> Result<(u64, u64)>,
     buffers: Vec<Vec<u8>>,
-    aggregate: &mut crate::selected_journal::PinHash,
+    aggregate: &mut n2r_win32::bulk_digest::HashedBehind,
 ) -> Result<Option<OneHandle>> {
     if buffers.len() != 2 * AHEAD || buffers.iter().any(|buffer| buffer.len() < SPAN) {
         return Ok(Some(OneHandle::because(
@@ -506,7 +506,11 @@ mod tests {
         }
         let mut first = std::io::Cursor::new(image.clone());
         let mut second = std::io::Cursor::new(image.clone());
-        let mut hash = aggregate_pin_hash(n2r_win32::bulk_digest::Algorithm::WRITTEN).unwrap();
+        let mut hash = n2r_win32::bulk_digest::HashedBehind::new(
+            n2r_win32::bulk_digest::Algorithm::WRITTEN,
+            SPAN,
+        )
+        .unwrap();
         let started = hash_two_readers(
             (&mut first, "first"),
             (&mut second, "second"),
@@ -517,7 +521,7 @@ mod tests {
         )
         .unwrap();
         assert!(started.is_none(), "both readers started");
-        assert_eq!(finish(hash).unwrap(), serial(&image, &ranges));
+        assert_eq!(hash.finish().unwrap(), serial(&image, &ranges));
     }
 
     #[test]
@@ -526,7 +530,11 @@ mod tests {
         let ranges = [(0, 4096), (8 * MIB, 4096), (4096 * 3, 4096)];
         let mut first = std::io::Cursor::new(image.clone());
         let mut second = std::io::Cursor::new(image);
-        let mut hash = aggregate_pin_hash(n2r_win32::bulk_digest::Algorithm::WRITTEN).unwrap();
+        let mut hash = n2r_win32::bulk_digest::HashedBehind::new(
+            n2r_win32::bulk_digest::Algorithm::WRITTEN,
+            SPAN,
+        )
+        .unwrap();
         let error = hash_two_readers(
             (&mut first, "first"),
             (&mut second, "second"),

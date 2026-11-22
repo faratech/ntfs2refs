@@ -35,7 +35,7 @@ const SCAN_WINDOW: usize = 4 * BUFFER;
 /// they follow each other closely (no more than 8 KiB between two, see
 /// [`InOrder`]): hundreds of the rows that store nothing. A fraction of the
 /// megabytes every observation of a journal leases for its buffers.
-const DESCRIPTOR_WINDOW: usize = 64 * 1024;
+const DESCRIPTOR_WINDOW: usize = 4 * 1024;
 
 /// The window a pass over every byte of the journal reads it through
 /// ([`InOrder`]), and the lease that pays for it. A window only buys speed,

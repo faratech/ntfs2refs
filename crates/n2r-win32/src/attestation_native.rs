@@ -959,6 +959,9 @@ struct Taken<'s> {
     security_bytes: usize,
     /// The content reads skipped so far, as the report's header records them.
     skipped: crate::attestation::SkippedContentReads,
+    /// One bit per object: set when the namespace pass must open it (directories
+    /// or objects whose metadata open failed). Clear for ordinary non-directories.
+    needs_namespace_open: Vec<u64>,
     /// What the helper threads hold for themselves; none once given up.
     helper_workspaces: Vec<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>,
 }
@@ -1196,6 +1199,7 @@ pub(crate) fn collect_file_metadata_with_routes(
         stream_bytes,
         security_bytes: 0,
         skipped: crate::attestation::SkippedContentReads::default(),
+        needs_namespace_open: vec![0u64; selectors.len().div_ceil(64)],
         helper_workspaces,
     };
     crate::ordered_observation::in_order(
@@ -1260,7 +1264,7 @@ pub(crate) fn collect_file_metadata_with_routes(
                 _paid: paid,
             })
         },
-        |taken, _, selected, observed| {
+        |taken, index, selected, observed| {
             let identity = &selected.row.identity;
             // Whatever fails for this object is reported with its file record.
             (|| -> io::Result<()> {
@@ -1298,6 +1302,18 @@ pub(crate) fn collect_file_metadata_with_routes(
                     &mut taken.security_bytes,
                 )?;
                 taken.skipped.add_object(&logical.before)?;
+                let is_plain_file = obs.open_error.is_none()
+                    && obs.before.as_ref().is_some_and(|before| {
+                        before.queries.iter().any(|q| {
+                            q.class == 1
+                                && q.native_error.is_none()
+                                && q.bytes.len() == 24
+                                && q.bytes[21] == 0
+                        })
+                    });
+                if !is_plain_file {
+                    taken.needs_namespace_open[index / 64] |= 1u64 << (index % 64);
+                }
                 if let Some(sink) = taken.sink.as_deref_mut() {
                     sink.file(&selected.row, &obs, &logical)?;
                 } else {
@@ -1319,6 +1335,7 @@ pub(crate) fn collect_file_metadata_with_routes(
         read_budget,
         mut stream_bytes,
         skipped,
+        needs_namespace_open,
         helper_workspaces,
         ..
     } = taken;
@@ -1359,6 +1376,7 @@ pub(crate) fn collect_file_metadata_with_routes(
             Some(row_limit),
             row_payer,
             helper_workspaces,
+            crate::verify_policy::checks_once().then_some(needs_namespace_open.as_slice()),
             |row| sink.namespace(&row),
         )?;
         NamespaceData { files: Vec::new() }

@@ -158,9 +158,6 @@ fn add(a: u64, b: u64) -> io::Result<u64> {
 /// its allocator or its admission has no batch to pay for, and neither has
 /// one whose handle slots have no room for the helpers' duplicates.
 pub(super) fn payer(tree: &PrivateTree) -> Option<Arc<dyn ReportMemoryAccountant>> {
-    if tree.partition_source.is_some() {
-        return None;
-    }
     let threads = std::thread::available_parallelism().map_or(1, |cores| cores.get());
     if !supply_snapshot::handles_admit_helpers(tree, threads) {
         return None;

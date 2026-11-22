@@ -171,43 +171,40 @@ fn probe_alias_unnamed(
             .collect::<Vec<_>>(),
     )?;
     let expected = probe.expected();
-    // The verification above has just read the link's point through this
-    // handle, on a volume that is read-only, and held it to the point its
-    // target's name makes. In a run that verifies once, and in the recovery
-    // of one (`repeats_once_as_verified`), that reading stands for the
-    // snapshot's own: the snapshot does not ask for the point again and
-    // carries the one verified, which is then held to the point this probe
-    // expects, as before. A thorough run, the recovery of one and a run with
-    // `--recheck-everything` read it again, as before.
+    // The verification above has just checked the link's FileIdInfo,
+    // FileStandardInfo (link count == 1, delete pending == 0, directory flag,
+    // non-directory EOF == 0), FileAttributeTagInfo and reparse point on this
+    // same handle, on a read-only volume. In a run that verifies once (and in
+    // the recovery of one), only FileBasicInfo and security remain to be read.
     let snapshot = if crate::verify_policy::verifies_once()
         || crate::verify_policy::repeats_once_as_verified()
     {
-        let mut snapshot = super::metadata_snapshot_with_limit(
-            &alias,
-            &Input {
-                reparse: None,
-                ..probe.expected()
-            },
-            Some(maximum_row_bytes),
-        );
-        snapshot.reparse = Some(crate::attestation::ReparseObservation {
-            point: Some(observed.point.clone()),
-            error: None,
+        let basic = super::info(&alias, 0, 40)?;
+        if !super::basic_matches(&expected, &basic) || observed.point != *probe.point {
+            return Err(invalid(differs));
+        }
+        let mut snapshot = super::security_snapshot_with_limit(&alias, Some(maximum_row_bytes));
+        snapshot.queries.push(crate::attestation::Query {
+            class: 18,
+            bytes: observed.alias_file_id_info.to_vec(),
+            native_error: None,
         });
         snapshot
     } else {
-        super::metadata_snapshot_with_limit(&alias, &expected, Some(maximum_row_bytes))
+        let snapshot =
+            super::metadata_snapshot_with_limit(&alias, &expected, Some(maximum_row_bytes));
+        let standard = super::query_bytes(&snapshot, 1, 24)?;
+        if !super::basic_matches(&expected, super::query_bytes(&snapshot, 0, 40)?)
+            || !super::reparse_matches(&expected, &snapshot)?
+            || layout::u32_at(standard, 16)? != 1
+            || standard[20] != 0
+            || standard[21] != u8::from(probe.directory)
+            || (!probe.directory && layout::u64_at(standard, 8)? != 0)
+        {
+            return Err(invalid(differs));
+        }
+        snapshot
     };
-    let standard = super::query_bytes(&snapshot, 1, 24)?;
-    if !super::basic_matches(&expected, super::query_bytes(&snapshot, 0, 40)?)
-        || !super::reparse_matches(&expected, &snapshot)?
-        || layout::u32_at(standard, 16)? != 1
-        || standard[20] != 0
-        || standard[21] != u8::from(probe.directory)
-        || (!probe.directory && layout::u64_at(standard, 8)? != 0)
-    {
-        return Err(invalid(differs));
-    }
     if !probe.directory {
         super::streams::exact_list(&stream_info(&alias)?, &expected)?;
     }
@@ -353,12 +350,7 @@ impl VerifiedWindowsAliases {
         let plan_digest = aliases.semantic_sha256()?;
         let input_digest = super::private_tree::metadata::input_digest_domain(input)?;
         let root = format!("{}\\", pair.source.volume_path()?);
-        let workspace = admission
-            .budget
-            .max_row_bytes
-            .checked_mul(8)
-            .and_then(|n| n.checked_add(4 << 20))
-            .ok_or_else(|| invalid("recovered alias workspace overflow"))?;
+        let workspace = report_memory::alias_peak(admission.budget.max_row_bytes)?;
         let _working = payer.reserve(workspace)?;
         let count = aliases.len();
         let mut bytes = 4096u64;
@@ -652,11 +644,7 @@ impl VerifiedWindowsAliases {
                 ));
             }
         }
-        let work = self
-            .maximum_row_bytes
-            .checked_mul(8)
-            .and_then(|n| n.checked_add(4 << 20))
-            .ok_or_else(|| invalid("alias readonly workspace overflow"))?;
+        let work = report_memory::alias_peak(self.maximum_row_bytes)?;
         let _working = payer.reserve(work)?;
         let mut privileges = Privileges::enable_for(&["SeBackupPrivilege", "SeSecurityPrivilege"])?;
         let mut events = Vec::new();
@@ -1085,11 +1073,8 @@ impl StagedWindowsAliases {
         let root = format!("{}\\", pair.shadow.volume_path()?);
         let plan_digest = aliases.semantic_sha256()?;
         let input_digest = super::private_tree::metadata::input_digest_domain(input)?;
-        let workspace = admission
-            .budget
-            .max_row_bytes
-            .checked_mul(8)
-            .and_then(|n| n.checked_add(crate::windows_alias_native::WORKSPACE_BYTES))
+        let workspace = report_memory::alias_peak(admission.budget.max_row_bytes)?
+            .checked_add(crate::windows_alias_native::WORKSPACE_BYTES)
             .ok_or_else(|| invalid("alias row workspace overflow"))?;
         let working = payer.reserve(workspace)?;
         let mut bytes = 4096u64;
@@ -1174,8 +1159,10 @@ impl StagedWindowsAliases {
                     named_streams: Vec::new(),
                     sparse: None,
                 };
-                super::create(&pending.path, &initial, 0, None)?;
-                Some(super::open(&pending.path, entry.directory, true)?)
+                match super::create_returning_file(&pending.path, &initial, 0, None)? {
+                    Some(file) => Some(file),
+                    None => Some(super::open(&pending.path, entry.directory, true)?),
+                }
             };
             let file = created
                 .as_ref()
@@ -1657,10 +1644,6 @@ impl StagedWindowsAliases {
                 super::metadata_snapshot_with_limit(file, &expected, Some(maximum_row_bytes))
             }))
         };
-        // A link's snapshot, and the workspace of installing its point.
-        let workspace_of_one = report_memory::alias_peak(maximum_row_bytes)?
-            .checked_add(crate::windows_alias_native::WORKSPACE_BYTES)
-            .ok_or_else(|| invalid("alias restoration workspace overflow"))?;
         let payer = Arc::clone(&self.payer);
         let mut provisional_aliases = 0usize;
         let mut done = 0u64;
@@ -1756,7 +1739,12 @@ impl StagedWindowsAliases {
             let restored: Vec<io::Result<Option<Snapshot>>> = super::each_at_once(
                 Some(&*payer),
                 &links,
-                |_| Some(workspace_of_one),
+                |link| {
+                    Some(
+                        report_memory::security_query_peak(link.canonical.security.len())
+                            .saturating_add(crate::windows_alias_native::WORKSPACE_BYTES),
+                    )
+                },
                 &restore_one,
             );
             for (link, restored) in links.iter().zip(restored) {

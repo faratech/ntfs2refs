@@ -3240,12 +3240,12 @@ fn descriptor_checked(bytes: &[u8], maximum: Option<u64>) -> io::Result<Vec<u64>
     }
     Ok(aligned)
 }
-fn create(
+fn create_returning_file(
     path: &str,
     i: &Input<'_>,
     index: usize,
     payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
-) -> io::Result<()> {
+) -> io::Result<Option<File>> {
     let mut sd = descriptor(i.security)?;
     let sa = SECURITY_ATTRIBUTES {
         nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -3258,7 +3258,8 @@ fn create(
         check(unsafe { CreateDirectoryW(name.as_ptr(), &sa) })?;
         // Before anything is made inside it: a directory made in a marked
         // one takes the mark from it.
-        return settle_new_directory_case(path, i);
+        settle_new_directory_case(path, i)?;
+        return Ok(None);
     }
     let h = unsafe {
         CreateFileW(
@@ -3284,6 +3285,15 @@ fn create(
         f.write_all(i.payload)?;
     }
     crate::verify_policy::flush_working_file(&f)?;
+    Ok(Some(f))
+}
+fn create(
+    path: &str,
+    i: &Input<'_>,
+    index: usize,
+    payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
+) -> io::Result<()> {
+    let _ = create_returning_file(path, i, index, payload_writer)?;
     Ok(())
 }
 fn basic(file: &File, i: &Input<'_>) -> io::Result<()> {
@@ -3445,6 +3455,7 @@ pub(crate) fn observe_general_layout_readonly_domain_accounted(
         resource_profile,
         memory,
         None,
+        None,
     )
 }
 
@@ -3482,10 +3493,24 @@ pub(crate) fn observe_general_layout_readonly_domain_with_windows_aliases(
         Some(resource_profile),
         Some(memory),
         Some(aliases),
+        None,
     )?;
     let observed =
         aliases.observe_readonly_volume(input, protected.volume(), memory, &same_security)?;
     Ok((report, observed))
+}
+
+/// State for reading `< target_cluster` residual tails inline during the
+/// closing shadow walk (`observe_object`) on the already-open file handle,
+/// avoiding a second open/FileIdInfo/close pass over every file on the volume.
+/// Borrows `KeptResiduals` only per batch so the ledger may evict it at any
+/// time; if evicted mid-walk, the fallback residual pass resumes from `taken`.
+struct InlineResiduals<'a> {
+    kept: &'a crate::evict::Evictable<KeptResiduals>,
+    writer: &'a mut crate::layout_residual_pages::ResidualResultsWriter,
+    taken: u64,
+    bytes_read: u64,
+    abandoned: bool,
 }
 
 fn observe_general_layout_readonly_domain_accounted_with_alias_overlay(
@@ -3496,6 +3521,7 @@ fn observe_general_layout_readonly_domain_accounted_with_alias_overlay(
     resource_profile: Option<crate::attestation::ResourceProfile>,
     memory: Option<&dyn report_memory::ReportMemoryAccountant>,
     aliases: Option<&windows_aliases::VerifiedWindowsAliases>,
+    inline_residuals: Option<&mut InlineResiduals<'_>>,
 ) -> io::Result<GeneralLayoutReport> {
     pair.validate_with_resource_profile(resource_profile)?;
     if protected.binding() != &pair.shadow {
@@ -3522,6 +3548,7 @@ fn observe_general_layout_readonly_domain_accounted_with_alias_overlay(
         true,
         None,
         memory,
+        inline_residuals,
     )?;
     validate_existing_content_domain_with_memory_and_windows_aliases(
         &native,
@@ -4102,24 +4129,49 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
     provider.revalidate()?;
     // Declare the writer lease before the report so it also outlives any
     // report fields appended during this pass on every error path.
-    let mut residual_writer_memory;
-    let mut report = observe_general_layout_readonly_domain_accounted_with_alias_overlay(
-        pair.clone(),
-        input,
-        &same_security,
-        protected,
-        resource_profile,
-        memory,
-        aliases,
-    )?;
-    // Writer/control state survives the whole pass; descriptor query buffers
-    // are acquired only after the current paged input object has decoded.
-    residual_writer_memory = memory
+    let mut residual_writer_memory = memory
         .map(|payer| {
             report_memory::residual_writer_peak(result_budget.max_page_bytes)
                 .and_then(|bytes| payer.reserve(bytes))
         })
         .transpose()?;
+    let mut writer = crate::layout_residual_pages::ResidualResultsWriter::new(
+        result_path,
+        result_budget,
+        pair.clone(),
+        input.len() as u64,
+        &provider_sha,
+        input_sha.clone(),
+        count,
+    )?;
+    let (mut report, inline_taken, mut bytes_read) = {
+        let mut inline = if crate::verify_policy::verifies_once() {
+            kept.as_ref().map(|kept| InlineResiduals {
+                kept,
+                writer: &mut writer,
+                taken: 0,
+                bytes_read: 0,
+                abandoned: false,
+            })
+        } else {
+            None
+        };
+        let report = observe_general_layout_readonly_domain_accounted_with_alias_overlay(
+            pair,
+            input,
+            &same_security,
+            protected,
+            resource_profile,
+            memory,
+            aliases,
+            inline.as_mut(),
+        )?;
+        let (taken, bytes_read) = match inline {
+            Some(state) => (state.taken, state.bytes_read),
+            None => (0, 0),
+        };
+        (report, taken, bytes_read)
+    };
     let native = Arc::get_mut(&mut report.native)
         .ok_or_else(|| invalid("paged residual native observation already shared"))?;
     let report_heap_before = report_memory::report_bytes(native)?;
@@ -4136,16 +4188,6 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
         "\\\\?\\Volume{{{}}}\\",
         binding.volume_guid.trim_matches(['{', '}'])
     );
-    let mut writer = crate::layout_residual_pages::ResidualResultsWriter::new(
-        result_path,
-        result_budget,
-        pair,
-        input.len() as u64,
-        &provider_sha,
-        input_sha.clone(),
-        count,
-    )?;
-    let mut bytes_read = 0u64;
     // One residual: the tail of a stream beyond its last whole cluster. Each
     // is opened, compared with what the walk found, read to its end, hashed
     // and compared again: a few file-system calls for nearly every file of
@@ -4179,14 +4221,20 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
             };
             let path = streams::path(&root, &object.components, name)?;
             let mut file = open_protected_readonly(&path, false)?;
-            if repeat_snapshot(&file, before_stream) != *before_stream {
+            let id: [u8; 16] = query_bytes(before_stream, 18, 24)?[8..24]
+                .try_into()
+                .map_err(|_| invalid("paged residual file identity length differs"))?;
+            if crate::verify_policy::verifies_once() {
+                if info(&file, 18, 24)? != query_bytes(before_stream, 18, 24)? {
+                    return Err(invalid(
+                        "paged residual identity/metadata changed before read",
+                    ));
+                }
+            } else if repeat_snapshot(&file, before_stream) != *before_stream {
                 return Err(invalid(
                     "paged residual identity/metadata changed before read",
                 ));
             }
-            let id: [u8; 16] = query_bytes(before_stream, 18, 24)?[8..24]
-                .try_into()
-                .map_err(|_| invalid("paged residual file identity length differs"))?;
             file.seek(SeekFrom::Start(expected.logical_offset))?;
             // A residual is shorter than one target cluster.
             let mut buffer = vec![0u8; expected.length as usize];
@@ -4196,7 +4244,10 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
                 return Err(invalid("paged residual expected EOF absent"));
             }
             let sha = hex::encode(Sha256::digest(&buffer));
-            if sha != expected.sha256 || repeat_snapshot(&file, after_stream) != *after_stream {
+            if sha != expected.sha256
+                || (!crate::verify_policy::verifies_once()
+                    && repeat_snapshot(&file, after_stream) != *after_stream)
+            {
                 return Err(invalid("paged residual content/metadata differs"));
             }
             Ok((id, sha))
@@ -4314,11 +4365,12 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
     // is borrowed for one of them at a time: between two the ledger may
     // take the list back, and the rest is then derived again below. A gate
     // that is open by now derives all of them again.
-    let mut taken = 0u64;
-    let mut all_kept = false;
-    if let Some(kept) = kept
-        .as_ref()
-        .filter(|_| !crate::verify_policy::full_unremembered())
+    let mut taken = inline_taken;
+    let mut all_kept = taken == count;
+    if !all_kept
+        && let Some(kept) = kept
+            .as_ref()
+            .filter(|_| !crate::verify_policy::full_unremembered())
     {
         // The borrow ends inside `map`, before the residual is gathered.
         while let Some(next) = kept.get().map(|list| {
@@ -4575,6 +4627,7 @@ fn observe_general_converted_metadata_domain_accounted_with_alias_overlay(
         false,
         None,
         memory,
+        None,
     )?;
     // Keep the converted observer's existing namespace policy independently
     // of whether admitted payload bytes were read. Protected shadow layout
@@ -5027,6 +5080,7 @@ fn run_role_content_domain(
         hash_file_contents,
         legacy_input,
         None,
+        None,
     )
 }
 
@@ -5046,6 +5100,7 @@ fn run_role_content_domain_accounted(
     hash_file_contents: bool,
     legacy_input: Option<&[Input<'_>]>,
     memory_accountant: Option<&dyn report_memory::ReportMemoryAccountant>,
+    mut inline_residuals: Option<&mut InlineResiduals<'_>>,
 ) -> io::Result<Report> {
     let protected_converted_metadata = converted
         && ordinary
@@ -6037,16 +6092,21 @@ fn run_role_content_domain_accounted(
     } else {
         None
     };
-    let observe_object = |i: &Input<'_>| -> io::Result<ObjectReport> {
+    let observe_object = |i: &Input<'_>,
+                          residuals: &[LayoutResidualExpectation]|
+     -> io::Result<(ObjectReport, Vec<([u8; 16], String)>)> {
         let path = format!("{}{}", root, i.components.join("\\"));
-        // The handle reads data in three cases: a directory is listed, a
-        // file's contents are compared when this walk verifies contents, and
-        // a sparse file is asked for its allocated ranges.
-        let mut h = if i.directory || verify_file_contents || i.sparse.is_some() {
-            open_input(&path, i, readonly_object_access)?
-        } else {
-            open_input_metadata(&path, i, readonly_object_access)?
-        };
+        let has_unnamed_residual = residuals.iter().any(|r| r.stream_name_utf16.is_empty());
+        // The handle reads data in four cases: a directory is listed, a
+        // file's contents are compared when this walk verifies contents,
+        // a sparse file is asked for its allocated ranges, or this closing
+        // walk reads the file's `< target_cluster` residual tail inline.
+        let mut h =
+            if i.directory || verify_file_contents || i.sparse.is_some() || has_unnamed_residual {
+                open_input(&path, i, readonly_object_access)?
+            } else {
+                open_input_metadata(&path, i, readonly_object_access)?
+            };
         let before = capture_metadata(&h, i);
         let expected_allocation = layout::u64_at(query_bytes(&before, 1, 24)?, 0)?;
         let mut resident_data = false;
@@ -6226,10 +6286,15 @@ fn run_role_content_domain_accounted(
                     vec![],
                 )
             };
-        let after = capture_metadata(&h, i);
-        if before != after {
-            return Err(invalid("shadow metadata changed during observation"));
-        }
+        let after = if readonly_object_access && crate::verify_policy::verifies_once() {
+            before.clone()
+        } else {
+            let after = capture_metadata(&h, i);
+            if before != after {
+                return Err(invalid("shadow metadata changed during observation"));
+            }
+            after
+        };
         let streams = if i.directory {
             vec![]
         } else {
@@ -6253,71 +6318,128 @@ fn run_role_content_domain_accounted(
             }
             b
         };
-        Ok(ObjectReport {
-            components: i.components.to_vec(),
-            named_streams: streams::observe(
-                &root,
-                i,
-                &before,
-                readonly_object_access,
-                verify_file_contents,
-                clusters,
-                initialized_region_bytes,
-            )?,
-            sparse: i
-                .sparse
-                .map(|s| sparse_stream::observe(&h, s, i.logical_length()))
-                .transpose()?,
-            additional_names: hard_links::observe(&root, i, &before, readonly_object_access)?,
-            before,
-            after,
-            logical_sha256,
-            retrieval,
-            retrieval_page_proof,
-            resident_data,
-            cached_validity,
-            storage_validity,
-            cached_validity_pages,
-            storage_validity_pages,
-            integrity,
-            namespace,
-            streams,
-            source_candidate: i
-                .source_offset
-                .filter(|_| mode != Mode::ObserveLayout)
-                .map(|offset| -> io::Result<_> {
-                    let candidate_bytes = if i.expected_sha256.is_none() {
-                        crate::target_cluster::floor(i.logical_length())
-                    } else {
-                        i.logical_length()
-                            .next_multiple_of(crate::target_cluster::bytes())
-                    };
-                    let (legacy_view, metadata_view) = candidate_views
-                        .as_ref()
-                        .ok_or_else(|| invalid("candidate bitmap views missing"))?;
-                    Ok(CandidateReport {
-                        legacy: legacy_view.candidate(offset, candidate_bytes)?,
-                        metadata_inclusive: metadata_view.candidate(offset, candidate_bytes)?,
-                        legacy_page_proof: bitmaps
+        let named_streams = streams::observe(
+            &root,
+            i,
+            &before,
+            readonly_object_access,
+            verify_file_contents,
+            clusters,
+            initialized_region_bytes,
+        )?;
+        let mut residual_results = Vec::with_capacity(residuals.len());
+        for expected in residuals {
+            if expected.stream_name_utf16.is_empty() {
+                let id: [u8; 16] = query_bytes(&before, 18, 24)?[8..24]
+                    .try_into()
+                    .map_err(|_| invalid("paged residual file identity length differs"))?;
+                h.seek(SeekFrom::Start(expected.logical_offset))?;
+                let mut buffer = vec![0u8; expected.length as usize];
+                h.read_exact(&mut buffer)?;
+                let mut eof_probe = [0u8; 1];
+                if h.read(&mut eof_probe)? != 0 {
+                    return Err(invalid("paged residual expected EOF absent"));
+                }
+                let sha = hex::encode(Sha256::digest(&buffer));
+                if sha != expected.sha256 {
+                    return Err(invalid("paged residual content/metadata differs"));
+                }
+                residual_results.push((id, sha));
+            } else {
+                let stream = named_streams
+                    .iter()
+                    .find(|s| s.name_utf16 == expected.stream_name_utf16)
+                    .ok_or_else(|| invalid("paged residual named stream absent"))?;
+                let id: [u8; 16] = query_bytes(&stream.before, 18, 24)?[8..24]
+                    .try_into()
+                    .map_err(|_| invalid("paged residual file identity length differs"))?;
+                let stream_path = streams::path(&root, i.components, &expected.stream_name_utf16)?;
+                let mut file = open_protected_readonly(&stream_path, false)?;
+                if info(&file, 18, 24)? != query_bytes(&stream.before, 18, 24)? {
+                    return Err(invalid(
+                        "paged residual identity/metadata changed before read",
+                    ));
+                }
+                file.seek(SeekFrom::Start(expected.logical_offset))?;
+                let mut buffer = vec![0u8; expected.length as usize];
+                file.read_exact(&mut buffer)?;
+                let mut eof_probe = [0u8; 1];
+                if file.read(&mut eof_probe)? != 0 {
+                    return Err(invalid("paged residual expected EOF absent"));
+                }
+                let sha = hex::encode(Sha256::digest(&buffer));
+                if sha != expected.sha256 {
+                    return Err(invalid("paged residual content/metadata differs"));
+                }
+                residual_results.push((id, sha));
+            }
+        }
+        Ok((
+            ObjectReport {
+                components: i.components.to_vec(),
+                named_streams,
+                sparse: i
+                    .sparse
+                    .map(|s| sparse_stream::observe(&h, s, i.logical_length()))
+                    .transpose()?,
+                additional_names: hard_links::observe(&root, i, &before, readonly_object_access)?,
+                before,
+                after,
+                logical_sha256,
+                retrieval,
+                retrieval_page_proof,
+                resident_data,
+                cached_validity,
+                storage_validity,
+                cached_validity_pages,
+                storage_validity_pages,
+                integrity,
+                namespace,
+                streams,
+                source_candidate: i
+                    .source_offset
+                    .filter(|_| mode != Mode::ObserveLayout)
+                    .map(|offset| -> io::Result<_> {
+                        let candidate_bytes = if i.expected_sha256.is_none() {
+                            crate::target_cluster::floor(i.logical_length())
+                        } else {
+                            i.logical_length()
+                                .next_multiple_of(crate::target_cluster::bytes())
+                        };
+                        let (legacy_view, metadata_view) = candidate_views
                             .as_ref()
-                            .ok_or_else(|| invalid("candidate legacy bitmap missing"))?
-                            .0
-                            .proof(),
-                        metadata_page_proof: bitmaps
-                            .as_ref()
-                            .ok_or_else(|| invalid("candidate metadata bitmap missing"))?
-                            .1
-                            .proof(),
+                            .ok_or_else(|| invalid("candidate bitmap views missing"))?;
+                        Ok(CandidateReport {
+                            legacy: legacy_view.candidate(offset, candidate_bytes)?,
+                            metadata_inclusive: metadata_view.candidate(offset, candidate_bytes)?,
+                            legacy_page_proof: bitmaps
+                                .as_ref()
+                                .ok_or_else(|| invalid("candidate legacy bitmap missing"))?
+                                .0
+                                .proof(),
+                            metadata_page_proof: bitmaps
+                                .as_ref()
+                                .ok_or_else(|| invalid("candidate metadata bitmap missing"))?
+                                .1
+                                .proof(),
+                        })
                     })
-                })
-                .transpose()?,
-        })
+                    .transpose()?,
+            },
+            residual_results,
+        ))
     };
     // Many of the checks above return a bare reason. Whatever fails for one
     // object is reported with that object's path.
     let observe = |i: &Input<'_>| -> io::Result<ObjectReport> {
-        observe_object(i).map_err(|error| at_walk_object(i, error))
+        observe_object(i, &[])
+            .map(|(row, _)| row)
+            .map_err(|error| at_walk_object(i, error))
     };
+    let observe_with_residuals =
+        |(i, residuals): &(Input<'_>, &[LayoutResidualExpectation])| -> io::Result<(ObjectReport, Vec<([u8; 16], String)>)> {
+            observe_object(i, residuals).map_err(|error| at_walk_object(i, error))
+        };
     let objects = if let Some(legacy) = legacy_input {
         Rows::from_observed(observe_in_parallel(legacy, observe)?)
     } else {
@@ -6368,11 +6490,63 @@ fn run_role_content_domain_accounted(
                 },
             )?;
             let items: Vec<Input<'_>> = owners.iter().map(|owner| owner.input()).collect();
+            let mut batch_residuals: Vec<Vec<LayoutResidualExpectation>> =
+                vec![Vec::new(); items.len()];
+            if let Some(inline) = inline_residuals
+                .as_deref_mut()
+                .filter(|state| !state.abandoned && !crate::verify_policy::full_unremembered())
+            {
+                if let Some(list) = inline.kept.get() {
+                    let mut cursor = inline.taken as usize;
+                    for (slot, bucket) in batch_residuals.iter_mut().enumerate() {
+                        let object_index = next + slot;
+                        while let Some(expected) = list.list.get(cursor) {
+                            if expected.object_index != object_index {
+                                break;
+                            }
+                            bucket.push(expected.clone());
+                            cursor += 1;
+                        }
+                    }
+                } else {
+                    inline.abandoned = true;
+                }
+            }
+            let batch_items: Vec<(Input<'_>, &[LayoutResidualExpectation])> = items
+                .into_iter()
+                .zip(batch_residuals.iter())
+                .map(|(item, residuals)| (item, residuals.as_slice()))
+                .collect();
             let rows = {
                 let _timed = crate::perf::scope(crate::perf::Point::ShadowObject);
-                observe_read_back(&items, &observe)?
+                observe_read_back(&batch_items, &observe_with_residuals)?
             };
-            for (mut row, (lease, peak)) in rows.into_iter().zip(leases) {
+            let batch_len = batch_items.len();
+            drop(batch_items);
+            for (((mut row, residual_results), res_expected), (lease, peak)) in
+                rows.into_iter().zip(batch_residuals).zip(leases)
+            {
+                if let Some(inline) = inline_residuals.as_deref_mut()
+                    && !res_expected.is_empty()
+                {
+                    for (expected, (id, sha)) in res_expected.into_iter().zip(residual_results) {
+                        let length = expected.length;
+                        inline.writer.push(
+                            &crate::layout_residual_pages::LayoutResidualResult {
+                                expectation: expected,
+                                native_file_id: id,
+                                actual_sha256: sha,
+                                bytes_read: length,
+                                eof_observed: true,
+                            },
+                        )?;
+                        inline.bytes_read = inline
+                            .bytes_read
+                            .checked_add(length)
+                            .ok_or_else(|| invalid("paged residual byte count overflow"))?;
+                        inline.taken += 1;
+                    }
+                }
                 match (memory_accountant, lease) {
                     (Some(payer), Some(lease)) if in_blocks => {
                         report_memory::compact_row(&mut row);
@@ -6390,7 +6564,7 @@ fn run_role_content_domain_accounted(
                 }
                 result.push(row)?;
             }
-            next += items.len();
+            next += batch_len;
         }
         result.finish(memory_accountant)?;
         result

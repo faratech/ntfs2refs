@@ -421,6 +421,16 @@ fn wire_budget(budget: PageBudget) -> Result<PageBudget> {
 }
 
 fn decode_chunk(value: &[u8], maximum: usize) -> Result<Vec<u8>> {
+    if let Some((&0u8, raw)) = value.split_first() {
+        ensure!(
+            !raw.is_empty() && raw.len() <= maximum,
+            "decoded object chunk exceeds bound"
+        );
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(raw.len())?;
+        bytes.extend_from_slice(raw);
+        return Ok(bytes);
+    }
     let value: &str = serde_json::from_slice(value)?;
     let input = value.as_bytes();
     ensure!(input.len().is_multiple_of(4), "chunk base64 length differs");
@@ -502,7 +512,7 @@ impl ChunkWriter<'_> {
         if self.buffer.is_empty() {
             return Ok(());
         }
-        let payload = crate::ntfs_inspect::paged_storage::encode_json_base64(&self.buffer)
+        let payload = crate::ntfs_inspect::paged_storage::encode_raw_chunk(&self.buffer)
             .map_err(io::Error::other)?;
         self.writer
             .push(&object_key(self.object, self.chunks), &payload)?;

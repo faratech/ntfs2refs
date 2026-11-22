@@ -679,7 +679,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         let shapes = super::each_at_once(
             enumeration_payer,
             &items,
-            |(_, item)| row_limit.and_then(|limit| report_memory::row_peak(item, limit).ok()),
+            |(_, item)| report_memory::handle_shape_peak(item).ok(),
             handle_shape,
         );
         let mut asked = items.iter().zip(shapes);
@@ -1032,7 +1032,6 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     } else {
         1
     };
-    let snapshot_workspace = row_limit.and_then(|limit| report_memory::alias_peak(limit).ok());
     let mut security_order = ordered
         .iter()
         .filter(|(_, _, flags)| *flags & DIRECTORY != 0)
@@ -1111,7 +1110,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         let found = super::each_at_once(
             change_payer,
             &items,
-            |_| snapshot_workspace,
+            |(_, _, item)| Some(report_memory::security_query_peak(item.security.len())),
             |(_, index, _)| -> io::Result<Snapshot> {
                 let handle = held(handles, *index)?;
                 if info(handle, 18, 24)? != *identity_of(&identities, *index)? {
@@ -1151,14 +1150,14 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         let restored = super::each_at_once(
             change_payer,
             &restoring,
-            |_| snapshot_workspace,
-            |((_, index, item), found)| -> io::Result<(ProtectionRestore, io::Result<Snapshot>)> {
+            |((_, _, item), _)| Some(report_memory::security_query_peak(item.security.len())),
+            |((_, index, item), found)| -> io::Result<(ProtectionRestore, io::Result<Option<Snapshot>>)> {
                 let handle = held(handles, *index)?;
                 let protection = restore_acl_protection_observed(handle, item, row_limit, found)?;
                 Ok((
                     protection,
                     super::backup_security_write_with_limit(handle, item.security, row_limit)
-                        .map(|_| security_snapshot_with_limit(handle, row_limit)),
+                        .map(|_| read_back.then(|| security_snapshot_with_limit(handle, row_limit))),
                 ))
             },
         );
@@ -1167,15 +1166,16 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             let checked = restored.and_then(|(protection, restored_view)| {
                 dacl_protection_updates += usize::from(protection.dacl);
                 sacl_protection_updates += usize::from(protection.sacl);
-                let restored_view = restored_view?;
-                if !security_matches(item, &restored_view, &same_security)? {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "owned source security views differ after restoration: {}",
-                            security_difference(item, &restored_view)
-                        ),
-                    ));
+                if let Some(restored_view) = restored_view? {
+                    if !security_matches(item, &restored_view, &same_security)? {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "owned source security views differ after restoration: {}",
+                                security_difference(item, &restored_view)
+                            ),
+                        ));
+                    }
                 }
                 Ok(())
             });
@@ -1393,7 +1393,11 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         |_| 1,
         |index, item, before_mutation| -> io::Result<()> {
             let handle = held(handles, index)?;
-            if info(handle, 18, 24)? != *identity_of(&identities, index)? {
+            if (recovering
+                || !crate::verify_policy::checks_once()
+                || !crate::verify_policy::verifies_once())
+                && info(handle, 18, 24)? != *identity_of(&identities, index)?
+            {
                 return Err(invalid("owned identity changed before basic restoration"));
             }
             if !recovering || !basic_matches(item, &info(handle, 0, 40)?) {

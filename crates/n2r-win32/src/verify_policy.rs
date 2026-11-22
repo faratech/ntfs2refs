@@ -260,6 +260,21 @@ impl Paced {
             last => Self::now().saturating_sub(last) >= interval_ms,
         }
     }
+    /// Whether the check should be made now, running at most once per open
+    /// [`Gate`] (via `last_full`) instead of on every call while a gate stays
+    /// open. Outside a gate, behaves like [`due`](Self::due).
+    pub fn due_once_per_gate(&self, interval_ms: u64, last_full: &LastFull) -> bool {
+        if !ONCE.load(SeqCst) {
+            return true;
+        }
+        if GATE.load(SeqCst) != 0 {
+            return decide(true, GATE.load(SeqCst), last_full);
+        }
+        match self.0.load(SeqCst) {
+            0 => true,
+            last => Self::now().saturating_sub(last) >= interval_ms,
+        }
+    }
     /// Records that the check just passed.
     pub fn passed(&self) {
         self.0.store(Self::now(), SeqCst);
@@ -339,5 +354,13 @@ mod tests {
         assert_eq!(GATE.load(SeqCst), id);
         drop(first);
         assert_ne!(GATE.load(SeqCst), id);
+    }
+
+    #[test]
+    fn paced_once_per_gate_runs_once_inside_a_gate() {
+        let last = LastFull::new();
+        assert!(decide(true, 1, &last));
+        assert!(!decide(true, 1, &last));
+        assert!(decide(true, 2, &last));
     }
 }

@@ -17,6 +17,7 @@ use crate::{
 use n2r_win32::bulk_digest::Algorithm;
 
 mod qualification;
+mod source_prefetch;
 pub(super) use qualification::FrozenPreparedWitness;
 pub(crate) use qualification::partition_apply::{
     PartitionApplyFailure, PartitionApplyOutcome, PartitionExecutionOutcome, PartitionFreshApply,
@@ -297,6 +298,7 @@ pub(crate) fn prepare_native_partition_from_protected_capture<
             true,
             None,
             read_back_buffers,
+            false,
             |_, _| (),
         );
         let closing = admission.revalidate_publication_handoff(source, facts.guard_pin, events);
@@ -695,31 +697,53 @@ fn lease_preparation(
     }
 }
 
+/// File-wide hashes of the journal being written: `whole` is only computed for
+/// diagnostic callers that verify the whole file including its leading marker
+/// region; `immutable` hashes the immutable body from `header` through `footer`
+/// on a background 4 MiB `HashedBehind` worker.
+struct WrittenHashes {
+    whole: Option<PinHash>,
+    immutable: n2r_win32::bulk_digest::HashedBehind,
+}
+
+impl WrittenHashes {
+    fn update(&mut self, bytes: &[u8]) -> Result<()> {
+        if let Some(whole) = self.whole.as_mut() {
+            whole.update(bytes)?;
+        }
+        self.immutable.update(bytes)?;
+        Ok(())
+    }
+}
+
 /// Completes the rows whose payloads are written, in their order: each row's
 /// two digests are taken from the workers, its descriptor is written in its
 /// place and, where the file's hashes are computed as it is written, the row
 /// is read back from the file and hashed in file order. Leaves the file at
 /// the end of the last of them.
+#[allow(clippy::too_many_arguments)]
 fn complete_rows<J: DurableIo>(
     f: JournalLayoutFacts,
     file: &mut J,
     owed: &mut Vec<OwedRow>,
     old_records: &mut RecordHashes,
     new_records: &mut RecordHashes,
+    check_records: &mut RecordHashes,
     zeros: &mut ZeroDigests,
-    mut written: Option<&mut (PinHash, PinHash)>,
+    mut written: Option<&mut WrittenHashes>,
     buffer: &mut [u8],
 ) -> Result<()> {
     let Some(end) = owed.last().map(|last| last.row.next_offset) else {
         return Ok(());
     };
+    let mut checked: Vec<(&'static str, u64, u64, u64, [u8; 32], RowDigest)> = Vec::new();
     for OwedRow { row, old, new } in owed.drain(..) {
         let old = old_records.settle(old, zeros)?;
         let new = new_records.settle(new, zeros)?;
         let record = encode_record(row, f, old, new);
         file.seek(SeekFrom::Start(row.descriptor_offset))?;
         file.write_all(&record[..f.record_size])?;
-        if let Some((whole, immutable)) = written.as_deref_mut() {
+        if let Some(written) = written.as_deref_mut() {
             file.seek(SeekFrom::Start(row.descriptor_offset))?;
             let mut stored = [0u8; OLD_ZERO_RECORD];
             file.read_exact(&mut stored[..f.record_size])?;
@@ -727,8 +751,7 @@ fn complete_rows<J: DurableIo>(
                 stored[..f.record_size] == record[..f.record_size],
                 "journal descriptor read back differs from the one written"
             );
-            whole.update(&stored[..f.record_size])?;
-            immutable.update(&stored[..f.record_size])?;
+            written.update(&stored[..f.record_size])?;
             ensure!(
                 row.descriptor_offset.checked_add(f.record_size as u64)
                     == Some(row.old_storage_offset),
@@ -747,6 +770,7 @@ fn complete_rows<J: DurableIo>(
             let payloads = [
                 (
                     "OLD",
+                    row.old_storage_offset,
                     row.new_storage_offset
                         .checked_sub(row.old_storage_offset)
                         .context("journal row layout underflow")?,
@@ -754,15 +778,16 @@ fn complete_rows<J: DurableIo>(
                 ),
                 (
                     "NEW",
+                    row.new_storage_offset,
                     row.next_offset
                         .checked_sub(row.new_storage_offset)
                         .context("journal row layout underflow")?,
                     new,
                 ),
             ];
-            for (kind, stored, expected) in payloads {
+            for (kind, storage_offset, stored, expected) in payloads {
                 let mut check = if full(stored) {
-                    Some(crate::selected_journal::pin_hash(old_records.algorithm)?)
+                    Some(check_records.begin()?)
                 } else {
                     None
                 };
@@ -770,28 +795,30 @@ fn complete_rows<J: DurableIo>(
                 while left != 0 {
                     let count = usize::try_from(left.min(buffer.len() as u64))?;
                     file.read_exact(&mut buffer[..count])?;
-                    whole.update(&buffer[..count])?;
-                    immutable.update(&buffer[..count])?;
+                    written.update(&buffer[..count])?;
                     if let Some(check) = check.as_mut() {
                         check.update(&buffer[..count])?;
                     }
                     left -= count as u64;
                 }
                 if let Some(check) = check {
-                    ensure!(
-                        crate::selected_journal::finish(check)? == expected,
-                        "journal preparation read-back: the {kind} payload stored at offset {} for the source range at {} ({} bytes) differs from the digest of the bytes it was written from; the journal is not used",
-                        if kind == "OLD" {
-                            row.old_storage_offset
-                        } else {
-                            row.new_storage_offset
-                        },
+                    checked.push((
+                        kind,
+                        storage_offset,
                         row.capture.offset,
-                        row.capture.length
-                    );
+                        row.capture.length,
+                        expected,
+                        check.finish(None)?,
+                    ));
                 }
             }
         }
+    }
+    for (kind, storage_offset, range_offset, range_length, expected, digest) in checked {
+        ensure!(
+            check_records.settle(digest, zeros)? == expected,
+            "journal preparation read-back: the {kind} payload stored at offset {storage_offset} for the source range at {range_offset} ({range_length} bytes) differs from the digest of the bytes it was written from; the journal is not used"
+        );
     }
     file.seek(SeekFrom::Start(end))?;
     Ok(())
@@ -837,6 +864,7 @@ pub(crate) fn prepare_diagnostic<'domain, 'capture, R: ReadSeek, S: ReadSeek>(
         false,
         None,
         read_back_buffers,
+        true,
         |_, _| (),
     )?;
     let readonly = n2r_win32::file_storage::duplicate_readonly(&file)?;
@@ -1005,18 +1033,25 @@ fn prepare_native_inner<'journal, 'domain, 'capture, S: ReadSeek>(
     // the apply's passes read them (`AscendingRanges`): a window that ran a
     // megabyte past the first range of a group read 5.8 GB on the full
     // Windows volume that no range used.
-    let (ticket, _whole) = source.with_read_ahead(|source| {
-        prepare_inner(
-            domain,
-            source,
-            candidate,
-            journal,
-            same_captured_source,
-            capture_witness,
-            read_back_buffers,
-            n2r_win32::GeneralFrozenPartition::set_read_ahead_reach,
-        )
-    })?;
+    let (ticket, _whole) = source_prefetch::with_prefetched_source(
+        source,
+        domain,
+        capture_group.arena(),
+        events,
+        |prefetched| {
+            prepare_inner(
+                domain,
+                prefetched,
+                candidate,
+                journal,
+                same_captured_source,
+                capture_witness,
+                read_back_buffers,
+                false,
+                source_prefetch::SourceReader::set_read_ahead_reach,
+            )
+        },
+    )?;
     if ticket.marker_profile.is_some() {
         journal.seal_redundant(&ticket)?;
         let marker = journal
@@ -1072,6 +1107,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     same_captured_source: bool,
     capture_witness: Option<&CaptureRevalidation<'_>>,
     read_back_buffers: usize,
+    need_whole: bool,
     mut reach: impl FnMut(&mut R, u64),
 ) -> Result<(SelectedTicket, [u8; 32])> {
     let f = domain.facts;
@@ -1086,6 +1122,10 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     put_u64(&mut header, 32, f.journal_length);
     file.write_all(&vec![0u8; usize::try_from(f.body_offset)?])?;
     file.write_all(&header)?;
+    let mut position = f
+        .body_offset
+        .checked_add(HEADER as u64)
+        .context("journal header position overflow")?;
     // The journal's two file hashes cover its bytes in file order, and a row's
     // descriptor is only known after its payload. They used to come from
     // reading the finished journal back, twice over where rows copy from
@@ -1100,12 +1140,17 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     // BLAKE3 (`n2r_win32::bulk_digest`); the ticket says so.
     let algorithm = Algorithm::WRITTEN;
     let mut written = if n2r_win32::verify_policy::checks_once() && f.source_free_bytes == 0 {
-        let mut whole = burst_pin_hash(algorithm, read_back_buffers)?;
-        let mut immutable = burst_pin_hash(algorithm, read_back_buffers)?;
-        whole.update(&vec![0u8; usize::try_from(f.body_offset)?])?;
-        whole.update(&header)?;
+        let whole = if need_whole {
+            let mut whole = burst_pin_hash(algorithm, read_back_buffers)?;
+            whole.update(&vec![0u8; usize::try_from(f.body_offset)?])?;
+            whole.update(&header)?;
+            Some(whole)
+        } else {
+            None
+        };
+        let mut immutable = n2r_win32::bulk_digest::HashedBehind::new(algorithm, 4 * BUFFER)?;
         immutable.update(&header)?;
-        Some((whole, immutable))
+        Some(WrittenHashes { whole, immutable })
     } else {
         None
     };
@@ -1125,6 +1170,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     // first, and then their descriptors, in the same places as before.
     let mut old_records = RecordHashes::overlapped(algorithm)?;
     let mut new_records = RecordHashes::overlapped(algorithm)?;
+    let mut check_records = RecordHashes::overlapped(algorithm)?;
     let mut owed: Vec<OwedRow> = Vec::with_capacity(MOST_OWED_ROWS);
     let mut owed_bytes = 0u64;
     let mut rows = n2r_win32::AscendingRanges::new(u64::from(f.range_count));
@@ -1137,10 +1183,13 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
             reach(source, end);
         }
         ensure!(
-            file.stream_position()? == row.descriptor_offset,
+            position == row.descriptor_offset,
             "diagnostic journal descriptor offset differs"
         );
         file.write_all(&[0u8; OLD_ZERO_RECORD][..f.record_size])?;
+        position = position
+            .checked_add(f.record_size as u64)
+            .context("journal descriptor position overflow")?;
         let range = SelectedRange {
             offset: row.capture.offset,
             length: row.capture.length,
@@ -1165,7 +1214,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 &mut old_records,
             )?
         } else {
-            copy_selected_with(
+            let digest = copy_selected_with(
                 source,
                 &range,
                 &mut file,
@@ -1173,10 +1222,14 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 &mut buffer,
                 old_restored.as_mut(),
                 &mut old_records,
-            )?
+            )?;
+            position = position
+                .checked_add(row.capture.length)
+                .context("journal old payload position overflow")?;
+            digest
         };
         ensure!(
-            file.stream_position()? == row.new_storage_offset,
+            position == row.new_storage_offset,
             "diagnostic old payload length differs"
         );
         let new = if row.capture.new_is_zero {
@@ -1191,7 +1244,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 &mut new_records,
             )?
         } else {
-            copy_candidate_checked(
+            let digest = copy_candidate_checked(
                 domain,
                 source,
                 candidate,
@@ -1202,10 +1255,16 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 &mut compare,
                 same_captured_source,
                 &mut new_records,
-            )?
+            )?;
+            if row.capture.copy_source_offset.is_none() {
+                position = position
+                    .checked_add(row.capture.length)
+                    .context("journal new payload position overflow")?;
+            }
+            digest
         };
         ensure!(
-            file.stream_position()? == row.next_offset,
+            position == row.next_offset,
             "diagnostic new payload length differs"
         );
         owed_bytes = owed_bytes.saturating_add(
@@ -1221,6 +1280,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 &mut owed,
                 &mut old_records,
                 &mut new_records,
+                &mut check_records,
                 &mut zeros,
                 written.as_mut(),
                 &mut buffer,
@@ -1234,12 +1294,14 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         &mut owed,
         &mut old_records,
         &mut new_records,
+        &mut check_records,
         &mut zeros,
         written.as_mut(),
         &mut buffer,
     )?;
     old_records.finish()?;
     new_records.finish()?;
+    check_records.finish()?;
     let old_sha = finish(old_selected)?;
     let restored_sha = old_restored.map(finish).transpose()?;
     let new_sha = finish(new_selected)?;
@@ -1249,9 +1311,8 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     footer[40..72].copy_from_slice(&new_sha);
     put_u64(&mut footer, 72, f.journal_length);
     file.write_all(&footer)?;
-    if let Some((whole, immutable)) = written.as_mut() {
-        whole.update(&footer)?;
-        immutable.update(&footer)?;
+    if let Some(written) = written.as_mut() {
+        written.update(&footer)?;
     }
     if let Some(restored) = restored_sha {
         header[40..72].copy_from_slice(&restored);
@@ -1280,7 +1341,13 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         digest: Some(algorithm),
     };
     let (immutable, whole) = match written {
-        Some((whole, immutable)) => (finish(immutable)?, finish(whole)?),
+        Some(written) => (
+            written.immutable.finish()?,
+            match written.whole {
+                Some(whole) => finish(whole)?,
+                None => [0u8; 32],
+            },
+        ),
         None => validate_readback(domain, file, &ticket, &mut buffer, &mut compare)?,
     };
     ticket.immutable_sha256 = immutable;

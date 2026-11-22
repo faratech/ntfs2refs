@@ -406,16 +406,38 @@ const LARGEST_DESCRIPTOR_BYTES: u64 = 256 * 1024;
 pub(in crate::shadow_native) fn snapshot_peak(maximum: u64) -> io::Result<u64> {
     // `maximum` is the row limit (RAM / 64: 246 MB on a 24 GB machine). Paying
     // eight of those for every snapshot made one file with four hard-link
-    // names ask for 15.7 GB and stop the conversion.
+    // names ask for 15.7 GB and stop the conversion. A Windows security
+    // descriptor is at most 256 KiB; four of those plus 256 KiB covers both
+    // API and kernel copies alongside EA, reparse and fixed info buffers.
     add(
         mul(
             maximum
                 .min(LARGEST_DESCRIPTOR_BYTES)
                 .max(crate::attestation::MAX_SECURITY_BYTES as u64),
-            8,
+            4,
         )?,
-        1024 * 1024,
+        256 * 1024,
     )
+}
+/// One handle-shape check (`FileIdInfo`, `FileStandardInfo` and optional
+/// retrieval mapping): no security snapshot or namespace listing is taken.
+pub(super) fn handle_shape_peak(i: &Input<'_>) -> io::Result<u64> {
+    add(
+        mul(
+            crate::retrieval_paging::returned_bytes_for_stream(i.logical_length()) as u64,
+            4,
+        )?,
+        64 * 1024,
+    )
+}
+/// One security-only snapshot and restore workspace, sized from the object's
+/// own expected descriptor rather than a multi-megabyte worst case.
+pub(super) fn security_query_peak(security_len: usize) -> u64 {
+    (security_len as u64)
+        .max(4096)
+        .min(LARGEST_DESCRIPTOR_BYTES)
+        .saturating_mul(4)
+        .saturating_add(64 * 1024)
 }
 /// One short-name link's native check: its metadata snapshot, and a megabyte
 /// for its stream list, reparse query and the three small pair snapshots.
@@ -464,13 +486,15 @@ pub(super) fn row_peak(i: &Input<'_>, maximum: u64) -> io::Result<u64> {
         )?;
         add(
             add(mul(snapshot_peak(maximum)?, 2)?, retrieval)?,
-            4 * 1024 * 1024,
+            256 * 1024,
         )
     };
-    let mut n = add(
-        stream(i.logical_length())?,
-        mul(namespace_layout::MAX_EVIDENCE as u64, 12)?,
-    )?;
+    let namespace = if i.directory && i.reparse.is_none() {
+        mul(namespace_layout::MAX_EVIDENCE as u64, 12)?
+    } else {
+        0
+    };
+    let mut n = add(stream(i.logical_length())?, namespace)?;
     let path_bytes = i.components.iter().try_fold(
         mul(i.components.len() as u64, mem::size_of::<String>() as u64)?,
         |n, s| add(n, s.len() as u64),

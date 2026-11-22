@@ -146,6 +146,36 @@ apply-mid-ranges`, VM with 12 GB) and then recovered by `--recover`:
 Both recovered volumes started Windows (`RESUMED-BOOTED-ON-REFS`,
 `ROLLED-BACK-BOOTED-ON-NTFS`).
 
+## After 0.0.2: spare-RAM sizing, verify-once I/O and syscall elimination
+
+A subsequent optimization pass (`perf/drastic-speed`, on Rust 1.100.0) fixed
+spare-RAM workspace overcharges that collapsed parallelism under memory limits,
+moved source/journal/read-back I/O onto multi-lane read-ahead and 4 MiB
+`HashedBehind` pipelines, stored raw binary page chunks in `observation_pages`,
+`paged_storage` and `expected.pages`, folded closing residual tail reads into
+the closing shadow walk, fused attestation resource validation with comparison,
+and eliminated redundant syscalls and bitmap queries under `--verify fast`
+(leaving `--verify thorough` and all source-protection gates unchanged):
+
+| Run | 0.0.2 | After | Change |
+|---|---|---|---|
+| The full Windows volume, converted and started from ReFS (`perf-final-full-system`, VM with 24 GB) | 1,127 s (1,337 s on `r10-base-full`) | 642 s (10.7 min) | −43% vs 0.0.2, −52% (2.08×) vs `r10-base-full`; `BOOTED-ON-REFS`, identical listing |
+| 100,000 files, `--memory-limit 1240` (`perf-final-files-100k-mid`, VM with 24 GB) | 387 s (415 s on `g3b-files-100k-mid`) | 189 s (3.1 min) | −51% vs 0.0.2, 2.20× faster than `g3b-files-100k-mid`; 552 MiB required RAM, identical listing |
+| Lived-in data volume, 23,137 objects (`perf-final-lived-in`, `-Check -Acceptance`) | — | 53 s | `check and run: agree`, all acceptance checks passed, identical listing |
+
+Where the full volume's 642 s go:
+
+| Phase | 0.0.2 | After | Largest changes |
+|---|---|---|---|
+| Building the ReFS volume | 302 | 168 | place extents 90 → 27 s (skip per-move bitmap ioctls under verify-once), supply payloads 83 → 35 s (reuse scan plan & skip redundant tail readback), restore times & attributes 24 → 6 s |
+| Capturing the result | 141 | 124 | walk shadow (closing) 48 → 41 s (inline residual tail reads), compare shadow with source 54 → 52 s (8-lane prefetch + identical-chunk fast path) |
+| Reading the source | 179 | 117 | observe source through Windows 61 → 18 s (skip non-directory `OpenFileById` + single-pass), compare raw and Windows views 35 → 19 s (fused validation + raw page chunks), fingerprint 8 → 4 s (coalesced lanes) |
+| Journal preparation | 79 | 49 | multi-lane source prefetch, 4 MiB `HashedBehind`, read-ahead on COPY source lane, drop unused whole-journal hash |
+| Applying | 191 | 47 | read back changed ranges 42 → 12 s (4 MiB `HashedBehind`), verify journal and source 39 → 10 s (QD=2 OLD digest), journal scan window 64 KiB → 4 KiB (16.4 GB → 0.23 GB) |
+| Verifying the converted volume | 73 | 48 | check recovered alias links 26 s (trim redundant `GetVolumeInformationByHandleW`, `FSCTL_GET_REPARSE_POINT`, and duplicate `File*Info` queries), walk converted metadata 12 s, contents 5 s |
+| Expected tree | 52 | 26 | raw binary chunks & single-pass `ExternalSort` |
+| Gate before first write | 61 | 19 | |
+
 ## A partition on the Windows disk, through a restart
 
 A 6 GiB partition of 505 objects beside C: on Windows Server 2025, working

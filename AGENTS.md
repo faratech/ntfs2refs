@@ -92,7 +92,7 @@ it lies on target-cluster boundaries; the rest goes through the working storage.
 ## Lab
 
 - Host: 16 logical CPUs, 64 GB RAM. `cargo` is at `%USERPROFILE%\.cargo\bin`
-  (not on PATH), toolchain 1.98.1. Build both binaries first: `cargo build
+  (not on PATH), toolchain 1.100.0. Build both binaries first: `cargo build
   --locked --release --bin ntfs2refs --bin lab-volume-manifest`.
 - VM `ntfs2refs-reference-isolated`, Id `8f7fc646-8c9f-41d0-b65a-ecfadccfc36a`,
   generation 2, Secure Boot on, no network adapter. Guest credential:

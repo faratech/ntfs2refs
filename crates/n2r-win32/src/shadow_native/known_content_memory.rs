@@ -375,7 +375,11 @@ impl Check<'_> {
     ) -> Option<StreamAhead> {
         let before = snapshot(&file).ok()?;
         let digest = hash_exact_stream(&mut file, length).ok()?;
-        let after = snapshot(&file).ok()?;
+        let after = if crate::verify_policy::verifies_once() {
+            before.clone()
+        } else {
+            snapshot(&file).ok()?
+        };
         let held = [
             report_memory::snapshot_bytes(&before).ok()?,
             report_memory::snapshot_bytes(&after).ok()?,

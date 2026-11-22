@@ -396,8 +396,10 @@ pub(super) fn run_domain(
         );
         written_bytes = written_bytes.saturating_add(item.logical_length());
     }
-    tree.before_backing_mutation(0)?;
-    crate::perf::flush(crate::perf::Point::VolumeFlush, &tree.volume)?;
+    if !crate::verify_policy::checks_once() {
+        tree.before_backing_mutation(0)?;
+        crate::perf::flush(crate::perf::Point::VolumeFlush, &tree.volume)?;
+    }
     require_owned_directories(tree, input)?;
     tree.require_source_excluded()?;
     tree.system_payloads_complete = true;

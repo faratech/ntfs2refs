@@ -31,12 +31,11 @@ use std::{
 /// The chunks one lane may have read that the comparison has not asked for,
 /// where it is the only lane: two, as before.
 const AHEAD_ALONE: usize = 2;
-/// The same where there are several lanes: one each. Between them they are
-/// still as many chunks ahead as there are lanes, and each lane holds two
-/// buffers, the one it reads into and the one waiting to be taken.
-const AHEAD_EACH: usize = 1;
+/// The same where there are several lanes: two each. Between them they keep
+/// the disk queue fed across small-range boundaries.
+const AHEAD_EACH: usize = 2;
 /// The most lanes a prefetch opens on one disk.
-const MOST_LANES: usize = 4;
+const MOST_LANES: usize = 8;
 /// A helper thread's stack.
 const STACK_BYTES: u64 = 2 * 1024 * 1024;
 /// What opening a lane asks Windows: one state query of the disk, whose
@@ -638,8 +637,8 @@ mod tests {
     fn lanes_follow_the_devices_depth() {
         assert_eq!(OriginalPrefetch::lanes_for(1), 0);
         assert_eq!(OriginalPrefetch::lanes_for(2), 4);
-        assert_eq!(OriginalPrefetch::lanes_for(4), 4);
-        assert_eq!(OriginalPrefetch::lanes_for(8), 4);
+        assert_eq!(OriginalPrefetch::lanes_for(4), 8);
+        assert_eq!(OriginalPrefetch::lanes_for(8), 8);
         let granted = OriginalPrefetch::reserve_lanes(4, 4096, 10, |bytes| {
             (bytes <= OriginalPrefetch::workspace_bytes(2, 4096, 10).unwrap()).then_some(bytes)
         });

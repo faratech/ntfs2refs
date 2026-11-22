@@ -796,7 +796,9 @@ fn compare_domain_with_header(
             )?);
             Ok(())
         })());
-        if windows_paths && metadata.matched && usize::from(file.hard_link_count) != file.names.len()
+        if windows_paths
+            && metadata.matched
+            && usize::from(file.hard_link_count) != file.names.len()
         {
             metadata.detail = format!(
                 "raw FILE header link-counter hint preserved: raw={}, FILE_NAME={}, canonical={}; native before/after canonical counts match; complete native namespace coverage remains required",
@@ -892,9 +894,7 @@ fn compare_domain_with_header(
                 let handles: Vec<_> = chunks
                     .into_iter()
                     .map(|chunk| {
-                        scope.spawn(|| {
-                            chunk.into_iter().map(&evaluate_one).collect::<Vec<_>>()
-                        })
+                        scope.spawn(|| chunk.into_iter().map(&evaluate_one).collect::<Vec<_>>())
                     })
                     .collect();
                 let mut out = Vec::with_capacity(COMPARE_BATCH);

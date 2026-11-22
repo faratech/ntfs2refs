@@ -61,12 +61,70 @@ struct Lane {
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
+/// Maximum gap between two consecutive chunks that are coalesced into a single
+/// sequential lane read (up to `chunk` bytes).
+const COALESCE_GAP: u64 = 64 * 1024;
+
+struct CoalescedSpan {
+    start: u64,
+    len: usize,
+    first_chunk: usize,
+    chunk_count: usize,
+}
+
+fn build_coalesced_spans(
+    ranges: &[ByteRange],
+    chunk: usize,
+) -> (Vec<(u64, usize)>, Vec<CoalescedSpan>) {
+    let mut chunks = Vec::new();
+    for range in ranges {
+        let mut done = 0u64;
+        while done < range.length {
+            let length = (range.length - done).min(chunk as u64) as usize;
+            chunks.push((range.offset + done, length));
+            done += length as u64;
+        }
+    }
+    let mut spans: Vec<CoalescedSpan> = Vec::new();
+    let mut idx = 0usize;
+    while idx < chunks.len() {
+        let (start, first_len) = chunks[idx];
+        let mut end = start + first_len as u64;
+        let first_chunk = idx;
+        idx += 1;
+        while idx < chunks.len() {
+            let (next_off, next_len) = chunks[idx];
+            if next_off < end || next_off - end > COALESCE_GAP {
+                break;
+            }
+            let next_end = next_off + next_len as u64;
+            if next_end - start > chunk as u64 {
+                break;
+            }
+            end = next_end;
+            idx += 1;
+        }
+        spans.push(CoalescedSpan {
+            start,
+            len: (end - start) as usize,
+            first_chunk,
+            chunk_count: idx - first_chunk,
+        });
+    }
+    (chunks, spans)
+}
+
 pub(crate) struct OriginalPrefetch {
     lanes: Vec<Lane>,
     // The lane the next chunk comes from, and the one the last came from
     // (whose buffer count the buffer handed back restores).
     next: usize,
     last: usize,
+    // Chunk counts of each coalesced span, in order, so `next()` consumes
+    // every chunk of a span from its assigned lane before advancing `next`.
+    span_counts: Vec<usize>,
+    span_index: usize,
+    span_left: usize,
     // What pays for the buffers, the list, the lanes and the stacks:
     // returned once the helpers have ended and they are gone.
     _paid: Option<Box<dyn std::any::Any>>,
@@ -98,7 +156,7 @@ impl OriginalPrefetch {
     /// speed: it is asked for as spare memory, and a comparison that is
     /// refused it reads as it did.
     pub(crate) fn workspace_bytes(lanes: usize, chunk: usize, ranges: u64) -> Option<u64> {
-        let buffers = (Self::ahead(lanes) as u64 + 1).checked_mul(chunk as u64)?;
+        let buffers = (Self::ahead(lanes) as u64 + 2).checked_mul(chunk as u64)?;
         let lane = buffers
             .checked_add(GeneralFrozenPartition::read_buffer_memory_bytes())?
             .checked_add(LANE_OPEN_BYTES)?
@@ -175,11 +233,18 @@ impl OriginalPrefetch {
             return Err(io::Error::other("a prefetch needs a lane"));
         }
         let ahead = Self::ahead(count);
-        let ranges: Arc<[ByteRange]> = ranges.into();
+        let (chunks, spans) = build_coalesced_spans(&ranges, chunk);
+        let span_counts: Vec<usize> = spans.iter().map(|s| s.chunk_count).collect();
+        let initial_left = span_counts.first().copied().unwrap_or(0);
+        let chunks: Arc<[(u64, usize)]> = chunks.into();
+        let spans: Arc<[CoalescedSpan]> = spans.into();
         let mut started = Self {
             lanes: Vec::with_capacity(count),
             next: 0,
             last: 0,
+            span_counts,
+            span_index: 0,
+            span_left: initial_left,
             _paid: paid,
         };
         for (turn, mut lane) in lanes.into_iter().enumerate() {
@@ -193,27 +258,27 @@ impl OriginalPrefetch {
                 buffer.resize(chunk, 0);
                 let _ = free.send(buffer);
             }
-            let ranges = Arc::clone(&ranges);
+            let mut span_buf = Vec::new();
+            span_buf.try_reserve_exact(chunk).map_err(|_| {
+                io::Error::new(io::ErrorKind::OutOfMemory, "no memory for coalesce buffer")
+            })?;
+            span_buf.resize(chunk, 0);
+            let chunks = Arc::clone(&chunks);
+            let spans = Arc::clone(&spans);
             let worker = std::thread::Builder::new()
                 .name(name.into())
                 .spawn(move || {
                     let _sampled = n2r_win32::stack_sampler::helper();
-                    let mut ordinal = 0usize;
-                    for range in ranges.iter() {
-                        let mut done = 0;
-                        while done < range.length {
-                            let length = (range.length - done).min(chunk as u64);
-                            let offset = range.offset + done;
-                            done += length;
-                            let mine = ordinal % count == turn;
-                            ordinal += 1;
-                            if !mine {
-                                continue;
-                            }
+                    for (span_idx, span) in spans.iter().enumerate() {
+                        if span_idx % count != turn {
+                            continue;
+                        }
+                        if span.chunk_count == 1 {
+                            let (offset, length) = chunks[span.first_chunk];
                             let Ok(mut buffer) = free_rx.recv() else {
                                 return;
                             };
-                            buffer.resize(length as usize, 0);
+                            buffer.resize(length, 0);
                             let result = lane
                                 .seek(SeekFrom::Start(offset))
                                 .and_then(|_| lane.read_exact(&mut buffer))
@@ -226,6 +291,56 @@ impl OriginalPrefetch {
                             let stop = result.is_err();
                             if filled_tx.send(result).is_err() || stop {
                                 return;
+                            }
+                        } else {
+                            let read_res = lane
+                                .seek(SeekFrom::Start(span.start))
+                                .and_then(|_| lane.read_exact(&mut span_buf[..span.len]));
+                            if read_res.is_ok() {
+                                for &(offset, length) in
+                                    &chunks[span.first_chunk..span.first_chunk + span.chunk_count]
+                                {
+                                    let Ok(mut buffer) = free_rx.recv() else {
+                                        return;
+                                    };
+                                    let rel = (offset - span.start) as usize;
+                                    buffer.resize(length, 0);
+                                    buffer.copy_from_slice(&span_buf[rel..rel + length]);
+                                    let item = PrefetchedChunk {
+                                        offset,
+                                        xxh3_128: hash
+                                            .then(|| crate::parallel_digest::xxh3_128(&buffer)),
+                                        bytes: buffer,
+                                    };
+                                    if filled_tx.send(Ok(item)).is_err() {
+                                        return;
+                                    }
+                                }
+                            } else {
+                                // A bridged gap or later chunk failed: fall back to
+                                // per-chunk reads so any error is reported on its
+                                // exact chunk and never on a gap or earlier chunk.
+                                for &(offset, length) in
+                                    &chunks[span.first_chunk..span.first_chunk + span.chunk_count]
+                                {
+                                    let Ok(mut buffer) = free_rx.recv() else {
+                                        return;
+                                    };
+                                    buffer.resize(length, 0);
+                                    let result = lane
+                                        .seek(SeekFrom::Start(offset))
+                                        .and_then(|_| lane.read_exact(&mut buffer))
+                                        .map(|()| PrefetchedChunk {
+                                            offset,
+                                            xxh3_128: hash
+                                                .then(|| crate::parallel_digest::xxh3_128(&buffer)),
+                                            bytes: buffer,
+                                        });
+                                    let stop = result.is_err();
+                                    if filled_tx.send(result).is_err() || stop {
+                                        return;
+                                    }
+                                }
                             }
                         }
                     }
@@ -253,7 +368,12 @@ impl OriginalPrefetch {
             .map_err(|_| anyhow::anyhow!("prefetch stopped early"))?
             .with_context(|| format!("reading {count} bytes at partition offset {offset} ahead"))?;
         self.last = turn;
-        self.next = (turn + 1) % self.lanes.len();
+        self.span_left = self.span_left.saturating_sub(1);
+        if self.span_left == 0 {
+            self.span_index += 1;
+            self.span_left = self.span_counts.get(self.span_index).copied().unwrap_or(0);
+            self.next = (turn + 1) % self.lanes.len();
+        }
         ensure!(
             chunk.offset == offset && chunk.bytes.len() == count,
             "prefetched chunk differs from the comparison's: {} bytes at {}, not {count} at {offset}",
@@ -644,5 +764,32 @@ mod tests {
         });
         assert_eq!(granted.map(|(lanes, _)| lanes), Some(2));
         assert!(OriginalPrefetch::reserve_lanes(4, 4096, 10, |_| None::<()>).is_none());
+    }
+
+    #[test]
+    fn coalesced_spans_bridge_small_gaps_and_respect_chunk_cap() {
+        let ranges = vec![
+            ByteRange {
+                offset: 0,
+                length: 4096,
+            },
+            ByteRange {
+                offset: 12 * 1024,
+                length: 4096,
+            },
+            ByteRange {
+                offset: 200 * 1024,
+                length: 8192,
+            },
+        ];
+        let (chunks, spans) = build_coalesced_spans(&ranges, 64 * 1024);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].start, 0);
+        assert_eq!(spans[0].len, 16 * 1024);
+        assert_eq!(spans[0].chunk_count, 2);
+        assert_eq!(spans[1].start, 200 * 1024);
+        assert_eq!(spans[1].len, 8192);
+        assert_eq!(spans[1].chunk_count, 1);
     }
 }

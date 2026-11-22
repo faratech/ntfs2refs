@@ -824,6 +824,70 @@ fn complete_rows<J: DurableIo>(
     Ok(())
 }
 
+/// Staged in-memory batch completion: patches all descriptors in `stage`,
+/// writes the entire contiguous batch in one sequential `write_all`, and when
+/// `written` is active reads the batch back sequentially in 1 MiB chunks to
+/// verify exact byte-for-byte equality with `stage` and feed `written`.
+#[allow(clippy::too_many_arguments)]
+fn complete_staged_rows<J: DurableIo>(
+    f: JournalLayoutFacts,
+    file: &mut J,
+    stage: &mut Vec<u8>,
+    stage_start: &mut Option<u64>,
+    owed: &mut Vec<OwedRow>,
+    old_records: &mut RecordHashes,
+    new_records: &mut RecordHashes,
+    zeros: &mut ZeroDigests,
+    mut written: Option<&mut WrittenHashes>,
+    buffer: &mut [u8],
+) -> Result<()> {
+    let Some(end) = owed.last().map(|last| last.row.next_offset) else {
+        stage.clear();
+        *stage_start = None;
+        return Ok(());
+    };
+    let base = stage_start
+        .take()
+        .context("staged journal batch base offset absent")?;
+    ensure!(
+        base.checked_add(stage.len() as u64) == Some(end),
+        "staged journal batch byte length differs from planned layout"
+    );
+    for OwedRow { row, old, new } in owed.drain(..) {
+        let old = old_records.settle(old, zeros)?;
+        let new = new_records.settle(new, zeros)?;
+        let record = encode_record(row, f, old, new);
+        let rel = usize::try_from(
+            row.descriptor_offset
+                .checked_sub(base)
+                .context("staged journal descriptor offset precedes batch")?,
+        )?;
+        ensure!(
+            rel + f.record_size <= stage.len(),
+            "staged journal descriptor escapes batch buffer"
+        );
+        stage[rel..rel + f.record_size].copy_from_slice(&record[..f.record_size]);
+    }
+    file.write_all(stage)?;
+    if let Some(written) = written.as_deref_mut() {
+        file.seek(SeekFrom::Start(base))?;
+        let mut pos = 0usize;
+        while pos < stage.len() {
+            let count = (stage.len() - pos).min(buffer.len());
+            file.read_exact(&mut buffer[..count])?;
+            ensure!(
+                buffer[..count] == stage[pos..pos + count],
+                "journal preparation read-back: staged batch at offset {} differs from the bytes written; the journal is not used",
+                base + pos as u64
+            );
+            written.update(&buffer[..count])?;
+            pos += count;
+        }
+    }
+    stage.clear();
+    Ok(())
+}
+
 /// Write and independently validate one diagnostic journal. Space is reserved
 /// before `CreateNew`; the function never accepts an arbitrary writable disk.
 pub(crate) fn prepare_diagnostic<'domain, 'capture, R: ReadSeek, S: ReadSeek>(
@@ -1173,6 +1237,17 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     let mut check_records = RecordHashes::overlapped(algorithm)?;
     let mut owed: Vec<OwedRow> = Vec::with_capacity(MOST_OWED_ROWS);
     let mut owed_bytes = 0u64;
+    // Stage contiguous batches of up to 4 MiB (descriptors + OLD + NEW) in
+    // spare RAM so descriptors are patched in memory and flushed in a single
+    // sequential write + sequential read-back, avoiding hundreds of thousands
+    // of tiny unbuffered seek/write/read syscalls.
+    const STAGE_BYTES: usize = 4 * 1024 * 1024;
+    let mut stage: Option<(Vec<u8>, crate::ntfs_inspect::paged_storage::SourceRamLease)> = domain
+        .scratch
+        .lease_spare_ram(STAGE_BYTES as u64)
+        .ok()
+        .map(|lease| (Vec::with_capacity(STAGE_BYTES), lease));
+    let mut stage_start: Option<u64> = None;
     let mut rows = n2r_win32::AscendingRanges::new(u64::from(f.range_count));
     while let Some((row, group_end)) = rows.next(|ordinal| {
         domain
@@ -1186,6 +1261,150 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
             position == row.descriptor_offset,
             "diagnostic journal descriptor offset differs"
         );
+        let row_bytes = row
+            .next_offset
+            .checked_sub(row.descriptor_offset)
+            .context("journal row layout underflow")?;
+        let use_stage = stage
+            .as_ref()
+            .is_some_and(|(buf, _)| row_bytes <= buf.capacity() as u64);
+        if use_stage {
+            let (buf, _) = stage.as_mut().unwrap();
+            if stage_start.is_some()
+                && (owed.len() == MOST_OWED_ROWS
+                    || buf.len() as u64 + row_bytes > buf.capacity() as u64)
+            {
+                complete_staged_rows(
+                    f,
+                    file,
+                    buf,
+                    &mut stage_start,
+                    &mut owed,
+                    &mut old_records,
+                    &mut new_records,
+                    &mut zeros,
+                    written.as_mut(),
+                    &mut buffer,
+                )?;
+                owed_bytes = 0;
+            } else if stage_start.is_none() && !owed.is_empty() {
+                complete_rows(
+                    f,
+                    file,
+                    &mut owed,
+                    &mut old_records,
+                    &mut new_records,
+                    &mut check_records,
+                    &mut zeros,
+                    written.as_mut(),
+                    &mut buffer,
+                )?;
+                owed_bytes = 0;
+            }
+            if stage_start.is_none() {
+                stage_start = Some(row.descriptor_offset);
+            }
+            buf.write_all(&[0u8; OLD_ZERO_RECORD][..f.record_size])?;
+            position = position
+                .checked_add(f.record_size as u64)
+                .context("journal descriptor position overflow")?;
+            let range = SelectedRange {
+                offset: row.capture.offset,
+                length: row.capture.length,
+            };
+            let old = if row.capture.old_is_source_free {
+                RowDigest::Known(capture_free_selected(
+                    source,
+                    &range,
+                    buf,
+                    &mut old_selected,
+                    &mut buffer,
+                )?)
+            } else if row.capture.old_is_zero {
+                verify_zero_selected_with(
+                    source,
+                    &range,
+                    &mut old_selected,
+                    &mut buffer,
+                    &mut zeros,
+                    "source OLD-zero row is nonzero",
+                    old_restored.as_mut(),
+                    &mut old_records,
+                )?
+            } else {
+                let digest = copy_selected_with(
+                    source,
+                    &range,
+                    buf,
+                    &mut old_selected,
+                    &mut buffer,
+                    old_restored.as_mut(),
+                    &mut old_records,
+                )?;
+                position = position
+                    .checked_add(row.capture.length)
+                    .context("journal old payload position overflow")?;
+                digest
+            };
+            ensure!(
+                position == row.new_storage_offset,
+                "diagnostic old payload length differs"
+            );
+            let new = if row.capture.new_is_zero {
+                verify_zero_selected_with(
+                    candidate,
+                    &range,
+                    &mut new_selected,
+                    &mut buffer,
+                    &mut zeros,
+                    "candidate zero row is nonzero",
+                    None,
+                    &mut new_records,
+                )?
+            } else {
+                let digest = copy_candidate_checked(
+                    domain,
+                    source,
+                    candidate,
+                    buf,
+                    row,
+                    &mut new_selected,
+                    &mut buffer,
+                    &mut compare,
+                    same_captured_source,
+                    &mut new_records,
+                )?;
+                if row.capture.copy_source_offset.is_none() {
+                    position = position
+                        .checked_add(row.capture.length)
+                        .context("journal new payload position overflow")?;
+                }
+                digest
+            };
+            ensure!(
+                position == row.next_offset,
+                "diagnostic new payload length differs"
+            );
+            owed.push(OwedRow { row, old, new });
+            continue;
+        }
+        if let Some((buf, _)) = stage.as_mut() {
+            if stage_start.is_some() {
+                complete_staged_rows(
+                    f,
+                    file,
+                    buf,
+                    &mut stage_start,
+                    &mut owed,
+                    &mut old_records,
+                    &mut new_records,
+                    &mut zeros,
+                    written.as_mut(),
+                    &mut buffer,
+                )?;
+                owed_bytes = 0;
+            }
+        }
         file.write_all(&[0u8; OLD_ZERO_RECORD][..f.record_size])?;
         position = position
             .checked_add(f.record_size as u64)
@@ -1267,11 +1486,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
             position == row.next_offset,
             "diagnostic new payload length differs"
         );
-        owed_bytes = owed_bytes.saturating_add(
-            row.next_offset
-                .checked_sub(row.descriptor_offset)
-                .context("journal row layout underflow")?,
-        );
+        owed_bytes = owed_bytes.saturating_add(row_bytes);
         owed.push(OwedRow { row, old, new });
         if owed.len() == MOST_OWED_ROWS || owed_bytes >= MOST_OWED_BYTES {
             complete_rows(
@@ -1288,6 +1503,23 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
             owed_bytes = 0;
         }
     }
+    if let Some((buf, _)) = stage.as_mut() {
+        if stage_start.is_some() {
+            complete_staged_rows(
+                f,
+                file,
+                buf,
+                &mut stage_start,
+                &mut owed,
+                &mut old_records,
+                &mut new_records,
+                &mut zeros,
+                written.as_mut(),
+                &mut buffer,
+            )?;
+        }
+    }
+    drop(stage);
     complete_rows(
         f,
         file,

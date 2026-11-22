@@ -746,6 +746,10 @@ pub struct PagedSourceByteAdapterWithScope<'a, 'scope> {
     /// partition, which a stream's reads take where they lie wholly inside
     /// them ([`AheadReader`]); empty but where a caller offered them.
     read_ahead: Vec<(u64, Vec<u8>)>,
+    /// True only when every entry in `read_ahead` was read by a read lane of
+    /// `self.source` inside the same frozen scope, allowing `AheadReader` to
+    /// satisfy `read_with_direct_receipts` (`direct == true`) as well.
+    read_ahead_from_source_lanes: bool,
     /// Bounded, evictable 1 MiB aligned page cache for small MFT record reads
     /// during `prepare()` under `checks_once()`. Paid from `reserve_cache_ram`.
     mft_cache: Option<n2r_win32::evict::Evictable<MftPageCache>>,
@@ -802,6 +806,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
             logical_bytes: 0,
             poisoned: false,
             read_ahead: Vec::new(),
+            read_ahead_from_source_lanes: false,
             mft_cache: None,
             _session_ram: session_ram,
         })
@@ -858,6 +863,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
             logical_bytes: 0,
             poisoned: false,
             read_ahead: Vec::new(),
+            read_ahead_from_source_lanes: false,
             mft_cache: None,
             _session_ram: session_ram,
         })
@@ -991,9 +997,12 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
         prepared?;
         self.poisoned = true;
         let session = self.session.as_mut().context("paged DATA session absent")?;
-        // A direct read's receipt says the owner itself read the bytes:
-        // only an ordinary read takes bytes read ahead.
-        let receipt = if self.read_ahead.is_empty() || direct {
+        // A direct read's receipt says the frozen source itself supplied the
+        // bytes: only buffers read from `self.source`'s own read lanes within
+        // the same scope may satisfy `direct == true`.
+        let use_ahead =
+            !self.read_ahead.is_empty() && (!direct || self.read_ahead_from_source_lanes);
+        let receipt = if !use_ahead {
             read_session(
                 session,
                 &mut self.source,
@@ -1035,11 +1044,23 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
     /// no read asks for are not used. The caller takes them back
     /// ([`Self::withdraw_read_ahead`]) once that stream's range is read.
     pub(crate) fn offer_read_ahead(&mut self, offset: u64, bytes: Vec<u8>) {
+        self.read_ahead_from_source_lanes = false;
+        self.read_ahead.push((offset, bytes));
+    }
+
+    /// Offers `bytes` read by a read lane of `self.source` inside the same
+    /// frozen scope, enabling `AheadReader` to satisfy `read_with_direct_receipts`
+    /// as well as ordinary reads.
+    pub(crate) fn offer_source_lane_read_ahead(&mut self, offset: u64, bytes: Vec<u8>) {
+        if self.read_ahead.is_empty() {
+            self.read_ahead_from_source_lanes = true;
+        }
         self.read_ahead.push((offset, bytes));
     }
 
     /// Takes back every offer, handing each buffer to `give_back`.
     pub(crate) fn withdraw_read_ahead(&mut self, give_back: impl FnMut(Vec<u8>)) {
+        self.read_ahead_from_source_lanes = false;
         self.read_ahead
             .drain(..)
             .map(|(_, bytes)| bytes)

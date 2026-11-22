@@ -442,6 +442,9 @@ pub struct PagedSourceBackedCandidateWithScope<'source, 'observation, 'scope> {
     // in its helper thread, which has ended when this is finished or
     // dropped: before the source's read scope closes.
     originals_ahead: Option<OriginalPrefetch>,
+    // Multi-lane prefetcher for non-in-place routed source spans within each
+    // 4 MiB capture chunk. Dropped before `bytes.finish()` and scope close.
+    routed_ahead: Option<super::source_backed::original_prefetch::LaneReads>,
     poisoned: bool,
     _ram: SourceRamLease,
 }
@@ -492,6 +495,7 @@ impl<'source, 'observation, 'scope>
             closing_shadow: None,
             closing_source: None,
             originals_ahead: None,
+            routed_ahead: None,
             poisoned: false,
             _ram: ram,
         })
@@ -788,6 +792,7 @@ impl<'source, 'observation, 'scope>
         } else {
             0
         })?;
+        self.prefetch_routed_chunk(offset, output.len(), original.is_some())?;
         let result: Result<CandidateReadSpans> = (|| {
             self.seek(SeekFrom::Start(offset))?;
             let mut done = 0;
@@ -807,6 +812,7 @@ impl<'source, 'observation, 'scope>
             }
             Ok(spans)
         })();
+        self.bytes.withdraw_read_ahead(drop);
         if result.is_err() {
             self.poisoned = true;
         }
@@ -907,6 +913,136 @@ impl<'source, 'observation, 'scope>
             Some(Box::new(paid)),
         )
         .ok();
+        self.routed_ahead = super::source_backed::tails_ahead(
+            &mut self.bytes,
+            self.routes.scratch.artifact_group(),
+            "n2r-capture-routed-ahead",
+        )?;
+        Ok(())
+    }
+
+    /// Prefetch non-in-place routed source spans for the upcoming capture
+    /// chunk (`offset..offset + length`) across multiple source read lanes,
+    /// sorting by source physical offset and coalescing gaps <= 64 KiB into
+    /// <= 4 MiB sequential reads.
+    fn prefetch_routed_chunk(
+        &mut self,
+        offset: u64,
+        length: usize,
+        reusing_original: bool,
+    ) -> Result<()> {
+        if self.routed_ahead.is_none() || length == 0 {
+            return Ok(());
+        }
+        const ROUTED_COALESCE_GAP: u64 = 64 * 1024;
+        const ROUTED_COALESCE_MAX: u64 = 4 * 1024 * 1024;
+        let end = offset
+            .checked_add(length as u64)
+            .context("routed prefetch end overflow")?;
+        let mut asks: Vec<(u64, usize)> = Vec::new();
+        let mut cursor = offset;
+        while cursor < end {
+            let (route, boundary) = self.routes.locate(cursor)?;
+            ensure!(
+                boundary > cursor && boundary <= self.length,
+                "candidate routing boundary differs during prefetch"
+            );
+            let count = (boundary - cursor).min(end - cursor) as usize;
+            if let Some(route) = route {
+                if self
+                    .object
+                    .as_ref()
+                    .is_none_or(|(index, _)| *index != route.object_index)
+                {
+                    self.object = Some((
+                        route.object_index,
+                        self.expected.object_leased(route.object_index)?,
+                    ));
+                }
+                if let Some((_, object)) = self.object.as_ref()
+                    && let Some(stream) = object.stream(&route.stream_name_utf16)
+                    && stream.sparse.is_none()
+                    && let Some(logical) = route
+                        .logical_offset
+                        .checked_add(cursor - route.target_physical_offset)
+                {
+                    let logical_end = logical.saturating_add(count as u64);
+                    if let Some(base) = stream.source_offset {
+                        if let Some(place) = base.checked_add(logical)
+                            && !(reusing_original && place == cursor)
+                        {
+                            asks.push((place, count));
+                        }
+                    } else {
+                        for run in stream.source_extents {
+                            let Some(run_end) = run.logical_offset.checked_add(run.length) else {
+                                continue;
+                            };
+                            if run_end <= logical || run.logical_offset >= logical_end {
+                                continue;
+                            }
+                            let Some(phys) = run.physical_offset else {
+                                continue;
+                            };
+                            let ov_start = logical.max(run.logical_offset);
+                            let ov_end = logical_end.min(run_end);
+                            if ov_end > ov_start {
+                                let Some(place) = phys.checked_add(ov_start - run.logical_offset)
+                                else {
+                                    continue;
+                                };
+                                let seg_len = (ov_end - ov_start) as usize;
+                                let target_at = cursor + (ov_start - logical);
+                                if !(reusing_original && place == target_at) {
+                                    asks.push((place, seg_len));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            cursor += count as u64;
+        }
+        if asks.len() < 2 {
+            return Ok(());
+        }
+        asks.sort_unstable();
+        let Some(reads) = self.routed_ahead.as_mut() else {
+            return Ok(());
+        };
+        let mut tickets: Vec<(u64, u64)> = Vec::new();
+        let mut total_bytes = 0u64;
+        let mut i = 0usize;
+        while i < asks.len() {
+            let span_start = asks[i].0;
+            let mut span_end = span_start + asks[i].1 as u64;
+            i += 1;
+            while i < asks.len() {
+                let (next_place, next_count) = asks[i];
+                let next_end = next_place + next_count as u64;
+                if next_place > span_end.saturating_add(ROUTED_COALESCE_GAP) {
+                    break;
+                }
+                let merged_end = span_end.max(next_end);
+                if merged_end - span_start > ROUTED_COALESCE_MAX {
+                    break;
+                }
+                span_end = merged_end;
+                i += 1;
+            }
+            let span_len = span_end - span_start;
+            if total_bytes.saturating_add(span_len) > super::source_backed::TAIL_BATCH_BYTES {
+                break;
+            }
+            total_bytes += span_len;
+            tickets.push((span_start, reads.ask(span_start, span_len as usize)));
+        }
+        for (span_start, ticket) in tickets {
+            if let Ok(span_bytes) = reads.take(ticket) {
+                self.bytes
+                    .offer_source_lane_read_ahead(span_start, span_bytes);
+            }
+        }
         Ok(())
     }
 
@@ -985,6 +1121,7 @@ impl<'source, 'observation, 'scope>
         if let Some(ahead) = self.originals_ahead.take() {
             ahead.finish()?;
         }
+        drop(self.routed_ahead.take());
         self.routes.revalidate(self.expected)?;
         ensure!(
             self.shadow.state(&mut Vec::new())? == self.shadow_before,

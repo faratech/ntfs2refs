@@ -1295,10 +1295,16 @@ impl ResourceSourceContext {
                         &output.join("fingerprint"),
                     )?;
                     fingerprint.validate_inspection_reads(&read_coverage)?;
+                    // The read's own refusals (a lane whose route differs
+                    // from the frozen state) are the fingerprint's, as where
+                    // it was read in place; the planning goes on under the
+                    // phase it had.
+                    *phase = "source-fingerprint";
                     let reading = fingerprint
                         .lane_reread_as_cache(source)?
                         .and_then(|(lanes, ram)| lanes.start().ok().map(|read| (read, ram)))
                         .map(|started| n2r_win32::evict::Evictable::new(Some(started)));
+                    *phase = "source-inspection";
                     Some((fingerprint, reading))
                 } else {
                     None

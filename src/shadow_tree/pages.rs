@@ -1743,7 +1743,7 @@ impl PagedExpectedTree {
         Self::create_in_group(tree, path, admission, group, None)
     }
     /// [`Self::create_with_resources_in_group`] and then
-    /// [`Self::open_created_with_resources_in_group`] of what it wrote.
+    /// [`Self::open_with_resources_in_group`] of what it wrote.
     ///
     /// In a run that verifies once, the creation decodes every object back
     /// from the chunks it has just written, with the opening's decoder,
@@ -2050,21 +2050,14 @@ impl PagedExpectedTree {
         )
     }
     /// [`Self::open_with_resources_in_group`] for the pages that
-    /// [`Self::create_with_resources_in_group`] has just written, pinned by
-    /// the receipt it returned. In a run that verifies once, the legacy
-    /// JSON's digest and the object counts are those the creation derived
+    /// [`Self::create_in_group`] has just written, pinned by the receipt it
+    /// returned, with the objects it decoded back (`decoded`). In a run
+    /// that verifies once, where the creation decoded every object back,
+    /// the legacy JSON's digest and the object counts are those the
+    /// creation derived and `decoded` becomes the tree's decoded objects
     /// (see [`CreatedHere`]); otherwise, and for a receipt that does not
-    /// describe this file, the opening derives them again as every other
-    /// opening does.
-    pub fn open_created_with_resources_in_group(
-        path: &Path,
-        receipt: &ExpectedTreePageReceipt,
-        admission: n2r_win32::tree_resources::SourceResourceAdmission,
-        group: &crate::artifact_arena::ArtifactGroupPermit,
-        artifact: crate::artifact_arena::ArtifactLease,
-    ) -> Result<Self> {
-        Self::open_created_in_group(path, receipt, admission, group, artifact, None)
-    }
+    /// describe this file, the opening makes its pass over every object as
+    /// every other opening does.
     fn open_created_in_group(
         path: &Path,
         receipt: &ExpectedTreePageReceipt,

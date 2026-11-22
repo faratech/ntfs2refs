@@ -202,7 +202,12 @@ fn stored_descriptor(
             "source descriptor binding hash differs"
         );
         let mut stored = Vec::new();
-        stored.try_reserve_exact(held.stored.len())?;
+        stored.try_reserve_exact(held.stored.len()).with_context(|| {
+            format!(
+                "copying the stored security descriptor {id} of FILE {} from the projection's cache",
+                file.record_number
+            )
+        })?;
         stored.extend_from_slice(&held.stored);
         return Ok((stored, held.stored_sha256.clone()));
     }

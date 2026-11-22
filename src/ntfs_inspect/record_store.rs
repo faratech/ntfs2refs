@@ -236,6 +236,11 @@ impl SortedRecordWriter {
         Ok(())
     }
 
+    /// The records written so far: the ordinal of the next one.
+    pub(crate) fn records(&self) -> u64 {
+        self.records
+    }
+
     pub fn finish(self) -> Result<RecordStorePin> {
         ensure!(!self.poisoned, "cannot finish incomplete record store");
         let data = self.data.finish()?;

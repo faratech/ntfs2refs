@@ -99,12 +99,172 @@ struct DecodedRows {
     // Declared before the blocks, so the rows are dropped before the
     // credit that pays for them.
     rows: Vec<Option<Arc<FileInventory>>>,
+    // The rows of the store that replaces this one, by their ordinal there,
+    // as this process serialized them ([`WrittenRows`]): not served until
+    // that store is opened and they take the place of `rows`.
+    written: Vec<Option<Arc<FileInventory>>>,
     leases: Vec<SourceRamLease>,
     // What the blocks hold together, and what of it no row has taken yet.
     leased: u64,
     unspent: u64,
     // Rows still to pass by before a block is asked for again.
     refused_for: u32,
+}
+impl DecodedRows {
+    /// What holding `file` takes from the blocks.
+    fn charge_of(file: &FileInventory) -> Option<u64> {
+        file_heap_bytes(file)
+            .ok()?
+            .checked_add(DECODED_ROW_OVERHEAD_BYTES)
+    }
+    /// What the slots of `count` rows take from the blocks.
+    fn slots_charge(count: usize) -> u64 {
+        (count as u64).saturating_mul(std::mem::size_of::<Option<Arc<FileInventory>>>() as u64)
+    }
+    /// Gives `bytes` back to the blocks, no more than they hold.
+    fn credit(&mut self, bytes: u64) {
+        self.unspent = self.unspent.saturating_add(bytes).min(self.leased);
+    }
+    /// Holds `file` at `index` of the rows served (or, with `written`, of
+    /// the rows written for the replacement), which have `count` slots. It
+    /// is paid from the blocks; where they are spent another is asked for,
+    /// within `share` bytes of blocks, as optional memory. False where it is
+    /// not held: the row is then decoded where it is asked for, as before.
+    fn hold(
+        &mut self,
+        written: bool,
+        index: usize,
+        count: usize,
+        file: &Arc<FileInventory>,
+        scratch: &SourceScratch,
+        share: u64,
+    ) -> bool {
+        let slots = if written { &self.written } else { &self.rows };
+        if slots.get(index).is_some_and(Option::is_some) {
+            return true;
+        }
+        let first = slots.is_empty();
+        if self.refused_for > 0 {
+            self.refused_for -= 1;
+            return false;
+        }
+        let Some(mut bytes) = Self::charge_of(file) else {
+            return false;
+        };
+        if first {
+            bytes = bytes.saturating_add(Self::slots_charge(count));
+        }
+        if self.unspent < bytes {
+            let block = DECODED_ROW_BLOCK_BYTES.max(bytes);
+            // The rows keep to their share of the optional memory, and
+            // optional cache pressure must not become a source admission
+            // limit: a refusal is the ordinary answer of a full ledger.
+            let within_share = self
+                .leased
+                .checked_add(block)
+                .is_some_and(|leased| leased <= share);
+            match within_share
+                .then(|| scratch.lease_optional_ram(block).ok())
+                .flatten()
+            {
+                Some(lease) => {
+                    self.leases.push(lease);
+                    self.leased += block;
+                    self.unspent += block;
+                }
+                None => {
+                    self.refused_for = DECODED_ROW_RETRY_ROWS;
+                    return false;
+                }
+            }
+        }
+        let slots = if written {
+            &mut self.written
+        } else {
+            &mut self.rows
+        };
+        if first {
+            if slots.try_reserve_exact(count).is_err() {
+                self.refused_for = DECODED_ROW_RETRY_ROWS;
+                return false;
+            }
+            slots.resize_with(count, || None);
+        }
+        let Some(slot) = slots.get_mut(index) else {
+            return false;
+        };
+        *slot = Some(Arc::clone(file));
+        self.unspent -= bytes;
+        true
+    }
+    /// Takes the row at `index` out of the rows served, giving back to the
+    /// blocks what it was paid with.
+    fn take(&mut self, index: usize) -> Option<Arc<FileInventory>> {
+        let row = self.rows.get_mut(index)?.take()?;
+        if let Some(bytes) = Self::charge_of(&row) {
+            self.credit(bytes);
+        }
+        Some(row)
+    }
+    /// Drops the rows written for a replacement, giving back what they were
+    /// paid with.
+    fn drop_written(&mut self) {
+        let written = std::mem::take(&mut self.written);
+        let mut freed = Self::slots_charge(written.len());
+        for row in written.iter().flatten() {
+            freed = freed.saturating_add(Self::charge_of(row).unwrap_or(0));
+        }
+        drop(written);
+        self.credit(freed);
+    }
+    /// The rows written for the replacement, a store of `count` rows, become
+    /// the rows served; the rows before them are dropped, and the blocks no
+    /// row needs any more are given back.
+    fn promote_written(&mut self, count: usize) {
+        let old = std::mem::replace(&mut self.rows, std::mem::take(&mut self.written));
+        let mut freed = Self::slots_charge(old.len());
+        for row in old.iter().flatten() {
+            freed = freed.saturating_add(Self::charge_of(row).unwrap_or(0));
+        }
+        drop(old);
+        self.credit(freed);
+        if self.rows.len() > count {
+            // A writer may have had room for more rows than it wrote: the
+            // slots beyond the store are given back.
+            let beyond = self.rows.split_off(count);
+            let mut freed = Self::slots_charge(beyond.len());
+            for row in beyond.iter().flatten() {
+                freed = freed.saturating_add(Self::charge_of(row).unwrap_or(0));
+            }
+            drop(beyond);
+            self.rows.shrink_to_fit();
+            self.credit(freed);
+        } else if self.rows.len() < count && !self.rows.is_empty() {
+            // Not a store of these rows: nothing of it is held.
+            self.drop_rows();
+        }
+        while let Some(last) = self.leases.last() {
+            let bytes = last.held_bytes();
+            if bytes > self.unspent {
+                break;
+            }
+            self.leases.pop();
+            self.leased -= bytes;
+            self.unspent -= bytes;
+        }
+    }
+    /// Gives up every row and block.
+    fn drop_rows(&mut self) {
+        self.leased = 0;
+        self.unspent = 0;
+        let taken = (
+            std::mem::take(&mut self.rows),
+            std::mem::take(&mut self.written),
+            std::mem::take(&mut self.leases),
+        );
+        // The rows before the blocks that paid for them.
+        drop(taken);
+    }
 }
 /// The decoded rows as a cache of the run: given up, with the blocks that
 /// pay for them, when memory is short ([`n2r_win32::evict`]).
@@ -127,6 +287,7 @@ impl DecodedRowCache {
             decoded.refused_for = 0;
             (
                 std::mem::take(&mut decoded.rows),
+                std::mem::take(&mut decoded.written),
                 std::mem::take(&mut decoded.leases),
             )
         };
@@ -150,6 +311,7 @@ impl n2r_win32::evict::Evict for DecodedRowCache {
                 decoded.refused_for = DECODED_ROW_RETRY_ROWS;
                 Some((
                     std::mem::take(&mut decoded.rows),
+                    std::mem::take(&mut decoded.written),
                     std::mem::take(&mut decoded.leases),
                 ))
             }
@@ -176,6 +338,81 @@ pub(super) fn file_key(number: u64) -> [u8; 16] {
     key
 }
 
+/// The rows of a file store as this process serialized them, kept for the
+/// opening of that store: it takes them as its decoded rows instead of
+/// decoding every row from its JSON again.
+///
+/// The inspection writes the file store three times (the MFT scan, the
+/// roles and the stream evidence) and opened each by decoding all of its
+/// rows: three decodes of every row of the volume, which the values the
+/// writer had just serialized make unnecessary. The opening still holds
+/// each kept row to the store's key at its ordinal, to the record bitmaps
+/// and to its working window, as it holds a decoded one.
+///
+/// Rows are kept only where each thing is verified once (`--verify fast`)
+/// and decoded rows are served (outside the gate): a run with `--verify
+/// thorough`, without the check-once policy or inside the gate decodes
+/// every row of the store it opens, as before. The memory is the decoded
+/// rows' own: optional, in blocks, within their share, and given up with
+/// them when memory is short; a row that is not kept is decoded, as before.
+pub(super) struct WrittenRows {
+    cache: Rc<DecodedRowCache>,
+    scratch: SourceScratch,
+    // The slots: the rows the store may have.
+    count: usize,
+}
+impl WrittenRows {
+    /// Whether rows written in this process are kept for their store.
+    pub(super) fn keeps() -> bool {
+        n2r_win32::verify_policy::verifies_once() && !n2r_win32::verify_policy::full_unremembered()
+    }
+    /// For a store of at most `count` rows, written while no store of
+    /// these rows is open (the MFT scan): the rows are paid by blocks of
+    /// their own, which the store takes with them when it is opened.
+    pub(super) fn new(scratch: &SourceScratch, count: u64) -> Option<Self> {
+        if !Self::keeps() {
+            return None;
+        }
+        let count = usize::try_from(count).ok()?;
+        let cache = Rc::new(DecodedRowCache {
+            state: RefCell::new(DecodedRows::default()),
+            last_used: Cell::new(n2r_win32::evict::now()),
+            last_served: Cell::new(None),
+        });
+        n2r_win32::evict::register(&cache);
+        Some(Self {
+            cache,
+            scratch: scratch.clone(),
+            count,
+        })
+    }
+    /// Keeps `file`, the row just written at `ordinal` of the store: as the
+    /// writer serialized it. A row that cannot be paid for is dropped and
+    /// decoded when the store is opened.
+    pub(super) fn keep(&self, ordinal: u64, file: FileInventory) {
+        let Ok(index) = usize::try_from(ordinal) else {
+            return;
+        };
+        if index >= self.count {
+            return;
+        }
+        self.cache.last_used.set(n2r_win32::evict::now());
+        let share = self.scratch.budget().ram_bytes / DECODED_ROW_SHARE;
+        // Borrowed means it is being given up at this moment.
+        let Ok(mut state) = self.cache.state.try_borrow_mut() else {
+            return;
+        };
+        state.hold(
+            true,
+            index,
+            self.count,
+            &Arc::new(file),
+            &self.scratch,
+            share,
+        );
+    }
+}
+
 pub struct PagedRawFiles {
     header: SourceHeader,
     files: SortedRecordStore,
@@ -190,12 +427,16 @@ pub struct PagedRawFiles {
     decoded: Rc<DecodedRowCache>,
 }
 impl PagedRawFiles {
+    /// Opens the store `files`. `written` are its rows as this process
+    /// wrote them ([`WrittenRows`]), where they were kept: those are held
+    /// to the store as they are, the others decoded.
     pub(super) fn from_live_bitmap(
         header: SourceHeader,
         files: &RecordStorePin,
         allocated: Box<dyn SourceMetadataRange>,
         extensions: &SourcePagePin,
         scratch: &SourceScratch,
+        written: Option<WrittenRows>,
     ) -> Result<Self> {
         ensure!(
             header.schema_version == 2
@@ -204,6 +445,7 @@ impl PagedRawFiles {
                 && header.records_scanned <= header.mft_record_count,
             "paged source intrinsic MFT domain differs"
         );
+        let written = written.filter(|_| WrittenRows::keeps());
         let value = Self {
             header,
             files: SortedRecordStore::open(files, scratch)?,
@@ -213,18 +455,90 @@ impl PagedRawFiles {
             scratch: scratch.clone(),
             directory_rows: RefCell::new(DirectoryRowCache::default()),
             last_row: RefCell::new(None),
-            decoded: {
-                let decoded = Rc::new(DecodedRowCache {
-                    state: RefCell::new(DecodedRows::default()),
-                    last_used: Cell::new(n2r_win32::evict::now()),
-                    last_served: Cell::new(None),
-                });
-                n2r_win32::evict::register(&decoded);
-                decoded
+            decoded: match &written {
+                Some(written) => Rc::clone(&written.cache),
+                None => {
+                    let decoded = Rc::new(DecodedRowCache {
+                        state: RefCell::new(DecodedRows::default()),
+                        last_used: Cell::new(n2r_win32::evict::now()),
+                        last_served: Cell::new(None),
+                    });
+                    n2r_win32::evict::register(&decoded);
+                    decoded
+                }
             },
         };
-        value.validate_complete_files()?;
+        let promoted = written.is_some();
+        drop(written);
+        if promoted {
+            value.promote_written()?;
+        }
+        value.validate_complete_files(promoted)?;
         Ok(value)
+    }
+    /// The rows written for this store take the place of the rows held.
+    fn promote_written(&self) -> Result<()> {
+        let count = usize::try_from(self.files.len())?;
+        self.decoded.last_served.set(None);
+        self.decoded.state.borrow_mut().promote_written(count);
+        Ok(())
+    }
+    /// The rows of the store that is to replace this one, written in this
+    /// process in its order: kept beside the rows of this one, paid from the
+    /// same blocks, and served once it has replaced this one
+    /// ([`Self::replace_files`]). None where rows are not kept.
+    pub(super) fn written_rows(&self) -> Option<WrittenRows> {
+        if !WrittenRows::keeps() {
+            return None;
+        }
+        let count = usize::try_from(self.files.len()).ok()?;
+        self.decoded.state.borrow_mut().drop_written();
+        Some(WrittenRows {
+            cache: Rc::clone(&self.decoded),
+            scratch: self.scratch.clone(),
+            count,
+        })
+    }
+    /// The row at `ordinal` as a value of the caller's own, for a pass that
+    /// rewrites every row, in order, into the store that replaces this one
+    /// ([`Self::written_rows`]). A row that is no directory and is held
+    /// with the decoded rows is handed over, not copied: it is held no
+    /// more, and the memory it took pays for the rows written. Asked for
+    /// again, it is decoded from the store. Directories, which the paths of
+    /// other rows are built from, are copied as [`RootFileDomain::file`]
+    /// copies them, and so is every row where rows written are not kept.
+    pub(super) fn take_file(&self, ordinal: u64) -> Result<FileInventory> {
+        if WrittenRows::keeps()
+            && let Ok(index) = usize::try_from(ordinal)
+            && self
+                .decoded
+                .state
+                .borrow()
+                .rows
+                .get(index)
+                .and_then(Option::as_ref)
+                .is_some_and(|row| !row.is_directory)
+        {
+            let key = self.files.key(ordinal)?;
+            let number = u64::from_be_bytes(key[..8].try_into()?);
+            ensure!(
+                key == file_key(number),
+                "canonical ordinal key is not a file identity"
+            );
+            let row = self
+                .decoded
+                .state
+                .borrow_mut()
+                .take(index)
+                .context("the decoded row of the source file store disappeared")?;
+            ensure!(
+                row.record_number == number,
+                "the decoded row held for ordinal {ordinal} of the source file store is FILE {}, where the store's index has FILE {number}",
+                row.record_number
+            );
+            return Ok(Arc::unwrap_or_clone(row));
+        }
+        self.file(ordinal)
     }
     pub fn file_pin(&self) -> &RecordStorePin {
         self.files.pin()
@@ -260,7 +574,15 @@ impl PagedRawFiles {
         self.header = header;
         Ok(())
     }
-    pub(super) fn replace_files(&mut self, pin: &RecordStorePin) -> Result<()> {
+    /// Replaces the store with `pin`, a store of the same records. `written`
+    /// are its rows as this process wrote them ([`Self::written_rows`]),
+    /// where they were kept: those are held to the store as they are, the
+    /// others decoded.
+    pub(super) fn replace_files(
+        &mut self,
+        pin: &RecordStorePin,
+        written: Option<WrittenRows>,
+    ) -> Result<()> {
         ensure!(
             pin.records == self.files.len() && pin.data.path != self.files.pin().data.path,
             "source row replacement cannot change its complete identity domain"
@@ -269,21 +591,36 @@ impl PagedRawFiles {
         // and return optional cache credit before opening replacement pages.
         self.directory_rows.get_mut().clear();
         self.last_row.get_mut().take();
-        self.decoded.clear();
-        self.files.clear_resident_cache();
-        let replacement = SortedRecordStore::open(pin, &self.scratch)?;
-        for ordinal in 0..replacement.len() {
-            ensure!(
-                replacement.key(ordinal)? == self.files.key(ordinal)?,
-                "source row replacement changed a canonical identity"
-            );
+        let promoted = written.is_some_and(|written| {
+            Rc::ptr_eq(&written.cache, &self.decoded)
+                && u64::try_from(written.count) == Ok(pin.records)
+        }) && WrittenRows::keeps();
+        if promoted {
+            self.promote_written()?;
+        } else {
+            self.decoded.clear();
         }
-        let old = self.files.pin().clone();
-        self.files = replacement;
-        self.validate_complete_files()?;
-        self.scratch.retire_created(&old.data)?;
-        self.scratch.retire_created(&old.directory)?;
-        Ok(())
+        self.files.clear_resident_cache();
+        let result = (|| {
+            let replacement = SortedRecordStore::open(pin, &self.scratch)?;
+            for ordinal in 0..replacement.len() {
+                ensure!(
+                    replacement.key(ordinal)? == self.files.key(ordinal)?,
+                    "source row replacement changed a canonical identity"
+                );
+            }
+            let old = self.files.pin().clone();
+            self.files = replacement;
+            self.validate_complete_files(promoted)?;
+            self.scratch.retire_created(&old.data)?;
+            self.scratch.retire_created(&old.directory)?;
+            Ok(())
+        })();
+        if result.is_err() && promoted {
+            // The rows held may be of a store that was not taken.
+            self.decoded.clear();
+        }
+        result
     }
     pub(super) fn ordinal(&self, number: u64) -> Result<Option<u64>> {
         let key = file_key(number);
@@ -330,56 +667,17 @@ impl PagedRawFiles {
         if decoded.rows.get(index).is_some_and(Option::is_some) {
             return true;
         }
-        if decoded.refused_for > 0 {
-            decoded.refused_for -= 1;
+        if !decoded.hold(
+            false,
+            index,
+            count,
+            file,
+            &self.scratch,
+            self.budget().ram_bytes / DECODED_ROW_SHARE,
+        ) {
             return false;
         }
-        let Some(mut bytes) = file_heap_bytes(file)
-            .ok()
-            .and_then(|heap| heap.checked_add(DECODED_ROW_OVERHEAD_BYTES))
-        else {
-            return false;
-        };
-        let slots = decoded.rows.is_empty();
-        if slots {
-            bytes = bytes.saturating_add(
-                (count as u64)
-                    .saturating_mul(std::mem::size_of::<Option<Arc<FileInventory>>>() as u64),
-            );
-        }
-        if decoded.unspent < bytes {
-            let block = DECODED_ROW_BLOCK_BYTES.max(bytes);
-            // The rows keep to their share of the optional memory, and
-            // optional cache pressure must not become a source admission
-            // limit: a refusal is the ordinary answer of a full ledger.
-            let within_share = decoded
-                .leased
-                .checked_add(block)
-                .is_some_and(|leased| leased <= self.budget().ram_bytes / DECODED_ROW_SHARE);
-            match within_share
-                .then(|| self.scratch.lease_optional_ram(block).ok())
-                .flatten()
-            {
-                Some(lease) => {
-                    decoded.leases.push(lease);
-                    decoded.leased += block;
-                    decoded.unspent += block;
-                }
-                None => {
-                    decoded.refused_for = DECODED_ROW_RETRY_ROWS;
-                    return false;
-                }
-            }
-        }
-        if slots {
-            if decoded.rows.try_reserve_exact(count).is_err() {
-                decoded.refused_for = DECODED_ROW_RETRY_ROWS;
-                return false;
-            }
-            decoded.rows.resize_with(count, || None);
-        }
-        decoded.unspent -= bytes;
-        decoded.rows[index] = Some(Arc::clone(file));
+        drop(decoded);
         self.decoded
             .last_served
             .set(Some((file.record_number, ordinal)));
@@ -616,7 +914,10 @@ impl PagedRawFiles {
         range.read_exact_at(number / 8, &mut byte)?;
         Ok(byte[0] & (1 << (number % 8)) != 0)
     }
-    fn validate_complete_files(&self) -> Result<()> {
+    /// Holds the complete store to the record bitmaps, row by row. With
+    /// `written`, a row held as the writer serialized it ([`WrittenRows`])
+    /// is held to them as it is; every other row is decoded from the store.
+    fn validate_complete_files(&self, written: bool) -> Result<()> {
         self.revalidate()?;
         let bytes = self.header.mft_record_count.div_ceil(8);
         ensure!(
@@ -674,22 +975,27 @@ impl PagedRawFiles {
         );
         let mut previous = None;
         for ordinal in 0..self.files.len() {
+            let held = if written {
+                usize::try_from(ordinal).ok().and_then(|index| {
+                    self.decoded
+                        .state
+                        .borrow()
+                        .rows
+                        .get(index)
+                        .and_then(Option::as_ref)
+                        .map(Arc::clone)
+                })
+            } else {
+                None
+            };
+            if let Some(file) = held {
+                // Held to the same key, order, bitmaps and window as a
+                // decoded row, and kept where it is.
+                self.check_complete_row(ordinal, &file, &mut previous)?;
+                continue;
+            }
             let file: FileInventory = self.files.get(ordinal)?;
-            ensure!(
-                self.files.key(ordinal)? == file_key(file.record_number)
-                    && previous.is_none_or(|n| n < file.record_number)
-                    && file.base_file_reference == 0
-                    && self.bit(self.allocated.as_ref(), file.record_number)?
-                    && !self.bit(&self.extensions, file.record_number)?,
-                "canonical source identity/key/allocation differs"
-            );
-            ensure!(
-                file_heap_bytes(&file)?
-                    .checked_add(std::mem::size_of::<FileInventory>() as u64)
-                    .is_some_and(|n| n <= self.budget().record_bytes.saturating_mul(8)),
-                "one source row exceeds its resource working window"
-            );
-            previous = Some(file.record_number);
+            self.check_complete_row(ordinal, &file, &mut previous)?;
             // Every row is decoded here and held to its key: the first pass
             // that asks for it need not decode it again.
             if self.serves_decoded() {
@@ -697,6 +1003,31 @@ impl PagedRawFiles {
             }
         }
         self.revalidate()
+    }
+    /// Holds the row at `ordinal` to the store's key there, to the order of
+    /// the rows before it, to the record bitmaps and to its working window.
+    fn check_complete_row(
+        &self,
+        ordinal: u64,
+        file: &FileInventory,
+        previous: &mut Option<u64>,
+    ) -> Result<()> {
+        ensure!(
+            self.files.key(ordinal)? == file_key(file.record_number)
+                && previous.is_none_or(|n| n < file.record_number)
+                && file.base_file_reference == 0
+                && self.bit(self.allocated.as_ref(), file.record_number)?
+                && !self.bit(&self.extensions, file.record_number)?,
+            "canonical source identity/key/allocation differs"
+        );
+        ensure!(
+            file_heap_bytes(file)?
+                .checked_add(std::mem::size_of::<FileInventory>() as u64)
+                .is_some_and(|n| n <= self.budget().record_bytes.saturating_mul(8)),
+            "one source row exceeds its resource working window"
+        );
+        *previous = Some(file.record_number);
+        Ok(())
     }
 }
 impl RootFileDomain for PagedRawFiles {
@@ -839,5 +1170,144 @@ impl RootFileDomain for PagedRawFiles {
         self.files.revalidate()?;
         self.allocated.revalidate()?;
         self.extensions.revalidate()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch() -> SourceScratch {
+        SourceScratch::new(SourceMetadataBudget {
+            ram_bytes: 1024 * 1024 * 1024,
+            scratch_bytes: 256 * 1024 * 1024,
+            page_bytes: 4096,
+            record_bytes: 64 * 1024,
+            merge_fan_in: 8,
+        })
+        .unwrap()
+    }
+    fn row(number: u64, directory: bool) -> Arc<FileInventory> {
+        // A name of some length, so that the rows take several blocks.
+        let name = format!("{number:0>300}");
+        Arc::new(FileInventory {
+            record_number: number,
+            sequence_number: 1,
+            hard_link_count: 1,
+            is_directory: directory,
+            is_metadata: false,
+            metadata_role: MetadataRole::NotClassified,
+            metadata_role_issue: None,
+            base_file_reference: 0,
+            names: vec![NameInventory {
+                name_utf16: name.encode_utf16().collect(),
+                name,
+                namespace: 1,
+                parent_record_number: 5,
+                parent_sequence_number: 5,
+            }],
+            standard_information: None,
+            streams: Vec::new(),
+            attributes: Vec::new(),
+            extended_attributes: None,
+            reparse: None,
+        })
+    }
+    /// What the blocks have paid out: every row held, and the slots of
+    /// each of the two vectors that has any.
+    fn spent(rows: &DecodedRows) -> u64 {
+        [&rows.rows, &rows.written]
+            .into_iter()
+            .map(|slots| {
+                DecodedRows::slots_charge(slots.len())
+                    + slots
+                        .iter()
+                        .flatten()
+                        .map(|row| DecodedRows::charge_of(row).unwrap())
+                        .sum::<u64>()
+            })
+            .sum()
+    }
+
+    #[test]
+    fn rows_handed_over_pay_for_the_rows_written_and_spare_blocks_go_back() {
+        let scratch = scratch();
+        let share = scratch.budget().ram_bytes / DECODED_ROW_SHARE;
+        let before = scratch.working_ram_bytes();
+        let mut rows = DecodedRows::default();
+        const COUNT: usize = 60_000;
+        for index in 0..COUNT {
+            assert!(rows.hold(
+                false,
+                index,
+                COUNT,
+                &row(index as u64 + 16, index % 7 == 0),
+                &scratch,
+                share
+            ));
+        }
+        assert_eq!(rows.leased - rows.unspent, spent(&rows));
+        let full = rows.leased;
+        assert!(full > DECODED_ROW_BLOCK_BYTES, "more than one block");
+        // A rewrite: each row that is no directory is taken over and its
+        // replacement written.
+        for index in 0..COUNT {
+            let taken = if index % 7 == 0 {
+                None
+            } else {
+                Some(rows.take(index).unwrap())
+            };
+            assert!(rows.rows[index].is_none() == taken.is_some());
+            assert!(rows.hold(
+                true,
+                index,
+                COUNT,
+                &row(index as u64 + 16, index % 7 == 0),
+                &scratch,
+                share
+            ));
+            if index % 4999 == 0 {
+                assert_eq!(rows.leased - rows.unspent, spent(&rows), "row {index}");
+            }
+        }
+        assert_eq!(rows.leased - rows.unspent, spent(&rows));
+        // The rows handed over paid for most of the rows written.
+        assert!(rows.leased < full * 3 / 2, "{} of {full}", rows.leased);
+        rows.promote_written(COUNT);
+        assert!(rows.written.is_empty());
+        assert!(rows.rows.iter().all(Option::is_some));
+        assert_eq!(rows.leased - rows.unspent, spent(&rows));
+        assert!(
+            rows.unspent < DECODED_ROW_BLOCK_BYTES,
+            "the blocks no row needs are given back"
+        );
+        assert_eq!(
+            scratch.working_ram_bytes() - before,
+            rows.leased,
+            "the ledger holds what the blocks hold"
+        );
+        rows.drop_rows();
+        assert_eq!(scratch.working_ram_bytes(), before);
+    }
+
+    #[test]
+    fn rows_written_beyond_the_store_or_short_of_it_are_not_served() {
+        let scratch = scratch();
+        let share = scratch.budget().ram_bytes / DECODED_ROW_SHARE;
+        let mut rows = DecodedRows::default();
+        // A scan's writer has room for every record; the store has fewer.
+        for index in 0..10 {
+            assert!(rows.hold(true, index, 100, &row(index as u64, false), &scratch, share));
+        }
+        rows.promote_written(10);
+        assert_eq!(rows.rows.len(), 10);
+        assert_eq!(rows.leased - rows.unspent, spent(&rows));
+        // Slots short of the store: nothing is held.
+        for index in 0..5 {
+            assert!(rows.hold(true, index, 5, &row(index as u64, false), &scratch, share));
+        }
+        rows.promote_written(10);
+        assert!(rows.rows.is_empty() && rows.written.is_empty() && rows.leases.is_empty());
+        assert_eq!((rows.leased, rows.unspent), (0, 0));
     }
 }

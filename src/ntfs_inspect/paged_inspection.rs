@@ -4,7 +4,7 @@ use super::*;
 use super::{
     allocation_domain::{PagedAllocationReconciliation, reconcile_allocation_domain},
     namespace_capture::{NamespacePagePins, PagedNamespaceCapture, PagedNamespaceDomain},
-    paged_files::{PagedRawFiles, file_key},
+    paged_files::{PagedRawFiles, WrittenRows, file_key},
     paged_storage::{SourcePagePin, SourceScratch},
     record_store::{RecordStorePin, SortedRecordStore, SortedRecordWriter},
     security_input::{PagedSecurityCapture, PagedSecurityInput, SecurityCapturePins},
@@ -155,6 +155,7 @@ impl PagedInspection {
             Box::new(bitmap),
             &pin.extensions,
             scratch,
+            None,
         )?;
         let directories = PagedNamespaceDomain::open(&pin.namespace, scratch)?;
         ensure!(
@@ -233,6 +234,7 @@ impl PagedInspection {
             Box::new(bitmap),
             &pin.extensions,
             scratch,
+            None,
         )?;
         let directories = PagedNamespaceDomain::open(&pin.namespace, scratch)?;
         ensure!(
@@ -763,7 +765,12 @@ pub(crate) fn inspect_paged_with_layout_scope<R: Read + Seek>(
 /// The worker serializes each row into a buffer of exactly its estimate and
 /// stops there: such a row comes back unserialized and is written by the
 /// scan's thread.
-struct RowsAhead {
+///
+/// The rewrites of the store (roles, stream evidence) go through it too.
+/// With [`WrittenRows`], every row written is kept as it was serialized,
+/// for the opening of the store: the worker hands the row back with its
+/// JSON.
+pub(super) struct RowsAhead {
     jobs: Option<std::sync::mpsc::SyncSender<(FileInventory, usize)>>,
     done: std::sync::mpsc::Receiver<Serialized>,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -773,6 +780,8 @@ struct RowsAhead {
     scratch: SourceScratch,
     row_bytes: u64,
     workspace: Option<super::paged_storage::SourceRamLease>,
+    /// Where the rows written are kept, where they are.
+    written: Option<WrittenRows>,
 }
 /// A row handed to the worker: its record, all it was paid for and the
 /// lease that pays it.
@@ -783,8 +792,9 @@ struct RowInFlight {
 }
 /// What the worker made of a row.
 enum Serialized {
-    /// Its JSON, within the estimate it was paid for.
-    Json(Vec<u8>),
+    /// Its JSON, within the estimate it was paid for, and the row itself
+    /// where rows written are kept.
+    Json(Vec<u8>, Option<Box<FileInventory>>),
     /// Its JSON is longer than that estimate: the row, for the scan's thread.
     Longer(Box<FileInventory>),
     /// What serializing it failed with.
@@ -819,11 +829,18 @@ impl RowsAhead {
     const POOL_BYTES: u64 = 32 * 1024 * 1024;
     /// The worker's thread, beside the rows.
     const WORKSPACE_BYTES: u64 = 2 * 1024 * 1024;
-    fn new(scratch: &SourceScratch, row_bytes: u64) -> Self {
+    /// `written`, where rows written are kept ([`WrittenRows`]), is handed
+    /// back by [`Self::finish`].
+    pub(super) fn new(
+        scratch: &SourceScratch,
+        row_bytes: u64,
+        written: Option<WrittenRows>,
+    ) -> Self {
         let (jobs, received) =
             std::sync::mpsc::sync_channel::<(FileInventory, usize)>(Self::IN_FLIGHT);
         let (finished, done) = std::sync::mpsc::channel();
         let mut workspace = scratch.lease_spare_ram(Self::WORKSPACE_BYTES).ok();
+        let keep = written.is_some();
         let worker = workspace.as_ref().and_then(|_| {
             std::thread::Builder::new()
                 .name("raw-file-rows".into())
@@ -838,7 +855,11 @@ impl RowsAhead {
                             over: false,
                         };
                         let made = match serde_json::to_writer(&mut json, &inventory) {
-                            Ok(()) => Serialized::Json(json.bytes),
+                            // The row stays paid by its lease in flight
+                            // until it is written and kept.
+                            Ok(()) => {
+                                Serialized::Json(json.bytes, keep.then(|| Box::new(inventory)))
+                            }
                             Err(_) if json.over => Serialized::Longer(Box::new(inventory)),
                             Err(error) => Serialized::Failed(error.to_string()),
                         };
@@ -862,6 +883,14 @@ impl RowsAhead {
             scratch: scratch.clone(),
             row_bytes,
             workspace,
+            written,
+        }
+    }
+    /// Keeps `inventory`, the row `writer` has just written, where rows
+    /// written are kept.
+    fn keep_written(&self, writer: &SortedRecordWriter, inventory: FileInventory) {
+        if let (Some(written), Some(ordinal)) = (&self.written, writer.records().checked_sub(1)) {
+            written.keep(ordinal, inventory);
         }
     }
     /// The JSON a row of `heap` bytes is paid for before it is serialized:
@@ -873,7 +902,7 @@ impl RowsAhead {
             .saturating_add(4096)
             .min(self.row_bytes)
     }
-    fn push(
+    pub(super) fn push(
         &mut self,
         writer: &mut SortedRecordWriter,
         number: u64,
@@ -918,7 +947,9 @@ impl RowsAhead {
             }
             _ => {
                 self.write_ready(writer, true)?;
-                writer.push(file_key(number), &inventory)
+                writer.push(file_key(number), &inventory)?;
+                self.keep_written(writer, inventory);
+                Ok(())
             }
         }
     }
@@ -946,13 +977,19 @@ impl RowsAhead {
             .pop_front()
             .context("raw file row in flight absent")?;
         match made {
-            Serialized::Json(json) => writer.push_serialized(file_key(row.number), &json)?,
+            Serialized::Json(json, inventory) => {
+                writer.push_serialized(file_key(row.number), &json)?;
+                if let Some(inventory) = inventory {
+                    self.keep_written(writer, *inventory);
+                }
+            }
             Serialized::Longer(inventory) => {
                 // The estimate does not hold for this volume's rows: the
                 // worker finishes the rows it holds, and the scan writes
                 // this one and every one after them.
                 self.jobs = None;
                 writer.push(file_key(row.number), &inventory)?;
+                self.keep_written(writer, *inventory);
             }
             Serialized::Failed(error) => anyhow::bail!(error),
         }
@@ -980,7 +1017,9 @@ impl RowsAhead {
         while self.write_next(writer, wait)? {}
         Ok(())
     }
-    fn finish(mut self, writer: &mut SortedRecordWriter) -> Result<()> {
+    /// Writes every row handed over and ends the worker; returns where the
+    /// rows written were kept, if they were.
+    pub(super) fn finish(mut self, writer: &mut SortedRecordWriter) -> Result<Option<WrittenRows>> {
         self.write_ready(writer, true)?;
         self.jobs.take();
         if let Some(worker) = self.worker.take() {
@@ -988,7 +1027,7 @@ impl RowsAhead {
                 .join()
                 .map_err(|_| anyhow::anyhow!("the raw file row worker panicked"))?;
         }
-        Ok(())
+        Ok(self.written.take())
     }
 }
 impl Drop for RowsAhead {
@@ -1084,7 +1123,11 @@ fn inspect_paged_internal<R: Read + Seek>(
     let mut bitmap_buf = [0u8; 4096];
     let mut bitmap_block = u64::MAX;
     let bitmap_len = bitmap.byte_len();
-    let mut rows_ahead = RowsAhead::new(&scratch, budget.record_bytes);
+    let mut rows_ahead = RowsAhead::new(
+        &scratch,
+        budget.record_bytes,
+        WrittenRows::new(&scratch, record_count),
+    );
     for number in 0..record_count {
         let byte_offset = number / 8;
         let block = byte_offset / bitmap_buf.len() as u64;
@@ -1207,7 +1250,7 @@ fn inspect_paged_internal<R: Read + Seek>(
             ext_byte = 0;
         }
     }
-    rows_ahead.finish(&mut files_writer)?;
+    let written = rows_ahead.finish(&mut files_writer)?;
     drop(mft_data);
     drop(bootstrap_record);
     n2r_win32::perf::step("NTFS: finish raw file store");
@@ -1237,6 +1280,7 @@ fn inspect_paged_internal<R: Read + Seek>(
         bitmap,
         &extension_pin,
         &scratch,
+        written,
     )?;
     n2r_win32::perf::step("NTFS: resolve attribute lists and classify roles");
     let assemblies = resolver.finish(&files)?;
@@ -1289,9 +1333,9 @@ fn inspect_paged_internal<R: Read + Seek>(
                 })
                 .context("raw hashing working memory overflow")?,
         )?;
-        let mut rows_ahead = RowsAhead::new(&scratch, budget.record_bytes);
+        let mut rows_ahead = RowsAhead::new(&scratch, budget.record_bytes, files.written_rows());
         for ordinal in 0..files.file_count() {
-            let mut file = files.file(ordinal)?;
+            let mut file = files.take_file(ordinal)?;
             for index in 0..file.streams.len() {
                 if file.streams[index].logical_hash_status != LogicalHashStatus::NotComputed {
                     continue;
@@ -1358,8 +1402,8 @@ fn inspect_paged_internal<R: Read + Seek>(
             let record_number = file.record_number;
             rows_ahead.push(&mut output, record_number, file)?;
         }
-        rows_ahead.finish(&mut output)?;
-        files.replace_files(&output.finish()?)?;
+        let written = rows_ahead.finish(&mut output)?;
+        files.replace_files(&output.finish()?, written)?;
     }
     n2r_win32::perf::step("NTFS: reconcile security");
     let security_input = security.finish()?;

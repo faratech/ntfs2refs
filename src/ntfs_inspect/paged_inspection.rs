@@ -6,6 +6,7 @@ use super::{
     namespace_capture::{NamespacePagePins, PagedNamespaceCapture, PagedNamespaceDomain},
     paged_files::{PagedRawFiles, WrittenRows, file_key},
     paged_storage::{SourcePagePin, SourceScratch},
+    read_lanes::LanePrefetch,
     record_store::{RecordStorePin, SortedRecordStore, SortedRecordWriter},
     security_input::{PagedSecurityCapture, PagedSecurityInput, SecurityCapturePins},
 };
@@ -320,6 +321,7 @@ impl PagedInspection {
             root,
             scratch,
             InspectionPurpose::Preparation,
+            None,
         )
     }
     pub fn pin(&self) -> &SourceInspectionPin {
@@ -725,11 +727,14 @@ pub fn inspect_paged_with_scratch<R: Read + Seek>(
         root,
         scratch,
         InspectionPurpose::Conversion,
+        None,
     )
 }
 
 /// Observational path scope selected by the actual frozen source layout.
 /// It does not cover target alias preservation or grant write authority.
+/// `prefetch`, where `reader` is read ahead on read lanes under it
+/// ([`super::read_lanes`]), is told what the MFT scan reads next.
 pub(crate) fn inspect_paged_with_layout_scope<R: Read + Seek>(
     reader: &mut R,
     length: u64,
@@ -738,13 +743,16 @@ pub(crate) fn inspect_paged_with_layout_scope<R: Read + Seek>(
     root: &Path,
     scratch: &SourceScratch,
     layout: n2r_win32::general_layout::GeneralDiskLayoutProfile,
+    prefetch: Option<&LanePrefetch>,
 ) -> Result<PagedInspection> {
     let purpose = if layout == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
         InspectionPurpose::WindowsConversion
     } else {
         InspectionPurpose::Conversion
     };
-    inspect_paged_internal(reader, length, resources, policy, root, scratch, purpose)
+    inspect_paged_internal(
+        reader, length, resources, policy, root, scratch, purpose, prefetch,
+    )
 }
 
 /// The raw file rows of the MFT scan, serialized on a worker thread while
@@ -1040,6 +1048,54 @@ impl Drop for RowsAhead {
     }
 }
 
+/// Reads ahead, on read lanes, what the MFT scan reads for the records of
+/// the window of the MFT just loaded, and the window after it
+/// ([`super::read_lanes`]). `data`: whether the scan hashes small streams.
+fn read_window_ahead(
+    prefetch: &LanePrefetch,
+    resolver: &super::assembled_io::PagedMftResolver,
+    bitmap: &dyn SourceMetadataRange,
+    geometry: &NtfsGeometry,
+    record_count: u64,
+    data: bool,
+    reads: &mut Vec<(u64, u64)>,
+) -> Result<()> {
+    let (start, window) = resolver.window();
+    let size = u64::from(geometry.file_record_size);
+    let first = start / size;
+    let records = (window.len() as u64 / size).min(record_count.saturating_sub(first));
+    // The window's bits of the MFT bitmap: only allocated records are read.
+    let from = first / 8;
+    let to = first
+        .saturating_add(records)
+        .div_ceil(8)
+        .min(bitmap.byte_len());
+    let mut bits = Vec::new();
+    if to > from {
+        bits.try_reserve_exact(usize::try_from(to - from)?)?;
+        bits.resize(usize::try_from(to - from)?, 0);
+        bitmap.read_exact_at(from, &mut bits)?;
+    }
+    reads.clear();
+    super::read_lanes::window_reads(
+        &window[..usize::try_from(records * size)?],
+        first,
+        geometry,
+        data,
+        |number| {
+            usize::try_from(number / 8 - from)
+                .ok()
+                .and_then(|at| bits.get(at))
+                .is_some_and(|byte| byte & (1 << (number % 8)) != 0)
+        },
+        reads,
+    );
+    resolver.next_window_reads(reads);
+    prefetch.read_ahead(reads);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn inspect_paged_internal<R: Read + Seek>(
     reader: &mut R,
     length: u64,
@@ -1048,6 +1104,7 @@ fn inspect_paged_internal<R: Read + Seek>(
     root: &Path,
     scratch: &SourceScratch,
     purpose: InspectionPurpose,
+    prefetch: Option<&LanePrefetch>,
 ) -> Result<PagedInspection> {
     let preparation_only = purpose == InspectionPurpose::Preparation;
     let budget = SourceMetadataBudget::from_resource_budget(resources)?;
@@ -1128,6 +1185,8 @@ fn inspect_paged_internal<R: Read + Seek>(
         budget.record_bytes,
         WrittenRows::new(&scratch, record_count),
     );
+    // The windows of the MFT whose reads were read ahead, and those reads.
+    let (mut windows_ahead, mut reads_ahead) = (0u64, Vec::new());
     for number in 0..record_count {
         let byte_offset = number / 8;
         let block = byte_offset / bitmap_buf.len() as u64;
@@ -1140,6 +1199,20 @@ fn inspect_paged_internal<R: Read + Seek>(
         let allocated_byte = bitmap_buf[(byte_offset % bitmap_buf.len() as u64) as usize];
         if allocated_byte & (1 << (number % 8)) != 0 {
             resolver.read_physical_record(reader, number, &mut raw)?;
+            if let Some(prefetch) = prefetch
+                && resolver.window_loads() != windows_ahead
+            {
+                windows_ahead = resolver.window_loads();
+                read_window_ahead(
+                    prefetch,
+                    &resolver,
+                    bitmap.as_ref(),
+                    &geometry,
+                    record_count,
+                    policy.is_fast() && !preparation_only,
+                    &mut reads_ahead,
+                )?;
+            }
             // Declared before the record so the assembly lease drops only
             // after the assembled record and its resident values are gone.
             let mut _assembly_ram = None;
@@ -1251,6 +1324,11 @@ fn inspect_paged_internal<R: Read + Seek>(
         }
     }
     let written = rows_ahead.finish(&mut files_writer)?;
+    // The scan is over: the lanes close and their memory goes back.
+    if let Some(prefetch) = prefetch {
+        prefetch.finish();
+    }
+    drop(reads_ahead);
     drop(mft_data);
     drop(bootstrap_record);
     n2r_win32::perf::step("NTFS: finish raw file store");

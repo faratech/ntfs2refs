@@ -32,8 +32,17 @@ use std::sync::mpsc;
 /// Buffers in flight: one this thread fills, one queued, one being written.
 const BUFFERS: usize = 3;
 
+/// Overlapped async write queue depth (4 KiB-aligned `WRITE` buffers) when
+/// spare memory allows.
+const OVERLAPPED_DEPTH: usize = 4;
+
 /// The longest write: the writer's limit, one native request.
 const WRITE: usize = n2r_win32::BorrowedPagedWriter::MAX_WRITE;
+
+pub(super) struct StagedBuffers {
+    buffers: Vec<Vec<u8>>,
+    overlapped_depth: usize,
+}
 
 /// Cuts the changed ranges, taken in ascending order, into writes of up to
 /// `limit` bytes: a part of a range that begins where the write being
@@ -131,10 +140,19 @@ impl std::error::Error for WriterStopped {}
 /// as before.
 pub(super) fn reserve(
     arena: &crate::artifact_arena::ArtifactArena,
-) -> Option<(crate::artifact_arena::ArenaRamLease, Vec<Vec<u8>>)> {
-    let lease = arena
-        .reserve_spare_ram(u64::try_from(BUFFERS * WRITE).ok()?)
-        .ok()?;
+) -> Option<(crate::artifact_arena::ArenaRamLease, StagedBuffers)> {
+    // Prefer reserving both the staging buffers and the overlapped write
+    // queue's aligned slots; fall back to staging buffers alone if tight.
+    let (lease, overlapped_depth) = arena
+        .reserve_spare_ram(u64::try_from((BUFFERS + OVERLAPPED_DEPTH) * WRITE).ok()?)
+        .ok()
+        .map(|lease| (lease, OVERLAPPED_DEPTH))
+        .or_else(|| {
+            arena
+                .reserve_spare_ram(u64::try_from(BUFFERS * WRITE).ok()?)
+                .ok()
+                .map(|lease| (lease, 0))
+        })?;
     let mut buffers = Vec::with_capacity(BUFFERS);
     for _ in 0..BUFFERS {
         let mut buffer = Vec::new();
@@ -142,7 +160,13 @@ pub(super) fn reserve(
         buffer.resize(WRITE, 0);
         buffers.push(buffer);
     }
-    Some((lease, buffers))
+    Some((
+        lease,
+        StagedBuffers {
+            buffers,
+            overlapped_depth,
+        },
+    ))
 }
 
 /// Writes the `range_count` changed ranges of `domain` (the ticket's count,
@@ -154,9 +178,13 @@ pub(super) fn write_ranges(
     journal: &mut NativeSelectedJournal,
     domain: &ResourceJournalDomain<'_>,
     range_count: u64,
-    buffers: Vec<Vec<u8>>,
+    staged_buffers: StagedBuffers,
     journal_path: &Path,
 ) -> Result<Written> {
+    let StagedBuffers {
+        buffers,
+        overlapped_depth,
+    } = staged_buffers;
     let (recycle, free) = mpsc::channel::<Vec<u8>>();
     for buffer in buffers {
         recycle
@@ -165,7 +193,7 @@ pub(super) fn write_ranges(
     }
     let (stage, staged) = mpsc::sync_channel::<Staged>(BUFFERS);
     let (read, written) = std::thread::scope(|scope| {
-        let writer = scope.spawn(move || write_staged(target, staged, recycle));
+        let writer = scope.spawn(move || write_staged(target, staged, recycle, overlapped_depth));
         let read = read_staged(journal, domain, range_count, &free, stage, journal_path);
         (read, writer.join())
     });
@@ -288,8 +316,46 @@ fn write_staged(
     target: &mut n2r_win32::BorrowedPagedWriter<'_>,
     staged: mpsc::Receiver<Staged>,
     recycle: mpsc::Sender<Vec<u8>>,
+    overlapped_depth: usize,
 ) -> Result<u64> {
     let _sampled = n2r_win32::stack_sampler::helper();
+    if overlapped_depth >= 2 && target.io_profile().queue_depth >= 2 {
+        if let Ok(mut queue) = target.open_overlapped_writer(overlapped_depth) {
+            let mut writes = 0u64;
+            for item in staged {
+                let Stage {
+                    offset,
+                    length,
+                    bytes,
+                    first,
+                    last,
+                } = match item {
+                    Staged::Hold => {
+                        queue
+                            .drain()
+                            .context("apply: draining overlapped writes before lab hold")?;
+                        n2r_win32::lab_hold::reached("apply-mid-ranges");
+                        continue;
+                    }
+                    Staged::Write(stage) => stage,
+                };
+                let context = || {
+                    format!(
+                        "apply: writing {length} bytes at source offset {offset} (changed ranges {first} to {last})"
+                    )
+                };
+                queue
+                    .submit(offset, &bytes[..length])
+                    .with_context(context)?;
+                writes += 1;
+                let _ = recycle.send(bytes);
+            }
+            queue
+                .drain()
+                .context("apply: draining overlapped writes at end of pass")?;
+            return Ok(writes);
+        }
+    }
     let mut writes = 0u64;
     for item in staged {
         let Stage {

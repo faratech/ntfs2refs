@@ -645,7 +645,7 @@ pub struct BorrowedPagedWriter<'a> {
     requested: u64,
     written: u64,
 }
-impl BorrowedPagedWriter<'_> {
+impl<'s> BorrowedPagedWriter<'s> {
     /// The longest write the writer accepts: one native request.
     pub const MAX_WRITE: usize = MAX_IO;
     pub fn byte_len(&self) -> u64 {
@@ -694,6 +694,283 @@ impl BorrowedPagedWriter<'_> {
             return Err(error);
         }
         Ok(())
+    }
+    /// Opens an overlapped (`FILE_FLAG_OVERLAPPED | FILE_FLAG_NO_BUFFERING`)
+    /// write queue with `depth` 4 KiB-aligned `MAX_WRITE` slots for pipelined
+    /// fresh-apply writes. Every write still passes through this writer's
+    /// authenticated range policy and accounting, and all in-flight I/O is
+    /// drained on `drain()` and on `Drop`.
+    pub fn open_overlapped_writer<'w>(
+        &'w mut self,
+        depth: usize,
+    ) -> io::Result<OverlappedPagedWriter<'w, 's>> {
+        OverlappedPagedWriter::open(self, depth)
+    }
+}
+
+struct OverlappedSlot {
+    buffer: super::AlignedBuffer,
+    overlapped: Box<windows_sys::Win32::System::IO::OVERLAPPED>,
+    event: windows_sys::Win32::Foundation::HANDLE,
+    in_flight: bool,
+    relative_offset: u64,
+    len: usize,
+}
+impl Drop for OverlappedSlot {
+    fn drop(&mut self) {
+        if !self.event.is_null() {
+            // SAFETY: event was created by CreateEventW and all in-flight I/O
+            // using it has been drained before `slots` are dropped.
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.event);
+            }
+        }
+    }
+}
+
+/// Bounded asynchronous write queue over an exclusively held offline writable
+/// disk handle (`FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED`).
+pub struct OverlappedPagedWriter<'w, 's> {
+    writer: &'w mut BorrowedPagedWriter<'s>,
+    file: File,
+    slots: Vec<OverlappedSlot>,
+    free: Vec<usize>,
+    in_flight: std::collections::VecDeque<usize>,
+}
+
+impl<'w, 's> OverlappedPagedWriter<'w, 's> {
+    fn open(writer: &'w mut BorrowedPagedWriter<'s>, depth: usize) -> io::Result<Self> {
+        if writer.poisoned || depth < 2 {
+            return Err(invalid(
+                "overlapped paged writer requires an unpoisoned writer and depth >= 2",
+            ));
+        }
+        let path = format!("\\\\.\\PhysicalDrive{}", writer.source.binding.disk_number);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(3)
+            .custom_flags(0x6000_0000) // FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED
+            .open(&path)?;
+        let mut slots = Vec::with_capacity(depth);
+        let mut free = Vec::with_capacity(depth);
+        for index in 0..depth {
+            let buffer = super::AlignedBuffer::new()?;
+            // SAFETY: manual-reset unnamed event; owned by OverlappedSlot and closed in Drop.
+            let event = unsafe {
+                windows_sys::Win32::System::Threading::CreateEventW(
+                    std::ptr::null(),
+                    1,
+                    0,
+                    std::ptr::null(),
+                )
+            };
+            if event.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: zeroed OVERLAPPED is valid; Offset/OffsetHigh/hEvent are populated before each WriteFile.
+            let overlapped = Box::new(unsafe { std::mem::zeroed() });
+            slots.push(OverlappedSlot {
+                buffer,
+                overlapped,
+                event,
+                in_flight: false,
+                relative_offset: 0,
+                len: 0,
+            });
+            free.push(index);
+        }
+        Ok(Self {
+            writer,
+            file,
+            slots,
+            free,
+            in_flight: std::collections::VecDeque::with_capacity(depth),
+        })
+    }
+
+    fn wait_oldest(&mut self) -> io::Result<()> {
+        let Some(slot_idx) = self.in_flight.pop_front() else {
+            return Ok(());
+        };
+        let slot = &mut self.slots[slot_idx];
+        let mut transferred = 0u32;
+        // SAFETY: `self.file` is live, `slot.overlapped` and `slot.buffer` are
+        // pinned in heap allocations and have not moved since `WriteFile`.
+        let ok = unsafe {
+            windows_sys::Win32::System::IO::GetOverlappedResult(
+                self.file.as_raw_handle(),
+                slot.overlapped.as_mut(),
+                &mut transferred,
+                1,
+            )
+        };
+        slot.in_flight = false;
+        let expected = slot.len;
+        let relative = slot.relative_offset;
+        let result = if ok == 0 {
+            Err(io::Error::last_os_error())
+        } else if transferred as usize != expected {
+            Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "short overlapped fresh paged write; reopen through recovery",
+            ))
+        } else {
+            self.writer.written += transferred as u64;
+            self.writer
+                .source
+                .ahead
+                .written(relative, &slot.buffer.bytes_mut()[..expected]);
+            Ok(())
+        };
+        self.free.push(slot_idx);
+        if result.is_err() {
+            self.writer.poisoned = true;
+            self.writer.source.ahead.clear();
+            self.drain_ignoring_errors();
+        }
+        result
+    }
+
+    fn drain_ignoring_errors(&mut self) {
+        while let Some(slot_idx) = self.in_flight.pop_front() {
+            let slot = &mut self.slots[slot_idx];
+            let mut transferred = 0u32;
+            // SAFETY: must wait for every pending IRP before dropping its OVERLAPPED/buffer.
+            unsafe {
+                windows_sys::Win32::System::IO::GetOverlappedResult(
+                    self.file.as_raw_handle(),
+                    slot.overlapped.as_mut(),
+                    &mut transferred,
+                    1,
+                );
+            }
+            slot.in_flight = false;
+            self.free.push(slot_idx);
+        }
+    }
+
+    pub fn submit(&mut self, relative_offset: u64, input: &[u8]) -> io::Result<()> {
+        if input.is_empty() {
+            return Ok(());
+        }
+        let attempted = self
+            .writer
+            .requested
+            .checked_add(input.len() as u64)
+            .ok_or_else(|| invalid("fresh paged write accounting overflow"))?;
+        if self.writer.poisoned || input.len() > MAX_IO {
+            return Err(invalid(
+                "fresh paged writer is poisoned or request exceeds native I/O limit",
+            ));
+        }
+        let (permitted, maximum) = match self
+            .writer
+            .policy
+            .permits(relative_offset, input.len() as u64)
+            .and_then(|allowed| {
+                self.writer
+                    .policy
+                    .facts()
+                    .map(|facts| (allowed, facts.selected_bytes))
+            }) {
+            Ok(value) => value,
+            Err(error) => {
+                self.writer.poisoned = true;
+                self.drain_ignoring_errors();
+                return Err(error);
+            }
+        };
+        if !permitted || attempted > maximum {
+            return Err(invalid(
+                "fresh paged write is outside the authenticated selected range",
+            ));
+        }
+        let disk_offset = self
+            .writer
+            .source
+            .binding
+            .identity
+            .partition_offset
+            .checked_add(relative_offset)
+            .ok_or_else(|| invalid("fresh paged disk offset overflow"))?;
+        if self.free.is_empty() {
+            self.wait_oldest()?;
+        }
+        let slot_idx = self
+            .free
+            .pop()
+            .ok_or_else(|| invalid("overlapped write slot absent"))?;
+        let _timed = crate::perf::scope(crate::perf::Point::DeviceWrite);
+        crate::perf::add_bytes(crate::perf::Point::DeviceWrite, input.len() as u64);
+        let slot = &mut self.slots[slot_idx];
+        slot.buffer.bytes_mut()[..input.len()].copy_from_slice(input);
+        // SAFETY: manual-reset event owned by slot, currently idle.
+        unsafe {
+            windows_sys::Win32::System::Threading::ResetEvent(slot.event);
+            *slot.overlapped = std::mem::zeroed();
+        }
+        slot.overlapped.Anonymous.Anonymous.Offset = disk_offset as u32;
+        slot.overlapped.Anonymous.Anonymous.OffsetHigh = (disk_offset >> 32) as u32;
+        slot.overlapped.hEvent = slot.event;
+        self.writer.requested = attempted;
+        let mut written_now = 0u32;
+        // SAFETY: `self.file` is opened with FILE_FLAG_OVERLAPPED; `slot.buffer`
+        // is 4 KiB-aligned and heap-pinned; `slot.overlapped` is heap-pinned.
+        let ok = unsafe {
+            windows_sys::Win32::Storage::FileSystem::WriteFile(
+                self.file.as_raw_handle(),
+                slot.buffer.bytes_mut().as_ptr(),
+                input.len() as u32,
+                &mut written_now,
+                slot.overlapped.as_mut(),
+            )
+        };
+        if ok != 0 {
+            if written_now as usize != input.len() {
+                self.writer.poisoned = true;
+                self.writer.source.ahead.clear();
+                self.free.push(slot_idx);
+                self.drain_ignoring_errors();
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "short overlapped fresh paged write; reopen through recovery",
+                ));
+            }
+            self.writer.written += written_now as u64;
+            self.writer.source.ahead.written(relative_offset, input);
+            self.free.push(slot_idx);
+            return Ok(());
+        }
+        // SAFETY: immediate GetLastError after failed WriteFile.
+        let code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        if code == windows_sys::Win32::Foundation::ERROR_IO_PENDING {
+            slot.in_flight = true;
+            slot.relative_offset = relative_offset;
+            slot.len = input.len();
+            self.in_flight.push_back(slot_idx);
+            Ok(())
+        } else {
+            self.writer.poisoned = true;
+            self.writer.source.ahead.clear();
+            self.free.push(slot_idx);
+            self.drain_ignoring_errors();
+            Err(io::Error::from_raw_os_error(code as i32))
+        }
+    }
+
+    pub fn drain(&mut self) -> io::Result<()> {
+        let _timed = crate::perf::scope(crate::perf::Point::DeviceWrite);
+        while !self.in_flight.is_empty() {
+            self.wait_oldest()?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for OverlappedPagedWriter<'_, '_> {
+    fn drop(&mut self) {
+        self.drain_ignoring_errors();
     }
 }
 impl Drop for BorrowedPagedWriter<'_> {

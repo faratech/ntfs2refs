@@ -3000,13 +3000,19 @@ fn open_protected_readonly(path: &str, directory: bool) -> io::Result<File> {
     open_protected(path, directory, PROTECTED_READ_ACCESS)
 }
 fn open_protected(path: &str, directory: bool, access: u32) -> io::Result<File> {
-    let f = File::options()
+    let f = open_protected_unchecked(path, access)?;
+    validate_open_type(&f, directory)?;
+    Ok(f)
+}
+/// [`open_protected`] without its type check, for a caller that makes that
+/// check itself from the basic information it reads through the handle
+/// ([`validate_open_type_from`]).
+fn open_protected_unchecked(path: &str, access: u32) -> io::Result<File> {
+    File::options()
         .access_mode(access)
         .share_mode(3)
         .custom_flags(0x02200000)
-        .open(path)?;
-    validate_open_type(&f, directory)?;
-    Ok(f)
+        .open(path)
 }
 
 // ACCESS_SYSTEM_SECURITY | READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_READ_EA | FILE_READ_DATA.
@@ -3027,12 +3033,25 @@ const PROTECTED_READ_ACCESS: u32 = 0x01020089;
 const PROTECTED_METADATA_ACCESS: u32 = PROTECTED_READ_ACCESS & !0x1;
 
 fn validate_open_type(f: &File, directory: bool) -> io::Result<()> {
-    let attrs = info(&f, 0, 40)?;
-    let flags = u32::from_le_bytes(attrs[32..36].try_into().unwrap());
+    validate_open_type_basic(&info(f, 0, 40)?, directory)
+}
+/// [`validate_open_type`] from the object's FILE_BASIC_INFO as read through
+/// its handle.
+fn validate_open_type_basic(attrs: &[u8], directory: bool) -> io::Result<()> {
+    let flags = layout::u32_at(attrs, 32)?;
     if flags & (0x400 | 0x800 | 0x4000) != 0 || (flags & 16 != 0) != directory {
         return Err(invalid("shadow path type or encoding differs"));
     }
     Ok(())
+}
+/// [`validate_open_type`] from the basic information a metadata snapshot of
+/// the handle read, where it read it; otherwise it is asked again, so that a
+/// failure reports Windows' own error.
+fn validate_open_type_from(f: &File, snapshot: &Snapshot, directory: bool) -> io::Result<()> {
+    match query_bytes(snapshot, 0, 40) {
+        Ok(basic) => validate_open_type_basic(basic, directory),
+        Err(_) => validate_open_type(f, directory),
+    }
 }
 fn validate_bound_type(file: &File, item: &Input<'_>) -> io::Result<()> {
     let Some(expected) = item.reparse else {
@@ -6523,13 +6542,33 @@ fn run_role_content_domain_accounted(
         // file's contents are compared when this walk verifies contents,
         // a sparse file is asked for its allocated ranges, or this closing
         // walk reads the file's `< target_cluster` residual tail inline.
-        let mut h =
-            if i.directory || verify_file_contents || i.sparse.is_some() || has_unnamed_residual {
-                open_input(&path, i, readonly_object_access)?
-            } else {
-                open_input_metadata(&path, i, readonly_object_access)?
-            };
+        let reads_data =
+            i.directory || verify_file_contents || i.sparse.is_some() || has_unnamed_residual;
+        // On a volume held read-only, in a run that verifies once, an object
+        // without a reparse point is held to its type (its attributes) from
+        // the basic information its metadata snapshot reads just after, not
+        // from a query of its own as it is opened: the same attributes of the
+        // same handle, asked for once.
+        let type_from_snapshot =
+            readonly_object_access && i.reparse.is_none() && crate::verify_policy::verifies_once();
+        let mut h = if type_from_snapshot {
+            open_protected_unchecked(
+                &path,
+                if reads_data {
+                    PROTECTED_READ_ACCESS
+                } else {
+                    PROTECTED_METADATA_ACCESS
+                },
+            )?
+        } else if reads_data {
+            open_input(&path, i, readonly_object_access)?
+        } else {
+            open_input_metadata(&path, i, readonly_object_access)?
+        };
         let before = capture_metadata(&h, i);
+        if type_from_snapshot {
+            validate_open_type_from(&h, &before, i.directory)?;
+        }
         let expected_allocation = layout::u64_at(query_bytes(&before, 1, 24)?, 0)?;
         let mut resident_data = false;
         let mut retrieval_page_proof = None;
@@ -7255,6 +7294,25 @@ mod tests {
         let (_, firsts) =
             gather_batch(0..3, |index| Ok(index), |_: &usize, first| Ok(first)).unwrap();
         assert_eq!(firsts, [true, false, false]);
+    }
+
+    #[test]
+    fn the_type_check_from_basic_information_is_the_one_made_at_opening() {
+        let basic = |attributes: u32| {
+            let mut bytes = [0u8; 40];
+            bytes[32..36].copy_from_slice(&attributes.to_le_bytes());
+            bytes
+        };
+        assert!(validate_open_type_basic(&basic(0x10), true).is_ok());
+        assert!(validate_open_type_basic(&basic(0x20), false).is_ok());
+        assert!(validate_open_type_basic(&basic(0x80), false).is_ok());
+        assert!(validate_open_type_basic(&basic(0x10), false).is_err());
+        assert!(validate_open_type_basic(&basic(0x20), true).is_err());
+        for refused in [0x400, 0x800, 0x4000] {
+            assert!(validate_open_type_basic(&basic(0x20 | refused), false).is_err());
+            assert!(validate_open_type_basic(&basic(0x10 | refused), true).is_err());
+        }
+        assert!(validate_open_type_basic(&[0u8; 20], false).is_err());
     }
 
     #[test]

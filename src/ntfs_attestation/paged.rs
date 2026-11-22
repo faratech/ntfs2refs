@@ -713,6 +713,10 @@ fn compare_domain_with_header(
     // unavailable.
     const COMPARE_BATCH: usize = 256;
     const COMPARE_BATCH_SPARE_BYTES: u64 = 16 * 1024 * 1024;
+    // Where the check of the native rows was left to this comparison, the
+    // memory it cannot do without is reserved before the spare memory of the
+    // batches (and held for the check below).
+    native.reserve_deferred_validation()?;
     let _batch_spare = source
         .metadata_scratch()
         .lease_spare_ram(COMPARE_BATCH_SPARE_BYTES)

@@ -416,6 +416,15 @@ pub struct PagedNativeObservation {
     // Set where the opening left the check of every row to the comparison
     // that decodes each of them next (`open_with_memory_for_comparison`).
     validation_deferred: std::cell::Cell<bool>,
+    // The identity map's working memory of that check, reserved before the
+    // comparison asks for spare memory (`reserve_deferred_validation`) and
+    // handed to the check: its size and lease.
+    validation_working: RefCell<
+        Option<(
+            u64,
+            Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>,
+        )>,
+    >,
     reader: RefCell<Reader>,
     // File and namespace rows are written in separate phases. Independent
     // authenticated page caches prevent an identity join from reloading and
@@ -714,6 +723,7 @@ impl PagedNativeObservation {
         let mut result = Self {
             resources_validated: std::cell::Cell::new(false),
             validation_deferred: std::cell::Cell::new(false),
+            validation_working: RefCell::new(None),
             memory,
             reader: RefCell::new(reader),
             namespace_reader: RefCell::new(namespace_reader),
@@ -915,6 +925,27 @@ impl NativeObservationDomain for PagedNativeObservation {
             Ok(())
         }
     }
+    fn reserve_deferred_validation(&self) -> io::Result<()> {
+        // The opening reserved this memory for its check and returned it
+        // when the check ended. Left to the comparison, the check reserves
+        // it here, ahead of the comparison's spare memory (its re-read of
+        // the fingerprint on lanes, its batches), so that what is granted of
+        // that is granted beside it: the same needed reservation, asked for
+        // where less of the run's memory is held than at the opening (its
+        // collection window is given back by then).
+        let Some(memory) = &self.memory else {
+            return Ok(());
+        };
+        if !NativeObservationDomain::validation_deferred(self)
+            || self.validation_working.borrow().is_some()
+        {
+            return Ok(());
+        }
+        let bytes = crate::attestation::validation_identity_bytes(self.files.len())?;
+        let lease = memory.accountant.reserve(bytes)?;
+        *self.validation_working.borrow_mut() = Some((bytes, lease));
+        Ok(())
+    }
     fn header(&self) -> &Report {
         self.refreshed_header.as_ref().unwrap_or(&self.header)
     }
@@ -996,6 +1027,12 @@ impl NativeObservationDomain for PagedNativeObservation {
         &self,
         bytes: u64,
     ) -> io::Result<Option<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>> {
+        // The check's memory, where it was reserved for it ahead of time.
+        let held = self.validation_working.borrow_mut().take();
+        match held {
+            Some((reserved, lease)) if reserved == bytes => return Ok(Some(lease)),
+            _ => {}
+        }
         self.memory
             .as_ref()
             .map(|memory| memory.accountant.reserve(bytes))

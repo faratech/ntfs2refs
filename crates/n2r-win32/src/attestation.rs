@@ -1140,6 +1140,14 @@ pub trait NativeObservationDomain {
     fn check_deferred_row(&self, _index: usize, _row: &NativeObservationRow<'_>) -> io::Result<()> {
         Ok(())
     }
+    /// Where the check of every row was left to the comparison
+    /// ([`Self::validation_deferred`]), reserves now the working memory that
+    /// check cannot do without, and holds it for it: called before the
+    /// caller asks for memory that only buys speed, so that what is granted
+    /// of that knows of this. A domain that checked its rows does nothing.
+    fn reserve_deferred_validation(&self) -> io::Result<()> {
+        Ok(())
+    }
     fn header(&self) -> &Report;
     fn len(&self) -> usize;
     fn logical_len(&self) -> usize;
@@ -1711,6 +1719,31 @@ fn validate_domain_resources_now(
     validate_domain_resources_irregular(domain)
 }
 
+/// The working memory the validation of a regular paged domain of `count`
+/// rows reserves for its identity map (`reserve_validation_working`).
+pub(crate) fn validation_identity_bytes(count: usize) -> io::Result<u64> {
+    // Same conservative pinned-BTree bound used by domain_memory: three
+    // complete internal nodes per insertion, including split/root growth.
+    let per_identity = (std::mem::size_of::<u64>()
+        + std::mem::size_of::<u8>()
+        + std::mem::size_of::<usize>()) as u64;
+    (count as u64)
+        .checked_mul(3)
+        .and_then(|n| {
+            per_identity
+                .checked_mul(16)
+                .and_then(|node| node.checked_add(256))
+                .and_then(|node| n.checked_mul(node))
+        })
+        .and_then(|n| n.checked_add(4096))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "native report resource profile or accounting differs",
+            )
+        })
+}
+
 fn mark_native_identity(
     identities: &mut std::collections::BTreeMap<u64, u8>,
     identity: u64,
@@ -1818,21 +1851,7 @@ fn validate_regular_paged_resources(
                 )?,
             )?;
     }
-    // Same conservative pinned-BTree bound used by domain_memory: three
-    // complete internal nodes per insertion, including split/root growth.
-    let per_identity = (std::mem::size_of::<u64>()
-        + std::mem::size_of::<u8>()
-        + std::mem::size_of::<usize>()) as u64;
-    let identity_bytes = (count as u64)
-        .checked_mul(3)
-        .and_then(|n| {
-            per_identity
-                .checked_mul(16)
-                .and_then(|node| node.checked_add(256))
-                .and_then(|node| n.checked_mul(node))
-        })
-        .and_then(|n| n.checked_add(4096))
-        .ok_or_else(invalid)?;
+    let identity_bytes = validation_identity_bytes(count)?;
     // Declared BEFORE the map so storage drops before its actual payment.
     let _identity_memory = domain.reserve_validation_working(identity_bytes)?;
     let mut identities = std::collections::BTreeMap::<u64, u8>::new();

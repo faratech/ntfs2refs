@@ -1760,6 +1760,12 @@ impl ResourceSourceContext {
                 })
                 .transpose()?;
             let mut storage_hint_count = 0u64;
+            // Where the check of the Windows rows was left to the comparison
+            // below, the memory it cannot do without is reserved before the
+            // spare memory of the re-read beside it (and of its batches).
+            n2r_win32::attestation::NativeObservationDomain::reserve_deferred_validation(
+                native.domain(),
+            )?;
             let reread = if reread_beside_comparison {
                 n2r_win32::perf::step("re-read source fingerprint");
                 // Without the memory, a lane or a thread for it, the

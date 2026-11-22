@@ -168,6 +168,7 @@ pub(crate) fn collect_rows_domain(
         row_limit,
         None,
         Vec::new(),
+        None,
         sink,
     )
 }
@@ -255,6 +256,7 @@ struct Gathered {
     id: FileIdentity,
     row_budget: usize,
     ahead: bool,
+    skip_open: bool,
 }
 /// What a helper saw of one object and the memory it is held with.
 struct Listed {
@@ -272,6 +274,12 @@ struct Listed {
 /// evidence, and a helper's row is used only where taking the object in its
 /// turn gives it that same budget. Otherwise (or where its result could not
 /// be paid for) the object is observed again in its turn, as without helpers.
+///
+/// When `needs_open` is `Some(bits)`, any object whose bit is `0` was already
+/// observed in the immediately preceding metadata pass as an ordinary
+/// non-directory file (`FileStandardInfo.Directory == 0`) with no open error;
+/// it carries no directory listing and is emitted directly without opening it
+/// again.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn collect_rows_domain_with_helpers(
     volume: &File,
@@ -281,6 +289,7 @@ pub(crate) fn collect_rows_domain_with_helpers(
     row_limit: Option<usize>,
     payer: Option<&std::sync::Arc<dyn crate::shadow_native::report_memory::ReportMemoryAccountant>>,
     mut workspaces: Vec<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>,
+    needs_open: Option<&[u64]>,
     mut sink: impl FnMut(NamespaceFile) -> io::Result<()>,
 ) -> io::Result<()> {
     struct Pass<'w, S> {
@@ -303,15 +312,21 @@ pub(crate) fn collect_rows_domain_with_helpers(
         &mut pass,
         |pass, index, _| {
             let id = selectors.identity(index)?;
+            let skip_open = needs_open.is_some_and(|bits| {
+                bits.get(index / 64)
+                    .is_some_and(|word| (word & (1u64 << (index % 64))) == 0)
+            });
             let row_budget = budget_for(pass.budget);
             // Where the run's remaining total bounds the row, every object
             // taken before it changes it: such an object waits for its turn.
-            let ahead =
-                !pass.workspaces.is_empty() && row_limit.is_some_and(|limit| row_budget == limit);
+            let ahead = !skip_open
+                && !pass.workspaces.is_empty()
+                && row_limit.is_some_and(|limit| row_budget == limit);
             Ok(Some(Gathered {
                 id,
                 row_budget,
                 ahead,
+                skip_open,
             }))
         },
         |gathered| {
@@ -325,6 +340,18 @@ pub(crate) fn collect_rows_domain_with_helpers(
             })
         },
         |pass, _, gathered, listed| {
+            if gathered.skip_open {
+                let row = NamespaceFile {
+                    identity: gathered.id,
+                    open_error: None,
+                    identity_before: None,
+                    identity_after: None,
+                    standard: None,
+                    before: None,
+                    after: None,
+                };
+                return (pass.sink)(row);
+            }
             let row_budget = budget_for(pass.budget);
             let (row, used) = match listed.filter(|_| gathered.row_budget == row_budget) {
                 Some(listed) => (listed.row, listed.used),

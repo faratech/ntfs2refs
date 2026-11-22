@@ -101,13 +101,18 @@ fn require_refs(file: &File) -> io::Result<()> {
     Ok(())
 }
 fn snapshot(file: &File, directory: bool) -> io::Result<Snapshot> {
+    snapshot_checked(file, directory, true)
+}
+fn snapshot_checked(file: &File, directory: bool, check_refs: bool) -> io::Result<Snapshot> {
     // SAFETY: GetFileType only examines the borrowed live handle.
     if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK {
         return Err(invalid(
             "derived alias requires an actual filesystem file/directory",
         ));
     }
-    require_refs(file)?;
+    if check_refs {
+        require_refs(file)?;
+    }
     let id = information::<24>(file, 18)?;
     let standard = information::<24>(file, 1)?;
     let mut tag = information::<8>(file, 9)?;
@@ -259,8 +264,11 @@ fn install_fresh_owned_under(
             &examined_here
         }
     };
-    let canonical_before = snapshot(canonical, directory).map_err(|e| of(CANONICAL, e))?;
-    let alias_before = snapshot(alias, directory).map_err(|e| of(ALIAS, e))?;
+    let check_child_refs = !(reuse && examined.is_some());
+    let canonical_before =
+        snapshot_checked(canonical, directory, check_child_refs).map_err(|e| of(CANONICAL, e))?;
+    let alias_before =
+        snapshot_checked(alias, directory, check_child_refs).map_err(|e| of(ALIAS, e))?;
     validate_pair(
         parent_before,
         &canonical_before,
@@ -426,15 +434,21 @@ fn verify_held(
     seen: Option<Seen<'_>>,
 ) -> io::Result<Observation> {
     let expected = Point::relative_component_alias(relative_target_component)?;
+    // When `checks_once()` is active, `parent_before` has already passed
+    // `require_refs` and `validate_pair` + `direct_child` prove that both
+    // `canonical` and `alias` share its exact volume serial and device path.
+    let check_child_refs = !crate::verify_policy::checks_once();
     let read_canonical;
     let canonical_before = match &seen {
         Some(seen) => seen.canonical,
         None => {
-            read_canonical = snapshot(canonical, directory).map_err(|e| of(CANONICAL, e))?;
+            read_canonical = snapshot_checked(canonical, directory, check_child_refs)
+                .map_err(|e| of(CANONICAL, e))?;
             &read_canonical
         }
     };
-    let alias_before = snapshot(alias, directory).map_err(|e| of(ALIAS, e))?;
+    let alias_before =
+        snapshot_checked(alias, directory, check_child_refs).map_err(|e| of(ALIAS, e))?;
     let alias_component = validate_pair(
         parent_before,
         canonical_before,
@@ -442,10 +456,12 @@ fn verify_held(
         relative_target_component,
     )?;
     // The target's point is compared only by the second look below; the
-    // installation already read it in this call.
-    let canonical_point = match &seen {
-        Some(_) => None,
-        None => reparse_native::capture(canonical)?,
+    // installation already read it in this call, and under `checks_once()`
+    // the second look is skipped.
+    let canonical_point = if seen.is_some() || crate::verify_policy::checks_once() {
+        None
+    } else {
+        reparse_native::capture(canonical)?
     };
     let alias_point = match &seen {
         Some(seen) => Some(seen.alias_point.clone()),

@@ -640,7 +640,6 @@ fn compare_domain_with_header(
             && !header.conversion_qualified,
         "resource reconciliation requires the actual paged native owner"
     );
-    n2r_win32::attestation::validate_domain_resources(native)?;
     // A run that verifies once does not read through Windows the contents
     // of plain streams; their rows say so, and the header counts them. Only
     // a process that verifies once compares such a view. Every other one
@@ -717,12 +716,15 @@ fn compare_domain_with_header(
     const MAX_SECURITY_CACHE: usize = 4096;
     let mut security_cache: std::collections::HashMap<u32, (String, std::sync::Arc<[u8]>)> =
         std::collections::HashMap::new();
-    for ordinal in 0..expected.len() {
+    let mut row_error: Option<anyhow::Error> = None;
+    let validation = n2r_win32::attestation::validate_domain_resources_with_rows(
+        native,
+        &mut |ordinal, native_row| {
+            let result: Result<()> = (|| {
         // The row is read here and by the selector's row below, and changed
         // by neither: both are handed the one the source holds, where it
         // was decoded twice.
         let file = source.file_shared(ordinal as u64)?;
-        let native_row = native.row_view(ordinal)?;
         let selector = native_row.request();
         ensure!(
             selector == expected.row(ordinal)?.as_ref(),
@@ -971,7 +973,19 @@ fn compare_domain_with_header(
             unread_plain_logical_bytes: evidence.unread_plain_bytes,
             source_file: file,
         })?;
+        Ok(())
+            })();
+            if let Err(err) = result {
+                row_error = Some(err);
+                return Err(std::io::Error::other("row comparison failed"));
+            }
+            Ok(())
+        },
+    );
+    if let Some(err) = row_error {
+        return Err(err);
     }
+    validation?;
     expected.revalidate()?;
     native.revalidate()?;
     summary.all_supported_user_views_compatible =

@@ -1637,7 +1637,7 @@ pub fn validate_domain_resources(domain: &impl NativeObservationDomain) -> io::R
 
 /// What a check of each row hands the caller: the row's ordinal and the row
 /// as it was decoded for the check.
-pub(crate) type EachValidatedRow<'f> =
+pub type EachValidatedRow<'f> =
     dyn FnMut(usize, &NativeObservationRow<'_>) -> io::Result<()> + 'f;
 
 /// [`validate_domain_resources`] that also hands every row it decodes to
@@ -1645,7 +1645,7 @@ pub(crate) type EachValidatedRow<'f> =
 /// decoded each of them once more to do it. Every row is handed over even
 /// where the domain remembers passing (each is then decoded for `each_row`
 /// alone); where the rows are checked here, each is decoded once for both.
-pub(crate) fn validate_domain_resources_with_rows(
+pub fn validate_domain_resources_with_rows(
     domain: &impl NativeObservationDomain,
     each_row: &mut EachValidatedRow<'_>,
 ) -> io::Result<()> {

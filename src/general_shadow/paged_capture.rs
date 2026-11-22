@@ -733,12 +733,26 @@ fn capture_selected_inner(
                 .context("capture selected offset overflow")?;
             let chunk = candidate.read_capture_chunk(at, &mut new_bytes[..count], true)?;
             // The chunk's XXH3-128 comes with it: where the originals are
-            // read ahead it was made by the thread that read them.
+            // read ahead it was made by the thread that read them. When the
+            // candidate chunk is byte-for-byte identical to the original
+            // (the common case for unchanged data), its XXH3-128 is identical
+            // to `original_xxh3` and no 4 KiB granule differs.
             let original_xxh3 = candidate.read_original_exact(at, &mut original, count)?;
             source_digest.update(original_xxh3);
-            candidate_digest.update(crate::parallel_digest::xxh3_128(chunk.bytes()));
+            let chunk_identical = &original[..count] == chunk.bytes();
+            let candidate_xxh3 = if chunk_identical {
+                original_xxh3
+            } else {
+                crate::parallel_digest::xxh3_128(chunk.bytes())
+            };
+            candidate_digest.update(candidate_xxh3);
             if let Some(hash) = &mut raw_digest {
                 hash.update(&original[..count])?;
+            }
+            if chunk_identical {
+                add(&mut compared, count as u64)?;
+                done += count as u64;
+                continue;
             }
             batch.clear();
             let packed_before = packed;

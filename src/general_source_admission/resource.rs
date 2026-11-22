@@ -1250,6 +1250,11 @@ impl ResourceSourceContext {
             // those walks, in a cache, until the comparison's gates are made.
             let directory_paths = n2r_win32::verify_policy::verifies_once()
                 .then(|| ntfs_admission::paged::hold_directory_paths(&raw));
+            // An inspection made by this process, not reopened from the
+            // source cache: its stream evidence was decided here.
+            let inspected_here = reopened_cache
+                .is_none()
+                .then(|| crate::ntfs_attestation::inspected_here(&raw));
             let storage_hint_ram = if binding.layout_profile
                 == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
             {
@@ -2429,6 +2434,7 @@ impl ResourceSourceContext {
                 source_views["native_observation_origin"] = serde_json::to_value(native.origin())?;
             }
             let source_views_sha = json_sha(&source_views, scratch.budget().scratch_bytes / 2)?;
+            drop(inspected_here);
             drop(directory_paths);
             n2r_win32::perf::step("reopen comparison stores");
             let rows = SortedRecordStore::open(&rows_pin, &scratch)?;

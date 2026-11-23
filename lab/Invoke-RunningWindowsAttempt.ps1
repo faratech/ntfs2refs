@@ -587,7 +587,11 @@ try {
                 # Windows answers for each, or why it would not.
                 $images = @(Get-ChildItem -LiteralPath $run -Recurse -Force -Filter '*.vhdx' -ErrorAction SilentlyContinue | ForEach-Object {
                     $image = $_.FullName
-                    try { [pscustomobject]@{ path = $image; attached = [bool](Get-DiskImage -ImagePath $image -ErrorAction Stop).Attached } }
+                    # Windows' own list of disks names an attached image's file
+                    # in Location and opens nothing; Get-DiskImage opens the
+                    # image and is refused (Access is denied) as the converter
+                    # was before #182.
+                    try { [pscustomobject]@{ path = $image; attached = [bool](@(Get-Disk -ErrorAction Stop | Where-Object { $_.Location -and $_.Location -ieq $image }).Count) } }
                     catch { [pscustomobject]@{ path = $image; error = "$($_.Exception.Message)" } }
                 })
                 [pscustomobject]@{ filesystem = [string]$c.FileSystem; health = [string]$c.HealthStatus; cluster_bytes = $c.AllocationUnitSize; bootmgr = $bcd; refsinfo = $refs
@@ -595,8 +599,8 @@ try {
             }
             $verdict.after = $after
             Say "back in Windows: C: is $($after.filesystem), health $($after.health)"
-            foreach ($image in @($after.run_images)) {
-                Say "the run's $(Split-Path -Leaf $image.path) ($($image.path)): $(if ($image.error) { "Windows did not say whether it is attached: $($image.error)" } elseif ($image.attached) { 'ATTACHED' } else { 'not attached' })"
+            foreach ($runImage in @($after.run_images)) {
+                Say "the run's $(Split-Path -Leaf $runImage.path) ($($runImage.path)): $(if ($runImage.error) { "Windows did not say whether it is attached: $($runImage.error)" } elseif ($runImage.attached) { 'ATTACHED' } else { 'not attached' })"
             }
             $expected = if ($Diagnose) { 'NTFS' } else { 'ReFS' }
             $converterEnded = if ($report -match 'The converter ended with exit code: (\d+)') { [int]$Matches[1] } else { -1 }

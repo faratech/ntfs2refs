@@ -803,6 +803,7 @@ fn adopt_recovery_domain(
         stream_slots,
         sparse_targets,
         carrier_directory,
+        shadow_root: std::sync::OnceLock::new(),
         volume: enrollment.volume,
         pair: enrollment.pair,
         backing_guard: None,

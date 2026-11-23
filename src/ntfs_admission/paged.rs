@@ -2,6 +2,7 @@
 //! observations only; no serialized result can grant a source certificate.
 use crate::ntfs_inspect::{FileInventory, RootFileDomain};
 use anyhow::{Context, Result, ensure};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 fn directory_path(files: &impl RootFileDomain, current: u64) -> Result<Vec<String>> {
     // A run that leaves short names behind walks up through directories
@@ -9,31 +10,337 @@ fn directory_path(files: &impl RootFileDomain, current: u64) -> Result<Vec<Strin
     directory_path_for_alias_preparation(files, current, crate::short_name_disposition::dropped())
 }
 
-fn directory_path_for_alias_preparation(
-    files: &impl RootFileDomain,
-    mut current: u64,
+/// What one directory of the chain adds to the path.
+enum Step {
+    Root,
+    Up {
+        name: String,
+        units: usize,
+        parent: u64,
+    },
+}
+
+/// One directory's step as a walk found it, remembered while a
+/// [`DirectoryPathScope`] is open: the step depends only on the directory's
+/// row and on whether short names are skipped, both fixed for the held
+/// domain.
+#[derive(Clone)]
+enum KnownStep {
+    Root,
+    Up {
+        name: Rc<str>,
+        /// The name's UTF-16 units.
+        length: usize,
+        parent: u64,
+    },
+}
+
+/// The domain a scope is open for: its address and type. The scope borrows
+/// it, so that neither changes while the scope is open.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DomainKey(usize, &'static str);
+fn domain_key<D: RootFileDomain>(files: &D) -> DomainKey {
+    DomainKey(
+        std::ptr::from_ref(files) as usize,
+        std::any::type_name::<D>(),
+    )
+}
+
+struct StepScope {
+    id: u64,
+    domain: DomainKey,
+    cache: Option<n2r_win32::evict::Evictable<StepCache>>,
+    /// Steps not remembered after the ledger refused to pay, or after the
+    /// cache was given up, before it is asked again.
+    wait: u32,
+}
+struct StepCache {
+    steps: HashMap<(u64, bool), KnownStep>,
+    /// What the steps take, at most.
+    bytes: u64,
+    /// What the reservations below pay for.
+    paid: u64,
+    _payments: Vec<Box<dyn std::any::Any + Send>>,
+}
+thread_local! {
+    static DIRECTORY_STEPS: RefCell<Option<StepScope>> = const { RefCell::new(None) };
+    static NEXT_SCOPE: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+}
+const STEP_CACHE_CHUNK: u64 = 1 << 20;
+const STEP_CACHE_WAIT: u32 = 4096;
+
+/// While it lives, the walks up the directories of one held source domain on
+/// this thread remember each directory's step, and every later path through
+/// that directory takes it from memory instead of reading the directory's
+/// row and its names again: every object's paths are derived several times
+/// during the source admission (for the selector's count, the comparison,
+/// the admission policy), each time through every directory above it.
+///
+/// The memory is a cache: paid from the run's ledger in steps of a mebibyte
+/// (`n2r_win32::evict::pay_for_cache`), given up with the thread's other
+/// caches when a reservation the run needs has no room, and done without
+/// where it is refused or there is no ledger. Nothing depends on it: a step
+/// it does not hold is read and checked as before, and one it holds was
+/// checked when it was read, of the same row (the domain is immutable and
+/// borrowed while the scope is open). Every check that depends on the whole
+/// path (its length, the bound on its steps) is still made of the whole path.
+/// Scopes nest; one closed out of order closes those above it.
+pub(crate) struct DirectoryPathScope<'a> {
+    id: u64,
+    previous: Option<StepScope>,
+    _domain: std::marker::PhantomData<&'a ()>,
+}
+pub(crate) fn hold_directory_paths<D: RootFileDomain>(files: &D) -> DirectoryPathScope<'_> {
+    let id = NEXT_SCOPE.with(|next| {
+        let id = next.get();
+        next.set(id + 1);
+        id
+    });
+    let previous = DIRECTORY_STEPS.with(|scope| {
+        scope.borrow_mut().replace(StepScope {
+            id,
+            domain: domain_key(files),
+            cache: None,
+            wait: 0,
+        })
+    });
+    DirectoryPathScope {
+        id,
+        previous,
+        _domain: std::marker::PhantomData,
+    }
+}
+impl Drop for DirectoryPathScope<'_> {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        let closed = DIRECTORY_STEPS.with(|scope| {
+            let mut scope = scope.borrow_mut();
+            let ours = scope.as_ref().is_some_and(|open| open.id == self.id);
+            // Closed in order, the enclosing scope is open again; out of
+            // order, the scopes above it close with it (their domains may
+            // no longer be borrowed), and nothing is remembered until one
+            // is opened again.
+            let closed = scope.take();
+            if ours {
+                *scope = previous;
+            }
+            closed
+        });
+        drop(closed);
+    }
+}
+fn open_scope_for(key: DomainKey) -> bool {
+    DIRECTORY_STEPS.with(|scope| {
+        scope
+            .try_borrow()
+            .is_ok_and(|scope| scope.as_ref().is_some_and(|open| open.domain == key))
+    })
+}
+fn known_step(key: DomainKey, current: u64, alias_preparation: bool) -> Option<KnownStep> {
+    DIRECTORY_STEPS.with(|scope| {
+        let scope = scope.try_borrow().ok()?;
+        let open = scope.as_ref().filter(|open| open.domain == key)?;
+        let cache = open.cache.as_ref()?.get()?;
+        cache.steps.get(&(current, alias_preparation)).cloned()
+    })
+}
+fn remember_step(key: DomainKey, current: u64, alias_preparation: bool, step: KnownStep) {
+    let cost = 3
+        * (std::mem::size_of::<(u64, bool)>() + std::mem::size_of::<KnownStep>() + 8) as u64
+        + match &step {
+            KnownStep::Root => 0,
+            KnownStep::Up { name, .. } => name.len() as u64 + 16,
+        };
+    // What more to pay for, decided without holding the cache: paying may
+    // give up this thread's caches, this one among them.
+    let need = DIRECTORY_STEPS.with(|scope| -> Option<u64> {
+        let mut scope = scope.try_borrow_mut().ok()?;
+        let open = scope.as_mut().filter(|open| open.domain == key)?;
+        if open.wait > 0 {
+            open.wait -= 1;
+            return None;
+        }
+        let held = match &open.cache {
+            Some(cache) => cache
+                .get()
+                .map(|cache| (cache.bytes.saturating_add(cost), cache.paid)),
+            None => Some((cost, 0)),
+        };
+        match held {
+            Some((wanted, paid)) if wanted <= paid => Some(0),
+            Some(_) => Some(STEP_CACHE_CHUNK.max(cost)),
+            None => {
+                // Given up: asked again after a while.
+                open.cache = None;
+                open.wait = STEP_CACHE_WAIT;
+                None
+            }
+        }
+    });
+    let Some(need) = need else {
+        return;
+    };
+    let payment = if need == 0 {
+        None
+    } else {
+        match n2r_win32::evict::pay_for_cache(need) {
+            n2r_win32::evict::CachePayment::Paid(payment) => Some(payment),
+            _ => {
+                DIRECTORY_STEPS.with(|scope| {
+                    if let Ok(mut scope) = scope.try_borrow_mut()
+                        && let Some(open) = scope.as_mut().filter(|open| open.domain == key)
+                    {
+                        open.wait = STEP_CACHE_WAIT;
+                    }
+                });
+                return;
+            }
+        }
+    };
+    DIRECTORY_STEPS.with(|scope| {
+        let Ok(mut scope) = scope.try_borrow_mut() else {
+            return;
+        };
+        let Some(open) = scope.as_mut().filter(|open| open.domain == key) else {
+            return;
+        };
+        if open.cache.as_ref().is_some_and(|cache| !cache.is_held()) {
+            open.cache = None;
+        }
+        let cache = open.cache.get_or_insert_with(|| {
+            n2r_win32::evict::Evictable::new(StepCache {
+                steps: HashMap::new(),
+                bytes: 0,
+                paid: 0,
+                _payments: Vec::new(),
+            })
+        });
+        let Some(mut cache) = cache.get_mut() else {
+            return;
+        };
+        if let Some(payment) = payment {
+            cache._payments.push(payment);
+            cache.paid = cache.paid.saturating_add(need);
+        }
+        if cache.bytes.saturating_add(cost) <= cache.paid
+            && cache
+                .steps
+                .insert((current, alias_preparation), step)
+                .is_none()
+        {
+            cache.bytes += cost;
+        }
+    });
+}
+
+fn directory_path_for_alias_preparation<D: RootFileDomain>(
+    files: &D,
+    current: u64,
     alias_preparation: bool,
 ) -> Result<Vec<String>> {
-    /// What one directory of the chain adds to the path.
-    enum Step {
-        Root,
-        Up {
-            name: String,
-            units: usize,
-            parent: u64,
-        },
-    }
+    let key = domain_key(files);
+    let remembered = open_scope_for(key).then_some(key);
+    walk_directory_path(
+        files.file_count(),
+        current,
+        alias_preparation,
+        remembered,
+        |current, units| read_directory_step(files, current, units, alias_preparation),
+    )
+}
+
+/// The walk from the directory `current` up to the root: each directory's
+/// step from `read_step` (given the directory and the units of the path so
+/// far), or from the open scope's memory where it holds the step.
+fn walk_directory_path(
+    file_count: u64,
+    mut current: u64,
+    alias_preparation: bool,
+    remembered: Option<DomainKey>,
+    mut read_step: impl FnMut(u64, usize) -> Result<Step>,
+) -> Result<Vec<String>> {
     let mut components = Vec::new();
     let mut units = 0usize;
     // A canonical parent chain cannot contain more identities than the source.
     // This detects cycles without retaining an all-source visited set.
-    for _ in 0..files.file_count() {
+    for _ in 0..file_count {
+        if let Some(key) = remembered
+            && let Some(known) = known_step(key, current, alias_preparation)
+        {
+            match known {
+                KnownStep::Root => {
+                    components.reverse();
+                    return Ok(components);
+                }
+                KnownStep::Up {
+                    name,
+                    length,
+                    parent,
+                } => {
+                    // The checks of the directory itself passed when its
+                    // step was read; those of the whole path are made here.
+                    units = units
+                        .checked_add(length)
+                        .and_then(|n| n.checked_add(1))
+                        .context("source native path length overflow")?;
+                    ensure!(
+                        units < u16::MAX as usize / 2,
+                        "source path exceeds native UTF-16 representation"
+                    );
+                    components.push(String::from(&*name));
+                    current = parent;
+                    continue;
+                }
+            }
+        }
+        match read_step(current, units)? {
+            Step::Root => {
+                if let Some(key) = remembered {
+                    remember_step(key, current, alias_preparation, KnownStep::Root);
+                }
+                components.reverse();
+                return Ok(components);
+            }
+            Step::Up {
+                name,
+                units: longer,
+                parent,
+            } => {
+                if let Some(key) = remembered {
+                    remember_step(
+                        key,
+                        current,
+                        alias_preparation,
+                        KnownStep::Up {
+                            name: Rc::from(name.as_str()),
+                            length: longer - units - 1,
+                            parent,
+                        },
+                    );
+                }
+                units = longer;
+                components.push(name);
+                current = parent;
+            }
+        }
+    }
+    anyhow::bail!("source parent chain cycles or does not reach the root")
+}
+
+/// One directory's step, read where the domain holds its row and checked.
+fn read_directory_step(
+    files: &impl RootFileDomain,
+    current: u64,
+    units: usize,
+    alias_preparation: bool,
+) -> Result<Step> {
+    {
         let number = current & 0x0000_ffff_ffff_ffff;
         let sequence = (current >> 48) as u16;
         // The directory's row is read where the domain holds it. Every
         // object's path asks for each directory above it; a copy of the row
         // for each of them was most of what building the paths cost.
-        let step = files
+        files
             .with_record(number, Some(sequence), |directory| {
                 let names: Vec<_> = directory
                     .names
@@ -75,24 +382,8 @@ fn directory_path_for_alias_preparation(
                     parent,
                 })
             })?
-            .context("source parent identity is missing or stale")?;
-        match step {
-            Step::Root => {
-                components.reverse();
-                return Ok(components);
-            }
-            Step::Up {
-                name,
-                units: longer,
-                parent,
-            } => {
-                units = longer;
-                components.push(name);
-                current = parent;
-            }
-        }
+            .context("source parent identity is missing or stale")
     }
-    anyhow::bail!("source parent chain cycles or does not reach the root")
 }
 
 /// A path to name a refused object by, in a message. The admission path
@@ -497,16 +788,15 @@ fn ordinary_user_issues_scoped(
                 .as_deref()
                 .is_some_and(n2r_win32::content_digest::is_hex),
             crate::ntfs_inspect::LogicalHashStatus::NotReadExtentIdentityV1 => {
+                // The object's paths were derived above; a run that verifies
+                // once does not derive them again for each such stream.
                 stream.logical_sha256.is_none()
-                    && (if aliases.is_some() {
-                        crate::ntfs_attestation::extent_identity_stream_request_windows_domain(
-                            source, file, stream,
-                        )?
-                    } else {
-                        crate::ntfs_attestation::extent_identity_stream_request_domain(
-                            source, file, stream, true, true,
-                        )?
-                    })
+                    && crate::ntfs_attestation::extent_identity_stream_request_observed(
+                        source,
+                        file,
+                        stream,
+                        aliases.is_some(),
+                    )?
                     .is_some()
             }
             // Still to be read. (A stream the inspection could not read has
@@ -547,4 +837,160 @@ fn ordinary_user_issues_scoped(
         },
         |stream| evidence.get(&stream.name_utf16).copied().unwrap_or(false),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// A ledger of this test's thread that pays for caches while it has room.
+    struct Ledger {
+        room: Cell<bool>,
+        live: Cell<bool>,
+    }
+    impl n2r_win32::evict::CachePayer for Ledger {
+        fn limit(&self) -> Option<u64> {
+            self.live.get().then_some(1 << 30)
+        }
+        fn pay(&self, bytes: u64) -> Option<Box<dyn std::any::Any + Send>> {
+            self.room
+                .get()
+                .then(|| Box::new(bytes) as Box<dyn std::any::Any + Send>)
+        }
+    }
+    fn ledger(room: bool) -> Rc<Ledger> {
+        let ledger = Rc::new(Ledger {
+            room: Cell::new(room),
+            live: Cell::new(true),
+        });
+        n2r_win32::evict::register_cache_payer(ledger.clone());
+        ledger
+    }
+
+    const ROOT: u64 = 5 | (5 << 48);
+    fn directory(record: u64) -> u64 {
+        record | (1 << 48)
+    }
+    /// Root \ A \ B \ C, with the names given.
+    fn walk(
+        names: [&str; 3],
+        start: u64,
+        remembered: Option<DomainKey>,
+        reads: &Cell<u32>,
+    ) -> Result<Vec<String>> {
+        walk_directory_path(1000, start, false, remembered, |current, units| {
+            reads.set(reads.get() + 1);
+            if current == ROOT {
+                return Ok(Step::Root);
+            }
+            let (name, parent) = match current & 0xffff {
+                30 => (names[0], ROOT),
+                31 => (names[1], directory(30)),
+                32 => (names[2], directory(31)),
+                _ => anyhow::bail!("source parent identity is missing or stale"),
+            };
+            let units = units + name.len() + 1;
+            ensure!(
+                units < u16::MAX as usize / 2,
+                "source path exceeds native UTF-16 representation"
+            );
+            Ok(Step::Up {
+                name: name.into(),
+                units,
+                parent,
+            })
+        })
+    }
+    fn open(key: DomainKey) {
+        DIRECTORY_STEPS.with(|scope| {
+            *scope.borrow_mut() = Some(StepScope {
+                id: u64::MAX,
+                domain: key,
+                cache: None,
+                wait: 0,
+            })
+        });
+    }
+    fn close() {
+        let closed = DIRECTORY_STEPS.with(|scope| scope.borrow_mut().take());
+        drop(closed);
+    }
+
+    #[test]
+    fn a_directory_s_step_is_read_once_while_a_scope_is_open() {
+        let ledger = ledger(true);
+        let key = DomainKey(1, "test domain");
+        let names = ["Windows", "System32", "drivers"];
+        let reads = Cell::new(0);
+        let expected = vec!["Windows", "System32", "drivers"];
+        // Without a scope every step is read, every time.
+        assert_eq!(walk(names, directory(32), None, &reads).unwrap(), expected);
+        assert_eq!(walk(names, directory(32), None, &reads).unwrap(), expected);
+        assert_eq!(reads.get(), 8);
+        open(key);
+        reads.set(0);
+        assert_eq!(
+            walk(names, directory(32), Some(key), &reads).unwrap(),
+            expected
+        );
+        assert_eq!(reads.get(), 4);
+        // The same path and a path through the same directories: no read.
+        assert_eq!(
+            walk(names, directory(32), Some(key), &reads).unwrap(),
+            expected
+        );
+        assert_eq!(
+            walk(names, directory(31), Some(key), &reads).unwrap(),
+            ["Windows", "System32"]
+        );
+        assert_eq!(reads.get(), 4);
+        // Another domain's walks are not served from it.
+        let other = DomainKey(2, "test domain");
+        assert_eq!(
+            walk(names, directory(31), Some(other), &reads).unwrap(),
+            ["Windows", "System32"]
+        );
+        assert_eq!(reads.get(), 7);
+        // Given up with the thread's caches, the steps are read again.
+        assert!(n2r_win32::evict::evict_all());
+        assert_eq!(
+            walk(names, directory(32), Some(key), &reads).unwrap(),
+            expected
+        );
+        assert_eq!(reads.get(), 11);
+        close();
+        ledger.live.set(false);
+    }
+
+    #[test]
+    fn nothing_is_remembered_without_a_payment_and_whole_paths_are_still_checked() {
+        let ledger = ledger(false);
+        let key = DomainKey(3, "test domain");
+        let names = ["Windows", "System32", "drivers"];
+        let reads = Cell::new(0);
+        open(key);
+        walk(names, directory(32), Some(key), &reads).unwrap();
+        walk(names, directory(32), Some(key), &reads).unwrap();
+        assert_eq!(reads.get(), 8, "refused: every step is read");
+        close();
+
+        // Each name fits; two of them together are longer than a path may be.
+        ledger.room.set(true);
+        let long = "x".repeat(20_000);
+        let names = [long.as_str(), long.as_str(), "c"];
+        let key = DomainKey(4, "test domain");
+        open(key);
+        let reads = Cell::new(0);
+        walk(names, directory(30), Some(key), &reads).unwrap();
+        for remembered in [None, Some(key)] {
+            let error = walk(names, directory(31), remembered, &reads).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "source path exceeds native UTF-16 representation"
+            );
+        }
+        close();
+        ledger.live.set(false);
+    }
 }

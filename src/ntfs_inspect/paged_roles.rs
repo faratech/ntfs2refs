@@ -1,7 +1,8 @@
 //! Raw ancestry classification with disk states and RAM-accounted DFS frames.
 use super::*;
 use super::{
-    paged_files::{PagedRawFiles, file_key},
+    paged_files::PagedRawFiles,
+    paged_inspection::RowsAhead,
     paged_storage::{SourceRamLease, SourceScratch, SourceTemporaryLease},
     record_store::SortedRecordWriter,
 };
@@ -280,44 +281,65 @@ pub(super) fn classify(
     states.checkpoint()?;
     let mut output =
         SortedRecordWriter::new(&root.join("classified-files"), *b"N2RFILE1", scratch)?;
+    // Each row is serialized on a worker while the next is classified, and
+    // kept as it was written where rows written are kept, for the opening
+    // of the classified store.
+    let mut rows_ahead =
+        RowsAhead::new(scratch, scratch.budget().record_bytes, files.written_rows());
     for ordinal in 0..files.file_count() {
-        let state = states.get(ordinal)?;
-        let mut file = files.file(ordinal)?;
-        let problem = if file.record_number < 16 {
-            file.metadata_role = MetadataRole::ReservedSystemRecord;
-            match (file.record_number, state) {
-                (5 | 11, State::Unresolved(problem)) => Some(problem),
-                _ => None,
-            }
-        } else {
-            file.metadata_role = match state {
-                State::OutsideExtend => MetadataRole::OutsideExtendCandidate,
-                State::WithinExtend => MetadataRole::ExtendDescendantCandidate,
-                _ => MetadataRole::Unresolved,
-            };
-            match state {
-                State::Unresolved(problem) => Some(problem),
-                State::Unseen | State::Visiting => {
-                    anyhow::bail!("incomplete metadata ancestry traversal")
+        // The row is classified, and only then handed over to be written.
+        let row = (|| -> Result<FileInventory> {
+            let state = states.get(ordinal)?;
+            let mut file = files.take_file(ordinal)?;
+            let problem = if file.record_number < 16 {
+                file.metadata_role = MetadataRole::ReservedSystemRecord;
+                match (file.record_number, state) {
+                    (5 | 11, State::Unresolved(problem)) => Some(problem),
+                    _ => None,
                 }
-                _ => None,
+            } else {
+                file.metadata_role = match state {
+                    State::OutsideExtend => MetadataRole::OutsideExtendCandidate,
+                    State::WithinExtend => MetadataRole::ExtendDescendantCandidate,
+                    _ => MetadataRole::Unresolved,
+                };
+                match state {
+                    State::Unresolved(problem) => Some(problem),
+                    State::Unseen | State::Visiting => {
+                        anyhow::bail!("incomplete metadata ancestry traversal")
+                    }
+                    _ => None,
+                }
+            };
+            file.metadata_role_issue = problem;
+            file.is_metadata = matches!(
+                file.metadata_role,
+                MetadataRole::ReservedSystemRecord | MetadataRole::ExtendDescendantCandidate
+            );
+            if let Some(problem) = problem {
+                blocked(InspectionBlocker {
+                    code: "metadata_role_ancestry_unresolved".into(),
+                    message: format!("MFT metadata role has unresolved ancestry: {problem:?}"),
+                    file_record_number: Some(file.record_number),
+                })?;
+            }
+            Ok(file)
+        })();
+        let file = match row {
+            Ok(file) => file,
+            Err(error) => {
+                // The rows before this one are written first: a row of
+                // theirs that cannot be is the error met first, as when
+                // each row was written before the next was classified.
+                rows_ahead.write_ready(&mut output, true)?;
+                return Err(error);
             }
         };
-        file.metadata_role_issue = problem;
-        file.is_metadata = matches!(
-            file.metadata_role,
-            MetadataRole::ReservedSystemRecord | MetadataRole::ExtendDescendantCandidate
-        );
-        if let Some(problem) = problem {
-            blocked(InspectionBlocker {
-                code: "metadata_role_ancestry_unresolved".into(),
-                message: format!("MFT metadata role has unresolved ancestry: {problem:?}"),
-                file_record_number: Some(file.record_number),
-            })?;
-        }
-        output.push(file_key(file.record_number), &file)?;
+        let record_number = file.record_number;
+        rows_ahead.push(&mut output, record_number, file)?;
     }
+    let written = rows_ahead.finish(&mut output)?;
     drop(_rows);
-    files.replace_files(&output.finish()?)?;
+    files.replace_files(&output.finish()?, written)?;
     files.revalidate()
 }

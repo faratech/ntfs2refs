@@ -288,7 +288,14 @@ pub fn collect_partition_ntfs_paged(
     drop(routes);
     let receipt = sink.finish(&header)?;
     drop(header);
-    let domain = PagedNativeObservation::open_with_memory(path, &receipt.sha256, budget, memory)?;
+    // Its one caller compares every row with the raw reading next
+    // (`compare_partition_domain`).
+    let domain = PagedNativeObservation::open_with_memory_for_comparison(
+        path,
+        &receipt.sha256,
+        budget,
+        memory,
+    )?;
     let vss_after = crate::vss_observation::observe_snapshot_presence(&volume_guid)?;
     vss_after.require_observed_snapshot_absence()?;
     if !vss_before.same_source_and_provider_inventory(&vss_after) {

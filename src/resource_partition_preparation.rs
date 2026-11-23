@@ -422,19 +422,15 @@ fn prepare_partition_resources_with_mode(
             admission.expected_page_budget()?.max_file_bytes,
         )?;
         let expected_path = arena_root.join("expected.pages");
-        let (receipt, artifact) = PagedExpectedTree::create_with_resources_in_group(
+        // Created and opened again at once, pinned by the creation's
+        // receipt, as the dedicated route does: in a run that verifies once
+        // the opening takes what the creation derived of the pages and the
+        // objects it decoded; every other run derives them from the pages.
+        let expected = PagedExpectedTree::create_and_open_with_resources_in_group(
             &projection,
             &expected_path,
             admission,
             &expected_group,
-        )?;
-        let expected = PagedExpectedTree::open_with_resources_in_group(
-            &expected_path,
-            &receipt.file_sha256,
-            &receipt.semantic_sha256,
-            admission,
-            &expected_group,
-            artifact,
         )?;
         let expected_seal = expected_group.seal()?;
         expected.require_resource_owner(admission)?;

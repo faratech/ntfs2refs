@@ -145,6 +145,142 @@ pub(super) struct PagedNamespaceCapture {
     upcase: Option<SourcePagePin>,
     previous_directory: Option<u64>,
     failed: bool,
+    // Where the evidence digests are made off the scan's thread, and the
+    // directories whose rows wait for theirs, in order.
+    ahead: Option<EvidenceAhead>,
+    pending: std::collections::VecDeque<PendingDirectory>,
+    // The index bytes handed to the worker and not yet hashed.
+    in_flight: u64,
+}
+
+/// The SHA-256 evidence of the directories' indexes, made on a worker
+/// thread while the scan goes on.
+///
+/// Each directory's evidence is a SHA-256 over its `$I30` root, allocation
+/// and bitmap, and was made on the scan's thread as the index was read: a
+/// second or more of the full Windows volume's scan, on a CPU without SHA
+/// extensions. Where an index is held in memory, its bytes are hashed by
+/// the worker once the index has been walked, from the digest of what came
+/// before them; the directory's row waits, with every row after it, until
+/// its digest is back, and the rows are written in their order. The bytes
+/// handed over are paid as spare memory, within a small pool; where that
+/// is refused, where an index is captured to a scratch file and where
+/// there is no worker, the digest is made on the scan's thread, as before.
+/// Either way it is the digest of the same bytes in the same order.
+#[cfg(windows)]
+struct EvidenceAhead {
+    jobs: Option<std::sync::mpsc::SyncSender<(Sha256, Vec<EvidencePiece>)>>,
+    done: std::sync::mpsc::Receiver<String>,
+    worker: Option<std::thread::JoinHandle<()>>,
+    _workspace: super::paged_storage::SourceRamLease,
+}
+#[cfg(windows)]
+enum EvidencePiece {
+    Length(u64),
+    Bytes(Vec<u8>),
+}
+/// What follows the root in a directory's evidence while it is not hashed
+/// yet: a length, or the bytes of the held allocation or bitmap.
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+enum EvidenceTail {
+    Length(u64),
+    Allocation,
+    Bitmap,
+}
+/// A directory whose index was walked: its row, the evidence made of it so
+/// far and what of the evidence is still to be made.
+#[cfg(windows)]
+struct ReadIndex {
+    header: SourceDirectoryHeader,
+    evidence: Sha256,
+    tail: Vec<EvidenceTail>,
+    allocation: Option<HeldAttribute>,
+    bitmap: Option<HeldAttribute>,
+}
+/// A directory whose row is not written yet: its digest is being made, or
+/// a directory before it waits for its own.
+#[cfg(windows)]
+struct PendingDirectory {
+    header: SourceDirectoryHeader,
+    waiting: bool,
+    bytes: u64,
+    _paid: Option<super::paged_storage::SourceRamLease>,
+}
+#[cfg(windows)]
+impl EvidenceAhead {
+    /// Directories whose digest the worker makes, at most at once.
+    const IN_FLIGHT: usize = 256;
+    /// The index bytes handed to it, at most at once.
+    const POOL_BYTES: u64 = 64 * 1024 * 1024;
+    /// The worker's thread.
+    const WORKSPACE_BYTES: u64 = 2 * 1024 * 1024;
+    fn start(scratch: &SourceScratch) -> Option<Self> {
+        let workspace = scratch.lease_spare_ram(Self::WORKSPACE_BYTES).ok()?;
+        let (jobs, received) =
+            std::sync::mpsc::sync_channel::<(Sha256, Vec<EvidencePiece>)>(Self::IN_FLIGHT);
+        let (finished, done) = std::sync::mpsc::channel();
+        let worker = std::thread::Builder::new()
+            .name("i30-evidence".into())
+            .spawn(move || {
+                let _sampled = n2r_win32::stack_sampler::helper();
+                for (mut evidence, pieces) in received {
+                    // Each piece's bytes are given up as they are hashed,
+                    // before the digest goes back.
+                    for piece in pieces {
+                        match piece {
+                            EvidencePiece::Length(length) => evidence.update(length.to_le_bytes()),
+                            EvidencePiece::Bytes(bytes) => evidence.update(&bytes),
+                        }
+                    }
+                    if finished.send(hex::encode(evidence.finalize())).is_err() {
+                        break;
+                    }
+                }
+            })
+            .ok()?;
+        Some(Self {
+            jobs: Some(jobs),
+            done,
+            worker: Some(worker),
+            _workspace: workspace,
+        })
+    }
+}
+#[cfg(windows)]
+impl Drop for EvidenceAhead {
+    fn drop(&mut self) {
+        // Ends the worker on every path, errors among them.
+        self.jobs.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+/// Hashes `tail` into `evidence`, in order, with the held bytes it names.
+#[cfg(windows)]
+fn hash_tail(
+    evidence: &mut Sha256,
+    tail: &[EvidenceTail],
+    allocation: Option<&HeldAttribute>,
+    bitmap: Option<&HeldAttribute>,
+) -> Result<()> {
+    for piece in tail {
+        match piece {
+            EvidenceTail::Length(length) => evidence.update(length.to_le_bytes()),
+            EvidenceTail::Allocation => evidence.update(
+                &allocation
+                    .context("held I30 allocation absent from its evidence")?
+                    .bytes,
+            ),
+            EvidenceTail::Bitmap => evidence.update(
+                &bitmap
+                    .context("held I30 bitmap absent from its evidence")?
+                    .bytes,
+            ),
+        }
+    }
+    Ok(())
 }
 
 /// One directory index attribute, held in memory while its index is walked.
@@ -312,6 +448,9 @@ impl PagedNamespaceCapture {
             upcase: None,
             previous_directory: None,
             failed: false,
+            ahead: EvidenceAhead::start(scratch),
+            pending: std::collections::VecDeque::new(),
+            in_flight: 0,
         })
     }
     pub(super) fn observe<R: Read + Seek>(
@@ -323,17 +462,40 @@ impl PagedNamespaceCapture {
     ) -> Result<()> {
         ensure!(!self.failed, "paged namespace capture is poisoned");
         self.failed = true;
-        self.read_record(reader, record, number, geometry)?;
+        let index = match self.read_record(reader, record, number, geometry) {
+            Ok(index) => index,
+            Err(error) => {
+                // The rows of the directories before this one that still
+                // wait for their digests are written first: an error of
+                // theirs is the one met first, as when each directory's row
+                // was written as its index was read.
+                self.write_ready(true)?;
+                return Err(error);
+            }
+        };
+        if let Some(index) = index {
+            self.queue_directory(
+                index.header,
+                index.evidence,
+                &index.tail,
+                index.allocation,
+                index.bitmap,
+            )?;
+            self.previous_directory = Some(number);
+        }
         self.failed = false;
         Ok(())
     }
+    /// Reads the record's names and, for a directory, walks its index:
+    /// what is returned is the directory's row, to be written once its
+    /// evidence is made ([`Self::queue_directory`]).
     fn read_record<R: Read + Seek>(
         &mut self,
         reader: &mut R,
         record: &Record,
         number: u64,
         geometry: &NtfsGeometry,
-    ) -> Result<()> {
+    ) -> Result<Option<ReadIndex>> {
         ensure!(
             record.base == 0 && !record.attributes.iter().any(|a| a.report.type_code == 0x20),
             "namespace requires fully assembled base records"
@@ -357,7 +519,7 @@ impl PagedNamespaceCapture {
             )?);
         }
         if record.flags & 2 == 0 {
-            return Ok(());
+            return Ok(None);
         }
         ensure!(
             number < 1 << 48
@@ -398,6 +560,11 @@ impl PagedNamespaceCapture {
             .context("resident I30 bytes absent")?;
         evidence.update((root_bytes.len() as u64).to_le_bytes());
         evidence.update(root_bytes);
+        // With the worker, what follows the root is hashed by it after the
+        // walk, as long as every index is held; one that is captured to a
+        // scratch file is hashed as it is read, after what came before it.
+        let mut deferred = self.ahead.is_some();
+        let mut tail = Vec::new();
         // Each of the three ranges is held in memory when it can be, and
         // otherwise captured to a scratch file exactly as before. Either way
         // the same bytes are read in the same order into the same evidence.
@@ -432,10 +599,30 @@ impl PagedNamespaceCapture {
                 !attribute.report.resident,
                 "I30 allocation must be nonresident"
             );
-            evidence.update(attribute.report.logical_size.to_le_bytes());
-            match hold_attribute(reader, attribute, geometry, &scratch, Some(&mut evidence))? {
-                Some(held) => (Some(held), None),
+            if deferred {
+                tail.push(EvidenceTail::Length(attribute.report.logical_size));
+            } else {
+                evidence.update(attribute.report.logical_size.to_le_bytes());
+            }
+            match hold_attribute(
+                reader,
+                attribute,
+                geometry,
+                &scratch,
+                (!deferred).then_some(&mut evidence),
+            )? {
+                Some(held) => {
+                    if deferred {
+                        tail.push(EvidenceTail::Allocation);
+                    }
+                    (Some(held), None)
+                }
                 None => {
+                    if deferred {
+                        hash_tail(&mut evidence, &tail, None, None)?;
+                        tail.clear();
+                        deferred = false;
+                    }
                     let pin = capture_attribute(
                         reader,
                         attribute,
@@ -449,15 +636,40 @@ impl PagedNamespaceCapture {
                 }
             }
         } else {
-            evidence.update(0u64.to_le_bytes());
+            if deferred {
+                tail.push(EvidenceTail::Length(0));
+            } else {
+                evidence.update(0u64.to_le_bytes());
+            }
             (None, None)
         };
         let (held_bitmap, bitmap_range) = if let Some(attribute) = bitmap {
             require_bitmap_bytes(&attribute.report, attribute.report.logical_size)?;
-            evidence.update(attribute.report.logical_size.to_le_bytes());
-            match hold_attribute(reader, attribute, geometry, &scratch, Some(&mut evidence))? {
-                Some(held) => (Some(held), None),
+            if deferred {
+                tail.push(EvidenceTail::Length(attribute.report.logical_size));
+            } else {
+                evidence.update(attribute.report.logical_size.to_le_bytes());
+            }
+            match hold_attribute(
+                reader,
+                attribute,
+                geometry,
+                &scratch,
+                (!deferred).then_some(&mut evidence),
+            )? {
+                Some(held) => {
+                    if deferred {
+                        tail.push(EvidenceTail::Bitmap);
+                    }
+                    (Some(held), None)
+                }
                 None => {
+                    // What was put aside is hashed first: the bitmap is
+                    // hashed as it is read, and nothing after it is left.
+                    if deferred {
+                        hash_tail(&mut evidence, &tail, held_allocation.as_ref(), None)?;
+                        tail.clear();
+                    }
                     let pin = capture_attribute(
                         reader,
                         attribute,
@@ -471,7 +683,11 @@ impl PagedNamespaceCapture {
                 }
             }
         } else {
-            evidence.update(0u64.to_le_bytes());
+            if deferred {
+                tail.push(EvidenceTail::Length(0));
+            } else {
+                evidence.update(0u64.to_le_bytes());
+            }
             (None, None)
         };
         fn either<'a>(
@@ -543,21 +759,171 @@ impl PagedNamespaceCapture {
             summary.entries == ordinal,
             "namespace entry capture incomplete"
         );
-        self.directories.push(
-            namespace_key(number, 0),
-            &SourceDirectoryHeader {
+        Ok(Some(ReadIndex {
+            header: SourceDirectoryHeader {
                 record_number: number,
                 sequence_number: record.sequence,
                 entries: ordinal,
                 index_blocks: summary.index_blocks,
-                evidence_sha256: hex::encode(evidence.finalize()),
+                evidence_sha256: String::new(),
             },
+            evidence,
+            tail,
+            allocation: held_allocation,
+            bitmap: held_bitmap,
+        }))
+    }
+    /// Writes the directory's row once its evidence is made: here, or by
+    /// the worker from `evidence` and the held bytes `tail` names, after
+    /// every directory before it.
+    fn queue_directory(
+        &mut self,
+        mut header: SourceDirectoryHeader,
+        mut evidence: Sha256,
+        tail: &[EvidenceTail],
+        mut allocation: Option<HeldAttribute>,
+        mut bitmap: Option<HeldAttribute>,
+    ) -> Result<()> {
+        let mut job = None;
+        if !tail.is_empty() {
+            let mut bytes = 0u64;
+            for piece in tail {
+                let held = match piece {
+                    EvidenceTail::Length(_) => continue,
+                    EvidenceTail::Allocation => allocation.as_ref(),
+                    EvidenceTail::Bitmap => bitmap.as_ref(),
+                };
+                bytes = bytes
+                    .checked_add(
+                        held.context("held I30 bytes absent from their evidence")?
+                            .bytes
+                            .len() as u64,
+                    )
+                    .context("I30 evidence byte count overflow")?;
+            }
+            // Only indexes held in memory are worth the worker's while.
+            if bytes > 0 && bytes <= EvidenceAhead::POOL_BYTES {
+                // Room in the pool, and among the directories in flight, is
+                // made by writing the oldest first.
+                while (self.in_flight.saturating_add(bytes) > EvidenceAhead::POOL_BYTES
+                    || self.pending.len() >= EvidenceAhead::IN_FLIGHT)
+                    && self.write_next(true)?
+                {}
+                if let Ok(paid) = self.scratch.lease_spare_ram(bytes) {
+                    let mut pieces = Vec::with_capacity(tail.len());
+                    for piece in tail {
+                        pieces.push(match piece {
+                            EvidenceTail::Length(length) => EvidencePiece::Length(*length),
+                            EvidenceTail::Allocation => EvidencePiece::Bytes(std::mem::take(
+                                &mut allocation
+                                    .as_mut()
+                                    .context("held I30 allocation absent from its evidence")?
+                                    .bytes,
+                            )),
+                            EvidenceTail::Bitmap => EvidencePiece::Bytes(std::mem::take(
+                                &mut bitmap
+                                    .as_mut()
+                                    .context("held I30 bitmap absent from its evidence")?
+                                    .bytes,
+                            )),
+                        });
+                    }
+                    job = Some((pieces, bytes, paid));
+                }
+            }
+            if job.is_none() {
+                hash_tail(&mut evidence, tail, allocation.as_ref(), bitmap.as_ref())?;
+            }
+        }
+        // The bytes handed over are paid by the spare memory now; the held
+        // attributes and what the ledger lent for them go.
+        drop((allocation, bitmap));
+        match job {
+            Some((pieces, bytes, paid)) => {
+                self.ahead
+                    .as_ref()
+                    .and_then(|ahead| ahead.jobs.as_ref())
+                    .context("the I30 evidence worker is absent")?
+                    .send((evidence, pieces))
+                    .map_err(|_| anyhow::anyhow!("the I30 evidence worker stopped"))?;
+                self.in_flight = self.in_flight.saturating_add(bytes);
+                self.pending.push_back(PendingDirectory {
+                    header,
+                    waiting: true,
+                    bytes,
+                    _paid: Some(paid),
+                });
+            }
+            None => {
+                header.evidence_sha256 = hex::encode(evidence.finalize());
+                if self.pending.is_empty() {
+                    self.directories
+                        .push(namespace_key(header.record_number, 0), &header)?;
+                } else {
+                    self.pending.push_back(PendingDirectory {
+                        header,
+                        waiting: false,
+                        bytes: 0,
+                        _paid: None,
+                    });
+                }
+            }
+        }
+        self.write_ready(false)
+    }
+    /// Writes the oldest directory waiting once its digest is made; with
+    /// `wait`, waits for it. False when there was none to write.
+    fn write_next(&mut self, wait: bool) -> Result<bool> {
+        let Some(front) = self.pending.front_mut() else {
+            return Ok(false);
+        };
+        if front.waiting {
+            let ahead = self
+                .ahead
+                .as_ref()
+                .context("the I30 evidence worker is absent")?;
+            let digest = if wait {
+                ahead
+                    .done
+                    .recv()
+                    .map_err(|_| anyhow::anyhow!("the I30 evidence worker stopped"))?
+            } else {
+                match ahead.done.try_recv() {
+                    Ok(digest) => digest,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(false),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        anyhow::bail!("the I30 evidence worker stopped")
+                    }
+                }
+            };
+            front.header.evidence_sha256 = digest;
+            front.waiting = false;
+        }
+        let written = self
+            .pending
+            .pop_front()
+            .context("namespace directory in flight absent")?;
+        self.directories.push(
+            namespace_key(written.header.record_number, 0),
+            &written.header,
         )?;
-        self.previous_directory = Some(number);
+        self.in_flight = self.in_flight.saturating_sub(written.bytes);
+        Ok(true)
+    }
+    /// Writes the directories whose digests are made, in order; with
+    /// `wait`, every one.
+    fn write_ready(&mut self, wait: bool) -> Result<()> {
+        while self.write_next(wait)? {}
         Ok(())
     }
-    pub(super) fn finish(self) -> Result<PagedNamespaceDomain> {
+    pub(super) fn finish(mut self) -> Result<PagedNamespaceDomain> {
         ensure!(!self.failed, "cannot close partial namespace capture");
+        self.write_ready(true)?;
+        ensure!(
+            self.pending.is_empty(),
+            "namespace directories wait for their evidence"
+        );
+        drop(self.ahead.take());
         let pins = NamespacePagePins {
             schema_version: 1,
             directories: self.directories.finish()?,
@@ -757,5 +1123,141 @@ impl NamespaceCapture {
             result.detail = "No complete $UpCase table was captured".into();
         }
         result
+    }
+}
+
+#[cfg(all(test, windows))]
+mod evidence_tests {
+    use super::*;
+    use crate::artifact_arena::{ArtifactArena, ArtifactGroup};
+
+    const MIB: u64 = 1024 * 1024;
+
+    /// A source scratch in a run's ledger, so that spare memory is had.
+    fn scratch(directory: &Path) -> (ArtifactArena, SourceScratch) {
+        let arena = ArtifactArena::new(
+            &directory.join("arena"),
+            n2r_win32::tree_resources::ResourceBudget {
+                schema_version: 1,
+                ram_bytes: 512 * MIB,
+                scratch_bytes: 512 * MIB,
+                page_bytes: 65536,
+                max_row_bytes: 65536,
+                retained_index_bytes: 32 * MIB,
+                handle_slots: 1024,
+            },
+            &[],
+        )
+        .unwrap();
+        let budget = SourceMetadataBudget {
+            ram_bytes: 256 * MIB,
+            scratch_bytes: 64 * MIB,
+            page_bytes: 65536,
+            record_bytes: 65536,
+            merge_fan_in: 8,
+        };
+        let permit = arena
+            .reserve_group(ArtifactGroup::Source, budget.scratch_bytes)
+            .unwrap();
+        let scratch = SourceScratch::new_in_arena(budget, permit).unwrap();
+        (arena, scratch)
+    }
+    fn bytes(seed: u64, length: usize) -> Vec<u8> {
+        (0..length as u64)
+            .map(|n| (n.wrapping_mul(seed | 1) >> 3) as u8)
+            .collect()
+    }
+
+    #[test]
+    fn evidence_made_by_the_worker_is_the_evidence_made_in_order() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("arena")).unwrap();
+        let (_arena, scratch) = scratch(directory.path());
+        // The run's working files are under its ledger's directory.
+        let namespace = directory.path().join("arena").join("namespace");
+        std::fs::create_dir(&namespace).unwrap();
+        let mut capture = PagedNamespaceCapture::new(&namespace, &scratch).unwrap();
+        assert!(capture.ahead.is_some(), "the worker has its memory");
+        let mut expected = Vec::new();
+        // More directories than may be in flight at once, some without an
+        // index allocation (hashed here), the others' handed to the worker.
+        for number in 16..400u64 {
+            let reference = number | 1 << 48;
+            let root = bytes(number, 64 + number as usize % 50);
+            let indexed = number % 3 != 0;
+            let allocation = indexed.then(|| bytes(number * 7, 4096 * (1 + number as usize % 5)));
+            let bitmap = indexed.then(|| bytes(number * 11, 8));
+            let mut inline = Sha256::new();
+            inline.update(b"ntfs2refs-I30-v1\0");
+            inline.update(reference.to_le_bytes());
+            inline.update((root.len() as u64).to_le_bytes());
+            inline.update(&root);
+            let mut evidence = inline.clone();
+            let mut tail = Vec::new();
+            for part in [&allocation, &bitmap] {
+                let length = part.as_ref().map_or(0, Vec::len) as u64;
+                inline.update(length.to_le_bytes());
+                tail.push(EvidenceTail::Length(length));
+                if let Some(part) = part {
+                    inline.update(part);
+                }
+            }
+            if indexed {
+                tail.insert(1, EvidenceTail::Allocation);
+                tail.push(EvidenceTail::Bitmap);
+            }
+            expected.push(hex::encode(inline.finalize()));
+            let held = |bytes: Option<Vec<u8>>| {
+                bytes.map(|bytes| HeldAttribute {
+                    _ram: scratch.lease_ram(bytes.len() as u64 + 4096).unwrap(),
+                    bytes,
+                })
+            };
+            // Without the worker the tail is hashed here.
+            if number == 100 {
+                evidence = {
+                    let mut here = evidence;
+                    hash_tail(
+                        &mut here,
+                        &tail,
+                        held(allocation.clone()).as_ref(),
+                        held(bitmap.clone()).as_ref(),
+                    )
+                    .unwrap();
+                    here
+                };
+                tail.clear();
+            }
+            capture
+                .queue_directory(
+                    SourceDirectoryHeader {
+                        record_number: number,
+                        sequence_number: 1,
+                        entries: 0,
+                        index_blocks: 0,
+                        evidence_sha256: String::new(),
+                    },
+                    evidence,
+                    &tail,
+                    held(allocation),
+                    held(bitmap),
+                )
+                .unwrap();
+            assert!(capture.pending.len() <= EvidenceAhead::IN_FLIGHT);
+            assert!(capture.in_flight <= EvidenceAhead::POOL_BYTES);
+        }
+        capture.write_ready(true).unwrap();
+        assert!(capture.pending.is_empty() && capture.in_flight == 0);
+        drop(capture.ahead.take());
+        let store =
+            SortedRecordStore::open(&capture.directories.finish().unwrap(), &scratch).unwrap();
+        let written: Vec<String> = (0..store.len())
+            .map(|ordinal| {
+                let header: SourceDirectoryHeader = store.get(ordinal).unwrap();
+                assert_eq!(header.record_number, 16 + ordinal);
+                header.evidence_sha256
+            })
+            .collect();
+        assert_eq!(written, expected);
     }
 }

@@ -292,9 +292,12 @@ pub(crate) fn snapshot_with_ea(file: &File) -> Snapshot {
 }
 
 /// Source NTFS only. FileCaseSensitiveInfo is Win32 class 23 and its SDK
-/// FILE_CASE_SENSITIVE_INFO contains one ULONG Flags (four bytes). Value1 means
-/// case-sensitive; higher layers refuse every nonzero value, including unknown
-/// flags. Failed queries retain the actual Windows error, never flags zero.
+/// FILE_CASE_SENSITIVE_INFO contains one ULONG Flags (four bytes). Value 1
+/// means case-sensitive, which converts (#103: the mark is counted and kept
+/// in the run's records, and set on the new volume where the running
+/// Windows was shown to hold it); higher layers refuse any other nonzero
+/// value, and two names of one directory that differ only by case. Failed
+/// queries retain the actual Windows error, never flags zero.
 fn source_directory_case(file: &File, queries: &[Query]) -> Option<Query> {
     let standard = queries.iter().find(|query| query.class == 1)?;
     (standard.native_error.is_none() && standard.bytes.len() == 24 && standard.bytes[21] != 0)
@@ -750,12 +753,15 @@ pub fn collect_file_metadata_single_content_pass(request: &Request) -> io::Resul
     collect_file_metadata_with_passes(request, request, true, None)
 }
 
+/// `for_comparison`: the caller compares every row with the raw reading next
+/// (`PagedNativeObservation::open_with_memory_for_comparison`).
 pub(crate) fn collect_file_metadata_paged_domain_with_memory(
     selectors: &impl NativeRequestDomain,
     path: &std::path::Path,
     budget: crate::observation_pages::NativeObservationBudget,
     single_content_pass: bool,
     accountant: std::sync::Arc<dyn crate::shadow_native::report_memory::ReportMemoryAccountant>,
+    for_comparison: bool,
 ) -> io::Result<crate::observation_pages::PagedNativeObservation> {
     let admission = selectors
         .header()
@@ -780,12 +786,21 @@ pub(crate) fn collect_file_metadata_paged_domain_with_memory(
     )?;
     let receipt = sink.finish(&header)?;
     drop(header);
-    crate::observation_pages::PagedNativeObservation::open_with_memory(
-        path,
-        &receipt.sha256,
-        budget,
-        memory,
-    )
+    if for_comparison {
+        crate::observation_pages::PagedNativeObservation::open_with_memory_for_comparison(
+            path,
+            &receipt.sha256,
+            budget,
+            memory,
+        )
+    } else {
+        crate::observation_pages::PagedNativeObservation::open_with_memory(
+            path,
+            &receipt.sha256,
+            budget,
+            memory,
+        )
+    }
 }
 
 pub(crate) fn collect_file_metadata_paged_domain(

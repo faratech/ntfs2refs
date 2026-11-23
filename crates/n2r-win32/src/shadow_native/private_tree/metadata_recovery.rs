@@ -1353,7 +1353,7 @@ impl VerifiedMetadataRecovery {
         aliases.revalidate()?;
         report["recovery"] = serde_json::json!({"kind":"fresh-native-mixed-metadata-reconciliation-v1",
             "canonical_objects":state.handles.len(),"verified_streams":state.streams.len(),
-            "hard_links":links,"source_payload_writes":0,"payload_rematerialization_bytes":0,
+            "hard_links_made":links,"source_payload_writes":0,"payload_rematerialization_bytes":0,
             "saved_flags_used_as_authority":false,"partial_carrier_transfer_supported":false,
             "protected_target_capture_required":true,"conversion_qualified":false});
         reparse.restore()?;

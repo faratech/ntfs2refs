@@ -39,6 +39,10 @@ mod paged_roles;
 #[cfg(windows)]
 pub mod paged_storage;
 #[cfg(windows)]
+mod read_lanes;
+#[cfg(windows)]
+pub(crate) use read_lanes::{LanePrefetch, LaneSource, PrefetchedSource};
+#[cfg(windows)]
 pub mod record_store;
 #[cfg(windows)]
 mod security_input;
@@ -1867,7 +1871,7 @@ fn blocker(
     budget.push(&mut report.blockers, item, heap_bytes)
 }
 
-fn file_heap_bytes(file: &FileInventory) -> Result<u64> {
+pub(crate) fn file_heap_bytes(file: &FileInventory) -> Result<u64> {
     let mut counter = ReportBudget {
         limit: u64::MAX,
         used: 0,

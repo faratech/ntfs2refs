@@ -430,6 +430,22 @@ impl NativeSelectedJournal {
             }
         }
     }
+    /// The same held handle, while the journal is being prepared, for the
+    /// preparation's thread that writes its staged rows: only a buffered
+    /// (markerless) journal whose body is not sealed and whose length is not
+    /// fixed, where this owner's own write checks admit every write the
+    /// preparation makes. Nothing is reopened or duplicated; a marker journal
+    /// writes through its own cache and has none.
+    pub(crate) fn preparation_handle(&self) -> Option<&File> {
+        match &self.storage {
+            Storage::Buffered(file)
+                if !self.prepared_body_sealed && self.fixed_length.is_none() =>
+            {
+                Some(file)
+            }
+            _ => None,
+        }
+    }
     /// Make the actual fixed-EOF markerless owner permanently reject ordinary
     /// writes to its body. This is an in-process capability boundary, not a
     /// claim that privileged raw-volume aliases are excluded.

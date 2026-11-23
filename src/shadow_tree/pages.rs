@@ -137,7 +137,11 @@ impl ExpectedTreePageCounts {
 }
 
 /// This receipt is descriptive. Opening still requires independently pinned
-/// file and legacy-semantic hashes and complete validation of the actual file.
+/// file and legacy-semantic hashes and complete validation of the actual
+/// file, except the opening of the pages this process has just written in
+/// a run that verifies once, which takes what their creation derived and
+/// checked of them instead of the pass over every object (see
+/// [`CreatedHere`]).
 #[derive(Clone, Debug, Serialize)]
 pub struct ExpectedTreePageReceipt {
     pub schema_version: u32,
@@ -152,6 +156,46 @@ pub struct ExpectedTreePageReceipt {
     pub semantic_byte_budget: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+    // What the creation computed of the pages, in memory only: never
+    // serialized, and made by nothing but the creation itself.
+    #[serde(skip)]
+    created: Option<CreatedHere>,
+}
+
+/// What this process's creation of a tree's pages derived and checked of
+/// them, while it wrote them: the digest of the tree's legacy JSON and the
+/// counts of its objects, of the file it wrote, under the budgets it wrote
+/// it to, and whether it decoded every object back from the chunks it had
+/// just written ([`DecodeBack`]).
+///
+/// The opening of a tree's pages checks, of every object: that its chunks
+/// are complete, ordered and within the budgets (the directory it builds,
+/// always), that they decode to an object within the row budget, and that
+/// the objects reproduce the pinned legacy JSON's digest and counts (its
+/// pass over every object).
+///
+/// Opening that file again in a run that verifies once
+/// ([`n2r_win32::verify_policy::verifies_once`]) leaves its pass over every
+/// object out, and takes the digest and the counts from here, only where
+/// the creation decoded every object back: the decoding was then made at
+/// the creation, with the opening's decoder, and each object held equal to
+/// the one written, which is the one the digest and the counts are of. The
+/// reader accepts the file only as the one this process's writer produced
+/// ([`n2r_win32::metadata_pages::Reader::written_by_this_process`]), held
+/// since and checked page by page as it is read, so those were the same
+/// bytes. The directory is still built and checked by the opening. Every
+/// other opening (a thorough run, a cached body, a rebind, a recovery, a
+/// resume, any file this process did not write or did not decode back)
+/// makes its pass over every object, as it always has.
+#[derive(Clone, Debug)]
+struct CreatedHere {
+    file_sha256: String,
+    semantic_sha256: String,
+    counts: ExpectedTreePageCounts,
+    budget: PageBudget,
+    semantic_byte_budget: u64,
+    resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+    decoded_back: bool,
 }
 
 pub struct PagedExpectedTree {
@@ -239,6 +283,66 @@ impl n2r_win32::evict::Evict for DecodedCache {
             _ => None,
         };
         taken.is_some()
+    }
+}
+impl DecodedCache {
+    /// An empty cache, registered as a cache of this thread.
+    fn registered() -> std::rc::Rc<Self> {
+        let decoded = std::rc::Rc::new(Self(
+            RefCell::new(DecodedObjects::default()),
+            std::cell::Cell::new(n2r_win32::evict::now()),
+        ));
+        n2r_win32::evict::register(&decoded);
+        decoded
+    }
+    /// Keeps `object`, object `index` of a tree of `len` objects, where the
+    /// arena can spare the memory for it (see [`DecodedObjects`]).
+    fn keep(
+        &self,
+        arena: &crate::artifact_arena::ArtifactArena,
+        row_limit: u64,
+        len: usize,
+        index: usize,
+        object: &Arc<Object>,
+    ) {
+        self.1.set(n2r_win32::evict::now());
+        let mut decoded = self.0.borrow_mut();
+        if decoded.rows.get(index).is_some_and(Option::is_some) {
+            return;
+        }
+        if decoded.refused_for > 0 {
+            decoded.refused_for -= 1;
+            return;
+        }
+        let Ok(mut bytes) = object_memory_bytes(object, 0, row_limit) else {
+            return;
+        };
+        let slots = decoded.rows.is_empty();
+        if slots {
+            bytes = bytes.saturating_add((len * std::mem::size_of::<Option<Arc<Object>>>()) as u64);
+        }
+        if decoded.unspent < bytes {
+            let block = DECODED_BLOCK_BYTES.max(bytes);
+            match arena.reserve_optional_ram(block) {
+                Ok(lease) => {
+                    decoded.leases.push(lease);
+                    decoded.unspent += block;
+                }
+                Err(_) => {
+                    decoded.refused_for = DECODED_RETRY_OBJECTS;
+                    return;
+                }
+            }
+        }
+        if slots {
+            if decoded.rows.try_reserve_exact(len).is_err() {
+                decoded.refused_for = DECODED_RETRY_OBJECTS;
+                return;
+            }
+            decoded.rows.resize_with(len, || None);
+        }
+        decoded.unspent -= bytes;
+        decoded.rows[index] = Some(Arc::clone(object));
     }
 }
 const DECODED_BLOCK_BYTES: u64 = 16 * 1024 * 1024;
@@ -506,6 +610,8 @@ struct ChunkWriter<'a> {
     maximum: u64,
     buffer: Vec<u8>,
     chunk_bytes: usize,
+    // The payloads written, where the object is decoded back from them.
+    kept: Option<Vec<Vec<u8>>>,
 }
 impl ChunkWriter<'_> {
     fn flush_chunk(&mut self) -> io::Result<()> {
@@ -516,6 +622,10 @@ impl ChunkWriter<'_> {
             .map_err(io::Error::other)?;
         self.writer
             .push(&object_key(self.object, self.chunks), &payload)?;
+        if let Some(kept) = &mut self.kept {
+            kept.try_reserve(1).map_err(io::Error::other)?;
+            kept.push(payload);
+        }
         self.chunks = self
             .chunks
             .checked_add(1)
@@ -523,12 +633,13 @@ impl ChunkWriter<'_> {
         self.buffer.clear();
         Ok(())
     }
-    fn finish(mut self) -> io::Result<()> {
+    /// The payloads written, where they were kept.
+    fn finish(mut self) -> io::Result<Option<Vec<Vec<u8>>>> {
         self.flush_chunk()?;
         if self.chunks == 0 {
             return Err(io::Error::other("empty object JSON"));
         }
-        Ok(())
+        Ok(self.kept.take())
     }
 }
 impl Write for ChunkWriter<'_> {
@@ -761,7 +872,130 @@ impl Write for SemanticHash {
         self.bytes = next;
         Ok(total)
     }
+    // The JSON writer hands its text over in pieces of a few bytes, several
+    // for each element of a byte array. A piece that fits in the pending
+    // block, within the budget, is copied there at once; any other goes
+    // through `write`, which takes all of it or refuses it.
+    #[inline]
+    fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        if bytes.len() <= Self::BLOCK - self.pending.len()
+            && let Some(next) = self
+                .bytes
+                .checked_add(bytes.len() as u64)
+                .filter(|n| *n <= self.maximum)
+        {
+            self.pending.extend_from_slice(bytes);
+            self.bytes = next;
+            return Ok(());
+        }
+        self.write(bytes).map(|_| ())
+    }
     fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The legacy JSON of `value`, as `serde_json::to_writer_pretty` writes it,
+/// into `output`.
+fn write_legacy_json(
+    output: impl io::Write,
+    value: &(impl Serialize + ?Sized),
+) -> serde_json::Result<()> {
+    value.serialize(&mut serde_json::Serializer::with_formatter(
+        output,
+        LegacyPretty::default(),
+    ))
+}
+
+/// serde_json's `PrettyFormatter` with its two-space indentation, method for
+/// method, writing each line break together with the indentation that
+/// follows it, instead of the break and then each level's two spaces by
+/// itself. The bytes are the same; the legacy JSON of an expected tree is
+/// mostly byte arrays, one element a line, and this is a third of the
+/// pieces handed to its digest.
+#[derive(Default)]
+struct LegacyPretty {
+    current_indent: usize,
+    has_value: bool,
+}
+impl LegacyPretty {
+    /// Levels whose indentation is written in one piece with the break;
+    /// deeper ones (an expected tree has fewer than ten) a level at a time.
+    const LEVELS: usize = 32;
+    /// A comma, a line break, and the indentation of `LEVELS` levels.
+    const BREAKS: [u8; 2 + 2 * Self::LEVELS] = {
+        let mut breaks = [b' '; 2 + 2 * Self::LEVELS];
+        breaks[0] = b',';
+        breaks[1] = b'\n';
+        breaks
+    };
+    fn line<W: ?Sized + io::Write>(&self, writer: &mut W, comma: bool) -> io::Result<()> {
+        let from = usize::from(!comma);
+        let levels = self.current_indent.min(Self::LEVELS);
+        writer.write_all(&Self::BREAKS[from..2 + 2 * levels])?;
+        for _ in levels..self.current_indent {
+            writer.write_all(b"  ")?;
+        }
+        Ok(())
+    }
+}
+impl serde_json::ser::Formatter for LegacyPretty {
+    #[inline]
+    fn begin_array<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.current_indent += 1;
+        self.has_value = false;
+        writer.write_all(b"[")
+    }
+    #[inline]
+    fn end_array<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.current_indent -= 1;
+        if self.has_value {
+            self.line(writer, false)?;
+        }
+        writer.write_all(b"]")
+    }
+    #[inline]
+    fn begin_array_value<W: ?Sized + io::Write>(
+        &mut self,
+        writer: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
+        self.line(writer, !first)
+    }
+    #[inline]
+    fn end_array_value<W: ?Sized + io::Write>(&mut self, _writer: &mut W) -> io::Result<()> {
+        self.has_value = true;
+        Ok(())
+    }
+    #[inline]
+    fn begin_object<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.current_indent += 1;
+        self.has_value = false;
+        writer.write_all(b"{")
+    }
+    #[inline]
+    fn end_object<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.current_indent -= 1;
+        if self.has_value {
+            self.line(writer, false)?;
+        }
+        writer.write_all(b"}")
+    }
+    #[inline]
+    fn begin_object_key<W: ?Sized + io::Write>(
+        &mut self,
+        writer: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
+        self.line(writer, !first)
+    }
+    #[inline]
+    fn begin_object_value<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        writer.write_all(b": ")
+    }
+    #[inline]
+    fn end_object_value<W: ?Sized + io::Write>(&mut self, _writer: &mut W) -> io::Result<()> {
+        self.has_value = true;
         Ok(())
     }
 }
@@ -1068,9 +1302,270 @@ fn check_object_memory(object: &Object, compact: u64, maximum: u64) -> Result<()
     object_memory_bytes(object, compact, maximum).map(|_| ())
 }
 
+/// Whether a row of `compact` bytes cannot decode to more than `limit`.
+///
+/// The counting pass of [`decode_compact_object`] refuses a row whose
+/// decoded form would pass the row budget before anything is allocated for
+/// it. Decoding takes at most a small multiple of the JSON's size (an empty
+/// string or list costs 24 bytes for 2 of text, a first list element four
+/// elements' room); `DECODE_GROWTH` is far above that. A row that cannot
+/// reach the budget even so is parsed once, not twice, and its actual
+/// memory is still checked after decoding.
+fn decoded_cannot_exceed(compact: u64, limit: u64) -> bool {
+    const DECODE_GROWTH: u64 = 1024;
+    compact
+        .checked_mul(DECODE_GROWTH)
+        .and_then(|n| n.checked_add(std::mem::size_of::<Object>() as u64))
+        .is_some_and(|n| n <= limit)
+}
+
+/// One object decoded from the complete compact JSON its chunks hold, as
+/// an opening that owns its memory decodes it from its pages: the
+/// allocation pre-check against the row budget (`row_limit`, a resource
+/// admission's) where the row could reach it, the typed decoding, and the
+/// decoded object's actual memory held to the budget. The creation of a
+/// tree that verifies once decodes every object it writes with this too
+/// (see `DecodeBack`).
+fn decode_compact_object(bytes: &[u8], row_limit: Option<u64>) -> Result<Object> {
+    let compact = bytes.len() as u64;
+    if let Some(limit) = row_limit.filter(|limit| !decoded_cannot_exceed(compact, *limit)) {
+        let used = Cell::new(
+            compact
+                .checked_add(std::mem::size_of::<Object>() as u64)
+                .context("object memory counter overflow")?,
+        );
+        let seed = MemorySeed {
+            kind: MemoryKind::Object,
+            used: &used,
+            limit,
+        };
+        let mut decoder = serde_json::Deserializer::from_slice(bytes);
+        serde::de::DeserializeSeed::deserialize(seed, &mut decoder)?;
+        decoder.end()?;
+    }
+    let object: Object =
+        serde_json::from_slice(bytes).context("decode complete expected-tree object chunks")?;
+    if let Some(limit) = row_limit {
+        check_object_memory(&object, compact, limit)?;
+    }
+    Ok(object)
+}
+
+/// Where a creation that verifies once keeps what it decodes back (see
+/// [`DecodeBack`]): the cache of the tree that opens its pages next, the
+/// arena that pays for the decoding and for what is kept, and the number
+/// of objects of the tree.
+#[derive(Clone, Copy)]
+struct DecodeBackTo<'c> {
+    cache: &'c DecodedCache,
+    arena: &'c crate::artifact_arena::ArtifactArena,
+    len: usize,
+}
+
+/// Every object a creation that verifies once writes, decoded back from the
+/// chunks it was just written as, with the decoder an opening uses
+/// ([`decode_chunk`] for each chunk's payload, then
+/// [`decode_compact_object`]), and held equal to the object written.
+///
+/// The opening of those pages in the same run leaves out its own pass over
+/// every object (see [`CreatedHere`]), and the objects decoded here are the
+/// ones it is then handed (its decoded-object cache), so this is the check,
+/// before the first write to the source, that the pages decode to the tree:
+/// the chunk framing, the typed decoding, the allocation pre-check (a row
+/// it refuses is refused here, not at its first use after the apply) and
+/// the decoded object's memory.
+///
+/// Objects are decoded a batch at a time on helper threads, each object's
+/// workspace (eight times its compact bytes, as an opening reserves to
+/// decode it, and the object held until then) leased from spare memory;
+/// where the arena has none to spare, what is pending is decoded and the
+/// object is decoded by itself, its workspace reserved as an opening
+/// reserves it. Results are taken in the order the objects were written,
+/// so the refusal reported is that of the first object refused.
+struct DecodeBack<'c> {
+    to: DecodeBackTo<'c>,
+    pending: Vec<WrittenObject>,
+    leases: Vec<crate::artifact_arena::ArenaRamLease>,
+    leased: u64,
+    workers: usize,
+}
+/// One object as written: the object, its chunks' payloads and the compact
+/// bytes they hold.
+struct WrittenObject {
+    ordinal: usize,
+    object: Arc<Object>,
+    payloads: Vec<Vec<u8>>,
+    bytes: u64,
+}
+impl WrittenObject {
+    fn decode(&self, maximum_chunk: usize, row_limit: Option<u64>) -> Result<Object> {
+        (|| -> Result<Object> {
+            let length =
+                usize::try_from(self.bytes).context("compact object exceeds address space")?;
+            let mut compact = Vec::new();
+            compact.try_reserve_exact(length)?;
+            for payload in &self.payloads {
+                let raw = decode_chunk(payload, maximum_chunk)?;
+                ensure!(
+                    compact.len() + raw.len() <= length,
+                    "object chunk bytes exceed directory"
+                );
+                compact.extend_from_slice(&raw);
+            }
+            ensure!(
+                compact.len() == length,
+                "complete object chunk byte count differs"
+            );
+            let decoded = decode_compact_object(&compact, row_limit)?;
+            ensure!(
+                decoded == *self.object,
+                "the object decoded from its chunks differs from the object written"
+            );
+            Ok(decoded)
+        })()
+        .with_context(|| {
+            format!(
+                "expected-tree object {} (FILE {}) decoded back from the pages just written",
+                self.ordinal, self.object.record_number
+            )
+        })
+    }
+}
+impl<'c> DecodeBack<'c> {
+    /// Objects decoded at once on helper threads, and the workspace leased
+    /// for them, at most.
+    const BATCH_OBJECTS: usize = 1024;
+    const BATCH_BYTES: u64 = 64 * 1024 * 1024;
+    fn new(to: DecodeBackTo<'c>) -> Self {
+        Self {
+            to,
+            pending: Vec::new(),
+            leases: Vec::new(),
+            leased: 0,
+            workers: std::thread::available_parallelism()
+                .map_or(2, |n| n.get())
+                .clamp(2, 4),
+        }
+    }
+    /// The workspace to decode `written` back: what an opening reserves
+    /// to decode it from its pages, less the page buffers it reads them
+    /// through, and the object, held until it is decoded.
+    fn workspace(written: &WrittenObject, row_limit: Option<u64>) -> Result<u64> {
+        written
+            .bytes
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(DECODED_OBJECT_ALLOWANCE))
+            .and_then(|n| {
+                n.checked_add(
+                    object_memory_bytes(&written.object, 0, row_limit.unwrap_or(u64::MAX)).ok()?,
+                )
+            })
+            .context("expected decode-back workspace overflow")
+    }
+    /// Takes `written` to be decoded back, now or with its batch.
+    fn push(
+        &mut self,
+        written: WrittenObject,
+        maximum_chunk: usize,
+        row_limit: Option<u64>,
+    ) -> Result<()> {
+        let queued = (|| -> Result<_> {
+            let workspace = Self::workspace(&written, row_limit)?;
+            self.pending.try_reserve(1)?;
+            self.leases.try_reserve(1)?;
+            Ok((workspace, self.to.arena.reserve_spare_ram(workspace).ok()))
+        })();
+        match queued {
+            Ok((workspace, Some(lease))) => {
+                self.pending.push(written);
+                self.leases.push(lease);
+                self.leased = self.leased.saturating_add(workspace);
+                if self.pending.len() >= Self::BATCH_OBJECTS || self.leased >= Self::BATCH_BYTES {
+                    self.flush(maximum_chunk, row_limit)?;
+                }
+                Ok(())
+            }
+            Ok((workspace, None)) => {
+                // No memory to spare: in order, what is pending, and then
+                // this one by itself in the memory the run needs for it.
+                self.flush(maximum_chunk, row_limit)?;
+                let _workspace = self.to.arena.reserve_ram(workspace)?;
+                let decoded = written.decode(maximum_chunk, row_limit)?;
+                self.keep(written.ordinal, row_limit, decoded);
+                Ok(())
+            }
+            Err(error) => {
+                // This object's refusal comes after those of the objects
+                // written before it.
+                self.flush(maximum_chunk, row_limit)?;
+                Err(error)
+            }
+        }
+    }
+    /// Decodes back what is pending, in the order it was written: the
+    /// first object refused is the refusal returned.
+    fn flush(&mut self, maximum_chunk: usize, row_limit: Option<u64>) -> Result<()> {
+        let pending = std::mem::take(&mut self.pending);
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let decoded: Vec<Result<Object>> = if pending.len() >= 16 && self.workers > 1 {
+            let part = pending.len().div_ceil(self.workers);
+            std::thread::scope(|scope| -> Result<Vec<Result<Object>>> {
+                let handles: Vec<_> = pending
+                    .chunks(part)
+                    .map(|objects| {
+                        scope.spawn(move || {
+                            objects
+                                .iter()
+                                .map(|written| written.decode(maximum_chunk, row_limit))
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .collect();
+                let mut decoded = Vec::new();
+                decoded.try_reserve_exact(pending.len())?;
+                for handle in handles {
+                    decoded.extend(handle.join().map_err(|_| {
+                        anyhow::anyhow!("expected-tree decode-back worker panicked")
+                    })?);
+                }
+                Ok(decoded)
+            })?
+        } else {
+            pending
+                .iter()
+                .map(|written| written.decode(maximum_chunk, row_limit))
+                .collect()
+        };
+        let result = pending
+            .iter()
+            .zip(decoded)
+            .try_for_each(|(written, decoded)| {
+                self.keep(written.ordinal, row_limit, decoded?);
+                Ok(())
+            });
+        drop(pending);
+        self.leases.clear();
+        self.leased = 0;
+        result
+    }
+    fn keep(&self, ordinal: usize, row_limit: Option<u64>, decoded: Object) {
+        if let Some(limit) = row_limit {
+            self.to.cache.keep(
+                self.to.arena,
+                limit,
+                self.to.len,
+                ordinal,
+                &Arc::new(decoded),
+            );
+        }
+    }
+}
+
 /// The pages of a tree that is being created: the writer, past the header
 /// record, and what was counted of the objects written so far.
-struct CompactObjects {
+struct CompactObjects<'c> {
     writer: Writer,
     counts: ExpectedTreePageCounts,
     maximum_chunk: usize,
@@ -1079,14 +1574,17 @@ struct CompactObjects {
     // The row budget of a resource admission: the decoded object is held
     // to it as well.
     row_limit: Option<u64>,
+    // Every object written decoded back from its chunks (see `DecodeBack`).
+    decode_back: Option<DecodeBack<'c>>,
 }
-impl CompactObjects {
+impl<'c> CompactObjects<'c> {
     fn begin(
         path: &Path,
         budget: PageBudget,
         header: &HeaderRef<'_>,
         semantic_byte_budget: u64,
         row_limit: Option<u64>,
+        decode_back: Option<DecodeBackTo<'c>>,
     ) -> Result<Self> {
         let maximum_chunk = chunk_bytes(budget)?;
         let mut writer = Writer::new(path, PURPOSE, budget)?;
@@ -1097,10 +1595,44 @@ impl CompactObjects {
             maximum_chunk,
             maximum_bytes: row_limit.unwrap_or(semantic_byte_budget),
             row_limit,
+            decode_back: decode_back.map(DecodeBack::new),
         })
     }
     /// Counts `object` and writes it as the chunks of object `ordinal`.
-    fn write(&mut self, ordinal: usize, object: &Object) -> Result<()> {
+    ///
+    /// Where objects are decoded back, a refusal of this object's writing
+    /// is returned only once every object written before it has been
+    /// decoded back without one: the first refusal is still the first.
+    fn write(&mut self, ordinal: usize, object: Cow<'_, Object>) -> Result<()> {
+        let written = self.write_chunks(ordinal, &object);
+        let Some(decode_back) = self.decode_back.as_mut() else {
+            return written.map(|_| ());
+        };
+        let (payloads, bytes) = match written {
+            Ok(kept) => kept.context("the chunks to decode back are absent")?,
+            Err(error) => {
+                decode_back.flush(self.maximum_chunk, self.row_limit)?;
+                return Err(error);
+            }
+        };
+        decode_back.push(
+            WrittenObject {
+                ordinal,
+                object: Arc::new(object.into_owned()),
+                payloads,
+                bytes,
+            },
+            self.maximum_chunk,
+            self.row_limit,
+        )
+    }
+    /// The chunks of object `ordinal`; their payloads and compact bytes
+    /// where the object is to be decoded back from them.
+    fn write_chunks(
+        &mut self,
+        ordinal: usize,
+        object: &Object,
+    ) -> Result<Option<(Vec<Vec<u8>>, u64)>> {
         self.counts.include(object)?;
         if let Some(limit) = self.row_limit {
             check_object_memory(object, 0, limit)?;
@@ -1113,13 +1645,21 @@ impl CompactObjects {
             maximum: self.maximum_bytes,
             buffer: Vec::new(),
             chunk_bytes: self.maximum_chunk,
+            kept: self.decode_back.is_some().then(Vec::new),
         };
         serde_json::to_writer(&mut chunks, object)?;
         if let Some(limit) = self.row_limit {
             check_object_memory(object, chunks.bytes, limit)?;
         }
-        chunks.finish()?;
-        Ok(())
+        let bytes = chunks.bytes;
+        Ok(chunks.finish()?.map(|payloads| (payloads, bytes)))
+    }
+    /// Decodes back what is still pending (see `DecodeBack`).
+    fn finish_decoding_back(&mut self) -> Result<()> {
+        match self.decode_back.as_mut() {
+            Some(decode_back) => decode_back.flush(self.maximum_chunk, self.row_limit),
+            None => Ok(()),
+        }
     }
 }
 
@@ -1138,11 +1678,11 @@ impl CompactObjects {
 /// order is kept: the first failure of the pages is put aside, nothing
 /// more is written to them, and the JSON goes on to its end. Its refusal,
 /// if it has one, is the one reported; otherwise the pages' is.
-struct CreationView<'a, T: ExpectedObjectDomain> {
+struct CreationView<'a, 'c, T: ExpectedObjectDomain> {
     tree: &'a T,
-    compact: &'a RefCell<Result<CompactObjects>>,
+    compact: &'a RefCell<Result<CompactObjects<'c>>>,
 }
-impl<T: ExpectedObjectDomain> Serialize for CreationView<'_, T> {
+impl<T: ExpectedObjectDomain> Serialize for CreationView<'_, '_, T> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let mut fields = serializer.serialize_struct("ExpectedTree", 4)?;
         fields.serialize_field("profile", self.tree.profile())?;
@@ -1161,29 +1701,30 @@ impl<T: ExpectedObjectDomain> Serialize for CreationView<'_, T> {
         fields.end()
     }
 }
-struct CreationObjects<'a, T: ExpectedObjectDomain> {
+struct CreationObjects<'a, 'c, T: ExpectedObjectDomain> {
     tree: &'a T,
-    compact: &'a RefCell<Result<CompactObjects>>,
+    compact: &'a RefCell<Result<CompactObjects<'c>>>,
 }
-impl<T: ExpectedObjectDomain> Serialize for CreationObjects<'_, T> {
+impl<T: ExpectedObjectDomain> Serialize for CreationObjects<'_, '_, T> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let count = self.tree.object_count();
         let mut sequence = serializer.serialize_seq(Some(count))?;
         for index in 0..count {
             let object = self.tree.object(index).map_err(S::Error::custom)?;
-            {
-                let mut compact = self.compact.borrow_mut();
-                let written = match compact.as_mut() {
-                    Ok(pages) => pages.write(index, &object),
-                    // Already put aside: the JSON alone goes on.
-                    Err(_) => Ok(()),
-                };
-                if let Err(error) = written {
-                    // The writer goes with it: nothing certifies a prefix.
-                    *compact = Err(error);
-                }
-            }
+            // The JSON's refusal of this object, if it has one, is the one
+            // reported, whatever its pages would refuse: it goes first, and
+            // the object then goes to the pages.
             sequence.serialize_element(object.as_ref())?;
+            let mut compact = self.compact.borrow_mut();
+            let written = match compact.as_mut() {
+                Ok(pages) => pages.write(index, object),
+                // Already put aside: the JSON alone goes on.
+                Err(_) => Ok(()),
+            };
+            if let Err(error) = written {
+                // The writer goes with it: nothing certifies a prefix.
+                *compact = Err(error);
+            }
         }
         sequence.end()
     }
@@ -1195,6 +1736,41 @@ impl PagedExpectedTree {
         path: &Path,
         admission: n2r_win32::tree_resources::SourceResourceAdmission,
         group: &crate::artifact_arena::ArtifactGroupPermit,
+    ) -> Result<(
+        ExpectedTreePageReceipt,
+        crate::artifact_arena::ArtifactLease,
+    )> {
+        Self::create_in_group(tree, path, admission, group, None)
+    }
+    /// [`Self::create_with_resources_in_group`] and then
+    /// [`Self::open_with_resources_in_group`] of what it wrote.
+    ///
+    /// In a run that verifies once, the creation decodes every object back
+    /// from the chunks it has just written, with the opening's decoder,
+    /// and holds it equal to the object written ([`DecodeBack`]); the
+    /// opening then makes no pass over the objects of its own. The objects
+    /// decoded back are kept for the opened tree as its decoded objects, as
+    /// the opening's own pass over them used to keep them (the same
+    /// optional memory, the same cache, given up the same way when memory
+    /// is short). Where the opening makes its pass, it starts from an
+    /// empty cache, as always.
+    pub fn create_and_open_with_resources_in_group(
+        tree: &impl ExpectedObjectDomain,
+        path: &Path,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        group: &crate::artifact_arena::ArtifactGroupPermit,
+    ) -> Result<Self> {
+        let decoded = n2r_win32::verify_policy::verifies_once().then(DecodedCache::registered);
+        let (receipt, artifact) =
+            Self::create_in_group(tree, path, admission, group, decoded.as_deref())?;
+        Self::open_created_in_group(path, &receipt, admission, group, artifact, decoded)
+    }
+    fn create_in_group(
+        tree: &impl ExpectedObjectDomain,
+        path: &Path,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        group: &crate::artifact_arena::ArtifactGroupPermit,
+        decoded: Option<&DecodedCache>,
     ) -> Result<(
         ExpectedTreePageReceipt,
         crate::artifact_arena::ArtifactLease,
@@ -1217,7 +1793,13 @@ impl PagedExpectedTree {
             .context("expected writer RAM overflow")?;
         let _ram = group.arena().reserve_ram(working)?;
         let permit = group.reserve_file(path, admission.expected_page_budget()?.max_file_bytes)?;
-        let receipt = Self::create_with_resources(tree, permit.path(), admission)?;
+        let decode_back = decoded.map(|cache| DecodeBackTo {
+            cache,
+            arena: group.arena(),
+            len: tree.object_count(),
+        });
+        let receipt =
+            Self::create_with_resources_decoded_back(tree, permit.path(), admission, decode_back)?;
         let artifact = permit.verify_closed(&receipt.file_sha256)?;
         Ok((receipt, artifact))
     }
@@ -1240,12 +1822,20 @@ impl PagedExpectedTree {
         budget: PageBudget,
         semantic_byte_budget: u64,
     ) -> Result<ExpectedTreePageReceipt> {
-        Self::create_domain(tree, path, budget, semantic_byte_budget, None)
+        Self::create_domain(tree, path, budget, semantic_byte_budget, None, None)
     }
     pub fn create_with_resources(
         tree: &impl ExpectedObjectDomain,
         path: &Path,
         admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    ) -> Result<ExpectedTreePageReceipt> {
+        Self::create_with_resources_decoded_back(tree, path, admission, None)
+    }
+    fn create_with_resources_decoded_back(
+        tree: &impl ExpectedObjectDomain,
+        path: &Path,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        decode_back: Option<DecodeBackTo<'_>>,
     ) -> Result<ExpectedTreePageReceipt> {
         admission.validate()?;
         ensure!(
@@ -1264,6 +1854,7 @@ impl PagedExpectedTree {
             admission.expected_page_budget()?,
             admission.semantic_byte_budget(),
             Some(admission),
+            decode_back,
         )
     }
     fn create_domain(
@@ -1272,6 +1863,7 @@ impl PagedExpectedTree {
         budget: PageBudget,
         semantic_byte_budget: u64,
         resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+        decode_back: Option<DecodeBackTo<'_>>,
     ) -> Result<ExpectedTreePageReceipt> {
         budget.validate()?;
         ensure!(
@@ -1296,31 +1888,43 @@ impl PagedExpectedTree {
             resource_admission,
         };
         let row_limit = resource_admission.map(|admission| admission.budget.max_row_bytes);
+        // Whether every object written was decoded back from its chunks.
+        let mut decoded_back = false;
         let (semantic_sha256, compact) = if n2r_win32::verify_policy::full_unremembered() {
             // Two passes over the tree, as it always was: its legacy JSON
-            // first, then its pages.
-            serde_json::to_writer_pretty(&mut semantic, tree)?;
+            // first, then its pages. (Their opening derives everything from
+            // them again: nothing is decoded back here.)
+            write_legacy_json(&mut semantic, tree)?;
             let semantic_sha256 = semantic.finish()?;
-            let mut compact =
-                CompactObjects::begin(path, budget, &header, semantic_byte_budget, row_limit)?;
+            let mut compact = CompactObjects::begin(
+                path,
+                budget,
+                &header,
+                semantic_byte_budget,
+                row_limit,
+                None,
+            )?;
             for ordinal in 0..tree.object_count() {
                 let object = tree.object(ordinal)?;
-                compact.write(ordinal, &object)?;
+                compact.write(ordinal, object)?;
             }
             (semantic_sha256, compact)
         } else {
             // One pass (check-once, outside its gate): each object is
             // decoded once, for its pages and for the legacy JSON. What
             // the pages refuse is kept until the JSON is complete, so the
-            // refusal that comes first is the one that came first.
+            // refusal that comes first is the one that came first. The
+            // objects decoded back from the pages are of the pages too:
+            // their refusal comes after the JSON's.
             let compact = RefCell::new(CompactObjects::begin(
                 path,
                 budget,
                 &header,
                 semantic_byte_budget,
                 row_limit,
+                decode_back,
             ));
-            serde_json::to_writer_pretty(
+            write_legacy_json(
                 &mut semantic,
                 &CreationView {
                     tree,
@@ -1328,7 +1932,10 @@ impl PagedExpectedTree {
                 },
             )?;
             let semantic_sha256 = semantic.finish()?;
-            (semantic_sha256, compact.into_inner()?)
+            let mut compact = compact.into_inner()?;
+            compact.finish_decoding_back()?;
+            decoded_back = compact.decode_back.is_some();
+            (semantic_sha256, compact)
         };
         let CompactObjects { writer, counts, .. } = compact;
         if let Some(admission) = resource_admission {
@@ -1339,6 +1946,15 @@ impl PagedExpectedTree {
             summary.records >= records,
             "written expected-tree record domain differs"
         );
+        let created = CreatedHere {
+            file_sha256: summary.sha256.clone(),
+            semantic_sha256: semantic_sha256.clone(),
+            counts,
+            budget,
+            semantic_byte_budget,
+            resource_admission,
+            decoded_back,
+        };
         Ok(ExpectedTreePageReceipt {
             schema_version: if resource_admission.is_some() { 3 } else { 2 },
             path: path.to_owned(),
@@ -1351,6 +1967,7 @@ impl PagedExpectedTree {
             page_budget: budget,
             semantic_byte_budget,
             resource_admission,
+            created: Some(created),
         })
     }
 
@@ -1432,6 +2049,47 @@ impl PagedExpectedTree {
             Some((group.arena().clone(), artifact)),
         )
     }
+    /// [`Self::open_with_resources_in_group`] for the pages that
+    /// [`Self::create_in_group`] has just written, pinned by the receipt it
+    /// returned, with the objects it decoded back (`decoded`). In a run
+    /// that verifies once, where the creation decoded every object back,
+    /// the legacy JSON's digest and the object counts are those the
+    /// creation derived and `decoded` becomes the tree's decoded objects
+    /// (see [`CreatedHere`]); otherwise, and for a receipt that does not
+    /// describe this file, the opening makes its pass over every object as
+    /// every other opening does.
+    fn open_created_in_group(
+        path: &Path,
+        receipt: &ExpectedTreePageReceipt,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        group: &crate::artifact_arena::ArtifactGroupPermit,
+        artifact: crate::artifact_arena::ArtifactLease,
+        decoded: Option<std::rc::Rc<DecodedCache>>,
+    ) -> Result<Self> {
+        admission.validate()?;
+        ensure!(
+            group.group() == crate::artifact_arena::ArtifactGroup::Expected
+                && group.arena().budget() == admission.budget
+                && artifact.same_group(group)
+                && artifact.sha256() == receipt.file_sha256,
+            "expected page file/arena owner differs"
+        );
+        Self::open_owned_domain(
+            path,
+            &receipt.file_sha256,
+            Some(&receipt.semantic_sha256),
+            admission.expected_page_budget()?,
+            admission.semantic_byte_budget(),
+            Some(admission),
+            false,
+            Some(ExpectedMemoryOwner {
+                arena: group.arena().clone(),
+                artifact: Some(artifact),
+                reopened: None,
+            }),
+            receipt.created.as_ref().map(|created| (created, decoded)),
+        )
+    }
     fn open_domain(
         path: &Path,
         file_sha256: &str,
@@ -1457,6 +2115,7 @@ impl PagedExpectedTree {
                 artifact: Some(artifact),
                 reopened: None,
             }),
+            None,
         )
     }
 
@@ -1491,6 +2150,7 @@ impl PagedExpectedTree {
                 artifact: Some(artifact),
                 reopened: None,
             }),
+            None,
         )
     }
 
@@ -1522,6 +2182,7 @@ impl PagedExpectedTree {
                 artifact: Some(artifact),
                 reopened: None,
             }),
+            None,
         )?;
         tree.cached_body_pending = true;
         Ok(tree)
@@ -1660,6 +2321,7 @@ impl PagedExpectedTree {
                 artifact: None,
                 reopened: Some(file.try_clone()?),
             }),
+            None,
         )?;
         tree.apply_binding(pin, current)?;
         use std::os::windows::fs::OpenOptionsExt;
@@ -1718,11 +2380,13 @@ impl PagedExpectedTree {
                 artifact: None,
                 reopened: Some(file.try_clone()?),
             }),
+            None,
         )?;
         tree.require_recovery_memory(arena)?;
         Ok(tree)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn open_owned_domain(
         path: &Path,
         file_sha256: &str,
@@ -1732,6 +2396,9 @@ impl PagedExpectedTree {
         resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
         allow_original_source_header: bool,
         mut memory: Option<ExpectedMemoryOwner>,
+        // What the creation of this file derived of it, and the objects it
+        // decoded, kept for this tree where those facts are taken.
+        created: Option<(&CreatedHere, Option<std::rc::Rc<DecodedCache>>)>,
     ) -> Result<Self> {
         ensure!(
             (1..=i64::MAX as u64).contains(&semantic_byte_budget),
@@ -1976,14 +2643,7 @@ impl PagedExpectedTree {
             alias_projection: RefCell::new(None),
             alias_projection_lookups: Cell::new(0),
             input_digest: n2r_win32::shadow_native::input_domain::InputDigestMemo::new(),
-            decoded: {
-                let decoded = std::rc::Rc::new(DecodedCache(
-                    RefCell::new(DecodedObjects::default()),
-                    std::cell::Cell::new(n2r_win32::evict::now()),
-                ));
-                n2r_win32::evict::register(&decoded);
-                decoded
-            },
+            decoded: DecodedCache::registered(),
             header,
             counts: ExpectedTreePageCounts::default(),
             file_sha256: file_sha256.into(),
@@ -2006,22 +2666,47 @@ impl PagedExpectedTree {
             _directory_ram: directory_ram,
             _header_ram: header_ram,
         };
-        let counts = Cell::new(ExpectedTreePageCounts::default());
-        let mut semantic = SemanticHash::new(semantic_byte_budget)?;
-        serde_json::to_writer_pretty(
-            &mut semantic,
-            &LegacyView {
-                tree: &view,
-                counts: Some(&counts),
-            },
-        )?;
-        let derived_semantic_sha256 = semantic.finish()?;
-        ensure!(
-            legacy_semantic_sha256.is_none_or(|expected| derived_semantic_sha256 == expected),
-            "paged objects do not reproduce the pinned legacy expectation JSON"
-        );
-        view.semantic_sha256 = derived_semantic_sha256;
-        view.counts = counts.get();
+        // The file this process's creation has just written, pinned by what
+        // that creation derived of it: in a run that verifies once, those
+        // stand for deriving them again (see `CreatedHere`).
+        // Where they are not taken, the objects the creation decoded are
+        // given up here, before the opening decodes them again.
+        let created = created.filter(|(created, _)| {
+            n2r_win32::verify_policy::verifies_once()
+                && created.decoded_back
+                && !allow_original_source_header
+                && view.reader.borrow().written_by_this_process()
+                && created.file_sha256 == file_sha256
+                && legacy_semantic_sha256 == Some(created.semantic_sha256.as_str())
+                && created.budget == budget
+                && created.semantic_byte_budget == semantic_byte_budget
+                && created.resource_admission == view.resource_admission
+                && created.counts.objects == view.header.total_objects
+        });
+        if let Some((created, decoded)) = created {
+            view.semantic_sha256 = created.semantic_sha256.clone();
+            view.counts = created.counts;
+            if let Some(decoded) = decoded {
+                view.decoded = decoded;
+            }
+        } else {
+            let counts = Cell::new(ExpectedTreePageCounts::default());
+            let mut semantic = SemanticHash::new(semantic_byte_budget)?;
+            write_legacy_json(
+                &mut semantic,
+                &LegacyView {
+                    tree: &view,
+                    counts: Some(&counts),
+                },
+            )?;
+            let derived_semantic_sha256 = semantic.finish()?;
+            ensure!(
+                legacy_semantic_sha256.is_none_or(|expected| derived_semantic_sha256 == expected),
+                "paged objects do not reproduce the pinned legacy expectation JSON"
+            );
+            view.semantic_sha256 = derived_semantic_sha256;
+            view.counts = counts.get();
+        }
         ensure!(
             view.counts.objects == view.header.total_objects,
             "typed object count differs from the complete header domain"
@@ -2183,56 +2868,53 @@ impl PagedExpectedTree {
         mut more: impl FnMut(&Object) -> bool,
     ) -> Result<Vec<LeasedExpectedObject>> {
         let mut objects = vec![self.object_leased(first)?];
-        let (Some(arena), Some(admission)) = (&self.arena, self.resource_admission) else {
-            return Ok(objects);
-        };
-        let row = admission.budget.max_row_bytes;
         for index in first + 1..self.len() {
             if !objects.last().is_some_and(|object| more(object)) {
                 break;
             }
-            // The workspace of `reserve_decode_ram`, and then what
-            // `object_leased` keeps of it.
-            let compact = self.directory[index].bytes;
-            let Some(workspace) = compact
-                .checked_mul(8)
-                .and_then(|n| n.checked_add(u64::from(self.budget.max_page_bytes) * 3))
-                .and_then(|n| n.checked_add(DECODED_OBJECT_ALLOWANCE))
-                .filter(|_| compact <= row)
-            else {
+            let Some(object) = self.object_leased_spare(index) else {
                 break;
             };
-            let Ok(mut ram) = arena.reserve_spare_ram(workspace) else {
-                break;
-            };
-            let Ok(object) = self.decode_object(index) else {
-                break;
-            };
-            let Some(keep) = object_memory_bytes(&object, 0, row)
-                .ok()
-                .and_then(|bytes| bytes.checked_mul(3))
-            else {
-                break;
-            };
-            let more_ram = match keep.checked_sub(ram.bytes()) {
-                Some(beyond) if beyond > 0 => match arena.reserve_spare_ram(beyond) {
-                    Ok(lease) => Some(lease),
-                    Err(_) => break,
-                },
-                _ => {
-                    if ram.shrink_to(keep).is_err() {
-                        break;
-                    }
-                    None
-                }
-            };
-            objects.push(LeasedExpectedObject {
-                object,
-                _ram: ram,
-                _more: more_ram,
-            });
+            objects.push(object);
         }
         Ok(objects)
+    }
+    /// Object `index` leased as [`Self::object_leased`] leases it, with the
+    /// same workspace and the same lease on what it keeps, but from memory
+    /// the pass can do without (`ArtifactArena::reserve_spare_ram`). `None`
+    /// where the ledger has no spare room for it, where it does not decode,
+    /// and where this tree has no shared memory owner: the caller then asks
+    /// for it with [`Self::object_leased`] in its turn, and is told there.
+    pub fn object_leased_spare(&self, index: usize) -> Option<LeasedExpectedObject> {
+        let (Some(arena), Some(admission)) = (&self.arena, self.resource_admission) else {
+            return None;
+        };
+        let row = admission.budget.max_row_bytes;
+        // The workspace of `reserve_decode_ram`, and then what
+        // `object_leased` keeps of it.
+        let compact = self.directory.get(index)?.bytes;
+        let workspace = compact
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(u64::from(self.budget.max_page_bytes) * 3))
+            .and_then(|n| n.checked_add(DECODED_OBJECT_ALLOWANCE))
+            .filter(|_| compact <= row)?;
+        let mut ram = arena.reserve_spare_ram(workspace).ok()?;
+        let object = self.decode_object(index).ok()?;
+        let keep = object_memory_bytes(&object, 0, row)
+            .ok()
+            .and_then(|bytes| bytes.checked_mul(3))?;
+        let more_ram = match keep.checked_sub(ram.bytes()) {
+            Some(beyond) if beyond > 0 => Some(arena.reserve_spare_ram(beyond).ok()?),
+            _ => {
+                ram.shrink_to(keep).ok()?;
+                None
+            }
+        };
+        Some(LeasedExpectedObject {
+            object,
+            _ram: ram,
+            _more: more_ram,
+        })
     }
     /// Snapshot only: no file reads, allocations or per-record logging. These
     /// counters are diagnostic and never replace authentication/owner checks.
@@ -2387,45 +3069,13 @@ impl PagedExpectedTree {
         let (Some(arena), Some(admission)) = (&self.arena, self.resource_admission) else {
             return;
         };
-        self.decoded.1.set(n2r_win32::evict::now());
-        let mut decoded = self.decoded.0.borrow_mut();
-        if decoded.rows.get(index).is_some_and(Option::is_some) {
-            return;
-        }
-        if decoded.refused_for > 0 {
-            decoded.refused_for -= 1;
-            return;
-        }
-        let Ok(mut bytes) = object_memory_bytes(object, 0, admission.budget.max_row_bytes) else {
-            return;
-        };
-        let slots = decoded.rows.is_empty();
-        if slots {
-            bytes = bytes
-                .saturating_add((self.len() * std::mem::size_of::<Option<Arc<Object>>>()) as u64);
-        }
-        if decoded.unspent < bytes {
-            let block = DECODED_BLOCK_BYTES.max(bytes);
-            match arena.reserve_optional_ram(block) {
-                Ok(lease) => {
-                    decoded.leases.push(lease);
-                    decoded.unspent += block;
-                }
-                Err(_) => {
-                    decoded.refused_for = DECODED_RETRY_OBJECTS;
-                    return;
-                }
-            }
-        }
-        if slots {
-            if decoded.rows.try_reserve_exact(self.len()).is_err() {
-                decoded.refused_for = DECODED_RETRY_OBJECTS;
-                return;
-            }
-            decoded.rows.resize_with(self.len(), || None);
-        }
-        decoded.unspent -= bytes;
-        decoded.rows[index] = Some(Arc::clone(object));
+        self.decoded.keep(
+            arena,
+            admission.budget.max_row_bytes,
+            self.len(),
+            index,
+            object,
+        );
     }
     fn decode_object(&self, index: usize) -> Result<Arc<Object>> {
         ensure!(
@@ -2499,24 +3149,18 @@ impl PagedExpectedTree {
         } else {
             None
         };
-        // The counting pass below refuses a row whose decoded form would pass
-        // the row budget before anything is allocated for it. Decoding takes
-        // at most a small multiple of the JSON's size (an empty string or
-        // list costs 24 bytes for 2 of text, a first list element four
-        // elements' room); `DECODE_GROWTH` is far above that. A row that
-        // cannot reach the budget even so is parsed once, not twice, and its
-        // actual memory is still checked after decoding.
-        const DECODE_GROWTH: u64 = 1024;
-        let cannot_exceed = |limit: u64| {
-            entry
-                .bytes
-                .checked_mul(DECODE_GROWTH)
-                .and_then(|n| n.checked_add(std::mem::size_of::<Object>() as u64))
-                .is_some_and(|n| n <= limit)
-        };
+        if let Some(bytes) = compact {
+            return decode_compact_object(
+                &bytes,
+                self.resource_admission
+                    .map(|admission| admission.budget.max_row_bytes),
+            );
+        }
+        // Legacy and non-arena owners decode while they read the chunks,
+        // with the same pre-check (see `decode_compact_object`).
         if let Some(admission) = self
             .resource_admission
-            .filter(|admission| !cannot_exceed(admission.budget.max_row_bytes))
+            .filter(|admission| !decoded_cannot_exceed(entry.bytes, admission.budget.max_row_bytes))
         {
             let used = Cell::new(
                 entry
@@ -2529,21 +3173,12 @@ impl PagedExpectedTree {
                 used: &used,
                 limit: admission.budget.max_row_bytes,
             };
-            if let Some(bytes) = &compact {
-                let mut decoder = serde_json::Deserializer::from_slice(bytes);
-                serde::de::DeserializeSeed::deserialize(seed, &mut decoder)?;
-                decoder.end()?;
-            } else {
-                let mut decoder = serde_json::Deserializer::from_reader(chunks());
-                serde::de::DeserializeSeed::deserialize(seed, &mut decoder)?;
-                decoder.end()?;
-            }
+            let mut decoder = serde_json::Deserializer::from_reader(chunks());
+            serde::de::DeserializeSeed::deserialize(seed, &mut decoder)?;
+            decoder.end()?;
         }
-        let object: Object = match &compact {
-            Some(bytes) => serde_json::from_slice(bytes),
-            None => serde_json::from_reader(chunks()),
-        }
-        .context("decode complete expected-tree object chunks")?;
+        let object: Object = serde_json::from_reader(chunks())
+            .context("decode complete expected-tree object chunks")?;
         if let Some(admission) = self.resource_admission {
             check_object_memory(&object, entry.bytes, admission.budget.max_row_bytes)?;
         }
@@ -2802,6 +3437,347 @@ impl Serialize for PagedExpectedTree {
             counts: None,
         }
         .serialize(serializer)
+    }
+}
+
+#[cfg(test)]
+mod created_tests {
+    use super::*;
+
+    fn object(record_number: u64, path: &[&str], directory: bool) -> Object {
+        Object {
+            record_number,
+            sequence_number: 1,
+            path: path.iter().map(|part| (*part).to_owned()).collect(),
+            additional_names: Vec::new(),
+            directory,
+            stored_times: [1, 2, 3, 4],
+            attributes: if directory { 16 } else { 32 },
+            ntfs_compression_normalized: false,
+            security: (0..=255).collect(),
+            api_security: None,
+            extended_attributes: None,
+            reparse: None,
+            case_sensitive: None,
+            source_offset: None,
+            source_extents: Vec::new(),
+            length: if directory { 0 } else { 5 },
+            sha256: (!directory).then(|| "ab".repeat(16)),
+            source_evidence: None,
+            named_streams: Vec::new(),
+            sparse: None,
+        }
+    }
+
+    /// The legacy JSON is byte for byte what serde_json's pretty writer
+    /// writes: empty and nested arrays and objects, deeper than the levels
+    /// written in one piece, and an expected tree.
+    #[test]
+    fn the_legacy_formatter_writes_what_the_pretty_writer_writes() {
+        use serde_json::json;
+        let mut deep = json!(1);
+        for level in 0..40 {
+            deep = if level % 2 == 0 {
+                json!([deep, [], {}, [[]], [{}], 7])
+            } else {
+                json!({"k": deep, "e": [], "o": {}, "s": "x\n\"y\"", "n": null, "t": true})
+            };
+        }
+        let values = [
+            json!(null),
+            json!(-3),
+            json!("text"),
+            json!([]),
+            json!({}),
+            json!([[]]),
+            json!([{}]),
+            json!({"a": []}),
+            json!({"a": {}}),
+            json!([1, [2, []], {"b": [3, {}], "c": {"d": []}}]),
+            deep,
+        ];
+        for value in &values {
+            let mut ours = Vec::new();
+            write_legacy_json(&mut ours, value).unwrap();
+            assert_eq!(
+                String::from_utf8(ours).unwrap(),
+                serde_json::to_string_pretty(value).unwrap()
+            );
+        }
+        let mut objects = vec![object(5, &[], true), object(40, &["a"], true)];
+        let mut file = object(64, &["a", "f"], false);
+        file.additional_names = vec![vec!["a".into(), "F~1".into()]];
+        file.extended_attributes = Some(Default::default());
+        file.source_extents = vec![crate::ntfs_inspect::Extent {
+            logical_offset: 0,
+            physical_offset: Some(4096),
+            length: 8192,
+        }];
+        objects.push(file);
+        let tree = ExpectedTree {
+            profile: "test-profile".into(),
+            logical_bytes: 5,
+            internal_replacement_pending: vec!["root:$TXF_DATA".into()],
+            objects,
+        };
+        let mut ours = Vec::new();
+        write_legacy_json(&mut ours, &tree).unwrap();
+        assert!(ours == serde_json::to_vec_pretty(&tree).unwrap());
+    }
+
+    /// Pieces of any size, across the digest's blocks, give the digest of
+    /// the whole, and a piece past the budget is refused as it always was.
+    #[test]
+    fn the_semantic_digest_takes_pieces_and_refuses_past_its_budget() {
+        let text: Vec<u8> = (0..200_000u32).map(|n| b'a' + (n % 26) as u8).collect();
+        let mut whole = SemanticHash::new(1 << 20).unwrap();
+        for piece in text.chunks(7) {
+            whole.write_all(piece).unwrap();
+        }
+        assert_eq!(whole.finish().unwrap(), hex::encode(Sha256::digest(&text)));
+        let mut small = SemanticHash::new(10).unwrap();
+        small.write_all(b"0123456789").unwrap();
+        let refused = small.write_all(b"x").unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "legacy expected-tree JSON exceeds pinned byte budget"
+        );
+    }
+
+    /// What a creation keeps of its pages for an opening in a run that
+    /// verifies once is what an opening derives from them again, and never
+    /// part of the receipt's serialized form.
+    #[test]
+    fn a_creation_derives_what_its_opening_would_derive_again() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut objects = vec![object(5, &[], true), object(40, &["a"], true)];
+        for record in 0..300u64 {
+            objects.push(object(64 + record, &["a", &format!("f{record}")], false));
+        }
+        let tree = ExpectedTree {
+            profile: "test-profile".into(),
+            logical_bytes: 1500,
+            internal_replacement_pending: vec!["root:$TXF_DATA".into()],
+            objects,
+        };
+        let budget = PageBudget {
+            max_page_bytes: 64 * 1024,
+            max_records_per_page: 1024,
+            max_records: 4096,
+            max_pages: 1024,
+            max_file_bytes: 64 * 1024 * 1024,
+        };
+        let path = directory.path().join("expected.pages");
+        let receipt = PagedExpectedTree::create(&tree, &path, budget).unwrap();
+        let created = receipt.created.clone().unwrap();
+        assert_eq!(created.file_sha256, receipt.file_sha256);
+        assert_eq!(created.semantic_sha256, receipt.semantic_sha256);
+        assert_eq!(
+            created.semantic_sha256,
+            hex::encode(Sha256::digest(serde_json::to_vec_pretty(&tree).unwrap()))
+        );
+        assert_eq!(
+            created.counts,
+            ExpectedTreePageCounts {
+                objects: 302,
+                files: 300,
+                directories: 2,
+                data_streams: 300,
+            }
+        );
+
+        let opened = PagedExpectedTree::open(
+            &path,
+            &receipt.file_sha256,
+            &receipt.semantic_sha256,
+            budget,
+        )
+        .unwrap();
+        assert_eq!(opened.counts(), created.counts);
+        assert_eq!(opened.semantic_sha256(), created.semantic_sha256);
+
+        let written = serde_json::to_value(&receipt).unwrap();
+        assert!(!written.as_object().unwrap().contains_key("created"));
+    }
+
+    /// A ledger of 256 MiB in `directory`.
+    fn arena(directory: &Path) -> crate::artifact_arena::ArtifactArena {
+        let ledger = directory.join("ledger");
+        std::fs::create_dir(&ledger).unwrap();
+        crate::artifact_arena::ArtifactArena::new(
+            &ledger,
+            n2r_win32::tree_resources::ResourceBudget {
+                schema_version: 1,
+                ram_bytes: 256 * 1024 * 1024,
+                scratch_bytes: 256 * 1024 * 1024,
+                page_bytes: 65536,
+                max_row_bytes: 65536,
+                retained_index_bytes: 16 * 1024 * 1024,
+                handle_slots: 1024,
+            },
+            &[],
+        )
+        .unwrap()
+    }
+
+    /// `object` as written: its compact JSON as the payloads of chunks of
+    /// at most `chunk` bytes.
+    fn written(ordinal: usize, object: Object, chunk: usize) -> WrittenObject {
+        let compact = serde_json::to_vec(&object).unwrap();
+        WrittenObject {
+            ordinal,
+            payloads: compact
+                .chunks(chunk)
+                .map(|part| crate::ntfs_inspect::paged_storage::encode_raw_chunk(part).unwrap())
+                .collect(),
+            bytes: compact.len() as u64,
+            object: Arc::new(object),
+        }
+    }
+
+    /// Decoding back refuses, naming the object, what an opening's decoding
+    /// would refuse or would not give back as written: chunks that do not
+    /// hold the object's bytes, an object that decodes to another, and a
+    /// row the allocation pre-check refuses although the object written
+    /// was within the row budget.
+    #[test]
+    fn decoding_back_refuses_what_the_opening_would_not_decode_as_written() {
+        let file = object(64, &["a", "f"], false);
+        let good = written(7, file.clone(), 100);
+        assert!(good.payloads.len() > 1);
+        assert_eq!(good.decode(100, Some(65536)).unwrap(), file);
+
+        let mut short = written(7, file.clone(), 100);
+        short.payloads.pop();
+        let refused = format!("{:#}", short.decode(100, Some(65536)).unwrap_err());
+        assert!(
+            refused.contains("object 7 (FILE 64)")
+                && refused.contains("complete object chunk byte count differs"),
+            "{refused}"
+        );
+
+        let mut other = written(7, file.clone(), 100);
+        other.object = Arc::new(object(65, &["a", "g"], false));
+        let refused = format!("{:#}", other.decode(100, Some(65536)).unwrap_err());
+        assert!(
+            refused.contains("differs from the object written"),
+            "{refused}"
+        );
+
+        // 1,025 one-letter components: within the budget as held, past it
+        // as the pre-check charges a row before decoding it.
+        let parts: Vec<String> = (0..1025).map(|_| "a".to_owned()).collect();
+        let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
+        let deep = object(66, &parts, false);
+        let held = serde_json::to_vec(&deep).unwrap().len() as u64;
+        check_object_memory(&deep, held, 40_000).unwrap();
+        let refused = format!(
+            "{:#}",
+            written(9, deep, 768 * 1024)
+                .decode(768 * 1024, Some(40_000))
+                .unwrap_err()
+        );
+        assert!(
+            refused.contains("object 9 (FILE 66)")
+                && refused.contains("exceeds resource row budget"),
+            "{refused}"
+        );
+    }
+
+    /// The objects a creation decodes back and keeps for the tree that
+    /// opens its pages are what decoding those pages gives, ordinal by
+    /// ordinal, on helper threads and by themselves alike, and decoding
+    /// them changes nothing of the legacy JSON or of the pages written.
+    #[test]
+    fn the_objects_a_creation_keeps_are_those_its_pages_decode_to() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut objects = vec![object(5, &[], true), object(40, &["a"], true)];
+        for record in 0..200u64 {
+            objects.push(object(64 + record, &["a", &format!("f{record}")], false));
+        }
+        let tree = ExpectedTree {
+            profile: "test-profile".into(),
+            logical_bytes: 1000,
+            internal_replacement_pending: Vec::new(),
+            objects,
+        };
+        let budget = PageBudget {
+            max_page_bytes: 64 * 1024,
+            max_records_per_page: 1024,
+            max_records: 4096,
+            max_pages: 1024,
+            max_file_bytes: 64 * 1024 * 1024,
+        };
+        let first = directory.path().join("first.pages");
+        let receipt = PagedExpectedTree::create(&tree, &first, budget).unwrap();
+        // A tree that hands out objects of its own, as a projection does.
+        let source = PagedExpectedTree::open(
+            &first,
+            &receipt.file_sha256,
+            &receipt.semantic_sha256,
+            budget,
+        )
+        .unwrap();
+        let arena = arena(directory.path());
+        let wire = wire_budget(budget).unwrap();
+        let header = HeaderRef {
+            schema_version: 2,
+            profile: source.profile(),
+            logical_bytes: source.logical_bytes(),
+            internal_replacement_pending: source.internal_replacement_pending(),
+            total_objects: source.len() as u64,
+            resource_admission: None,
+        };
+        // On helper threads, and on the creation's own thread.
+        for (name, workers) in [("threads.pages", 4), ("serial.pages", 1)] {
+            let cache = DecodedCache::registered();
+            let second = directory.path().join(name);
+            let mut pages = CompactObjects::begin(
+                &second,
+                wire,
+                &header,
+                budget.max_file_bytes,
+                Some(65536),
+                Some(DecodeBackTo {
+                    cache: &cache,
+                    arena: &arena,
+                    len: source.len(),
+                }),
+            )
+            .unwrap();
+            pages.decode_back.as_mut().unwrap().workers = workers;
+            let compact = RefCell::new(Ok(pages));
+            let mut json = Vec::new();
+            serde_json::to_writer_pretty(
+                &mut json,
+                &CreationView {
+                    tree: &source,
+                    compact: &compact,
+                },
+            )
+            .unwrap();
+            assert_eq!(json, serde_json::to_vec_pretty(&tree).unwrap());
+            let mut compact = compact.into_inner().unwrap();
+            compact.finish_decoding_back().unwrap();
+            let CompactObjects { writer, counts, .. } = compact;
+            assert_eq!(counts, receipt.created.as_ref().unwrap().counts);
+            let summary = writer.finish().unwrap();
+            let reopened = PagedExpectedTree::open_with_limits(
+                &second,
+                &summary.sha256,
+                &receipt.semantic_sha256,
+                wire,
+                budget.max_file_bytes,
+            )
+            .unwrap();
+            let kept = cache.0.borrow();
+            assert_eq!(kept.rows.len(), tree.objects.len());
+            for (index, expected) in tree.objects.iter().enumerate() {
+                let held = kept.rows[index].as_deref().expect("every object kept");
+                assert_eq!(held, expected);
+                assert_eq!(*held, reopened.object(index).unwrap());
+            }
+        }
     }
 }
 

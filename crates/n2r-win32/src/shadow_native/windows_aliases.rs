@@ -37,6 +37,10 @@ struct AliasProbe<'a> {
     point: &'a crate::reparse_layout::Point,
     canonical: &'a Input<'a>,
     known_canonical_id: Option<[u8; 24]>,
+    /// The parent's identity as the walk of the converted volume read it,
+    /// in a run that verifies once: the parent is then not opened again
+    /// (see [`probe_alias_walked`]). Set only beside `known_canonical_id`.
+    walked_parent_id: Option<[u8; 24]>,
 }
 impl<'a> AliasProbe<'a> {
     /// The link as an object: the canonical object's times and security,
@@ -97,6 +101,8 @@ struct HeldParent {
 /// links lie in is opened and examined once, on this thread, before the links
 /// are probed. A directory that cannot be opened or examined fails each of
 /// its links with that reason, as it did when every link opened it itself.
+/// A probe whose parent the walk has already examined
+/// (`walked_parent_id`) has none.
 struct HeldParents {
     held: Vec<Result<HeldParent, (io::ErrorKind, String)>>,
     of_probe: Vec<usize>,
@@ -107,6 +113,10 @@ impl HeldParents {
         let mut keys: Vec<&[String]> = Vec::new();
         let mut of_probe = Vec::with_capacity(probes.len());
         for probe in probes {
+            if probe.walked_parent_id.is_some() {
+                of_probe.push(usize::MAX);
+                continue;
+            }
             let key = &probe.components[..probe.components.len() - 1];
             // Links come in the order of the tree: the parent is almost
             // always the one before, and a batch has few of them.
@@ -128,25 +138,101 @@ impl HeldParents {
         Self { held, of_probe }
     }
     fn of(&self, probe: usize) -> io::Result<&HeldParent> {
-        match &self.held[self.of_probe[probe]] {
-            Ok(parent) => Ok(parent),
-            Err((kind, reason)) => Err(io::Error::new(*kind, reason.clone())),
+        match self.held.get(self.of_probe[probe]) {
+            Some(Ok(parent)) => Ok(parent),
+            Some(Err((kind, reason))) => Err(io::Error::new(*kind, reason.clone())),
+            None => Err(invalid("the link's parent directory was not held")),
         }
     }
 }
 /// Opens the link and its target (read-only, never following the link),
 /// checks them and the held parent against one another and the link against
 /// `probe`.
-fn probe_alias(
+fn probe_alias<'p>(
     root: &str,
     probe: &AliasProbe<'_>,
-    parent: io::Result<&HeldParent>,
+    parent: impl FnOnce() -> io::Result<&'p HeldParent>,
     maximum_row_bytes: u64,
     differs: &'static str,
 ) -> io::Result<AliasNative> {
-    parent
-        .and_then(|parent| probe_alias_unnamed(root, probe, parent, maximum_row_bytes, differs))
-        .map_err(|error| alias_error(probe.components, error))
+    match (probe.walked_parent_id, probe.known_canonical_id) {
+        (Some(parent_id), Some(canonical_id)) => probe_alias_walked(
+            root,
+            probe,
+            parent_id,
+            canonical_id,
+            maximum_row_bytes,
+            differs,
+        ),
+        _ => parent().and_then(|parent| {
+            probe_alias_unnamed(root, probe, parent, maximum_row_bytes, differs)
+        }),
+    }
+    .map_err(|error| alias_error(probe.components, error))
+}
+/// [`probe_alias_unnamed`] in the one observation of a converted volume of
+/// a run that verifies once, after the walk of that volume has examined the
+/// link's parent and its target (`walked_parent_id`, `known_canonical_id`)
+/// and before the listing check holds the link's name in its parent's
+/// listing to its identity and attributes
+/// ([`crate::windows_alias_native::verify_walked`]). Every property of the
+/// link that [`probe_alias_unnamed`] checks is checked; what is left out is
+/// the parent's opening and examination, the link's path and the queries
+/// that asked again for what another query of the link answers.
+fn probe_alias_walked(
+    root: &str,
+    probe: &AliasProbe<'_>,
+    parent_id: [u8; 24],
+    canonical_id: [u8; 24],
+    maximum_row_bytes: u64,
+    differs: &'static str,
+) -> io::Result<AliasNative> {
+    let relative: Vec<u16> = probe
+        .canonical_components
+        .last()
+        .ok_or_else(|| invalid("derived alias names no object"))?
+        .encode_utf16()
+        .collect();
+    let component: Vec<u16> = probe
+        .components
+        .last()
+        .ok_or_else(|| invalid("derived alias has no name"))?
+        .encode_utf16()
+        .collect();
+    let alias = open_readonly(root, probe.components)?;
+    let expected = probe.expected();
+    // The link's identity, type and reparse point are checked first, as in
+    // `probe_alias_unnamed`, with its attributes from the basic information
+    // read where the attribute-tag query was; then its times and attributes.
+    let mut basic = None;
+    let observed = crate::windows_alias_native::verify_walked(
+        parent_id,
+        canonical_id,
+        &alias,
+        || {
+            let read = super::info(&alias, 0, 40)?;
+            let attributes = layout::u32_at(&read, 32)?;
+            basic = Some(read);
+            Ok(attributes)
+        },
+        probe.directory,
+        &component,
+        &relative,
+    )?;
+    let basic = basic.ok_or_else(|| invalid("the link's basic information was not read"))?;
+    if !super::basic_matches(&expected, &basic) || observed.point != *probe.point {
+        return Err(invalid(differs));
+    }
+    let mut snapshot = super::security_snapshot_with_limit(&alias, Some(maximum_row_bytes));
+    snapshot.queries.push(crate::attestation::Query {
+        class: 18,
+        bytes: observed.alias_file_id_info.to_vec(),
+        native_error: None,
+    });
+    if !probe.directory {
+        super::streams::exact_list(&stream_info(&alias)?, &expected)?;
+    }
+    Ok(AliasNative { observed, snapshot })
 }
 fn probe_alias_unnamed(
     root: &str,
@@ -261,7 +347,13 @@ fn probe_aliases(
     let parents = HeldParents::open(root, probes);
     let numbered: Vec<(usize, &AliasProbe<'_>)> = probes.iter().enumerate().collect();
     let probe_one = |(index, probe): &(usize, &AliasProbe<'_>)| {
-        probe_alias(root, probe, parents.of(*index), maximum_row_bytes, differs)
+        probe_alias(
+            root,
+            probe,
+            || parents.of(*index),
+            maximum_row_bytes,
+            differs,
+        )
     };
     let (at_once, in_turn) = numbered.split_at(workspaces.len());
     let mut natives = super::observe_read_back(at_once, &probe_one)?;
@@ -418,6 +510,15 @@ impl VerifiedWindowsAliases {
             ));
         }
         const DIFFERS: &str = "recovered alias native metadata or point differs";
+        // In a run that verifies once, the walk of this converted volume
+        // that `known_canonicals` comes from has opened every link's parent
+        // and held it to its row, and lists it for the listing check that
+        // follows, which holds each link's name in it to the link's identity
+        // and attributes. Each link's parent is then taken as the walk found
+        // it and not opened and examined again here, on this thread, one
+        // after another (`probe_alias_walked`). A recovery, which never
+        // verifies once, examines each parent as before.
+        let walked = known_canonicals.filter(|_| crate::verify_policy::verifies_once());
         let mut next = 0;
         while next < count {
             let end = (next + ALIAS_BATCH).min(count);
@@ -472,6 +573,10 @@ impl VerifiedWindowsAliases {
                         Some(lookup) => Some(lookup(row.canonical_object_index)?),
                         None => None,
                     };
+                    let walked_parent_id = match walked {
+                        Some(lookup) => Some(lookup(row.parent_object_index)?),
+                        None => None,
+                    };
                     Ok(AliasProbe {
                         components: &row.components,
                         canonical_components: &row.canonical_components,
@@ -482,6 +587,7 @@ impl VerifiedWindowsAliases {
                         point,
                         canonical,
                         known_canonical_id,
+                        walked_parent_id,
                     })
                 })
                 .collect::<io::Result<Vec<_>>>()?;
@@ -754,6 +860,7 @@ impl VerifiedWindowsAliases {
                         point: &entry.point,
                         canonical,
                         known_canonical_id,
+                        walked_parent_id: None,
                     })
                 })
                 .collect::<io::Result<Vec<_>>>()?;
@@ -1732,7 +1839,13 @@ impl StagedWindowsAliases {
                     Some(maximum_row_bytes),
                 )?;
             }
-            super::backup_security_with_limit(file, expected.security, Some(maximum_row_bytes))?;
+            // The write alone: the digest of the stream written was made and
+            // set aside for each link.
+            super::backup_security_write_with_limit(
+                file,
+                expected.security,
+                Some(maximum_row_bytes),
+            )?;
             if fast_alias_install {
                 super::basic_without_reparse_check(file, &expected)?;
             } else {

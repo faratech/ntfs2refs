@@ -31,6 +31,16 @@ fn held(handles: &BTreeMap<usize, File>, index: usize) -> io::Result<&File> {
         .ok_or_else(|| io::Error::other(format!("no handle is held for object {index}")))
 }
 
+/// Whether owned metadata completion snapshots each file's mapping before it
+/// restores metadata and reads everything back at its end: a recovery, and a
+/// run that does not verify each thing once (`--verify thorough`,
+/// `--diagnose`, `--recheck-everything`). Such a run flushes the shadow
+/// volume before the snapshot, so that it and the read-back both see the
+/// mapping the supplied payloads settle on.
+fn reads_metadata_back(recovering: bool, verifies_once: bool) -> bool {
+    recovering || !verifies_once
+}
+
 /// The file identity recorded for an object when its handle was first read.
 fn identity_of(identities: &BTreeMap<usize, Vec<u8>>, index: usize) -> io::Result<&Vec<u8>> {
     identities.get(&index).ok_or_else(|| {
@@ -72,7 +82,7 @@ pub(super) fn restore_acl_protection_with_limit(
     restore_acl_protection_observed(file, item, maximum, &actual)
 }
 /// [`restore_acl_protection_with_limit`] where the object's security views
-/// Restore DACL/SACL protection flags on an object whose current security
+/// are already at hand: restore DACL/SACL protection flags on an object whose current security
 /// views were just read through `file`, and nothing has changed the object
 /// since: the protection is set from the kernel descriptor of that observation
 /// instead of one read again.
@@ -92,19 +102,65 @@ pub(super) fn restore_acl_protection_observed(
     apply_acl_protection(file, item, maximum, Some(&kernel.bytes))
 }
 
-/// Restore DACL/SACL protection flags on a freshly created shadow object
-/// without an extra `GetKernelObjectSecurity` pre-read.
+/// Restore DACL/SACL protection flags on a shadow object the private tree
+/// created itself (see [`made_private`]) and whose security nothing has
+/// changed since, without reading its kernel descriptor first.
 ///
-/// Objects created inside our private shadow tree inherit the constructor's
-/// unprotected SYSTEM-only DACL and no SACL, so neither `SE_DACL_PROTECTED`
-/// nor `SE_SACL_PROTECTED` is set on creation. Only objects whose source
-/// descriptor carries a protection flag need an update.
+/// Such an object was created with an explicit descriptor, the private one
+/// (`private_tree::private_descriptor`, `O:SYG:SYD:P(A;;FA;;;SY)`; the
+/// placeholders of `unwritten` are made with the same text, and short-name
+/// links with the same descriptor). A creator descriptor whose DACL is
+/// present and protected gives the new object exactly that DACL with
+/// `SE_DACL_PROTECTED` set, and inherits nothing into it; with no SACL in it,
+/// `SE_SACL_PROTECTED` is never set. A recovery holds every such object to
+/// that exact descriptor, control word included
+/// (`private_tree::recovery::require_private_security`). So the protection
+/// is changed exactly where the observed path
+/// ([`restore_acl_protection_observed`]) changes it: where the source's DACL
+/// is unprotected or its SACL protected.
 pub(super) fn restore_acl_protection_fresh(
     file: &File,
     item: &Input<'_>,
     maximum: Option<u64>,
 ) -> io::Result<ProtectionRestore> {
     apply_acl_protection(file, item, maximum, None)
+}
+
+/// Whether the private tree made this object itself, with its private
+/// descriptor: every object below the root's own children except those in
+/// System Volume Information, where files the formatter made are kept.
+pub(super) fn made_private(item: &Input<'_>) -> bool {
+    item.components.len() >= 2 && item.components[0] != "System Volume Information"
+}
+
+/// The DACL and SACL protection an object created with the private
+/// descriptor has: an ACL's protection is kept from a creator descriptor
+/// only where that descriptor holds the ACL.
+fn created_protection() -> io::Result<(bool, bool)> {
+    use crate::security_descriptor::Presence;
+    static CREATED: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+    if let Some(&created) = CREATED.get() {
+        return Ok(created);
+    }
+    let private = super::private_tree::private_descriptor()?;
+    let layout = crate::security_descriptor::validate(&private)?;
+    let created = (
+        layout.dacl_protected() && layout.dacl.presence == Presence::Present,
+        layout.sacl_protected() && layout.sacl.presence == Presence::Present,
+    );
+    Ok(*CREATED.get_or_init(|| created))
+}
+
+/// Which protections differ between the source's descriptor and an object
+/// whose DACL and SACL protection are `current`.
+fn protection_changes(
+    source: &crate::security_descriptor::Layout,
+    (dacl, sacl): (bool, bool),
+) -> ProtectionRestore {
+    ProtectionRestore {
+        dacl: source.dacl_protected() != dacl,
+        sacl: source.sacl_protected() != sacl,
+    }
 }
 
 fn apply_acl_protection(
@@ -131,15 +187,12 @@ fn apply_acl_protection(
         } else {
             security_descriptor::validate(kernel_bytes)?
         };
-        ProtectionRestore {
-            dacl: source.dacl_protected() != observed.dacl_protected(),
-            sacl: source.sacl_protected() != observed.sacl_protected(),
-        }
+        protection_changes(
+            &source,
+            (observed.dacl_protected(), observed.sacl_protected()),
+        )
     } else {
-        ProtectionRestore {
-            dacl: source.dacl_protected(),
-            sacl: source.sacl_protected(),
-        }
+        protection_changes(&source, created_protection()?)
     };
     if !changed.dacl && !changed.sacl {
         return Ok(changed);
@@ -637,6 +690,28 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             .with_pass(pass),
         )
     };
+    // Under "verify once" the final read-back pass is skipped on a non-recovering
+    // run, so Pass 0 does not need to query FSCTL_GET_RETRIEVAL_POINTERS or hash
+    // retrieval maps solely for `mappings`.
+    let read_back = reads_metadata_back(recovering, crate::verify_policy::verifies_once());
+    if read_back {
+        // The mapping of every file is taken below and held, at the final
+        // read-back, to the mapping it has then: after the volume flush that
+        // ends metadata restoration. The payload supply writes the shadow's
+        // files through the cache (`verify_policy::shadow_file_flags`, no
+        // write-through under `check_once`), and ReFS gives a written range
+        // that has no cluster yet (a file shorter than a cluster and too long
+        // to be kept resident, about 2 KiB on 4 KiB clusters) its cluster only
+        // when the range is written out. Without this flush the snapshot saw
+        // such a file before its cluster was allocated and the read-back
+        // after: every one of them failed with "payload mapping changed"
+        // (lab, --verify thorough and --diagnose). The volume is flushed
+        // first, as a run with `--recheck-everything` (write-through, every
+        // file flushed) has it, so both sides see the settled mapping.
+        crate::perf::step("metadata: flush supplied payloads");
+        input.before_mutation(0)?;
+        crate::perf::flush(crate::perf::Point::VolumeFlush, volume)?;
+    }
     crate::perf::step("metadata: check objects and names");
     // What is asked of an object's handle: queries only, which one thread
     // made for one object after another. The objects of a batch are asked on
@@ -651,10 +726,6 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     // changed, on a shadow that is discarded. A recovery takes over what an
     // interrupted run left and changes one object at a time, as before.
     let change_payer = if recovering { None } else { enumeration_payer };
-    // Under "verify once" the final read-back pass is skipped on a non-recovering
-    // run, so Pass 0 does not need to query FSCTL_GET_RETRIEVAL_POINTERS or hash
-    // retrieval maps solely for `mappings`.
-    let read_back = recovering || !crate::verify_policy::verifies_once();
     let handle_shape = |(index, item): &(usize, Input<'_>)| {
         let handle = handles
             .get(index)
@@ -1140,17 +1211,20 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             })
             .collect();
         // On a freshly created private shadow tree under `verifies_once()`,
-        // every object created beneath the root/top-level formatter directories
-        // still holds the constructor's unprotected SYSTEM-only DACL, so skip
-        // both the redundant `BackupRead` + `security_matches` pre-check and
-        // the `GetKernelObjectSecurity` pre-read on depth >= 2 objects.
-        // Depth 0/1 (root and `System Volume Information`) were created by the
-        // ReFS formatter and still use the observed kernel descriptor check.
+        // every object the private tree made itself (`made_private`) still
+        // holds the private descriptor it was created with: a protected
+        // SYSTEM-only DACL and no SACL. Both the redundant `BackupRead` +
+        // `security_matches` pre-check and the `GetKernelObjectSecurity`
+        // pre-read are left out for them, and their protection is restored
+        // against that known state (`restore_acl_protection_fresh`). The root,
+        // its own children and System Volume Information's contents (some
+        // made by the ReFS formatter) still use the observed kernel
+        // descriptor.
         let fresh_fast_security =
             !recovering && crate::verify_policy::verifies_once() && row_limit.is_some();
         let all_fresh_children = fresh_fast_security
             && crate::verify_policy::checks_once()
-            && items.iter().all(|(_, _, item)| item.components.len() >= 2);
+            && items.iter().all(|(_, _, item)| made_private(item));
         let found: Vec<io::Result<Option<Snapshot>>> = if all_fresh_children {
             (0..items.len()).map(|_| Ok(None)).collect()
         } else {
@@ -1168,7 +1242,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                         ));
                     }
                     if fresh_fast_security {
-                        if item.components.len() >= 2 {
+                        if made_private(item) {
                             Ok(None)
                         } else {
                             let max_bytes =
@@ -2105,4 +2179,118 @@ pub fn run(
         "source_payload_writes":0,"source_before":source_before,"events":events,
         "privileges":privileges.audit(),"requires_fresh_conversion_admission":true,"conversion_qualified":false}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A self-relative descriptor from its SDDL text.
+    fn sddl(text: &str) -> Vec<u8> {
+        use windows_sys::Win32::{
+            Foundation::LocalFree,
+            Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        };
+        let text: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut sd = ptr::null_mut();
+        let mut length = 0;
+        // SAFETY: NUL-terminated SDDL; the allocated descriptor is copied and freed.
+        assert_ne!(
+            unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    text.as_ptr(),
+                    1,
+                    &mut sd,
+                    &mut length,
+                )
+            },
+            0
+        );
+        // SAFETY: the call above returned `length` initialized bytes at `sd`.
+        let bytes =
+            unsafe { std::slice::from_raw_parts(sd.cast::<u8>(), length as usize) }.to_vec();
+        // SAFETY: `sd` was allocated by the conversion and is not used again.
+        unsafe { LocalFree(sd) };
+        bytes
+    }
+
+    /// A thorough run, a diagnosis and a recovery snapshot the mappings and
+    /// so flush the supplied payloads first; a run that verifies once takes
+    /// no snapshot and is left as it was.
+    #[test]
+    fn the_mapping_snapshot_is_taken_where_the_metadata_is_read_back() {
+        assert!(reads_metadata_back(false, false));
+        assert!(reads_metadata_back(true, false));
+        assert!(reads_metadata_back(true, true));
+        assert!(!reads_metadata_back(false, true));
+    }
+
+    #[test]
+    fn a_private_object_is_created_with_a_protected_dacl_and_no_sacl() {
+        assert_eq!(created_protection().unwrap(), (true, false));
+    }
+
+    #[test]
+    fn the_fresh_protection_restore_changes_what_the_observed_one_changes() {
+        // What the kernel reports of an object created with the private
+        // descriptor, as the observed path reads it.
+        let private = super::private_tree::private_descriptor().unwrap();
+        let observed = crate::security_descriptor::validate(&private).unwrap();
+        let observed = (observed.dacl_protected(), observed.sacl_protected());
+        for (source, dacl, sacl) in [
+            ("O:SYG:SYD:P(A;;FA;;;SY)", false, false),
+            (
+                "O:BAG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)",
+                false,
+                false,
+            ),
+            (
+                "O:BAG:SYD:AI(A;OICIID;FA;;;SY)(A;OICIID;0x1200a9;;;BU)",
+                true,
+                false,
+            ),
+            ("O:BAG:SYD:(A;;FA;;;SY)", true, false),
+            ("O:BAG:SYD:P(A;;FA;;;SY)S:P(AU;SA;FA;;;WD)", false, true),
+            ("O:BAG:SYD:(A;;FA;;;SY)S:P(AU;SA;FA;;;WD)", true, true),
+            ("O:BAG:SYD:(A;;FA;;;SY)S:(AU;SA;FA;;;WD)", true, false),
+        ] {
+            let bytes = sddl(source);
+            let layout = crate::security_descriptor::validate(&bytes).unwrap();
+            let fresh = protection_changes(&layout, created_protection().unwrap());
+            let seen = protection_changes(&layout, observed);
+            assert_eq!((fresh.dacl, fresh.sacl), (dacl, sacl), "{source}");
+            assert_eq!((fresh.dacl, fresh.sacl), (seen.dacl, seen.sacl), "{source}");
+        }
+    }
+
+    #[test]
+    fn only_objects_below_the_roots_children_outside_the_system_directory_are_private() {
+        let made = |components: &[&str]| {
+            let components: Vec<String> = components.iter().map(|c| c.to_string()).collect();
+            made_private(&Input {
+                components: &components,
+                additional_names: &[],
+                directory: false,
+                times: [0; 4],
+                attributes: 0,
+                security: &[],
+                expected_api_security: None,
+                extended_attributes: None,
+                reparse: None,
+                case_sensitive: None,
+                payload: &[],
+                expected_length: None,
+                expected_sha256: None,
+                source_offset: None,
+                source_runs: Vec::new(),
+                named_streams: Vec::new(),
+                sparse: None,
+            })
+        };
+        assert!(!made(&[]));
+        assert!(!made(&["Windows"]));
+        assert!(made(&["Windows", "System32"]));
+        assert!(!made(&["System Volume Information"]));
+        assert!(!made(&["System Volume Information", "WPSettings.dat"]));
+    }
 }

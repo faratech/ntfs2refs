@@ -332,8 +332,23 @@ public static class ManyFiles {
             # and says why: the new root is never empty when its mark could
             # be set. If Windows does not mark this root (it may refuse a
             # directory that holds something), the feature is not made.
-            $said = "$(& fsutil.exe file setCaseSensitiveInfo "$drive\" enable 2>&1)".Trim()
-            if ("$(& fsutil.exe file queryCaseSensitiveInfo "$drive\" 2>&1)" -notmatch 'is enabled') { throw "the root directory is not marked case-sensitive after fsutil file setCaseSensitiveInfo: $said" }
+            # Windows marks only an empty directory (0x91 otherwise), and the
+            # content is written before the features: the root's own entries
+            # are moved off the volume while it is marked, then put back. What
+            # Windows keeps there itself (System Volume Information, the
+            # recycle bin) stays, and if it is there the mark is still refused.
+            $aside = Join-Path $env:TEMP "casemark-root-$([guid]::NewGuid().ToString('N'))"
+            $null = New-Item -ItemType Directory -Path $aside -Force
+            $moved = @(Get-ChildItem -LiteralPath "$drive\" -Force | Where-Object { $_.Name -notin 'System Volume Information', '$RECYCLE.BIN' })
+            foreach ($entry in $moved) { Move-Item -LiteralPath $entry.FullName -Destination $aside -Force }
+            try {
+                $left = @(Get-ChildItem -LiteralPath "$drive\" -Force | ForEach-Object Name) -join ', '
+                $said = "$(& fsutil.exe file setCaseSensitiveInfo "$drive\" enable 2>&1)".Trim()
+            } finally {
+                foreach ($entry in @(Get-ChildItem -LiteralPath $aside -Force)) { Move-Item -LiteralPath $entry.FullName -Destination "$drive\" -Force }
+                Remove-Item -LiteralPath $aside -Force -Recurse -ErrorAction SilentlyContinue
+            }
+            if ("$(& fsutil.exe file queryCaseSensitiveInfo "$drive\" 2>&1)" -notmatch 'is enabled') { throw "the root directory is not marked case-sensitive after fsutil file setCaseSensitiveInfo (its own entries moved aside; the root then held: $left): $said" }
             $null = New-Item -ItemType Directory -Path $dir -Force
             [IO.File]::WriteAllBytes("$dir\Readme.txt", (Bytes 100))
             $inner = "$(& fsutil.exe file queryCaseSensitiveInfo $dir 2>&1)" -match 'is enabled'

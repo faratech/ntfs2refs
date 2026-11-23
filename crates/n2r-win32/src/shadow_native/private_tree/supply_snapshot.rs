@@ -201,13 +201,15 @@ impl NativeReadOnlySupplyStreamSnapshot<'_> {
     }
 }
 /// The handles this tree holds, with the eight its fences count for the
-/// volume, the privilege leases and temporary control opens.
+/// volume, the privilege leases and temporary control opens, and the
+/// shadow's root where the tree holds it open (`PrivateTree::shadow_root`).
 fn owned_handles(tree: &PrivateTree) -> Option<u64> {
     (tree.files.len() as u64)
         .checked_add(tree.sparse_targets.len() as u64)
         .and_then(|n| n.checked_add(tree.metadata_targets.len() as u64))
         .and_then(|n| n.checked_add(u64::from(tree.carrier_directory.is_some())))
         .and_then(|n| n.checked_add(u64::from(tree.dedicated_source.is_some())))
+        .and_then(|n| n.checked_add(u64::from(tree.shadow_root.get().is_some())))
         .and_then(|n| n.checked_add(8))
 }
 /// Whether the tree's handle slots have room for a batch's helper threads:

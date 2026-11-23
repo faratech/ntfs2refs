@@ -393,6 +393,21 @@ function Remove-Scratch {
         Say ("scratch disk removed; host has {0:N0} GB free" -f ((Get-HostFreeBytes) / 1GB))
     } catch { Say "scratch disk not removed: $($_.Exception.Message)" }
 }
+# Hyper-V's view of a VM's drives lags behind a checkpoint restore, a
+# turn-off and a change of its drives for a few seconds (#228): the add of
+# the scratch disk one second after a restore was refused ("the specified
+# location is in use"), and a minute later the same add took a free place.
+# An add refused for its location is tried again, for up to half a minute;
+# any other error is not.
+function Invoke-DriveChange([scriptblock]$Change) {
+    for ($try = 1; ; $try++) {
+        try { return (& $Change) }
+        catch {
+            if ($try -ge 30 -or "$($_.Exception.Message)" -notmatch 'location') { throw }
+            Start-Sleep -Seconds 1
+        }
+    }
+}
 # The boot step detaches every disk but disk0. Those are the VM's active
 # differencing disks for the attempt. Restoring a checkpoint discards the
 # active disks that are attached, so the detached ones used to stay behind
@@ -419,8 +434,15 @@ function Restore-DetachedDisks {
         $vm = Get-LabVm
         $taken = Get-VMHardDiskDrive -VM $vm | Where-Object { $_.ControllerNumber -eq $disk.controller_number -and $_.ControllerLocation -eq $disk.controller_location }
         if ($taken -or (Get-VMHardDiskDrive -VM $vm | Where-Object Path -EQ $disk.path)) { continue }
+        # A DVD drive takes a place as well: the use test gives the media back
+        # at the first free place, which is that of a detached disk (#228).
+        # The checkpoint about to be restored has its own DVD drive.
+        foreach ($media in @(Get-VMDvdDrive -VM $vm | Where-Object { $_.ControllerNumber -eq $disk.controller_number -and $_.ControllerLocation -eq $disk.controller_location })) {
+            Say "a DVD drive is at the place of $(Split-Path -Leaf $disk.path), $($disk.controller_number)/$($disk.controller_location): taken out first"
+            try { $media | Remove-VMDvdDrive -ErrorAction Stop } catch { Say "the DVD drive could not be taken out: $($_.Exception.Message)" }
+        }
         try {
-            Add-VMHardDiskDrive -VM $vm -ControllerType SCSI -ControllerNumber $disk.controller_number -ControllerLocation $disk.controller_location -Path $disk.path -ErrorAction Stop
+            Invoke-DriveChange { Add-VMHardDiskDrive -VM (Get-LabVm) -ControllerType SCSI -ControllerNumber $disk.controller_number -ControllerLocation $disk.controller_location -Path $disk.path -ErrorAction Stop }
             $returned++
         } catch { Say "could not return $(Split-Path -Leaf $disk.path) to the VM: $($_.Exception.Message)" }
     }
@@ -709,7 +731,8 @@ try {
     if (-not $Recover) {
         $scratchPath = Join-Path $case 'scratch.vhdx'
         $null = New-VHD -Path $scratchPath -SizeBytes ([long]$ScratchGB * 1GB) -Dynamic
-        Add-VMHardDiskDrive -VM $vm -ControllerType SCSI -ControllerNumber 0 -Path $scratchPath
+        Invoke-DriveChange { Add-VMHardDiskDrive -VM (Get-LabVm) -ControllerType SCSI -ControllerNumber 0 -Path $scratchPath -ErrorAction Stop }
+        $vm = Get-LabVm
     }
     $verdict.vm = @{ memory_bytes = $memory; processors = (Get-VMProcessor -VM $vm).Count; checkpoint = $snapshots[0].Name
         host_free_disk_bytes = (Get-Volume -FilePath $case).SizeRemaining }

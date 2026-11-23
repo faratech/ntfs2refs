@@ -190,6 +190,121 @@ pub(crate) fn extent_identity_stream_request_windows_domain(
     })
 }
 
+thread_local! {
+    /// The inspections this process made, while their callers hold them
+    /// ([`inspected_here`]): an identifier, the domain's address and type.
+    static INSPECTED_HERE: std::cell::RefCell<Vec<(u64, usize, &'static str)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static NEXT_INSPECTED: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+}
+
+/// While it lives, `files` is known on this thread as an inspection that
+/// this process made itself (not one reopened from the source cache of an
+/// earlier process): its stream evidence was decided here, by this build's
+/// selector function ([`extent_identity_stream_request_observed`]). The
+/// domain is borrowed while it lives, so that its address stands for it.
+pub(crate) struct InspectedHere<'a> {
+    id: u64,
+    _files: std::marker::PhantomData<&'a ()>,
+}
+pub(crate) fn inspected_here<D>(files: &D) -> InspectedHere<'_> {
+    let id = NEXT_INSPECTED.with(|next| {
+        let id = next.get();
+        next.set(id + 1);
+        id
+    });
+    INSPECTED_HERE.with(|held| {
+        held.borrow_mut().push((
+            id,
+            std::ptr::from_ref(files) as usize,
+            std::any::type_name::<D>(),
+        ))
+    });
+    InspectedHere {
+        id,
+        _files: std::marker::PhantomData,
+    }
+}
+impl Drop for InspectedHere<'_> {
+    fn drop(&mut self) {
+        INSPECTED_HERE.with(|held| held.borrow_mut().retain(|(id, _, _)| *id != self.id));
+    }
+}
+fn was_inspected_here<D>(files: &D) -> bool {
+    let address = std::ptr::from_ref(files) as usize;
+    let kind = std::any::type_name::<D>();
+    INSPECTED_HERE.with(|held| {
+        held.try_borrow()
+            .is_ok_and(|held| held.iter().any(|(_, at, of)| *at == address && *of == kind))
+    })
+}
+
+/// The extent-identity selector of `stream` for the observation of the frozen
+/// source through Windows and its comparison with the raw reading:
+/// [`extent_identity_stream_request_windows_domain`] where `windows_paths`,
+/// otherwise [`extent_identity_stream_request_domain`] with both closures.
+///
+/// A stream the inspection marked `NotReadExtentIdentityV1` was found
+/// eligible by that same function, its paths included, on the same held
+/// source, when its stream evidence was decided (the inspection's step
+/// "decide stream evidence"): the paths are derived from names and parents
+/// that the step left as they were. In a run that verifies once they are
+/// not derived again for it here, once for the observation's selector, once
+/// for the comparison's and once more for each of the comparison's checks
+/// of it; every other condition of the selector is checked again, and every
+/// object's own paths are still derived by the admission of the comparison.
+/// That holds only of an inspection this process made ([`inspected_here`]);
+/// one reopened from the source cache had its statuses decided by an earlier
+/// process, perhaps of another build, and derives them as before. So does
+/// every other run, and every other stream.
+#[cfg(windows)]
+pub(crate) fn extent_identity_stream_request_observed<D: crate::ntfs_inspect::RootFileDomain>(
+    files: &D,
+    file: &FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+    windows_paths: bool,
+) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
+    let decided = n2r_win32::verify_policy::verifies_once()
+        && stream.logical_hash_status
+            == crate::ntfs_inspect::LogicalHashStatus::NotReadExtentIdentityV1
+        && was_inspected_here(files);
+    if !decided {
+        return if windows_paths {
+            extent_identity_stream_request_windows_domain(files, file, stream)
+        } else {
+            extent_identity_stream_request_domain(files, file, stream, true, true)
+        };
+    }
+    extent_identity_stream_request_checked(&files.header().geometry, file, stream, || Ok(true))
+}
+
+/// The extent-identity selector of `stream` for a caller that has just
+/// derived the paths of `file` itself, from the same held source, with the
+/// derivation the selector would make (the canonical paths of a Windows
+/// volume, the user paths otherwise): `paths_eligible` is
+/// [`extent_identity_paths_eligible`] of them. The paths are not derived
+/// again; every other condition of the selector is checked as before.
+pub(crate) fn extent_identity_stream_request_known_paths(
+    geometry: &crate::ntfs_inspect::NtfsGeometry,
+    file: &FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+    paths_eligible: bool,
+) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
+    extent_identity_stream_request_checked(geometry, file, stream, || Ok(paths_eligible))
+}
+
+/// Whether an object at `paths` keeps extent evidence: it has a path and
+/// none of them is under System Volume Information.
+pub(crate) fn extent_identity_paths_eligible(paths: &[Vec<String>]) -> bool {
+    // These streams use the bounded system-payload copier, whose complete
+    // content baseline is still required. Ordinary data keeps extent evidence.
+    !(paths.is_empty()
+        || paths.iter().any(|path| {
+            path.first()
+                .is_some_and(|part| part.eq_ignore_ascii_case("System Volume Information"))
+        }))
+}
+
 /// The ReFS allocation unit data must be aligned to in order to stay in place.
 fn target_cluster() -> u64 {
     n2r_win32::target_cluster::bytes()
@@ -200,6 +315,22 @@ fn extent_identity_stream_request_with_paths(
     file: &FileInventory,
     stream: &crate::ntfs_inspect::StreamInventory,
     source_paths: impl FnOnce() -> Result<Option<Vec<Vec<String>>>>,
+) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
+    extent_identity_stream_request_checked(geometry, file, stream, || {
+        let Some(paths) = source_paths()? else {
+            return Ok(false);
+        };
+        Ok(extent_identity_paths_eligible(&paths))
+    })
+}
+
+/// The selector of a stream whose paths `paths_eligible` says are those of
+/// a stream that keeps extent evidence.
+fn extent_identity_stream_request_checked(
+    geometry: &crate::ntfs_inspect::NtfsGeometry,
+    file: &FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+    paths_eligible: impl FnOnce() -> Result<bool>,
 ) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
     use crate::ntfs_inspect::MetadataRole;
     let target = target_cluster();
@@ -238,17 +369,7 @@ fn extent_identity_stream_request_with_paths(
     {
         return Ok(None);
     }
-    let Some(paths) = source_paths()? else {
-        return Ok(None);
-    };
-    // These streams use the bounded system-payload copier, whose complete
-    // content baseline is still required. Ordinary data keeps extent evidence.
-    if paths.is_empty()
-        || paths.iter().any(|path| {
-            path.first()
-                .is_some_and(|part| part.eq_ignore_ascii_case("System Volume Information"))
-        })
-    {
+    if !paths_eligible()? {
         return Ok(None);
     }
     ensure!(
@@ -812,6 +933,40 @@ pub fn check_descriptor_with_limit(bytes: &[u8], maximum: u64) -> Result<()> {
         ntfs_security::parse_descriptor_with_limit(bytes, maximum).map(|_| true)
     })
     .map(|_| ())
+}
+
+#[cfg(test)]
+mod inspected_here_tests {
+    use super::{inspected_here, was_inspected_here};
+
+    #[test]
+    fn only_an_inspection_held_as_made_here_is_known_as_one() {
+        struct Store(#[allow(dead_code)] u64);
+        // A domain whose first field is another domain at its address.
+        struct Domain {
+            store: Store,
+        }
+        let (made_here, reopened) = (Domain { store: Store(1) }, Domain { store: Store(2) });
+        assert!(!was_inspected_here(&made_here));
+        {
+            let _held = inspected_here(&made_here);
+            assert!(was_inspected_here(&made_here));
+            assert!(!was_inspected_here(&reopened), "another domain");
+            // The same address taken as another type is not it.
+            assert_eq!(
+                std::ptr::from_ref(&made_here.store) as usize,
+                std::ptr::from_ref(&made_here) as usize
+            );
+            assert!(!was_inspected_here(&made_here.store));
+            {
+                let _also = inspected_here(&reopened);
+                assert!(was_inspected_here(&reopened));
+            }
+            assert!(!was_inspected_here(&reopened), "no longer held");
+            assert!(was_inspected_here(&made_here));
+        }
+        assert!(!was_inspected_here(&made_here), "no longer held");
+    }
 }
 
 #[cfg(test)]

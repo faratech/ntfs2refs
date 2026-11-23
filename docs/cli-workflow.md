@@ -193,7 +193,10 @@ NTFS driver to shrink the partition to one, by less than 64 MiB. It says so,
 with the sizes, before the confirmation prompt, and does it only after the
 check has found nothing that refuses the volume and Windows has formatted the
 working volume (between steps 1 and 2). The shrink is not undone if the run
-stops later.
+stops later. Where Windows' storage service answers the shrink with a bare
+"Failed" and leaves the partition exactly as it was, the converter checks the
+source again and asks once more after a few seconds; any other failure, or a
+second one, stops the run.
 
 - **Source geometry.** Any that Windows formats NTFS with: clusters from 512
   bytes to 2 MiB, 512-byte or 4096-byte (4Kn) sectors, 1 KiB or 4 KiB file

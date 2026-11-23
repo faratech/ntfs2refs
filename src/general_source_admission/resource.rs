@@ -1243,6 +1243,18 @@ impl ResourceSourceContext {
                 refuse_short_names(&raw)?;
             }
             let inspection_sha = raw.canonical_sha256()?;
+            // Every object's paths are derived several times below (the
+            // short-name plan, the selector's count, the comparison and the
+            // admission policy), each through every directory above it. A
+            // run that verifies once remembers each directory's step of
+            // those walks, in a cache, until the comparison's gates are made.
+            let directory_paths = n2r_win32::verify_policy::verifies_once()
+                .then(|| ntfs_admission::paged::hold_directory_paths(&raw));
+            // An inspection made by this process, not reopened from the
+            // source cache: its stream evidence was decided here.
+            let inspected_here = reopened_cache
+                .is_none()
+                .then(|| crate::ntfs_attestation::inspected_here(&raw));
             let storage_hint_ram = if binding.layout_profile
                 == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
             {
@@ -1259,6 +1271,49 @@ impl ResourceSourceContext {
             } else {
                 None
             };
+            // A run that verifies once reads the source fingerprint the first
+            // time on read lanes of the frozen source, on a thread of its own,
+            // beside the work below that neither reads the source through
+            // them nor needs the digest (the short-name plan, the backup boot
+            // sector, log and label, the selection of objects and the target
+            // security preflight). The read is joined before the volume is
+            // mounted for its observation through Windows and before anything
+            // takes the digest; it is the digest `hash` makes of the same
+            // chunks. Without the memory for the lanes and the copy of the
+            // ranges, a lane, or a thread, it is read in place below, as
+            // every other run reads it.
+            //
+            // The read and its memory are held as a cache of this thread
+            // (paid as one, and an `Evictable`): a reservation the work
+            // beside it cannot do without that finds no room gives it up
+            // (the read stops after the chunks it is reading and is waited
+            // for, and its memory is returned) before it is refused, and the
+            // fingerprint is then read in place where the read would have
+            // been joined.
+            let early_fingerprint =
+                if n2r_win32::verify_policy::verifies_once() && reopened_cache.is_none() {
+                    n2r_win32::perf::step("build source fingerprint and start its read");
+                    let fingerprint = PagedSourceFingerprint::for_inspection(
+                        &raw,
+                        length,
+                        policy,
+                        &output.join("fingerprint"),
+                    )?;
+                    fingerprint.validate_inspection_reads(&read_coverage)?;
+                    // The read's own refusals (a lane whose route differs
+                    // from the frozen state) are the fingerprint's, as where
+                    // it was read in place; the planning goes on under the
+                    // phase it had.
+                    *phase = "source-fingerprint";
+                    let reading = fingerprint
+                        .lane_reread_as_cache(source)?
+                        .and_then(|(lanes, ram)| lanes.start().ok().map(|read| (read, ram)))
+                        .map(|started| n2r_win32::evict::Evictable::new(Some(started)));
+                    *phase = "source-inspection";
+                    Some((fingerprint, reading))
+                } else {
+                    None
+                };
             n2r_win32::perf::step("plan short-name links");
             let mut windows_aliases = if binding.layout_profile
                 == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
@@ -1310,33 +1365,46 @@ impl ResourceSourceContext {
                 &mut metadata,
                 &mut reservations,
             )?;
-            n2r_win32::perf::step("build and read source fingerprint");
-            let fingerprint = if let Some(cache) = reopened_cache.as_mut() {
-                cache
-                    .fingerprint
-                    .take()
-                    .context("cached fingerprint owner already consumed")?
+            let (fingerprint, fingerprint_reading) = if let Some(early) = early_fingerprint {
+                early
             } else {
-                PagedSourceFingerprint::for_inspection(
-                    &raw,
-                    length,
-                    policy,
-                    &output.join("fingerprint"),
-                )?
+                n2r_win32::perf::step("build and read source fingerprint");
+                let fingerprint = if let Some(cache) = reopened_cache.as_mut() {
+                    cache
+                        .fingerprint
+                        .take()
+                        .context("cached fingerprint owner already consumed")?
+                } else {
+                    PagedSourceFingerprint::for_inspection(
+                        &raw,
+                        length,
+                        policy,
+                        &output.join("fingerprint"),
+                    )?
+                };
+                fingerprint.validate_inspection_reads(&read_coverage)?;
+                (fingerprint, None)
             };
-            fingerprint.validate_inspection_reads(&read_coverage)?;
             *phase = "source-fingerprint";
-            let source_sha = fingerprint.hash(&mut source)?;
-            save(
-                output,
-                "source-frozen.json",
-                &serde_json::json!({"binding":binding,"source_sha256":source_sha,
-            "inspection_sha256":inspection_sha,"fingerprint":fingerprint.pins(),"scope":fingerprint.report(),
-            "state":before,"freeze_observation":source.freeze_observation(),"source_payload_writes":0}),
-                &scratch,
-                &mut metadata,
-                &mut reservations,
-            )?;
+            // Read here unless it is being read on lanes (joined below).
+            let mut source_sha = None;
+            if fingerprint_reading.is_none() {
+                if reopened_cache.is_none() && n2r_win32::verify_policy::verifies_once() {
+                    n2r_win32::perf::step("read source fingerprint");
+                }
+                let hash = fingerprint.hash(&mut source)?;
+                save(
+                    output,
+                    "source-frozen.json",
+                    &serde_json::json!({"binding":binding,"source_sha256":hash,
+                "inspection_sha256":inspection_sha,"fingerprint":fingerprint.pins(),"scope":fingerprint.report(),
+                "state":before,"freeze_observation":source.freeze_observation(),"source_payload_writes":0}),
+                    &scratch,
+                    &mut metadata,
+                    &mut reservations,
+                )?;
+                source_sha = Some(hash);
+            }
             n2r_win32::perf::step("verify backup boot sector, log and label");
             let backups = ntfs_backup::verify_domain(&mut source, length, &raw)?;
             let log = ntfs_log::verify_domain(&mut source, &raw)?;
@@ -1373,6 +1441,35 @@ impl ResourceSourceContext {
                     "raw Windows source security exceeds the pure target-construction profile; see source-raw-target-security-preflight.json; native source diagnostics were not started"
                 );
             }
+            // The fingerprint read on lanes ends before the volume is mounted.
+            if let Some(reading) = fingerprint_reading {
+                n2r_win32::perf::step("join source fingerprint read");
+                *phase = "source-fingerprint";
+                let taken = reading.get_mut().and_then(|mut held| held.take());
+                drop(reading);
+                let hash = match taken {
+                    Some((read, _ram)) => {
+                        let hash = read.finish()?;
+                        // As `hash` ends: its range stores are still as written.
+                        fingerprint.revalidate()?;
+                        hash
+                    }
+                    // Given up for a reservation the run needed: read here.
+                    None => fingerprint.hash(&mut source)?,
+                };
+                save(
+                    output,
+                    "source-frozen.json",
+                    &serde_json::json!({"binding":binding,"source_sha256":hash,
+                "inspection_sha256":inspection_sha,"fingerprint":fingerprint.pins(),"scope":fingerprint.report(),
+                "state":before,"freeze_observation":source.freeze_observation(),"source_payload_writes":0}),
+                    &scratch,
+                    &mut metadata,
+                    &mut reservations,
+                )?;
+                source_sha = Some(hash);
+            }
+            let source_sha = source_sha.context("the source fingerprint was not read")?;
             *phase = "source-observation";
             if let Some((arena, _, _)) = &groups {
                 arena.require_native_allocation(admission)?;
@@ -1692,6 +1789,12 @@ impl ResourceSourceContext {
                 })
                 .transpose()?;
             let mut storage_hint_count = 0u64;
+            // Where the check of the Windows rows was left to the comparison
+            // below, the memory it cannot do without is reserved before the
+            // spare memory of the re-read beside it (and of its batches).
+            n2r_win32::attestation::NativeObservationDomain::reserve_deferred_validation(
+                native.domain(),
+            )?;
             let reread = if reread_beside_comparison {
                 n2r_win32::perf::step("re-read source fingerprint");
                 // Without the memory, a lane or a thread for it, the
@@ -2002,14 +2105,37 @@ impl ResourceSourceContext {
                     if let (Some(aliases), Some(number)) =
                         (&windows_aliases, blocker.file_record_number)
                     {
-                        let file = raw
-                            .find_record(number, None)?
-                            .context("Windows alias blocker identity absent")?;
-                        ensure!(
-                            file.names.iter().any(|name| name.namespace == 2),
-                            "Windows alias blocker has no DOS source name"
-                        );
-                        let _ = aliases.user_paths(&raw, &file)?;
+                        // The comparison above derived the alias paths of
+                        // every ordinary object (one outside the NTFS
+                        // internals: its record is 16 or later and outside
+                        // $Extend) and refused the run where it could not.
+                        // A run that verifies once does not derive them
+                        // again for each of its short names (112,609 at the
+                        // full Windows volume), nor copy the object for it.
+                        let derived = if n2r_win32::verify_policy::verifies_once() {
+                            raw.with_record(number, None, |file| {
+                                ensure!(
+                                    file.names.iter().any(|name| name.namespace == 2),
+                                    "Windows alias blocker has no DOS source name"
+                                );
+                                Ok(file.record_number >= 16
+                                    && file.metadata_role
+                                        == ntfs_inspect::MetadataRole::OutsideExtendCandidate)
+                            })?
+                            .context("Windows alias blocker identity absent")?
+                        } else {
+                            false
+                        };
+                        if !derived {
+                            let file = raw
+                                .find_record(number, None)?
+                                .context("Windows alias blocker identity absent")?;
+                            ensure!(
+                                file.names.iter().any(|name| name.namespace == 2),
+                                "Windows alias blocker has no DOS source name"
+                            );
+                            let _ = aliases.user_paths(&raw, &file)?;
+                        }
                         true
                     } else {
                         false
@@ -2308,6 +2434,8 @@ impl ResourceSourceContext {
                 source_views["native_observation_origin"] = serde_json::to_value(native.origin())?;
             }
             let source_views_sha = json_sha(&source_views, scratch.budget().scratch_bytes / 2)?;
+            drop(inspected_here);
+            drop(directory_paths);
             n2r_win32::perf::step("reopen comparison stores");
             let rows = SortedRecordStore::open(&rows_pin, &scratch)?;
             let unresolved = SortedRecordStore::open(&unresolved_pin, &scratch)?;
@@ -2966,7 +3094,24 @@ impl ResourceSourceContext {
         // walks its file domain in ordinal order, so return the optional
         // whole-inventory cache before paying for projection rows/sorters.
         // Authenticated readers, compact indexes and all proof owners remain.
-        self.raw.release_inventory_resident_cache();
+        // The decoded file rows stay where the run verifies once, the
+        // ledgers have room for the projection's working memory beside them
+        // and its spare memory would still be granted beside both:
+        // the projection would otherwise decode every row again to keep it
+        // once more.
+        let working = crate::shadow_tree::source_pages::SourceExpectedDomain::working_ram_bound(
+            self.raw.file_count(),
+            admission,
+            scratch,
+        );
+        self.raw.release_inventory_resident_cache_before(
+            scratch,
+            working,
+            crate::shadow_tree::source_pages::SourceExpectedDomain::largest_working_reservation(
+                admission,
+            ),
+            crate::shadow_tree::source_pages::SourceExpectedDomain::spare_ram_bound(),
+        );
         // A run that verifies once (`--verify fast`) takes what the
         // comparison evaluated of each object (its user issues, metadata and
         // security views and case mark) from the comparison's rows (owner's

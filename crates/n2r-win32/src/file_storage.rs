@@ -273,11 +273,67 @@ pub fn device_path_on_volume(file: &std::fs::File, volume_root: &str) -> io::Res
 pub fn held_at_guid_path(file: &std::fs::File, guid_path: &str) -> io::Result<bool> {
     let (root, on_volume) = split_guid_path(guid_path)?;
     let (_held_root, device) = volume_device_root(root)?;
-    let actual = final_path_device(file)?;
+    Ok(device_path_is(
+        &final_path_device(file)?,
+        &device,
+        on_volume,
+    ))
+}
+
+/// Whether `actual`, a device path, is `on_volume` beneath `device`,
+/// compared without regard to ASCII case.
+fn device_path_is(actual: &str, device: &str, on_volume: &str) -> bool {
     let actual = actual.as_bytes();
-    Ok(actual.len() == device.len() + on_volume.len()
+    actual.len() == device.len() + on_volume.len()
         && actual[..device.len()].eq_ignore_ascii_case(device.as_bytes())
-        && actual[device.len()..].eq_ignore_ascii_case(on_volume.as_bytes()))
+        && actual[device.len()..].eq_ignore_ascii_case(on_volume.as_bytes())
+}
+
+/// A volume's root held open, with the device object its GUID root names.
+///
+/// [`held_at_guid_path`] opens the root of the volume a path names, asks for
+/// its device path and closes it again, for every object it is asked
+/// about: the root stays open across the comparison because a device name
+/// can only be given to another volume once every handle on it is closed.
+/// A tree that asks it about every stream it observes holds the root open
+/// instead, for as long as it holds the volume's files, and asks only for
+/// each object's own device path ([`Self::held_at_guid_path`]).
+pub struct HeldVolumeRoot {
+    guid_root: String,
+    _root: std::fs::File,
+    device: String,
+}
+
+impl HeldVolumeRoot {
+    /// Opens the root a GUID root path (`\\?\Volume{...}\`) names.
+    pub fn open(guid_root: &str) -> io::Result<Self> {
+        let (root, rest) = split_guid_path(guid_root)?;
+        if !rest.is_empty() {
+            return Err(io::Error::other(
+                "a volume root is expected, not a path on it",
+            ));
+        }
+        let (held, device) = volume_device_root(root)?;
+        Ok(Self {
+            guid_root: root.to_owned(),
+            _root: held,
+            device,
+        })
+    }
+
+    /// What [`held_at_guid_path`] answers, from this held root for a path on
+    /// its volume; a path on another volume is answered as there.
+    pub fn held_at_guid_path(&self, file: &std::fs::File, guid_path: &str) -> io::Result<bool> {
+        let (root, on_volume) = split_guid_path(guid_path)?;
+        if !root.eq_ignore_ascii_case(&self.guid_root) {
+            return held_at_guid_path(file, guid_path);
+        }
+        Ok(device_path_is(
+            &final_path_device(file)?,
+            &self.device,
+            on_volume,
+        ))
+    }
 }
 
 fn final_path(file: &std::fs::File, form: u32, name: &str) -> io::Result<String> {
@@ -612,6 +668,32 @@ mod tests {
         );
         assert!(
             device_path_on_volume(&file, &file_guid).is_err(),
+            "a root is required"
+        );
+
+        // A held root answers as the root opened for every query does.
+        let held_root = HeldVolumeRoot::open(root).unwrap();
+        for (object, path) in [
+            (&file, file_guid.as_str()),
+            (&parent, parent_guid.as_str()),
+            (&file, parent_guid.as_str()),
+            (&parent, file_guid.as_str()),
+            (&file, &file_guid[..file_guid.len() - 1]),
+        ] {
+            assert_eq!(
+                held_root.held_at_guid_path(object, path).unwrap(),
+                held_at_guid_path(object, path).unwrap(),
+                "{path}"
+            );
+        }
+        assert!(
+            held_root
+                .held_at_guid_path(&file, &file_guid.to_uppercase())
+                .unwrap()
+        );
+        assert!(held_root.held_at_guid_path(&file, &elsewhere).is_err());
+        assert!(
+            HeldVolumeRoot::open(&file_guid).is_err(),
             "a root is required"
         );
     }

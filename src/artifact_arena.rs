@@ -1907,6 +1907,39 @@ impl ArtifactArena {
                 <= self.0.budget.ram_bytes / 2
         })
     }
+    /// Whether `bytes` more would fit the budget beside everything the
+    /// ledger holds now, its caches among them: a reservation of that much
+    /// would be granted without giving up any cache. Nothing is reserved.
+    pub fn has_room_beside_caches(&self, bytes: u64) -> bool {
+        self.0.state.lock().is_ok_and(|state| {
+            !state.ram_poisoned
+                && state
+                    .leased_ram_bytes
+                    .checked_add(state.index_bytes)
+                    .and_then(|held| held.checked_add(bytes))
+                    .is_some_and(|wanted| wanted <= self.0.budget.ram_bytes)
+        })
+    }
+    /// Whether, once `needed` more is reserved beside everything held now
+    /// (caches included), none of it a single reservation larger than
+    /// `largest`, a spare reservation of `spare` would still be granted
+    /// ([`spare_fits`], which no cache is given up for). Nothing is
+    /// reserved and nothing counted.
+    pub fn spare_would_fit_beside(&self, needed: u64, largest: u64, spare: u64) -> bool {
+        self.0.state.lock().is_ok_and(|state| {
+            let beside = state
+                .spare
+                .largest_beside
+                .max(state.spare.largest_since)
+                .max(largest);
+            !state.ram_poisoned
+                && state
+                    .leased_ram_bytes
+                    .checked_add(state.index_bytes)
+                    .and_then(|held| held.checked_add(needed))
+                    .is_some_and(|held| spare_fits(self.speed_budget(), held, spare, beside))
+        })
+    }
     /// The most the ledger may hold with a cache in it: seven eighths of
     /// the budget, and no more than seven eighths of two thirds of the
     /// memory that was free when the ledger was made. A budget made larger
@@ -3764,5 +3797,54 @@ mod cache_tests {
         let state = arena.0.state.lock().unwrap();
         assert_eq!(state.spare.largest_beside, 0);
         assert_eq!(state.spare.largest_since, 0);
+    }
+
+    /// Room beside the caches counts what the caches hold, reserves
+    /// nothing and gives up no cache.
+    #[test]
+    fn room_beside_the_caches_counts_them_and_takes_nothing() {
+        let (_directory, arena) = ledger();
+        let free = |arena: &ArtifactArena| {
+            let state = arena.0.state.lock().unwrap();
+            LIMIT - state.leased_ram_bytes - state.index_bytes
+        };
+        let empty = free(&arena);
+        assert!(arena.has_room_beside_caches(empty));
+        assert!(!arena.has_room_beside_caches(empty + 1));
+        let cache = Evictable::new(arena.reserve_optional_ram(LIMIT / 4).unwrap());
+        let needed = arena.reserve_ram(LIMIT / 4).unwrap();
+        let before = held(&arena);
+        let room = empty - LIMIT / 2;
+        assert!(arena.has_room_beside_caches(room));
+        assert!(!arena.has_room_beside_caches(room + 1), "the cache counts");
+        assert_eq!(held(&arena), before, "nothing is reserved");
+        assert!(cache.is_held(), "and no cache is given up");
+        drop((cache, needed));
+        assert!(arena.has_room_beside_caches(empty));
+    }
+
+    /// A spare reservation is judged beside what is held, caches included,
+    /// and beside the headroom its largest neighbour asks for.
+    #[test]
+    fn a_spare_beside_a_pass_is_judged_as_it_will_be_granted() {
+        let (_directory, arena) = ledger();
+        let held = {
+            let state = arena.0.state.lock().unwrap();
+            state.leased_ram_bytes + state.index_bytes
+        };
+        let headroom = LIMIT / 16;
+        let spare = LIMIT - held - headroom;
+        assert!(arena.spare_would_fit_beside(0, 0, spare));
+        assert!(!arena.spare_would_fit_beside(0, 0, spare + 1));
+        // A cache held counts: spare memory gives none of them up.
+        let cache = Evictable::new(arena.reserve_optional_ram(LIMIT / 8).unwrap());
+        assert!(!arena.spare_would_fit_beside(0, 0, spare));
+        assert!(arena.spare_would_fit_beside(0, 0, spare - LIMIT / 8));
+        // So do the pass's own reservations, and twice its largest.
+        assert!(!arena.spare_would_fit_beside(1, 0, spare - LIMIT / 8));
+        let beside_largest = spare + headroom - LIMIT / 2 - LIMIT / 8;
+        assert!(arena.spare_would_fit_beside(0, LIMIT / 4, beside_largest));
+        assert!(!arena.spare_would_fit_beside(0, LIMIT / 4, beside_largest + 1));
+        assert!(cache.is_held());
     }
 }

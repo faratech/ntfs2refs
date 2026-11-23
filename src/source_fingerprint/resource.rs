@@ -607,7 +607,7 @@ pub fn inspect_recorded_with_scratch<R: Read + Seek>(
     root: &Path,
     scratch: &SourceScratch,
 ) -> Result<(PagedInspection, InspectionReadCoverage)> {
-    inspect_recorded_with_layout_scope(
+    record_inspection(
         reader,
         length,
         budget,
@@ -615,10 +615,15 @@ pub fn inspect_recorded_with_scratch<R: Read + Seek>(
         root,
         scratch,
         n2r_win32::general_layout::GeneralDiskLayoutProfile::DedicatedData,
+        None,
     )
 }
 
-pub(crate) fn inspect_recorded_with_layout_scope<R: Read + Seek>(
+/// As [`inspect_recorded_with_scratch`], for the frozen source's layout. The
+/// reads the MFT scan makes next are read ahead on read lanes of `reader`
+/// where it has them, under the recorder ([`ntfs_inspect::LanePrefetch`]):
+/// the recorder records the same reads either way.
+pub(crate) fn inspect_recorded_with_layout_scope<R: Read + Seek + ntfs_inspect::LaneSource>(
     reader: &mut R,
     length: u64,
     budget: n2r_win32::tree_resources::ResourceBudget,
@@ -628,7 +633,28 @@ pub(crate) fn inspect_recorded_with_layout_scope<R: Read + Seek>(
     layout: n2r_win32::general_layout::GeneralDiskLayoutProfile,
 ) -> Result<(PagedInspection, InspectionReadCoverage)> {
     ensure!(!root.exists(), "fresh recorded source directory required");
+    let prefetch = ntfs_inspect::LanePrefetch::open(&*reader, length, scratch)?;
+    record_inspection(
+        reader, length, budget, policy, root, scratch, layout, prefetch,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_inspection<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+    budget: n2r_win32::tree_resources::ResourceBudget,
+    policy: VerificationPolicy,
+    root: &Path,
+    scratch: &SourceScratch,
+    layout: n2r_win32::general_layout::GeneralDiskLayoutProfile,
+    prefetch: Option<ntfs_inspect::LanePrefetch>,
+) -> Result<(PagedInspection, InspectionReadCoverage)> {
+    ensure!(!root.exists(), "fresh recorded source directory required");
     fs::create_dir(root)?;
+    // What was read ahead answers reads under the recorder, which records
+    // each read as the inspection makes it.
+    let reader = ntfs_inspect::PrefetchedSource::new(reader, length, prefetch.clone())?;
     let mut recorder = PagedReadRecorder::new(reader, length, root, scratch)?;
     let source = ntfs_inspect::inspect_paged_with_layout_scope(
         &mut recorder,
@@ -638,6 +664,7 @@ pub(crate) fn inspect_recorded_with_layout_scope<R: Read + Seek>(
         &root.join("raw"),
         scratch,
         layout,
+        prefetch.as_ref(),
     )?;
     let (_, coverage) = recorder.finish()?;
     let source_pin = source.canonical_sha256()?;
@@ -1334,6 +1361,35 @@ impl PagedSourceFingerprint {
             crate::ntfs_inspect::paged_storage::SourceRamLease,
         )>,
     > {
+        self.lane_reread_leased(source, |bytes| self.scratch.lease_spare_ram(bytes))
+    }
+    /// As [`Self::lane_reread`], its memory paid as a cache
+    /// (`lease_optional_ram`), for a caller that holds the read as a cache of
+    /// its thread (`n2r_win32::evict::Evictable`) while other work makes
+    /// reservations it cannot do without: such a reservation that finds no
+    /// room gives the read and its memory up before it is refused, and the
+    /// caller then reads the fingerprint with `hash`.
+    pub fn lane_reread_as_cache(
+        &self,
+        source: &n2r_win32::GeneralFrozenPartition,
+    ) -> Result<
+        Option<(
+            LaneFingerprint,
+            crate::ntfs_inspect::paged_storage::SourceRamLease,
+        )>,
+    > {
+        self.lane_reread_leased(source, |bytes| self.scratch.lease_optional_ram(bytes))
+    }
+    fn lane_reread_leased(
+        &self,
+        source: &n2r_win32::GeneralFrozenPartition,
+        lease: impl FnOnce(u64) -> Result<crate::ntfs_inspect::paged_storage::SourceRamLease>,
+    ) -> Result<
+        Option<(
+            LaneFingerprint,
+            crate::ntfs_inspect::paged_storage::SourceRamLease,
+        )>,
+    > {
         use crate::parallel_digest::{Chunk, MAX_CHUNK_BYTES};
         ensure!(
             source.byte_len() == self.pins.partition_bytes,
@@ -1392,7 +1448,7 @@ impl PagedSourceFingerprint {
         else {
             return Ok(None);
         };
-        let Ok(ram) = self.scratch.lease_spare_ram(bytes) else {
+        let Ok(ram) = lease(bytes) else {
             return Ok(None);
         };
         let mut pieces = Vec::new();

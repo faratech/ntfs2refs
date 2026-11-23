@@ -219,7 +219,9 @@ $dataCases = @(
     'links|-Content minimal -Features links -Check'
     'bigdir|-Content minimal -Features bigdir -Check'
     'casemark|-Content minimal -Features casemark -Check'
-    'casemark-root|-Content minimal -Features casemark-root -Check'
+    # No casemark-root here: Windows 11 marks only an empty directory, and a
+    # mounted root always holds System Volume Information (0x91), so the
+    # feature is never made (g3a, w39a, w39b). The Server set keeps its case.
     # What the Windows Subsystem for Linux leaves on a volume, and names
     # that Win32 does not take and the file systems hold.
     'wsl|-Content minimal -Features wsl -Check'

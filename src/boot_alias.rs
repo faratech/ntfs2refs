@@ -234,6 +234,14 @@ pub struct WindowsPathAlias {
     pub canonical_path: Vec<String>,
     pub reparse: Point,
 }
+impl WindowsPathAlias {
+    /// The alias a row of the alias domain holds, decoded from its bytes
+    /// (`WindowsAliasDomain::alias_bytes`) as `SortedRecordStore::get`
+    /// decodes it.
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
+        Ok(serde_json::from_str(std::str::from_utf8(bytes)?)?)
+    }
+}
 
 pub(crate) fn aliases_for(
     source: &PagedInspection,
@@ -241,6 +249,14 @@ pub(crate) fn aliases_for(
 ) -> Result<Vec<WindowsPathAlias>> {
     let canonical =
         crate::ntfs_admission::paged::canonical_paths_for_alias_preparation(source, file)?;
+    aliases_for_canonical(file, &canonical)
+}
+
+/// [`aliases_for`] of `file`, whose canonical paths are `canonical`.
+fn aliases_for_canonical(
+    file: &FileInventory,
+    canonical: &[Vec<String>],
+) -> Result<Vec<WindowsPathAlias>> {
     let names: Vec<_> = file
         .names
         .iter()
@@ -255,7 +271,7 @@ pub(crate) fn aliases_for(
         // A separate DOS FILE_NAME belongs to the Win32 name in this parent.
         // POSIX hard links to the same FILE may also share that parent; they
         // remain canonical paths but are not the DOS name's long-name partner.
-        let mut targets = names.iter().zip(&canonical).filter(|(name, _)| {
+        let mut targets = names.iter().zip(canonical).filter(|(name, _)| {
             name.namespace == 1
                 && name.parent_record_number == alias.parent_record_number
                 && name.parent_sequence_number == alias.parent_sequence_number
@@ -371,6 +387,15 @@ impl WindowsAliasDomain {
     }
     pub fn alias(&self, ordinal: u64) -> Result<WindowsPathAlias> {
         self.entries.get(ordinal)
+    }
+    /// [`Self::alias`] in two halves: the row's bytes, read here (and
+    /// counted as a decoding), and [`WindowsPathAlias::decode`] of them,
+    /// which may run on another thread.
+    pub(crate) fn alias_bytes(&self, ordinal: u64) -> Result<Vec<u8>> {
+        // `SortedRecordStore::get` counts its decoding before it reads.
+        self.entries.record_bytes(ordinal)?;
+        n2r_win32::perf::add_call(n2r_win32::perf::Point::SourceRowDecode);
+        self.entries.get_json(ordinal)
     }
     pub(crate) fn bind_storage_hint_normalization(
         &mut self,
@@ -497,6 +522,12 @@ impl WindowsAliasDomain {
     /// Canonical paths only after conserving every alias of this exact source
     /// record in the independently owned derived-entry domain. The enclosing
     /// source owner must call require_source at its phase boundaries.
+    ///
+    /// The aliases are derived from the object's canonical paths, which are
+    /// then the paths returned. A run that verifies once walks the
+    /// directories for them once, not again for the paths returned: the same
+    /// derivation of the same held rows, which has just succeeded. Every
+    /// other run derives them twice, as before.
     pub(crate) fn user_paths(
         &self,
         source: &PagedInspection,
@@ -509,7 +540,9 @@ impl WindowsAliasDomain {
         let mut key = [0u8; 16];
         key[..8].copy_from_slice(&file.record_number.to_be_bytes());
         let first = self.entries.find_ordinal(key)?;
-        let expected = aliases_for(source, file)?;
+        let canonical =
+            crate::ntfs_admission::paged::canonical_paths_for_alias_preparation(source, file)?;
+        let expected = aliases_for_canonical(file, &canonical)?;
         ensure!(
             first.is_some() == !expected.is_empty(),
             "Windows source alias coverage differs"
@@ -535,8 +568,11 @@ impl WindowsAliasDomain {
                 "Windows alias domain has extra entries for this source record"
             );
         }
-        let mut paths =
-            crate::ntfs_admission::paged::canonical_paths_for_alias_preparation(source, file)?;
+        let mut paths = if n2r_win32::verify_policy::verifies_once() {
+            canonical
+        } else {
+            crate::ntfs_admission::paged::canonical_paths_for_alias_preparation(source, file)?
+        };
         paths.sort_by(|left, right| (left.len(), left).cmp(&(right.len(), right)));
         ensure!(
             !paths.windows(2).any(|pair| pair[0] == pair[1]),

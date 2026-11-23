@@ -601,6 +601,41 @@ impl SourceScratch {
             _arena_ram: Some(arena_ram),
         })
     }
+    /// Whether this ledger and the run's both have room for `bytes` more
+    /// beside everything they hold now, caches included: a reservation of
+    /// that much would not give up a cache. Nothing is reserved. Without
+    /// the run's ledger, this one alone decides.
+    pub(crate) fn has_room_beside_caches(&self, bytes: u64) -> bool {
+        let Ok(own) = self.has_room_for(bytes) else {
+            return false;
+        };
+        let permit = {
+            let ledger = self.0.borrow();
+            if ledger.poisoned {
+                return false;
+            }
+            ledger.arena.clone()
+        };
+        own && permit.is_none_or(|permit| permit.arena().has_room_beside_caches(bytes))
+    }
+    /// Whether, once `needed` more is reserved (no single reservation of it
+    /// larger than `largest`), spare memory of `spare` would still be
+    /// granted (`ArtifactArena::spare_would_fit_beside`). Without the run's
+    /// ledger no spare memory is granted whatever is held: true.
+    pub(crate) fn spare_would_fit_beside(&self, needed: u64, largest: u64, spare: u64) -> bool {
+        let permit = {
+            let ledger = self.0.borrow();
+            if ledger.poisoned {
+                return false;
+            }
+            ledger.arena.clone()
+        };
+        permit.is_none_or(|permit| {
+            permit
+                .arena()
+                .spare_would_fit_beside(needed, largest, spare)
+        })
+    }
     #[track_caller]
     fn lease_window(&self) -> Result<SourceRamLease> {
         let bytes = u64::from(self.budget().page_bytes)

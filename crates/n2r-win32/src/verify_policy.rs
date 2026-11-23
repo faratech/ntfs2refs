@@ -57,7 +57,37 @@ static VERIFY_ONCE: AtomicBool = AtomicBool::new(false);
 /// - the journal apply reading a range again immediately before writing it:
 ///   the range was held to its OLD digest before the apply marker and is read
 ///   back against its NEW digest after it is written;
-/// - the short-name links of a converted Windows volume probed once.
+/// - the journal's preparation reading a staged batch of rows back from the
+///   journal as it writes it: the batch is hashed as written, the bytes the
+///   rows' digests were computed from, and the gate reads the whole body
+///   again against that hash;
+/// - the journal's preparation reading the source's OLD-zero ranges again:
+///   the capture's comparison read every byte of them from the held source
+///   and found it zero, the journal stores none of them, and the gate reads
+///   every selected range again against the OLD aggregate;
+/// - the short-name links of a converted Windows volume probed once, each
+///   held to the parent identity the walk of the converted volume already
+///   verified instead of opening every parent again;
+/// - the shadow's payloads observed once, by the planning of their supply,
+///   and not again by its verification: the walk of the frozen shadow
+///   captures every stream's mapping, initialized regions and integrity, and
+///   the plan's and receipt's digests are the same;
+/// - a captured prefix of a stream revalidated immediately on the same
+///   handle;
+/// - a hard link on a fresh shadow looked up before and after the link call:
+///   the call refuses a name that exists, the file's complete link count and
+///   identity are checked once its names are made, and the listings are
+///   checked again when metadata is restored and by the final verification;
+/// - the Windows view of the source validated row by row when it is opened
+///   and again when it is compared: it is validated once, on the
+///   comparison's decode, with the same refusals;
+/// - a stream proved by the identity of its extents walked for its paths
+///   again by the selector and the admission policy after the stream
+///   evidence step held it to them;
+/// - stores this process has just written decoded again when they are
+///   opened (the raw file store, the expected tree's legacy JSON): the
+///   rows and digests are those the writer produced, and the gate reads
+///   their files again against their pins.
 ///
 /// A run with `--verify thorough`, a diagnosis and every route that never
 /// calls this (and every test) keep every check as it was. A recovery never

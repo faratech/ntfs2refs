@@ -498,6 +498,115 @@ pub fn verify_owned_in_with_known_canonical(
     })
 }
 
+/// What [`validate_known_canonical_pair`] holds of the three identities and
+/// the link's count of names, with the parent's identity as the walk read it.
+fn validate_walked_identities(
+    parent_id: [u8; 24],
+    canonical_id: [u8; 24],
+    alias_id: [u8; 24],
+    alias_links: u32,
+) -> io::Result<()> {
+    if parent_id[..8] == [0; 8]
+        || parent_id[8..] == [0; 16]
+        || canonical_id[..8] == [0; 8]
+        || canonical_id[8..] == [0; 16]
+        || parent_id[..8] != canonical_id[..8]
+        || canonical_id[..8] != alias_id[..8]
+        || parent_id == canonical_id
+        || parent_id == alias_id
+        || canonical_id == alias_id
+        || alias_links != 1
+    {
+        return Err(invalid(
+            "derived alias needs distinct same-volume objects and an ordinary held parent",
+        ));
+    }
+    Ok(())
+}
+
+/// [`verify_owned_in_with_known_canonical`] for the one observation of a
+/// converted volume in a run that verifies once, made after the walk of
+/// that volume: the walk opened the link's parent and its target and holds
+/// each to its row (identity, type, attributes, no reparse point for the
+/// parent) and lists the parent, and the listing check that follows holds
+/// this link's name in that listing to the identity read here and to the
+/// link's attributes. So the parent is neither opened nor examined here,
+/// the link's path on its volume is not asked for (where it lies is what
+/// the listing holds), and its reparse point is read by itself
+/// ([`reparse_native::capture_held_readonly`]). `attributes` reads the
+/// link's attributes through `alias`, where the attribute-tag query was
+/// made (the caller reads them in its basic information, which it holds to
+/// the link's times and attributes once this has checked the link): they
+/// stand for that query, which asked for the same attributes and for the
+/// tag that the point read here carries. The checks are made, and the first
+/// failure reported, in the order of [`verify_owned_in_with_known_canonical`].
+///
+/// The caller must hold the volume READ_ONLY, have opened `alias` without
+/// FILE_FLAG_OVERLAPPED, and hold the link to its parent's listing.
+pub fn verify_walked(
+    parent_file_id_info: [u8; 24],
+    canonical_file_id_info: [u8; 24],
+    alias: &File,
+    attributes: impl FnOnce() -> io::Result<u32>,
+    directory: bool,
+    alias_component: &[u16],
+    relative_target_component: &[u16],
+) -> io::Result<Observation> {
+    let expected = Point::relative_component_alias(relative_target_component)?;
+    // SAFETY: GetFileType only examines the borrowed live handle.
+    if unsafe { GetFileType(alias.as_raw_handle()) } != FILE_TYPE_DISK {
+        return Err(of(
+            ALIAS,
+            invalid("derived alias requires an actual filesystem file/directory"),
+        ));
+    }
+    let id = information::<24>(alias, 18).map_err(|e| of(ALIAS, e))?;
+    let standard = information::<24>(alias, 1).map_err(|e| of(ALIAS, e))?;
+    let attributes = attributes().map_err(|e| of(ALIAS, e))?;
+    let links = u32::from_le_bytes(standard[16..20].try_into().unwrap());
+    if id[..8] == [0; 8]
+        || id[8..] == [0; 16]
+        || standard[20] != 0
+        || standard[21] != u8::from(directory)
+        || links == 0
+        || (attributes & 0x10 != 0) != directory
+    {
+        return Err(of(
+            ALIAS,
+            invalid("alias native identity/delete/type/link information is invalid"),
+        ));
+    }
+    validate_walked_identities(parent_file_id_info, canonical_file_id_info, id, links)?;
+    if !String::from_utf16(alias_component)
+        .is_ok_and(|component| shadow_names::valid_unicode_component(&component))
+    {
+        return Err(invalid(
+            "held alias/canonical object is not a direct child of the held parent",
+        ));
+    }
+    let point = reparse_native::capture_held_readonly(alias).map_err(|e| of(ALIAS, e))?;
+    if point.as_ref() != Some(&expected)
+        || attributes & 0x400 == 0
+        || (!directory && u64::from_le_bytes(standard[8..16].try_into().unwrap()) != 0)
+    {
+        return Err(invalid(
+            "held derived alias has different native reparse bytes or type",
+        ));
+    }
+    Ok(Observation {
+        parent_file_id_info,
+        canonical_file_id_info,
+        alias_file_id_info: id,
+        directory,
+        alias_component: alias_component.to_vec(),
+        relative_target_component: relative_target_component.to_vec(),
+        point: expected,
+        same_volume_and_parent_verified: true,
+        canonical_identity_and_shape_unchanged: true,
+        grants_admission_or_source_authority: false,
+    })
+}
+
 /// [`verify_owned_in`], where `seen` is what the installation made in the
 /// same call has just read of the target and of the link's point.
 fn verify_held(
@@ -626,5 +735,32 @@ mod role_tests {
         let mut other_vol = canonical_id;
         other_vol[0] ^= 0xff;
         assert!(validate_known_canonical_pair(&parent, other_vol, &alias).is_err());
+    }
+
+    #[test]
+    fn walked_identities_hold_what_the_known_canonical_pair_holds() {
+        let mut parent_id = [0u8; 24];
+        parent_id[..8].copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes());
+        parent_id[8] = 1;
+        let mut canonical_id = parent_id;
+        canonical_id[8] = 2;
+        let mut alias_id = parent_id;
+        alias_id[8] = 3;
+        let walked = |parent, canonical, alias, links| {
+            validate_walked_identities(parent, canonical, alias, links).is_ok()
+        };
+        assert!(walked(parent_id, canonical_id, alias_id, 1));
+        assert!(!walked(parent_id, canonical_id, alias_id, 2), "one name");
+        assert!(!walked(parent_id, [0u8; 24], alias_id, 1));
+        assert!(!walked([0u8; 24], canonical_id, alias_id, 1));
+        assert!(!walked(parent_id, parent_id, alias_id, 1));
+        assert!(!walked(parent_id, alias_id, alias_id, 1));
+        assert!(!walked(alias_id, canonical_id, alias_id, 1));
+        let mut other_vol = canonical_id;
+        other_vol[0] ^= 0xff;
+        assert!(!walked(parent_id, other_vol, alias_id, 1));
+        let mut alias_elsewhere = alias_id;
+        alias_elsewhere[0] ^= 0xff;
+        assert!(!walked(parent_id, canonical_id, alias_elsewhere, 1));
     }
 }

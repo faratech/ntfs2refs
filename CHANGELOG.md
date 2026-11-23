@@ -3,6 +3,27 @@
 What changed for someone who runs the converter. The measurements behind each
 entry are in the pull request named beside it and in `docs/performance.md`.
 
+## 0.0.4
+
+What changed since 0.0.3:
+
+- **Faster**: the full Windows volume (143,580 objects, 22.9 GB) converts in
+  440 s, the median of three clean runs (was 525 s). Source inspection reads
+  ahead on read lanes and does not decode what it has just written; the
+  expected tree is projected on several threads; under `--verify fast` the
+  payload verification and the journal's preparation do not read again what
+  another step of the run already checks. `--verify thorough` keeps every
+  check (#269).
+- **Memory**: four places that held memory without reserving it now reserve
+  it, up to some 530 MiB on the full volume (#265, #266, #267, #268). A volume
+  of 500,000 files converts on a machine with 8 GB while another process takes
+  3 GB (#129).
+- **Fixes**: a finished recovery detaches the run's working volume (#182); a
+  bare "Failed" from Windows' partition shrink is tried once more after the
+  source is checked again (#254); aligned buffers for the object-ID and TxF
+  queries (#238); a paged write policy gives way when memory is short (#239);
+  both names of a case collision are named on every path (#103).
+
 ## 0.0.2
 
 What changed since 0.0.1:

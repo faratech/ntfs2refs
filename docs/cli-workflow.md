@@ -1,6 +1,6 @@
 # Operating and recovery guide
 
-For ntfs2refs 0.0.3. **It is experimental software:** every run starts with
+For ntfs2refs 0.0.4. **It is experimental software:** every run starts with
 a warning saying so, on the error stream, and [DISCLAIMER.md](../DISCLAIMER.md)
 says what that means. [The README](../README.md) says what the tool is;
 this guide says how to run it, what it refuses and why, and what to do if a

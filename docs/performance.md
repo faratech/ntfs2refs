@@ -324,7 +324,7 @@ The metadata sub-steps still trade time with one another from run to run.
 
 | Run | Previous (`perf-w34-38`) | After (`w39`) | Change |
 |---|---|---|---|
-| The full Windows volume, converted and started from ReFS (`w39f-full-system`, VM with 24 GB) | 525.4 s (8.76 min) | 490.7 s (8.18 min) | −34.7 s (`source-preparation` 79.7 → 52.9 s, `expected-preparation` 21.2 → 9.4 s, `shadow-placement` 141.6 → 121.0 s); `BOOTED-ON-REFS`, identical listing |
+| The full Windows volume, converted and started from ReFS (`w39f`, `w39g`, `w39h-full-system`, VM with 24 GB, three clean runs of one build) | 525.4 s (8.76 min) | 440.2 s median (490.7, 437.5, 440.2 s; 7.34 min) | −85.2 s at the median, −34.7 s for the slowest run (`source-preparation` 79.7 → 52.9 s, `expected-preparation` 21.2 → 9.4 s, `shadow-placement` 141.6 → 121.0 s); `BOOTED-ON-REFS`, identical listing |
 | 1-in-10 Windows fixture (`w39b-fixture10`, VM with 12 GB) | 116.9 s | 138.4 s | identical listing; run beside the data-volume set on a 12 GB VM, not comparable |
 
 ## A partition on the Windows disk, through a restart

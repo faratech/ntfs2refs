@@ -304,6 +304,29 @@ enabling sparse-stream routed prefetch (`shadow-placement` 150.8 → 141.6 s):
 | 1-in-10 Windows fixture (`perf-w34-38-1in10`, VM with 24 GB) | 124.9 s | 116.9 s | −49.2% vs `g3a-fixture10`, identical listing |
 | Lived-in data volume, 23,137 objects (`perf-w34-38-lived-in`, `-Check -Acceptance`) | 49.7 s | 46.7 s | `check and run: agree`, all acceptance checks passed, identical listing |
 
+A ninth round (`perf/waves-39-48`) took the profile of `perf-w34-38-clean-full`
+apart stage by stage. Source inspection reads each MFT window's `$I30`,
+small-stream and attribute-list ranges ahead on read lanes, opens the raw file
+store from the rows it has just written, joins MFT names to index entries by
+counting, hashes `$I30` evidence on a worker, validates the Windows rows on the
+comparison's own decode and reads the source fingerprint beside short-name
+planning (`NTFS: scan MFT records` 13.8 → 7.8 s, `observe source through
+Windows` 16.5 → 11.5 s). The expected tree is projected on helper threads and
+is not serialized again when this run opens what it has just written; its pages
+are decoded back at creation instead (`derive source projection` 10.9 → 4.1 s).
+Under `--verify fast` the payload verification takes its plan's observation
+rather than looking at the shadow again, tail writes overlap the next batch's
+reads, and placement's first mappings are queried on helpers (`plan and supply
+payloads` 19.4 → 12.3 s, `verify payloads` 8.9 → 0.0 s). Fresh objects no
+longer get a DACL protection write they already have; journal preparation
+hashes staged batches as written and does not re-read OLD-zero source ranges.
+The metadata sub-steps still trade time with one another from run to run.
+
+| Run | Previous (`perf-w34-38`) | After (`w39`) | Change |
+|---|---|---|---|
+| The full Windows volume, converted and started from ReFS (`w39f-full-system`, VM with 24 GB) | 525.4 s (8.76 min) | 490.7 s (8.18 min) | −34.7 s (`source-preparation` 79.7 → 52.9 s, `expected-preparation` 21.2 → 9.4 s, `shadow-placement` 141.6 → 121.0 s); `BOOTED-ON-REFS`, identical listing |
+| 1-in-10 Windows fixture (`w39b-fixture10`, VM with 12 GB) | 116.9 s | 138.4 s | identical listing; run beside the data-volume set on a 12 GB VM, not comparable |
+
 ## A partition on the Windows disk, through a restart
 
 A 6 GiB partition of 505 objects beside C: on Windows Server 2025, working

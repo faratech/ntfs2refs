@@ -3031,6 +3031,38 @@ impl ResourceSourceContext {
             guard.mark_live_cancelled(events)?;
         }
         checkpoint(events)?;
+        // Bringing NTFS online can leave the original letter unassigned even
+        // with automount enabled. As in rollback, restore only letters still
+        // absent and never claim one that now belongs to a different volume.
+        match native_batch(events, |batch| {
+            n2r_win32::capture_mount_paths_general(mounted.clone(), batch)
+        }) {
+            Ok(current) => {
+                for letter in self.mount_paths.paths.iter().filter(|path| {
+                    crate::resource_finalize::is_drive_letter_root(path)
+                        && !current
+                            .paths
+                            .iter()
+                            .any(|actual| actual.eq_ignore_ascii_case(path))
+                }) {
+                    if let Err(error) = native_batch(events, |batch| {
+                        n2r_win32::restore_drive_letter_general_on(
+                            mounted.clone(),
+                            letter,
+                            "NTFS",
+                            batch,
+                        )
+                    }) {
+                        eprintln!(
+                            "NTFS is back, but drive letter {letter} could not be restored: {error}. Give the volume a letter in Disk Management."
+                        );
+                    }
+                }
+            }
+            Err(error) => eprintln!(
+                "NTFS is back, but its drive letters could not be checked: {error}. Check the volume in Disk Management."
+            ),
+        }
         Ok(mounted)
     }
 

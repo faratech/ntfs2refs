@@ -1,0 +1,43 @@
+name: Native regression
+on:
+  workflow_call:
+    inputs:
+      binaries:
+        type: string
+        required: true
+      source:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Native (${{ matrix.case }})
+    runs-on: windows-2025
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [convert, many, resume, rollback, cancel, handled-preparation, cancel-preparation, tails-4k, tails-64k, tails-4k-limited, tails-64k-limited]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source || github.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.binaries }}
+          path: ${{ runner.temp }}/bin
+      - name: Exercise native conversion
+        env:
+          CASE: ${{ matrix.case }}
+        run: ./.github/scripts/Invoke-NativeRegression.ps1 -Case $env:CASE -Binaries "$env:RUNNER_TEMP/bin" -Records "$env:RUNNER_TEMP/native"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: native-${{ matrix.case }}
+          path: ${{ runner.temp }}/native
+          if-no-files-found: error
+          retention-days: 30

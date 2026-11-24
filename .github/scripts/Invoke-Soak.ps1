@@ -55,13 +55,21 @@ param(
     # The working storage the converter is given: not on the virtual disk.
     [string]$Scratch,
     # Where each round's records go.
-    [string]$Records = (Join-Path ([IO.Path]::GetTempPath()) 'n2r-soak-records')
+    [string]$Records = (Join-Path ([IO.Path]::GetTempPath()) 'n2r-soak-records'),
+    [ValidateSet('seeded', 'handled-preparation', 'cancel-preparation', 'tail-boundaries')][string]$Scenario = 'seeded',
+    [ValidateSet(4096, 65536)][int]$TargetClusterBytes,
+    [int]$MemoryLimitMiB,
+    [switch]$WriteTailsSingly,
+    [string]$FailureStorage
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 
 $converter = Join-Path $Binaries 'ntfs2refs.exe'
 $manifest = Join-Path $Binaries 'lab-volume-manifest.exe'
 foreach ($file in $converter, $manifest) { if (-not (Test-Path -LiteralPath $file)) { throw "Not found: $file" } }
+$converterHash = (Get-FileHash -LiteralPath $converter).Hash.ToLowerInvariant()
+$manifestHash = (Get-FileHash -LiteralPath $manifest).Hash.ToLowerInvariant()
+$osBuild = (Get-CimInstance Win32_OperatingSystem).BuildNumber
 $fixed = @(Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveType -eq 'Fixed' -and $_.FileSystem -eq 'NTFS' } | Sort-Object SizeRemaining -Descending)
 if (-not $Disks) { $Disks = Join-Path "$($fixed[0].DriveLetter):\" 'n2r-soak\disks' }
 if (-not $Scratch) {
@@ -126,7 +134,10 @@ function Invoke-Converter([string[]]$arguments, [string]$dir, [string]$holdAt = 
         $errTask = $process.StandardError.BaseStream.CopyToAsync($err)
         try { $process.StandardInput.WriteLine('y'); $process.StandardInput.Close() } catch [IO.IOException] { }
         while (-not $process.WaitForExit(250)) {
-            if ($holdAt -and (Read-Shared (Join-Path $dir 'stdout.log')).Contains('"kind":"lab-hold-v1"')) { $held = $true; $process.Kill($true); $ended = $true; break }
+            if ($holdAt) {
+                $holdLine = Read-Shared (Join-Path $dir 'stdout.log') | Select-String -Pattern '"kind":"lab-hold-v1"' -Raw
+                if ($holdLine -match ('"point"\s*:\s*"' + [regex]::Escape($holdAt) + '"')) { $held = $true; $process.Kill($true); $ended = $true; break }
+            }
             if ($endAfterSeconds -gt 0 -and $watch.Elapsed.TotalSeconds -ge $endAfterSeconds) { $process.Kill($true); $ended = $true; break }
             if ($watch.Elapsed.TotalMinutes -ge $timeoutMinutes) { $process.Kill($true); throw "ntfs2refs $($arguments -join ' ') did not end within $timeoutMinutes minutes" }
         }
@@ -277,7 +288,7 @@ function Capture([string]$path) {
 # as a difference. So, as lab\Invoke-DataVolumeAttempt.ps1 does, the volume is
 # mounted afresh and listed once those files are there and two listings in a
 # row agree. Taking the disk offline also closes what had the new files open.
-function Capture-Settled([string]$path, [int]$diskNumber) {
+function Capture-Settled([string]$path, [int]$diskNumber, [bool]$hasJunction) {
     $indexer = [bool](Get-Service -Name WSearch -ErrorAction SilentlyContinue | Where-Object { "$($_.StartType)" -ne 'Disabled' })
     $afresh = {
         Set-Disk -Number $diskNumber -IsOffline $true; Set-Disk -Number $diskNumber -IsOffline $false
@@ -295,7 +306,8 @@ function Capture-Settled([string]$path, [int]$diskNumber) {
         Capture $path
         $own = @(Select-String -LiteralPath $path -Pattern 'System Volume Information' -SimpleMatch)
         $has = { param($leaf) [bool]($own | Where-Object { $_.Line -like "*$leaf*" }) }
-        $settled = (& $has 'WPSettings.dat') -and (& $has 'MountPointManagerRemoteDatabase') -and (-not $indexer -or (& $has 'IndexerVolumeGuid')) -and $own.Count -eq $previous
+        $settled = (& $has 'WPSettings.dat') -and (-not $hasJunction -or (& $has 'MountPointManagerRemoteDatabase')) -and
+            (-not $indexer -or (& $has 'IndexerVolumeGuid')) -and $own.Count -eq $previous
         $previous = $own.Count
         if (-not $settled -and (Get-Date) -ge $remount) { & $afresh; $remount = (Get-Date).AddSeconds(20); $previous = -1 }
     } until ($settled -or (Get-Date) -gt $deadline)
@@ -333,6 +345,7 @@ for ($round = 1; ; $round++) {
     # (A VHDX made by diskpart has 4 KiB physical sectors: no 512-byte clusters.)
     $ntfsCluster = @(4096, 4096, 4096, 8192, 16384, 32768, 65536)[$draw.Next(0, 7)]
     $refsCluster = @(4096, 65536)[$draw.Next(0, 2)]
+    if ($TargetClusterBytes) { $refsCluster = $TargetClusterBytes }
     $gib = if ($kind -eq 'many') { 8 } else { $draw.Next(2, 7) }
     # One round of four (by its seed, so that -Seed makes it again) runs with
     # --verify thorough, whose apply step writes the handoff: the flow every
@@ -342,30 +355,60 @@ for ($round = 1; ; $round++) {
     $verify = if ($roundSeed % 4 -eq 0) { 'thorough' } else { 'fast' }
     $hold = switch ($kind) { 'resume' { $holdPoints[$verify][$draw.Next(0, $holdPoints[$verify].Count)] } 'rollback' { $rollbackPoints[$verify][$draw.Next(0, $rollbackPoints[$verify].Count)] } default { '' } }
     $endAfter = if ($kind -eq 'cancel') { [Math]::Round(0.5 + $draw.NextDouble() * 40, 1) } else { 0 }
+    if ($Scenario -ne 'seeded') { $verify = 'fast'; $endAfter = 0; $hold = if ($Scenario -eq 'cancel-preparation') { 'preparation-shadow-built' } else { '' } }
     $name = 'r{0:d3}-{1}-{2}' -f $round, $kind, $roundSeed
     $dir = Join-Path $Records $name
     $null = New-Item -ItemType Directory -Force -Path $dir
     $vhd = Join-Path $Disks "$name.vhdx"
     $work = Join-Path $Scratch $name
-    $result = [ordered]@{ round = $round; profile = $kind; seed = $roundSeed; verify = $verify; ntfs_cluster = $ntfsCluster; refs_cluster = $refsCluster; disk_gib = $gib
-        hold_at = $hold; end_after_seconds = $endAfter; content = ''; convert_seconds = $null; recovery = ''; outcome = ''; detail = ''; findings = @() }
+    $roundStarted = Get-Date
+    $result = [ordered]@{ round = $round; profile = $kind; scenario = $Scenario; seed = $roundSeed; verify = $verify; ntfs_cluster = $ntfsCluster; refs_cluster = $refsCluster; disk_gib = $gib
+        hold_at = $hold; reached_hold = $false; terminated = $false; end_after_seconds = $endAfter; content = ''; convert_seconds = $null
+        recovery = ''; recovery_mode = 'none'; outcome = ''; detail = ''; findings = @(); manifest_matches = $false; attached_before_cleanup = @(); cleanup_ok = $false
+        converter_sha256 = $converterHash; listing_tool_sha256 = $manifestHash; windows_build = $osBuild; refs_version = ''; events = @(); retention = 'not requested' }
     Say "round ${round}: $kind, seed $roundSeed, --verify $verify, NTFS clusters of $ntfsCluster, ReFS clusters of $refsCluster, a $gib GiB disk$(if ($hold) { ", held at $hold" })$(if ($endAfter) { ", ended after $endAfter s" })"
     try {
         $diskNumber = New-SoakDisk $vhd $gib $ntfsCluster
-        $result.content = New-SoakContent "${letter}:" $roundSeed $ntfsCluster ($kind -eq 'many') ([Math]::Min(1.5GB, [long]$gib * 1GB / 4))
+        if ($Scenario -eq 'seeded') {
+            $result.content = New-SoakContent "${letter}:" $roundSeed $ntfsCluster ($kind -eq 'many') ([Math]::Min(1.5GB, [long]$gib * 1GB / 4))
+        } else {
+            $random = [Random]::new($roundSeed)
+            foreach ($index in 0..63) {
+                $path = "${letter}:\tail-$index.bin"
+                $bytes = [byte[]]::new($refsCluster + 19); $random.NextBytes($bytes)
+                [IO.File]::WriteAllBytes($path, $bytes)
+                foreach ($delta in -1, 0, 1) {
+                    $bytes = [byte[]]::new($refsCluster + $delta); $random.NextBytes($bytes)
+                    Set-Content -LiteralPath $path -Stream "edge-$delta" -Value $bytes -AsByteStream
+                }
+            }
+            $result.content = 'ordinary files with named streams around the target allocation unit'
+        }
         Say "  content: $($result.content)"
-        Capture-Settled (Join-Path $dir 'before.jsonl') $diskNumber
+        Capture-Settled (Join-Path $dir 'before.jsonl') $diskNumber ($Scenario -eq 'seeded')
         $null = New-Item -ItemType Directory -Force -Path $work
         $arguments = @('--drive', $letter, '--scratch-directory', $work, '--target-cluster-bytes', "$refsCluster", '--verify', $verify)
         if ($hold) { $arguments += @('--lab-hold-at', $hold, '--acknowledge-lab-hold-never-completes') }
+        if ($MemoryLimitMiB) { $arguments += @('--memory-limit', "$MemoryLimitMiB") }
+        if ($WriteTailsSingly) { $arguments += '--lab-write-tails-singly' }
+        if ($Scenario -eq 'handled-preparation') { $arguments += '--lab-fail-preparation-after-shadow' }
         $run = Invoke-Converter $arguments (Join-Path $dir 'convert') $hold $endAfter
         $result.convert_seconds = $run.seconds
+        $result.reached_hold = $run.held
+        $result.terminated = $run.ended
         if ($hold -and -not $run.held) { throw "the run ended with exit $($run.exit) without reporting its hold at $hold" }
         Say "  ntfs2refs $($arguments -join ' '): $(if ($run.held) { "held at $hold after $($run.seconds) s" } elseif ($run.ended) { "ended after $($run.seconds) s" } else { "exit $($run.exit) after $($run.seconds) s" })"
         $expect = 'ReFS'
-        if ($run.ended) {
+        if ($Scenario -eq 'handled-preparation') {
+            if ($run.exit -eq 0 -or $run.stderr -notmatch 'laboratory failure after shadow construction, before publication' -or $run.stderr -notmatch 'unchanged original NTFS restored') { throw 'the handled preparation failure did not restore NTFS' }
+            $expect = 'NTFS'
+        } elseif ($run.ended) {
             $recover = [regex]::Match($run.said, $recoverLine, 'Multiline')
             $cancel = [regex]::Match($run.said, $cancelLine)
+            if ($Scenario -eq 'cancel-preparation') {
+                $intent = if ($cancel.Success) { Join-Path $cancel.Groups[1].Value 'preparation-intent.json' }
+                if (-not $intent -or -not (Test-Path -LiteralPath $intent)) { throw 'The interrupted preparation did not preserve its guard' }
+            }
             $recovery = $null
             if ($kind -eq 'rollback' -and $recover.Success) { $recovery = @('--recover', $recover.Groups[1].Value, '--recovery-sha256', $recover.Groups[2].Value, '--rollback'); $expect = 'NTFS' }
             elseif ($recover.Success) { $recovery = @('--recover', $recover.Groups[1].Value, '--recovery-sha256', $recover.Groups[2].Value) }
@@ -373,6 +416,7 @@ for ($round = 1; ; $round++) {
             elseif ($hold) { throw "the run was held at $hold but had printed no `"To recover:`" line" }
             else { $expect = 'NTFS' }
             if ($recovery) {
+                $result.recovery_mode = if ($recovery -contains '--rollback') { 'rollback' } else { 'resume' }
                 $result.recovery = $recovery -join ' '
                 $again = Invoke-Converter $recovery (Join-Path $dir 'recover')
                 Say "  ntfs2refs $($result.recovery): exit $($again.exit) after $($again.seconds) s"
@@ -386,6 +430,7 @@ for ($round = 1; ; $round++) {
                         Say '  the run had published its recovery records: following the command its cancellation gave'
                         $recovery = @('--recover', $published.Groups[1].Value, '--recovery-sha256', $published.Groups[2].Value, '--rollback')
                         $result.recovery = $recovery -join ' '
+                        $result.recovery_mode = 'rollback'
                         $again = Invoke-Converter $recovery (Join-Path $dir 'recover-published')
                         Say "  ntfs2refs $($result.recovery): exit $($again.exit) after $($again.seconds) s"
                     }
@@ -415,6 +460,11 @@ for ($round = 1; ; $round++) {
             }
         }
         $volume = Wait-Volume $expect
+        if ($expect -eq 'ReFS') {
+            $info = & fsutil.exe fsinfo refsinfo "${letter}:" 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0 -or $info -notmatch 'ReFS Volume Version\s*:\s*([\d.]+)') { throw "Could not record the ReFS version: $info" }
+            $result.refs_version = $Matches[1]
+        }
         Capture (Join-Path $dir 'after.jsonl')
         $compare = @('compare', '--before', (Join-Path $dir 'before.jsonl'), '--after', (Join-Path $dir 'after.jsonl'), '--report', (Join-Path $dir 'report.json'))
         if ($expect -eq 'NTFS') { $compare += '--exact' }
@@ -425,12 +475,12 @@ for ($round = 1; ; $round++) {
             throw "the listings differ ($(if ($expect -eq 'NTFS') { 'exact' } else { 'with the allowances of a conversion' })): $($summary.Trim()); first: $($first -join ' | ')"
         }
         $result.outcome = if ($expect -eq 'ReFS') { 'converted' } else { 'ntfs-as-before' }
+        $result.manifest_matches = $true
         Say "  ${letter}: is $($volume.FileSystem) $($volume.HealthStatus); listings $(if ($expect -eq 'NTFS') { 'identical' } else { 'match' })"
         foreach ($leaf in 'before.jsonl', 'after.jsonl') { Remove-Item -LiteralPath (Join-Path $dir $leaf) -Force -ErrorAction SilentlyContinue }
     } catch {
         $result.outcome = 'FAILED'; $result.detail = "$_"
         Say "  FAILED: $_"
-        try { & $converter --list 2>&1 | Out-File -LiteralPath (Join-Path $dir 'list-after-failure.txt') -Encoding utf8 } catch { }
         $failed = $result
     } finally {
         # A run that is killed before it records anything to recover from
@@ -442,7 +492,32 @@ for ($round = 1; ; $round++) {
         $attached = { @(Get-ChildItem -LiteralPath $work -Recurse -Force -File -Filter *.vhdx -ErrorAction SilentlyContinue | ForEach-Object {
             try { Get-DiskImage -ImagePath $_.FullName -ErrorAction Stop } catch { } } | Where-Object { $_.Attached }) }
         $before = & $attached
-        if ($before) {
+        $result.attached_before_cleanup = @($before | ForEach-Object ImagePath)
+        if ($Scenario -eq 'handled-preparation' -and ($before -or $result.findings)) {
+            $result.outcome = 'FAILED'; $result.detail = 'handled preparation required harness assistance'; $failed = $result
+        }
+        $systemEvents = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = $roundStarted; Level = 1, 2, 3 } -ErrorAction SilentlyContinue |
+            Where-Object { $_.ProviderName -match 'ReFS|Ntfs|volmgr|disk|storport' })
+        $result.events = @($systemEvents | ForEach-Object { @{ provider = $_.ProviderName; id = $_.Id; record = $_.RecordId; time = $_.TimeCreated } })
+        if ($systemEvents) { $systemEvents | ForEach-Object { $_.ToXml() } | Set-Content -LiteralPath (Join-Path $dir 'storage-events.xml.txt') }
+        if ($failed -and $FailureStorage) {
+            try {
+                $target = Join-Path $FailureStorage $kind
+                if (Test-Path -LiteralPath $target) { throw "retention slot already exists at $target" }
+                $null = New-Item -ItemType Directory -Path $target
+                # The stopped process cannot mutate these files. Detach by exact image path before copying.
+                foreach ($path in @($result.attached_before_cleanup) + @($vhd)) {
+                    if ((Test-Path -LiteralPath $path) -and (Get-DiskImage -ImagePath $path).Attached) { Dismount-DiskImage -ImagePath $path | Out-Null }
+                }
+                $files = @((Get-Item -LiteralPath $vhd -ErrorAction SilentlyContinue)) + @(Get-ChildItem -LiteralPath $work -File -Recurse -Force -ErrorAction SilentlyContinue)
+                $volume = Get-Volume -FilePath $target
+                if ($volume.SizeRemaining -lt ($files | Measure-Object Length -Sum).Sum) { throw 'insufficient space for the failed round' }
+                if (Test-Path -LiteralPath $vhd) { Copy-Item -LiteralPath $vhd -Destination $target }
+                if (Test-Path -LiteralPath $work) { Copy-Item -LiteralPath $work -Destination $target -Recurse -Force }
+                $result.retention = 'kept'
+            } catch { $result.retention = "capture failed: $_" }
+        }
+        if (& $attached) {
             $listed = try { & $converter --list 2>&1 | Out-String } catch { "$_" }
             $listed | Out-File -LiteralPath (Join-Path $dir 'list-after-run.txt') -Encoding utf8
             $settled = @($before | Where-Object { $image = $_; -not (& $attached | Where-Object ImagePath -EQ $image.ImagePath) })
@@ -457,14 +532,16 @@ for ($round = 1; ; $round++) {
             Say "  FINDING: the run left $($image.ImagePath) attached (offline=$($disk.IsOffline), read-only=$($disk.IsReadOnly)); detached"
             try { Dismount-DiskImage -ImagePath $image.ImagePath | Out-Null } catch { Say "  could not detach it: $_" }
         }
+        $stillAttached = & $attached
         Remove-SoakDisk $vhd
         # Any virtual disk still attached after the round, wherever it lies.
         $stray = @(Get-Disk | Where-Object { $_.BusType -eq 'File Backed Virtual' })
         if ($stray) { Say "  attached virtual disks after the round: $(@($stray | ForEach-Object { "disk $($_.Number) offline=$($_.IsOffline) $([Math]::Round($_.Size / 1GB, 1)) GiB" }) -join ', ')" }
         Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         if (Test-Path -LiteralPath $work) { Say "  the working storage $work could not be removed entirely" }
+        $result.cleanup_ok = -not $stillAttached -and -not (Test-Path -LiteralPath $work) -and -not (Test-Path -LiteralPath $vhd)
         $results.Add([pscustomobject]$result)
-        ([pscustomobject]$result | ConvertTo-Json -Compress) | Add-Content -LiteralPath (Join-Path $Records 'rounds.jsonl') -Encoding utf8
+        ([pscustomobject]$result | ConvertTo-Json -Depth 8 -Compress) | Add-Content -LiteralPath (Join-Path $Records 'rounds.jsonl') -Encoding utf8
     }
     if ($failed) { break }
 }

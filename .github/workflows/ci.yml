@@ -57,6 +57,9 @@ jobs:
           cargo clippy --locked --workspace --all-targets
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Test the release qualification gate
+        run: ./.github/scripts/Test-ReleaseQualification.ps1
+
   tests:
     name: tests
     runs-on: windows-2025
@@ -121,4 +124,11 @@ jobs:
             target/release/ntfs2refs.exe
             target/release/ntfs2refs-recovery.exe
             target/release/lab-volume-manifest.exe
+          if-no-files-found: error
           retention-days: 14
+
+  native:
+    needs: release-build
+    uses: ./.github/workflows/native-regression.yml
+    with:
+      binaries: ntfs2refs-${{ github.sha }}

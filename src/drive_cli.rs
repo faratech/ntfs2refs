@@ -249,6 +249,14 @@ pub struct DriveArgs {
     /// Laboratory: separate acknowledgement that a held run never completes.
     #[arg(long, hide = true, requires = "lab_hold_at")]
     pub acknowledge_lab_hold_never_completes: bool,
+    /// Laboratory: return a handled error before publication after constructing the shadow.
+    #[arg(long, hide = true, requires = "drive",
+        conflicts_with_all = ["list", "recover", "rollback", "diagnose", "check", "lab_hold_at", "lab_fail_at", "offline_recovery_media"])]
+    pub lab_fail_preparation_after_shadow: bool,
+    /// Laboratory: exercise the materializer without RAM for pending tail batches.
+    #[arg(long, hide = true, requires = "drive",
+        conflicts_with_all = ["list", "recover", "rollback", "diagnose", "check", "offline_recovery_media"])]
+    pub lab_write_tails_singly: bool,
     /// Laboratory: make a run that restarts the machine fail at a named
     /// point, so that each way back from there can be exercised.
     #[arg(long, hide = true, value_name = "POINT",
@@ -1279,6 +1287,12 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             args.lab_fail_at.is_none(),
             "laboratory failure points apply only to a run that restarts the machine: a partition on the running Windows disk"
         );
+        if args.lab_fail_preparation_after_shadow {
+            crate::resource_preparation::arm_failure_after_shadow();
+        }
+        if args.lab_write_tails_singly {
+            crate::general_shadow::paged_supply::routed::write_tails_singly_for_lab();
+        }
         if args.review {
             // The parser refuses these too; this holds whatever built the
             // arguments. A Windows boot volume is not started half way.
@@ -2060,7 +2074,7 @@ The machine restarts, possibly more than once. Do not switch it off while the co
         })();
         let (before, provider_commitment) = match prepared {
             Ok(prepared) => prepared,
-            Err(error) => return Err(stopped_unrecorded(staged, &run, error)),
+            Err(error) => return Err(retire_failed_preparation(staged, &run, error)),
         };
         let result = super::resource::convert_owned_with_provider_commitment(
             n2r_win32::general_layout::GeneralSourceShadowBinding {
@@ -2091,7 +2105,7 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             Ok(super::resource::ConversionOutcome::Diagnosed(outcome)) => {
                 // The shadow was built only to be examined; nothing was
                 // published from it, so it is detached and removed.
-                let retirement = staged.retire_after_diagnose();
+                let retirement = staged.retire_unpublished();
                 if !retirement.success() {
                     eprintln!(
                         "Diagnose finished, but its temporary shadow could not be removed (stopped at {}: {}). It remains in {}.",
@@ -2214,11 +2228,9 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                 let committed = e
                     .downcast_ref::<crate::resource_finalize::CommittedFinalizationError>()
                     .is_some();
-                // A run that stopped before its preparation intent was
-                // written has nothing a recovery could start from, and its
-                // working volume serves nothing (#201).
-                if !committed && super::staging::recorded_nothing(&run) {
-                    return Err(stopped_unrecorded(staged, &run, e));
+                let restored = e.is::<crate::resource_preparation::RestoredBeforePublication>();
+                if !committed && (restored || super::staging::recorded_nothing(&run)) {
+                    return Err(retire_failed_preparation(staged, &run, e));
                 }
                 // Preserve the permanent attachment/backing on every other
                 // error, including committed-but-incomplete native
@@ -2256,24 +2268,24 @@ The machine restarts, possibly more than once. Do not switch it off while the co
         )
     }
 
-    /// A run that stopped before it recorded anything to recover from: its
-    /// working volume serves nothing, and is retired as a diagnose run's is,
+    /// A run with no outstanding preparation or published recovery: its
+    /// working volume is retired as a diagnose run's is,
     /// frozen, detached and removed. Where that stops short, a detach by its
     /// path is tried. The run's error is returned; if the volume is still
     /// attached after both, that error says so and how to detach it.
-    fn stopped_unrecorded(
+    fn retire_failed_preparation(
         staged: super::staging::StageOwner,
         run: &std::path::Path,
         error: anyhow::Error,
     ) -> anyhow::Error {
         let shadow = run.join("shadow.vhdx");
-        let retirement = staged.retire_unrecorded();
+        let retirement = staged.retire_unpublished();
         if let Err(save) = save_new(&run.join("shadow-retirement.json"), &retirement) {
             eprintln!("The record of the working volume's removal could not be saved: {save:#}");
         }
         if retirement.success() {
             eprintln!(
-                "The run stopped before it recorded anything to recover from. The working volume it had built was detached and removed; nothing in {} is needed any more, and the folder can be deleted.",
+                "The working volume was detached and removed. The folder {} can be deleted after collecting any logs you want to keep.",
                 run.display()
             );
             return error;
@@ -2290,14 +2302,14 @@ The machine restarts, possibly more than once. Do not switch it off while the co
         match detached {
             Ok(_) => {
                 eprintln!(
-                    "The run stopped before it recorded anything to recover from. Its working volume {} is detached ({removal}); nothing in {} is needed any more, and the folder can be deleted.",
+                    "The working volume {} is detached ({removal}). The folder {} can be deleted after collecting any logs you want to keep.",
                     shadow.display(),
                     run.display()
                 );
                 error
             }
             Err(detach) => error.context(format!(
-                "the run stopped before it recorded anything to recover from, and its working volume {} is still attached: {removal}, and detaching it then failed ({detach}). Detach it by hand, {}; then {} can be deleted. What stopped the run",
+                "the working volume {} may still be attached: {removal}, and detaching it then failed ({detach}). Detach it by hand, {}; then {} can be deleted. What stopped the run",
                 shadow.display(),
                 detach_by_hand(&shadow),
                 run.display()

@@ -7,6 +7,12 @@ See [AGENTS.md](../AGENTS.md) for the VM identities and standing rules, and the
 [feature matrix](../docs/feature-matrix.md) and the
 [recovery matrix](../docs/recovery-matrix.md) for what the attempts have shown.
 
+The release workflow runs the gate round against the exact signed candidate
+and publishes a candidate-specific recovery matrix in `QUALIFICATION.md`.
+The checked-in matrix contains historical attempts. See the
+[release workflow guide](../.github/CI.md#the-release) for runner setup and
+forensics retention.
+
 ## The gate round
 
 Everything AGENTS.md asks for before a change is committed, for one build, on

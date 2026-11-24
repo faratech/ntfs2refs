@@ -12,6 +12,8 @@ use std::{
 
 /// Every place a hold can be put, in the order a conversion reaches them.
 pub const POINTS: &[&str] = &[
+    // The shadow is built and the preparation guard is live; no publication.
+    "preparation-shadow-built",
     // The apply marker is durable and the source is writable; nothing written.
     "apply-activated",
     // Half of the changed ranges are written, none of them flushed.

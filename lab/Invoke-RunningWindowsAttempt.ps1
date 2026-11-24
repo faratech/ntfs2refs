@@ -106,6 +106,7 @@ function Wait-Guest([int]$Minutes) {
     return $null
 }
 $verdict = [ordered]@{ name = $Name; vm_id = $VmId; started = (Get-Date).ToString('o'); outcome = 'harness-error' }
+$verdict.converter_sha256 = (Get-FileHash -LiteralPath $Binary).Hash.ToLowerInvariant()
 function Save-Verdict { [IO.File]::WriteAllText((Join-Path $records 'verdict.json'), ($verdict | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false)) }
 
 # The VM's screen as Hyper-V shows it (800 by 600, two bytes a pixel), which

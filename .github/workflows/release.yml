@@ -1,26 +1,24 @@
 name: Release
 
-# A pushed version tag (such as 0.0.1) on a commit of main: the executables
-# built from it, signed with Azure Artifact Signing (Fara Technologies LLC,
-# then Mike Fara), packed by lab/New-Release.ps1, attested, and published as
-# the GitHub release of that tag. The signing credentials are secrets of the
-# `release` environment, which only version tags and main may use.
+# Dispatch from main for an existing version tag on main. Qualify the exact
+# signed executables before packaging. Publish only on explicit request.
 on:
-  push:
-    tags:
-      - '[0-9]+.[0-9]+.[0-9]+*'
   workflow_dispatch:
     inputs:
       tag:
         description: 'The tag to release: it has to exist and be on main'
         required: true
         type: string
+      publish:
+        description: 'Publish after the qualification and package checks pass'
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  group: release-${{ inputs.tag }}
   cancel-in-progress: false
 
 env:
@@ -28,19 +26,20 @@ env:
 
 jobs:
   build:
-    name: build, sign and pack
+    if: github.ref == 'refs/heads/main'
+    name: build and sign
     runs-on: windows-2025
     timeout-minutes: 60
     environment: release
     permissions:
       contents: read
-      id-token: write
-      attestations: write
+      actions: read
     outputs:
       tag: ${{ steps.source.outputs.tag }}
       sha: ${{ steps.source.outputs.sha }}
       version: ${{ steps.source.outputs.version }}
       prerelease: ${{ steps.source.outputs.prerelease }}
+      candidate: signed-candidate-${{ github.run_id }}-${{ github.run_attempt }}
     defaults:
       run:
         shell: pwsh
@@ -48,14 +47,15 @@ jobs:
       - name: Check out the tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: refs/tags/${{ inputs.tag }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Check the tag
         id: source
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:TAG -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { throw "not a version tag: $env:TAG" }
@@ -66,7 +66,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "tag $env:TAG ($sha) is not on main" }
           $version = [regex]::Match((Get-Content -Raw Cargo.toml), '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
           if ($version -ne $env:TAG) { throw "Cargo.toml says $version, the tag $env:TAG" }
-          "tag=$env:TAG", "sha=$sha", "version=$version", "prerelease=$(if ($version.Contains('-')) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $channel = (Get-Content -LiteralPath .github/release-channel.txt -Raw).Trim()
+          if ($channel -cnotin 'prerelease', 'stable') { throw 'Set the release channel explicitly to prerelease or stable' }
+          $ci = gh run list --workflow ci.yml --commit $sha --branch main --event push --limit 20 --json conclusion,headSha | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not ($ci | Where-Object { $_.headSha -ceq $sha -and $_.conclusion -eq 'success' })) { throw "No successful main CI run for $sha" }
+          "tag=$env:TAG", "sha=$sha", "version=$version", "prerelease=$($channel -eq 'prerelease')".ToLowerInvariant() | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "Release $env:TAG from $sha" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
       - name: Install the pinned toolchain
@@ -127,8 +131,103 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "the second signature is missing or invalid: $file" }
           }
 
-      - name: Pack
-        run: ./lab/New-Release.ps1 -Binaries "$env:RUNNER_TEMP\dist\bin" -Output "$env:RUNNER_TEMP\dist\release"
+      - name: Record the signed candidate
+        env:
+          TAG: ${{ steps.source.outputs.tag }}
+          COMMIT: ${{ steps.source.outputs.sha }}
+        run: |
+          $hashes = [ordered]@{}
+          foreach ($exe in Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/dist/bin" -Filter *.exe) { $hashes[$exe.Name] = (Get-FileHash -LiteralPath $exe.FullName).Hash.ToLowerInvariant() }
+          if ($hashes.Count -ne 3) { throw 'Expected three executables' }
+          @{ schema = 1; tag = $env:TAG; commit = $env:COMMIT; request = "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"; hashes = $hashes } |
+            ConvertTo-Json | Set-Content -LiteralPath "$env:RUNNER_TEMP/dist/candidate.json" -Encoding utf8
+      - name: Keep the signed candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signed-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dist
+          if-no-files-found: error
+          retention-days: 30
+      - name: Keep executable inputs for hosted qualification
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signed-binaries-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dist/bin/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  native:
+    needs: build
+    uses: ./.github/workflows/native-regression.yml
+    with:
+      binaries: signed-binaries-${{ github.run_id }}-${{ github.run_attempt }}
+      source: ${{ needs.build.outputs.sha }}
+
+  soak:
+    needs: [build, native]
+    uses: ./.github/workflows/soak.yml
+    with:
+      binaries: signed-binaries-${{ github.run_id }}-${{ github.run_attempt }}
+      source: ${{ needs.build.outputs.sha }}
+
+  lab:
+    needs: [build, native]
+    runs-on: windows-2025
+    timeout-minutes: 360
+    environment: lab-qualification
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run the protected Hyper-V qualification
+        env:
+          GH_TOKEN: ${{ secrets.LAB_QUALIFICATION_TOKEN }}
+          LAB_REPOSITORY: ${{ vars.LAB_QUALIFICATION_REPOSITORY }}
+          COMMIT: ${{ needs.build.outputs.sha }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: ./.github/scripts/Invoke-PrivateQualification.ps1 -Repository $env:LAB_REPOSITORY -Commit $env:COMMIT -Tag $env:TAG -Output "$env:RUNNER_TEMP/lab"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-lab
+          path: ${{ runner.temp }}/lab/lab.json
+          if-no-files-found: error
+          retention-days: 30
+
+  package:
+    needs: [build, native, soak, lab]
+    runs-on: windows-2025
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build.outputs.candidate }}
+          path: ${{ runner.temp }}/dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: '{native-*,soak-records-*,release-lab}'
+          path: ${{ runner.temp }}/evidence
+      - name: Verify qualifying evidence and pack
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+          COMMIT: ${{ needs.build.outputs.sha }}
+        run: |
+          ./.github/scripts/Confirm-ReleaseQualification.ps1 -Candidate "$env:RUNNER_TEMP/dist" -Evidence "$env:RUNNER_TEMP/evidence" -Tag $env:TAG -Commit $env:COMMIT -Request "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" -Output "$env:RUNNER_TEMP/qualification"
+          ./.github/scripts/Install-Toolchain.ps1
+          ./lab/New-Release.ps1 -Binaries "$env:RUNNER_TEMP/dist/bin" -Output "$env:RUNNER_TEMP/dist/release" -Qualification "$env:RUNNER_TEMP/qualification"
+          Expand-Archive -LiteralPath "$env:RUNNER_TEMP/dist/release/ntfs2refs-$env:TAG-windows-x64.zip" -DestinationPath "$env:RUNNER_TEMP/unpacked"
+          $manifest = Get-Content -LiteralPath "$env:RUNNER_TEMP/dist/candidate.json" -Raw | ConvertFrom-Json -AsHashtable
+          foreach ($name in $manifest.hashes.Keys) {
+            if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP/unpacked/$name").Hash.ToLowerInvariant() -cne $manifest.hashes[$name]) { throw "Packaging changed $name" }
+          }
 
       - name: Attest
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -140,13 +239,14 @@ jobs:
       - name: Keep the release
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-${{ steps.source.outputs.tag }}
+          name: release-${{ needs.build.outputs.tag }}
           path: ${{ runner.temp }}/dist/release
           retention-days: 90
 
   publish:
     name: publish
-    needs: build
+    if: inputs.publish
+    needs: [build, package]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -169,6 +269,8 @@ jobs:
           {
             cat RELEASE-NOTES.md
             echo
+            cat QUALIFICATION.md
+            echo
             echo '## Verify the download'
             echo
             echo 'The executables are signed by Fara Technologies LLC and by Mike Fara (Azure Artifact Signing), and the ZIP and executables carry a build-provenance attestation of this repository'"'"'s release workflow:'
@@ -180,4 +282,4 @@ jobs:
           flags=()
           if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); else flags+=(--latest); fi
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "ntfs2refs $TAG" --notes-file notes.md "${flags[@]}" \
-            "ntfs2refs-$TAG-windows-x64.zip" "ntfs2refs-$TAG-windows-x64.zip.sha256"
+            "ntfs2refs-$TAG-windows-x64.zip" "ntfs2refs-$TAG-windows-x64.zip.sha256" QUALIFICATION.json

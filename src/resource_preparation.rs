@@ -91,6 +91,27 @@ impl std::fmt::Display for DiagnoseStop {
 }
 impl std::error::Error for DiagnoseStop {}
 
+/// The live guard closed before publication and verified that NTFS is back.
+/// The owning CLI may retire the shadow even though the intent file exists.
+#[derive(Debug)]
+pub(crate) struct RestoredBeforePublication(u32);
+
+impl std::fmt::Display for RestoredBeforePublication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "conversion failed before publication; unchanged original NTFS restored on disk {}",
+            self.0
+        )
+    }
+}
+
+static FAIL_AFTER_SHADOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn arm_failure_after_shadow() {
+    FAIL_AFTER_SHADOW.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The apply closure a diagnose run does not have.
 type NeverApplied<O> = for<'journal, 'domain, 'capture, 'proof, 'scope, 'expected> fn(
     ResourcePreparedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>,
@@ -1524,6 +1545,10 @@ where
             Goal::Convert(consume) => consume,
         };
         events.phase("source-after-shadow-construction");
+        n2r_win32::lab_hold::reached("preparation-shadow-built");
+        if FAIL_AFTER_SHADOW.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            anyhow::bail!("laboratory failure after shadow construction, before publication");
+        }
         context.recheck_source(&mut events)?;
         events.checkpoint()?;
         let shadow_ram = arena.reserve_ram(
@@ -1895,7 +1920,7 @@ where
                                 }));
                             }
                         }
-                        Err(original.context(format!("conversion failed before publication; unchanged original NTFS restored on disk {}", mounted.disk_number)))
+                        Err(original.context(RestoredBeforePublication(mounted.disk_number)))
                     }
                     Err(cleanup) => Err(original.context(format!("conversion failed before publication; original NTFS cleanup did not complete and source may remain excluded or already be online: {cleanup:#}"))),
                 }

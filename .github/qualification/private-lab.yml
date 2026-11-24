@@ -1,0 +1,72 @@
+# Install as .github/workflows/ntfs2refs-qualification.yml in the private lab repository.
+name: ntfs2refs qualification
+run-name: ntfs2refs qualification ${{ inputs.request }}
+on:
+  workflow_dispatch:
+    inputs:
+      request: { type: string, required: true }
+      release_run: { type: string, required: true }
+      commit: { type: string, required: true }
+      tag: { type: string, required: true }
+
+permissions: {}
+concurrency:
+  group: ntfs2refs-lab
+  cancel-in-progress: false
+
+jobs:
+  lab:
+    runs-on: [self-hosted, windows, x64, ntfs2refs-qualification]
+    timeout-minutes: 360
+    environment: ntfs2refs-lab
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Validate release run
+        env:
+          GH_TOKEN: ${{ secrets.N2R_PUBLIC_ARTIFACT_TOKEN }}
+          RELEASE_RUN: ${{ inputs.release_run }}
+          REQUEST: ${{ inputs.request }}
+          COMMIT: ${{ inputs.commit }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_RUN -notmatch '^\d+$' -or $env:REQUEST -notmatch "^$($env:RELEASE_RUN)-\d+$" -or $env:COMMIT -cnotmatch '^[0-9a-f]{40}$' -or $env:TAG -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { throw 'Invalid candidate identity' }
+          $run = gh api "repos/faratech/ntfs2refs/actions/runs/$env:RELEASE_RUN" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $run.head_branch -ne 'main' -or $run.path -ne '.github/workflows/release.yml' -or $run.event -ne 'workflow_dispatch') { throw 'Expected a release workflow dispatch from main' }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: faratech/ntfs2refs
+          ref: ${{ inputs.commit }}
+          fetch-depth: 0
+          clean: false
+          persist-credentials: false
+      - name: Qualify the signed candidate
+        env:
+          GH_TOKEN: ${{ secrets.N2R_PUBLIC_ARTIFACT_TOKEN }}
+          RELEASE_RUN: ${{ inputs.release_run }}
+          REQUEST: ${{ inputs.request }}
+          COMMIT: ${{ inputs.commit }}
+          TAG: ${{ inputs.tag }}
+          LAB_ROOT: ${{ vars.N2R_LAB_ROOT }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git merge-base --is-ancestor $env:COMMIT origin/main
+          if ($LASTEXITCODE -ne 0 -or (git rev-parse "refs/tags/$env:TAG^{commit}") -cne $env:COMMIT) { throw 'Candidate must be tagged on main' }
+          if (-not (Test-Path -LiteralPath $env:LAB_ROOT -PathType Container)) { throw 'Configure the private .lab directory in N2R_LAB_ROOT' }
+          if (-not (Test-Path -LiteralPath .lab)) { $null = New-Item -ItemType Junction -Path .lab -Target $env:LAB_ROOT }
+          $link = Get-Item -LiteralPath .lab
+          if ($link.LinkType -ne 'Junction' -or [string]$link.Target -ne $env:LAB_ROOT) { throw 'The checkout .lab path is not the configured lab junction' }
+          $candidate = Join-Path $env:RUNNER_TEMP "candidate-$env:REQUEST"
+          gh run download $env:RELEASE_RUN --repo faratech/ntfs2refs --name "signed-candidate-$env:REQUEST" --dir $candidate
+          if ($LASTEXITCODE -ne 0) { throw 'Could not download signed candidate' }
+          Remove-Item Env:GH_TOKEN
+          ./lab/Invoke-ReleaseQualification.ps1 -Candidate $candidate -Output (Join-Path $env:RUNNER_TEMP "lab-$env:REQUEST") -Tag $env:TAG -Commit $env:COMMIT -Request $env:REQUEST
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: lab-${{ inputs.request }}
+          path: ${{ runner.temp }}/lab-${{ inputs.request }}
+          if-no-files-found: error
+          retention-days: 30

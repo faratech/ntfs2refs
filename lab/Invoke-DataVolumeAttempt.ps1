@@ -844,6 +844,7 @@ public static class SiblingRaw {
     # What the converter took, at its largest over the attempt: sampled each
     # time the wait below looks whether it has ended.
     $usage = @{ peak_working_set = 0L; private_bytes = 0L; working_bytes = 0L; samples = 0 }
+    $measureScaling = 'manyfiles' -in $wanted
     function Wait-Worker([string]$Root, [string]$HoldAt, [string]$StopInPhase) {
         $deadline = (Get-Date).AddMinutes($TimeoutMinutes); $held = $false; $stopped = $false; $poweredOff = $false; $backSeconds = $null
         # With -PowerOffDuringPreparation the converter is not ended in the
@@ -851,8 +852,8 @@ public static class SiblingRaw {
         $turnOff = [bool]($StopInPhase -and $PowerOffDuringPreparation)
         do {
             if (-not $StopInPhase -or $stopped) { Start-Sleep -Seconds 2 }
-            $state = Invoke-Command -Session $session -ArgumentList $Root, ([bool]$HoldAt -and -not $held), $(if ($stopped) { '' } else { $StopInPhase }), $turnOff, $TakeMemoryMB, $TakeMemoryAt -ScriptBlock {
-                param($root, $watchHold, $phase, $turnOff, $takeMB, $takeAt)
+            $state = Invoke-Command -Session $session -ArgumentList $Root, ([bool]$HoldAt -and -not $held), $(if ($stopped) { '' } else { $StopInPhase }), $turnOff, $TakeMemoryMB, $TakeMemoryAt, $measureScaling -ScriptBlock {
+                param($root, $watchHold, $phase, $turnOff, $takeMB, $takeAt, $measureScaling)
                 $ended = (Test-Path "$root\native-terminal.json") -or (Test-Path "$root\worker-error.txt")
                 $atHold = $false; $inPhase = $false; $shown = ''; $taken = $null
                 if ($takeMB -gt 0 -and -not $ended -and -not (Test-Path "$root\memory-taken.txt") -and (Test-Path "$root\stdout.log") -and
@@ -896,13 +897,43 @@ public static class SiblingRaw {
                 # the working files come and go, between the look and the reading.
                 $sample = { param($take) try { [long](& $take) } catch { 0L } }
                 $running = @(Get-Process -Name ntfs2refs -ErrorAction SilentlyContinue)
+                $workingBytes = & $sample { (Get-ChildItem -LiteralPath $(if (Test-Path -LiteralPath 'M:\runs') { 'M:\runs' } else { 'S:\datalab\runs' }) -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum }
+                $sampleLines = if ($measureScaling -and $running.Count) {
+                    $exe = Join-Path $root 'ntfs2refs.exe'
+                    $processes = Get-CimInstance Win32_Process -Filter "Name = 'ntfs2refs.exe'" -ErrorAction SilentlyContinue |
+                        Where-Object { $_.ExecutablePath -ieq $exe -and $null -ne $_.CreationDate }
+                    if ($processes) {
+                        $memory = Get-CimInstance Win32_PerfRawData_PerfOS_Memory -ErrorAction SilentlyContinue
+                        $committedBytes = if ($memory) { $memory.CommittedBytes }
+                        $commitLimitBytes = if ($memory) { $memory.CommitLimit }
+                        $utc = [DateTime]::UtcNow.ToString('o')
+                        foreach ($process in $processes) {
+                            [ordered]@{ sampled_utc = $utc; executable = $exe; process_id = $process.ProcessId
+                                started_utc = $process.CreationDate.ToUniversalTime().ToString('o')
+                                handles = $process.HandleCount; working_set_bytes = $process.WorkingSetSize
+                                private_bytes = $process.PrivatePageCount; process_read_bytes = $process.ReadTransferCount
+                                process_write_bytes = $process.WriteTransferCount
+                                guest_committed_bytes = $committedBytes
+                                guest_commit_limit_bytes = $commitLimitBytes
+                                working_storage_bytes = $workingBytes } | ConvertTo-Json -Compress
+                        }
+                    }
+                }
                 [pscustomobject]@{ ended = $ended; at_hold = $atHold; in_phase = $inPhase; shown = $shown; taken = $taken
+                    resource_jsonl = $sampleLines -join [Environment]::NewLine
                     free_memory_bytes = & $sample { (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory * 1KB }
                     peak_working_set = & $sample { ($running | Measure-Object PeakWorkingSet64 -Maximum).Maximum }
                     private_bytes = & $sample { ($running | Measure-Object PrivateMemorySize64 -Maximum).Maximum }
-                    working_bytes = & $sample { (Get-ChildItem -LiteralPath $(if (Test-Path -LiteralPath 'M:\runs') { 'M:\runs' } else { 'S:\datalab\runs' }) -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum } }
+                    working_bytes = $workingBytes }
             }
             foreach ($measure in 'peak_working_set', 'private_bytes', 'working_bytes') { if ($state.$measure -gt $usage[$measure]) { $usage[$measure] = $state.$measure } }
+            if ($state.resource_jsonl) {
+                try {
+                    [IO.File]::AppendAllText($resourceSamples, $state.resource_jsonl + [Environment]::NewLine)
+                } catch {
+                    throw "Recording process resources for $Root in $resourceSamples failed: $($_.Exception.GetBaseException().Message)"
+                }
+            }
             $usage.samples++
             if ($state.taken) {
                 $verdict.memory_taken = $state.taken
@@ -1148,6 +1179,11 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     $arguments += $ConverterArgs
     $verdict.converter_arguments = $arguments
     $task = "N2R-DataLab-$Name"
+    if ($measureScaling) {
+        $verdict.resource_samples = 'worker-resources.jsonl'
+        $resourceSamples = Join-Path $records $verdict.resource_samples
+        [IO.File]::WriteAllText($resourceSamples, '', [Text.UTF8Encoding]::new($false))
+    }
     Start-Worker $guestRoot $arguments $task
     Say "converter started: ntfs2refs $($arguments -join ' ')"
     $waited = Wait-Worker $guestRoot $InterruptAt $StopDuringPreparation
@@ -1309,22 +1345,34 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     }
     if ($InterruptAt) {
         # The interrupted run's own output, then the recovery it printed.
-        foreach ($leaf in 'stdout.log', 'stderr.log') {
+        $interruptedLogs = @('stdout.log', 'stderr.log')
+        if ($SampleStacks) { $interruptedLogs += 'stacks.txt' }
+        foreach ($leaf in $interruptedLogs) {
             try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\$leaf" -Destination (Join-Path $records "interrupted-$leaf") } catch { }
         }
         if (-not $waited.held) { $verdict.outcome = 'hold-not-reached'; throw "the converter ended without reporting its hold at '$InterruptAt'" }
         $printed = Select-String -LiteralPath (Join-Path $records 'interrupted-stdout.log') -Pattern '^To recover: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64})' | Select-Object -Last 1
         if (-not $printed) { $verdict.outcome = 'interrupted-without-recovery-command'; throw 'the interrupted run printed no "To recover:" line' }
         $recover = @('--recover', $printed.Matches[0].Groups[1].Value, '--recovery-sha256', $printed.Matches[0].Groups[2].Value)
+        if ($measureScaling) {
+            # Keep the two measurements under the same requested ceiling.
+            $limit = @($arguments | Where-Object { $_ -like '--memory-limit=*' })
+            $at = [array]::IndexOf([string[]]$arguments, '--memory-limit')
+            if ($at -ge 0) { $limit = @('--memory-limit', $arguments[$at + 1]) }
+            $recover += $limit
+        }
         if ($RecoverMode -eq 'rollback') { $recover += '--rollback' }
         if ($Unattended) { $recover += '--yes' }
-        $verdict.interrupted_at = $InterruptAt; $verdict.recover_mode = $RecoverMode; $verdict.recovery_arguments = $recover
         # A folder of its own, so the interrupted run's records stay as they are.
         $guestRoot = "$guestRoot\recover"
-        Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
-            param($root)
+        if ($SampleStacks) { $recover += @('--sample-stacks', "$guestRoot\stacks.txt") }
+        $verdict.interrupted_at = $InterruptAt; $verdict.recover_mode = $RecoverMode; $verdict.recovery_arguments = $recover
+        Invoke-Command -Session $session -ArgumentList $guestRoot, ([bool]$SampleStacks) -ScriptBlock {
+            param($root, $includeSymbols)
             $null = New-Item -ItemType Directory -Path $root -Force
-            foreach ($leaf in 'ntfs2refs.exe', 'lab-volume-manifest.exe', 'worker.ps1', 'manifest-before.jsonl') { Copy-Item -LiteralPath (Join-Path (Split-Path $root) $leaf) -Destination $root }
+            $files = @('ntfs2refs.exe', 'lab-volume-manifest.exe', 'worker.ps1', 'manifest-before.jsonl')
+            if ($includeSymbols) { $files += 'ntfs2refs.pdb' }
+            foreach ($leaf in $files) { Copy-Item -LiteralPath (Join-Path (Split-Path $root) $leaf) -Destination $root }
         }
         Start-Worker $guestRoot $recover $task
         Say "recovery started: ntfs2refs $($recover -join ' ')"

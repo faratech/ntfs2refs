@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img alt="version 0.0.4" src="https://img.shields.io/badge/version-0.0.4-0078D6">
+  <img alt="version 0.0.5" src="https://img.shields.io/badge/version-0.0.5-0078D6">
   <img alt="status: experimental" src="https://img.shields.io/badge/status-experimental-orange">
   <img alt="Windows 11 | Windows Server 2025" src="https://img.shields.io/badge/Windows-11%20%7C%20Server%202025-0078D6">
   <img alt="licence: evaluation only" src="https://img.shields.io/badge/licence-evaluation%20only-red">
@@ -84,5 +84,5 @@ Rust 1.100.0, Windows x64 (MSVC). Contributors: [AGENTS.md](AGENTS.md) and the [
 
 ## Licence
 
-Version 0.0.4 · © 2026 Fara Technologies LLC · temporary evaluation licence,
+Version 0.0.5 · © 2026 Fara Technologies LLC · temporary evaluation licence,
 all rights reserved: see [LICENSE](LICENSE). Not affiliated with Microsoft.

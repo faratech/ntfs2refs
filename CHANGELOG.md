@@ -3,7 +3,7 @@
 What changed for someone who runs the converter. The measurements behind each
 entry are in the pull request named beside it and in `docs/performance.md`.
 
-## Unreleased
+## 0.0.5
 
 - Fixed conversion failures when an NTFS alternate data stream uses a ReFS
   carrier and its tail would have joined a parallel write. A failed batch

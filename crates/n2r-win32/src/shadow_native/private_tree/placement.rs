@@ -85,8 +85,7 @@ const MAX_SCRATCH_INTERVALS: usize = 2 * 65_536 + MAX_PLACEMENT_RANGES + 2;
 /// Fresh-snapshot re-plans allowed in each of the deferred and final phases
 /// after the mover finds a planned destination allocated since the snapshot.
 const MAX_DRIFT_REPLANS: usize = 8;
-/// The mover's refusal text for that case (unwritten.rs, ResourceBusy).
-const DRIFT_REFUSAL: &str = "private placement requires both current bitmap views free";
+
 /// Evidence reservation allowance: one extra extent per this many bytes moved.
 const SPLIT_ALLOWANCE_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -157,6 +156,7 @@ struct Counters {
     placement_artifact_bytes: usize,
     placement_artifact_bytes_limit: usize,
     phase_bitmap_snapshots: usize,
+    evacuation_drift_replans: usize,
     deferred_drift_replans: usize,
     final_drift_replans: usize,
     drift_replans_limit_per_phase: usize,
@@ -414,11 +414,7 @@ fn uncharge_move(tree: &mut PrivateTree, used: &mut u64, length: u64) {
 /// submission count, so the step may be planned again from a fresh snapshot.
 /// Every other error, including any native one, stays fatal.
 fn destination_drifted(error: &io::Error) -> bool {
-    error.kind() == io::ErrorKind::ResourceBusy
-        && error.raw_os_error().is_none()
-        && error
-            .get_ref()
-            .is_some_and(|inner| inner.to_string() == DRIFT_REFUSAL)
+    unwritten::OccupiedDestination::from_error(error).is_some()
 }
 
 /// Bytes `value` adds to the saved document as one element of a top-level
@@ -2497,277 +2493,296 @@ fn run_domain_inner(
             None,
         )?;
     }
-    let owned_memory = if limits.resource {
-        let tracked = tree.files.values().try_fold(0usize, |n, file| {
-            n.checked_add(file.tracked_mappings().len())
-                .ok_or_else(|| invalid("tracked count overflow"))
-        })?;
-        if tracked > limits.tracked {
-            return Err(invalid("resource tracked extent index exhausted"));
-        }
-        Some(
-            payer
-                .as_deref()
-                .ok_or_else(|| invalid("ownership payer absent"))?
-                .reserve(memory::placement_ownership_bytes(tracked, avoid.len())?)?,
-        )
-    } else {
-        None
-    };
-    let mut owned = Vec::new();
-    let mut eligible = Vec::new();
-    for index in &indexes {
-        let file = tree.file_by_slot(*index)?;
-        if !(deferred_after_evacuation && crate::verify_policy::verifies_once()) {
-            file.check_placements()?;
-        }
-        for &(v, l, n) in file.tracked_mappings() {
-            owned.push(shadow_evacuation::Extent {
-                file_index: u32::try_from(*index)
-                    .map_err(|_| invalid("placement slot exceeds planner identity"))?,
-                logical_offset: cluster_span(v, n)?.0,
-                physical_offset: cluster_span(l, n)?.0,
-                length: u64::from(n) * cluster(),
-            });
-        }
-        for run in &desired[index] {
-            let remaining;
-            let runs = if recovered.is_some() {
-                remaining = unfinished_runs(file, run, limits.tracked)?;
-                remaining.as_slice()
-            } else {
-                std::slice::from_ref(run)
-            };
-            for run in runs {
-                eligible.push(shadow_evacuation::Extent {
+    'evacuation: loop {
+        let _owned_memory = if limits.resource {
+            let tracked = tree.files.values().try_fold(0usize, |n, file| {
+                n.checked_add(file.tracked_mappings().len())
+                    .ok_or_else(|| invalid("tracked count overflow"))
+            })?;
+            if tracked > limits.tracked {
+                return Err(invalid("resource tracked extent index exhausted"));
+            }
+            Some(
+                payer
+                    .as_deref()
+                    .ok_or_else(|| invalid("ownership payer absent"))?
+                    .reserve(memory::placement_ownership_bytes(tracked, avoid.len())?)?,
+            )
+        } else {
+            None
+        };
+        let mut owned = Vec::new();
+        let mut eligible = Vec::new();
+        for index in &indexes {
+            let file = tree.file_by_slot(*index)?;
+            if counters.evacuation_drift_replans != 0
+                || !(deferred_after_evacuation && crate::verify_policy::verifies_once())
+            {
+                file.check_placements()?;
+            }
+            for &(v, l, n) in file.tracked_mappings() {
+                owned.push(shadow_evacuation::Extent {
                     file_index: u32::try_from(*index)
                         .map_err(|_| invalid("placement slot exceeds planner identity"))?,
-                    logical_offset: run.logical_offset,
-                    physical_offset: run.physical_offset.unwrap(),
-                    length: run.length,
+                    logical_offset: cluster_span(v, n)?.0,
+                    physical_offset: cluster_span(l, n)?.0,
+                    length: u64::from(n) * cluster(),
                 });
             }
+            for run in &desired[index] {
+                let remaining;
+                let runs = if recovered.is_some() {
+                    remaining = unfinished_runs(file, run, limits.tracked)?;
+                    remaining.as_slice()
+                } else {
+                    std::slice::from_ref(run)
+                };
+                for run in runs {
+                    eligible.push(shadow_evacuation::Extent {
+                        file_index: u32::try_from(*index)
+                            .map_err(|_| invalid("placement slot exceeds planner identity"))?,
+                        logical_offset: run.logical_offset,
+                        physical_offset: run.physical_offset.unwrap(),
+                        length: run.length,
+                    });
+                }
+            }
         }
-    }
-    // Only initial ReFS runs can block a desired range: direct pieces sit at
-    // their own coordinates and scratch avoids every desired range. The cap
-    // therefore bounds the intersecting set, not one entry per file; the
-    // planner still validates every tracked mapping against both views.
-    counters.tracked_extents = owned.len();
-    counters.eligible_runs = eligible.len();
-    counters.owned_intersecting_desired = owned
-        .iter()
-        .filter(|e| intersects_desired(&avoid, e.physical_offset, e.length))
-        .count();
-    if owned.len() > limits.tracked {
-        return Err(refuse(
-            tree,
-            &counters,
-            format!(
-                "global tracked shadow mapping budget exceeded: {} tracked mappings > {}",
-                owned.len(),
-                limits.tracked
-            ),
-        ));
-    }
-    if counters.owned_intersecting_desired > limits.owned {
-        return Err(refuse(
-            tree,
-            &counters,
-            format!(
-                "global tracked ownership range budget exceeded: {} tracked mappings intersect desired runs > {}",
-                counters.owned_intersecting_desired, limits.owned
-            ),
-        ));
-    }
-    let (legacy, metadata) = views(tree, limits)?;
-    counters.phase_bitmap_snapshots += 1;
-    progress(
-        tree,
-        "plan-evacuation",
-        move_bytes,
-        &evidence,
-        None,
-        &counters,
-    );
-    let Some(remaining) = max_moves.checked_sub(evidence.len()).filter(|v| *v > 0) else {
-        return Err(refuse(
-            tree,
-            &counters,
-            format!(
-                "no evacuation move budget: {} of {max_moves} submissions used",
-                evidence.len()
-            ),
-        ));
-    };
-    let evacuation = resource::evacuation(
-        &legacy,
-        &metadata,
-        &eligible,
-        &owned,
-        partition,
-        remaining,
-        limits,
-        payer.as_deref(),
-    )?;
-    let required: usize = evacuation
-        .moves
-        .iter()
-        .map(|m| m.length.div_ceil(MOVE_BYTES) as usize)
-        .sum();
-    counters.evacuation_planned_moves = evacuation.moves.len();
-    counters.evacuation_planned_submissions = required;
-    counters.evacuation_remaining_blocked_bytes = evacuation.remaining_blocked_bytes;
-    if required >= remaining {
-        return Err(refuse(
-            tree,
-            &counters,
-            format!(
-                "evacuation leaves no final-placement budget: {required} evacuation submissions of {remaining} remaining"
-            ),
-        ));
-    }
-    for movement in &evacuation.moves {
-        if movement.destination_offset < MARGIN
-            || movement
-                .destination_offset
-                .checked_add(movement.length)
-                .is_none_or(|v| v > partition.saturating_sub(MARGIN))
-        {
-            return Err(invalid(
-                "evacuation destination enters bootstrap safety margin",
+        // Only initial ReFS runs can block a desired range: direct pieces sit at
+        // their own coordinates and scratch avoids every desired range. The cap
+        // therefore bounds the intersecting set, not one entry per file; the
+        // planner still validates every tracked mapping against both views.
+        counters.tracked_extents = owned.len();
+        counters.eligible_runs = eligible.len();
+        counters.owned_intersecting_desired = owned
+            .iter()
+            .filter(|e| intersects_desired(&avoid, e.physical_offset, e.length))
+            .count();
+        if owned.len() > limits.tracked {
+            return Err(refuse(
+                tree,
+                &counters,
+                format!(
+                    "global tracked shadow mapping budget exceeded: {} tracked mappings > {}",
+                    owned.len(),
+                    limits.tracked
+                ),
             ));
         }
-    }
-    // The plan record is complete before any evacuation move, so its saved
-    // size is charged before native IO in this phase.
-    let plan_json_memory = if limits.resource {
-        let rows = owned
-            .len()
-            .checked_add(evacuation.moves.len())
-            .ok_or_else(|| invalid("evacuation JSON count overflow"))?;
-        Some(
-            payer
-                .as_deref()
-                .ok_or_else(|| invalid("evacuation JSON payer absent"))?
-                .reserve(memory::placement_plan_record_bytes(rows)?)?,
-        )
-    } else {
-        None
-    };
-    let plan_record = serde_json::json!({"strategy":"selective-user-blockers","initial_owned_ranges":owned,
-        "evacuation_plan":&*evacuation});
-    let charged = evidence.charge(&plan_record);
-    counters.placement_artifact_bytes = evidence.saved_bytes;
-    if let Err(message) = charged {
-        return Err(refuse(tree, &counters, message));
-    }
-    if limits.resource {
-        drop(plan_record);
-    } else {
-        parked.push(plan_record);
-    }
-    drop(plan_json_memory);
-    for (moved, movement) in evacuation.moves.iter().enumerate() {
-        let mut offset = 0;
-        while offset < movement.length {
-            let length = (movement.length - offset).min(MOVE_BYTES);
-            progress(
+        if counters.owned_intersecting_desired > limits.owned {
+            return Err(refuse(
                 tree,
-                "evacuate-blocker",
-                move_bytes,
-                &evidence,
-                Some(serde_json::json!({
-                "object_index":movement.file_index,"logical_offset":movement.logical_offset+offset,
-                "destination":movement.destination_offset+offset,"length":length,
-                "placement_result_recorded":false,"budget_charged":false})),
                 &counters,
-            );
-            let current_extents = tree
-                .file_by_slot(movement.file_index as usize)?
-                .retrieval_extents();
-            charge_move(&mut move_bytes, length, max_move_bytes)?;
-            tree.placement_progress["charged_move_bytes"] = move_bytes.into();
-            tree.placement_progress["pending"]["budget_charged"] = true.into();
-            let attempt = resource::move_slot(
+                format!(
+                    "global tracked ownership range budget exceeded: {} tracked mappings intersect desired runs > {}",
+                    counters.owned_intersecting_desired, limits.owned
+                ),
+            ));
+        }
+        let (legacy, metadata) = views(tree, limits)?;
+        counters.phase_bitmap_snapshots += 1;
+        progress(
+            tree,
+            "plan-evacuation",
+            move_bytes,
+            &evidence,
+            None,
+            &counters,
+        );
+        let Some(remaining) = max_moves.checked_sub(evidence.len()).filter(|v| *v > 0) else {
+            return Err(refuse(
                 tree,
-                movement.file_index as usize,
-                (movement.logical_offset + offset) / cluster(),
-                (movement.destination_offset + offset) / cluster(),
-                move_clusters(length)?,
-                true,
-                limits.resource,
-                |destination| {
-                    reserve_move(
-                        &mut counters,
-                        &mut evidence,
-                        &reservation,
-                        current_extents,
-                        length,
-                        destination,
-                    )
-                },
-            );
-            tree.placement_progress["counters"]["move_evidence_reservation_bytes"] =
-                counters.move_evidence_reservation_bytes.into();
-            let proof = attempt?;
-            if proof["native_error"] != serde_json::Value::Null
-                || proof["all_placements_match"] != true
+                &counters,
+                format!(
+                    "no evacuation move budget: {} of {max_moves} submissions used",
+                    evidence.len()
+                ),
+            ));
+        };
+        let evacuation = resource::evacuation(
+            &legacy,
+            &metadata,
+            &eligible,
+            &owned,
+            partition,
+            remaining,
+            limits,
+            payer.as_deref(),
+        )?;
+        let required: usize = evacuation
+            .moves
+            .iter()
+            .map(|m| m.length.div_ceil(MOVE_BYTES) as usize)
+            .sum();
+        counters.evacuation_planned_moves = evacuation.moves.len();
+        counters.evacuation_planned_submissions = required;
+        counters.evacuation_remaining_blocked_bytes = evacuation.remaining_blocked_bytes;
+        if required >= remaining {
+            return Err(refuse(
+                tree,
+                &counters,
+                format!(
+                    "evacuation leaves no final-placement budget: {required} evacuation submissions of {remaining} remaining"
+                ),
+            ));
+        }
+        for movement in &evacuation.moves {
+            if movement.destination_offset < MARGIN
+                || movement
+                    .destination_offset
+                    .checked_add(movement.length)
+                    .is_none_or(|v| v > partition.saturating_sub(MARGIN))
             {
-                let refusal = format!(
-                    "selective unwritten evacuation refused for slot {}: {length} bytes at logical offset {} \
-                     to physical offset {}, native error {}, placements match {}; preserve without retry",
-                    movement.file_index,
-                    movement.logical_offset + offset,
-                    movement.destination_offset + offset,
-                    proof["native_error"],
-                    proof["all_placements_match"]
-                );
-                tree.placement_progress["failed_native_move"] = evidence
-                    .failed_move(serde_json::json!({
-                        "object_index":movement.file_index,"phase":"evacuate-blocker","proof":proof
-                    }))
-                    .map_err(|e| invalid(&e))?;
-                return Err(invalid(&refusal));
+                return Err(invalid(
+                    "evacuation destination enters bootstrap safety margin",
+                ));
             }
-            counters.evacuation_submissions += 1;
-            count_proof_form(&mut counters, &proof);
-            let recorded = evidence.push_move_proof(
-                u64::from(movement.file_index),
-                "evacuate-blocker",
-                &proof,
-            );
-            counters.move_evidence_bytes = evidence.compact_bytes;
-            counters.placement_artifact_bytes = evidence.saved_bytes;
-            if let Err(message) = recorded {
-                return Err(refuse(tree, &counters, message));
-            }
-            // Where another piece follows, the next thing done is to record
-            // it as pending: this record would be replaced unread.
-            let last = offset + length >= movement.length
-                && evacuation.moves[moved + 1..]
-                    .iter()
-                    .all(|later| later.length == 0);
-            if last {
+        }
+        // The plan record is complete before any evacuation move, so its saved
+        // size is charged before native IO in this phase.
+        let plan_json_memory = if limits.resource {
+            let rows = owned
+                .len()
+                .checked_add(evacuation.moves.len())
+                .ok_or_else(|| invalid("evacuation JSON count overflow"))?;
+            Some(
+                payer
+                    .as_deref()
+                    .ok_or_else(|| invalid("evacuation JSON payer absent"))?
+                    .reserve(memory::placement_plan_record_bytes(rows)?)?,
+            )
+        } else {
+            None
+        };
+        let plan_record = serde_json::json!({"strategy":"selective-user-blockers","initial_owned_ranges":owned,
+        "evacuation_plan":&*evacuation});
+        let charged = evidence.charge(&plan_record);
+        counters.placement_artifact_bytes = evidence.saved_bytes;
+        if let Err(message) = charged {
+            return Err(refuse(tree, &counters, message));
+        }
+        if limits.resource {
+            drop(plan_record);
+        } else {
+            parked.push(plan_record);
+        }
+        drop(plan_json_memory);
+        for (moved, movement) in evacuation.moves.iter().enumerate() {
+            let mut offset = 0;
+            while offset < movement.length {
+                let length = (movement.length - offset).min(MOVE_BYTES);
                 progress(
                     tree,
                     "evacuate-blocker",
                     move_bytes,
                     &evidence,
-                    None,
+                    Some(serde_json::json!({
+                "object_index":movement.file_index,"logical_offset":movement.logical_offset+offset,
+                "destination":movement.destination_offset+offset,"length":length,
+                "placement_result_recorded":false,"budget_charged":false})),
                     &counters,
                 );
+                let current_extents = tree
+                    .file_by_slot(movement.file_index as usize)?
+                    .retrieval_extents();
+                charge_move(&mut move_bytes, length, max_move_bytes)?;
+                tree.placement_progress["charged_move_bytes"] = move_bytes.into();
+                tree.placement_progress["pending"]["budget_charged"] = true.into();
+                let attempt = resource::move_slot(
+                    tree,
+                    movement.file_index as usize,
+                    (movement.logical_offset + offset) / cluster(),
+                    (movement.destination_offset + offset) / cluster(),
+                    move_clusters(length)?,
+                    true,
+                    limits.resource,
+                    |destination| {
+                        reserve_move(
+                            &mut counters,
+                            &mut evidence,
+                            &reservation,
+                            current_extents,
+                            length,
+                            destination,
+                        )
+                    },
+                );
+                tree.placement_progress["counters"]["move_evidence_reservation_bytes"] =
+                    counters.move_evidence_reservation_bytes.into();
+                let proof = match attempt {
+                    Err(error)
+                        if unwritten::OccupiedDestination::from_error(&error)
+                            .is_some_and(|drift| drift.before_submission()) =>
+                    {
+                        uncharge_move(tree, &mut move_bytes, length);
+                        if counters.evacuation_drift_replans == MAX_DRIFT_REPLANS {
+                            return Err(refuse(
+                                tree,
+                                &counters,
+                                format!(
+                                    "evacuate blocker for slot {} after {MAX_DRIFT_REPLANS} fresh plans: {error}",
+                                    movement.file_index
+                                ),
+                            ));
+                        }
+                        // Previous moves remain charged and recorded. Rebuild ownership from
+                        // their verified mappings and choose destinations from both fresh views.
+                        counters.evacuation_drift_replans += 1;
+                        continue 'evacuation;
+                    }
+                    result => result?,
+                };
+                if proof["native_error"] != serde_json::Value::Null
+                    || proof["all_placements_match"] != true
+                {
+                    let refusal = format!(
+                        "selective unwritten evacuation refused for slot {}: {length} bytes at logical offset {} \
+                     to physical offset {}, native error {}, placements match {}; preserve without retry",
+                        movement.file_index,
+                        movement.logical_offset + offset,
+                        movement.destination_offset + offset,
+                        proof["native_error"],
+                        proof["all_placements_match"]
+                    );
+                    tree.placement_progress["failed_native_move"] = evidence
+                    .failed_move(serde_json::json!({
+                        "object_index":movement.file_index,"phase":"evacuate-blocker","proof":proof
+                    }))
+                    .map_err(|e| invalid(&e))?;
+                    return Err(invalid(&refusal));
+                }
+                counters.evacuation_submissions += 1;
+                count_proof_form(&mut counters, &proof);
+                let recorded = evidence.push_move_proof(
+                    u64::from(movement.file_index),
+                    "evacuate-blocker",
+                    &proof,
+                );
+                counters.move_evidence_bytes = evidence.compact_bytes;
+                counters.placement_artifact_bytes = evidence.saved_bytes;
+                if let Err(message) = recorded {
+                    return Err(refuse(tree, &counters, message));
+                }
+                // Where another piece follows, the next thing done is to record
+                // it as pending: this record would be replaced unread.
+                let last = offset + length >= movement.length
+                    && evacuation.moves[moved + 1..]
+                        .iter()
+                        .all(|later| later.length == 0);
+                if last {
+                    progress(
+                        tree,
+                        "evacuate-blocker",
+                        move_bytes,
+                        &evidence,
+                        None,
+                        &counters,
+                    );
+                }
+                offset += length;
             }
-            offset += length;
         }
-    }
-    if limits.resource {
-        drop(evacuation);
-        drop(owned);
-        drop(eligible);
-        drop(owned_memory);
-        drop(legacy);
-        drop(metadata);
+        break;
     }
     // One snapshot after evacuation plans every desired run. Final moves land
     // only in their own disjoint desired runs, so no earlier move in this

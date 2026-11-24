@@ -24,6 +24,51 @@ use windows_sys::Win32::{
     Storage::FileSystem::{SetFileInformationByHandle, SetFileValidData},
 };
 
+/// A live destination bitmap showed an allocated cluster in this move's range.
+#[derive(Debug)]
+pub(super) struct OccupiedDestination {
+    path: String,
+    vcn: u64,
+    request: bitmap_window::Request,
+    legacy_allocated: u64,
+    metadata_allocated: u64,
+    move_error: Option<String>,
+}
+
+impl std::fmt::Display for OccupiedDestination {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "private shadow placement for {}: {} clusters from VCN {} to LCN {}, allocated clusters in legacy bitmap {}, metadata bitmap {}",
+            self.path,
+            self.request.clusters,
+            self.vcn,
+            self.request.starting_lcn,
+            self.legacy_allocated,
+            self.metadata_allocated
+        )?;
+        if let Some(error) = &self.move_error {
+            write!(f, ", FSCTL_MOVE_FILE failed: {error}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for OccupiedDestination {}
+
+impl OccupiedDestination {
+    pub(super) fn from_error(error: &io::Error) -> Option<&Self> {
+        if error.kind() != io::ErrorKind::ResourceBusy {
+            return None;
+        }
+        error.get_ref()?.downcast_ref()
+    }
+
+    pub(super) fn before_submission(&self) -> bool {
+        self.move_error.is_none()
+    }
+}
+
 fn private_system_security_descriptor() -> io::Result<&'static [u64]> {
     static SD: OnceLock<Vec<u64>> = OnceLock::new();
     if let Some(cached) = SD.get() {
@@ -913,35 +958,42 @@ impl PrivatePlaceholder {
             clusters: u64::from(clusters),
         };
         let limits = destination_limits(clusters)?;
-        let capture_destination_windows = || -> io::Result<DestinationWindows> {
-            let legacy = bitmap_window_native::capture(volume, request, &[0; 8], limits)?;
-            let mut ex = [0u8; 16];
-            ex[8] = 1;
-            let metadata = bitmap_window_native::capture(volume, request, &ex, limits)?;
-            if legacy.request() != request
-                || metadata.request() != request
-                || legacy.proof().declared_volume_clusters != request.volume_clusters
-                || metadata.proof().declared_volume_clusters != request.volume_clusters
-            {
-                return Err(invalid(
-                    "destination bitmap window binding or declared domain differs",
-                ));
-            }
-            if legacy.allocated_clusters() != 0 || metadata.allocated_clusters() != 0 {
-                // Distinct kind: nothing was submitted or poisoned, so the tree
-                // planner may re-plan this step from a fresh snapshot.
-                return Err(io::Error::new(
-                    io::ErrorKind::ResourceBusy,
-                    "private placement requires both current bitmap views free",
-                ));
-            }
-            Ok(DestinationWindows {
-                schema_version: 1,
-                scope: "destination-window-v1".into(),
-                legacy: bitmap_window_transport::from_proof(legacy.into_proof())?,
-                metadata: bitmap_window_transport::from_proof(metadata.into_proof())?,
-            })
-        };
+        let capture_destination_windows =
+            |move_error: Option<&io::Error>| -> io::Result<DestinationWindows> {
+                let legacy = bitmap_window_native::capture(volume, request, &[0; 8], limits)?;
+                let mut ex = [0u8; 16];
+                ex[8] = 1;
+                let metadata = bitmap_window_native::capture(volume, request, &ex, limits)?;
+                if legacy.request() != request
+                    || metadata.request() != request
+                    || legacy.proof().declared_volume_clusters != request.volume_clusters
+                    || metadata.proof().declared_volume_clusters != request.volume_clusters
+                {
+                    return Err(invalid(
+                        "destination bitmap window binding or declared domain differs",
+                    ));
+                }
+                if legacy.allocated_clusters() != 0 || metadata.allocated_clusters() != 0 {
+                    // Preserve the native refusal when this capture follows a failed move.
+                    return Err(io::Error::new(
+                        io::ErrorKind::ResourceBusy,
+                        OccupiedDestination {
+                            path: self.path.clone(),
+                            vcn: starting_vcn,
+                            request,
+                            legacy_allocated: legacy.allocated_clusters(),
+                            metadata_allocated: metadata.allocated_clusters(),
+                            move_error: move_error.map(ToString::to_string),
+                        },
+                    ));
+                }
+                Ok(DestinationWindows {
+                    schema_version: 1,
+                    scope: "destination-window-v1".into(),
+                    legacy: bitmap_window_transport::from_proof(legacy.into_proof())?,
+                    metadata: bitmap_window_transport::from_proof(metadata.into_proof())?,
+                })
+            };
         let fast_skip_bitmap = crate::verify_policy::verifies_once();
         let destination_bitmap = if fast_skip_bitmap {
             DestinationWindows {
@@ -951,7 +1003,7 @@ impl PrivatePlaceholder {
                 metadata: bitmap_window_transport::Proof::omitted_fast(request),
             }
         } else {
-            capture_destination_windows()?
+            capture_destination_windows(None)?
         };
         // This charge uses the actual lossless transcripts, including native
         // rounding and every selector page, before FSCTL_MOVE_FILE can run.
@@ -964,12 +1016,12 @@ impl PrivatePlaceholder {
         self.poisoned = true; // Any missing post-I/O evidence must fail closed.
         self.move_submissions += 1;
         let moved = ctl(volume, 0x90074, &input, 0);
-        if fast_skip_bitmap && moved.is_err() {
+        if let (true, Err(move_error)) = (fast_skip_bitmap, &moved) {
             // If FSCTL_MOVE_FILE was rejected because the destination clusters
             // became occupied since the phase bitmap snapshot, return
             // ResourceBusy so the planner re-snapshots and re-plans.
-            if let Err(err) = capture_destination_windows() {
-                if err.kind() == io::ErrorKind::ResourceBusy {
+            if let Err(err) = capture_destination_windows(Some(move_error)) {
+                if OccupiedDestination::from_error(&err).is_some() {
                     self.poisoned = false;
                     return Err(err);
                 }
@@ -1535,5 +1587,48 @@ pub(in crate::shadow_native) mod proof_samples {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod occupied_destination_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_confirmed_bitmap_refusal_is_classified_as_destination_drift() {
+        let mut occupied = OccupiedDestination {
+            path: "shadow-file:stream".into(),
+            vcn: 5,
+            request: bitmap_window::Request {
+                volume_clusters: 1024,
+                clusters: 3,
+                starting_lcn: 70,
+            },
+            legacy_allocated: 1,
+            metadata_allocated: 2,
+            move_error: None,
+        };
+        assert!(occupied.before_submission());
+        occupied.move_error = Some(io::Error::from_raw_os_error(112).to_string());
+        let refusal = io::Error::new(io::ErrorKind::ResourceBusy, occupied);
+        let message = refusal.to_string();
+        for expected in [
+            "shadow-file:stream",
+            "3 clusters from VCN 5 to LCN 70",
+            "legacy bitmap 1, metadata bitmap 2",
+            "FSCTL_MOVE_FILE",
+            "112",
+        ] {
+            assert!(message.contains(expected), "{message}");
+        }
+        assert!(
+            !OccupiedDestination::from_error(&refusal)
+                .unwrap()
+                .before_submission()
+        );
+        assert!(
+            OccupiedDestination::from_error(&io::Error::new(io::ErrorKind::ResourceBusy, message,))
+                .is_none()
+        );
     }
 }

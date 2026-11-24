@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        case: [convert, many, resume, rollback, cancel, handled-preparation, cancel-preparation, tails-4k, tails-64k, tails-4k-limited, tails-64k-limited]
+        case: [convert, many, many-16k-to-64k, resume, rollback, cancel, handled-preparation, cancel-preparation, tails-4k, tails-64k, tails-4k-limited, tails-64k-limited]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

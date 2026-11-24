@@ -65,6 +65,8 @@ try {
             scenario = ($spec.Soak.Scenario ?? 'seeded'); refs_cluster = ($spec.Soak.TargetClusterBytes ?? 4096)
             hold_at = ($spec.Hold ?? ''); reached_hold = [bool]$spec.Hold; recovery_mode = ($spec.Recovery ?? 'none')
             end_after_seconds = 0; attached_before_cleanup = @() }
+        if ($spec.NtfsClusterBytes) { $row.ntfs_cluster = $spec.NtfsClusterBytes }
+        if ($spec.Verify) { $row.verify = $spec.Verify }
         $row.outcome = $spec.Outcome
         $row.terminated = [bool]$spec.Hold
         $nativeRows[$case] = $row
@@ -242,6 +244,10 @@ try {
     $serverWide.windows_edition = 79
 
     foreach ($test in @(
+        @('many-16k-to-64k', 'ntfs_cluster', 4096, 'Wrong source geometry or verification mode'),
+        @('many-16k-to-64k', 'refs_cluster', 4096, 'Wrong profile, seed, scenario or target'),
+        @('many-16k-to-64k', 'verify', 'fast', 'Wrong source geometry or verification mode'),
+        @('many-16k-to-64k', 'seed', 315782001, 'Wrong profile, seed, scenario or target'),
         @('rollback', 'outcome', 'converted', 'Unexpected verdict'),
         @('resume', 'hold_at', '', 'missed its interruption'),
         @('resume', 'recovery_mode', 'none', 'missed its recovery action'),

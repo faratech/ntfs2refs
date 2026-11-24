@@ -41,13 +41,17 @@ try {
         $row = $hosted + @{ case_id = $case; seed = ($spec.Soak.Seed ?? 315781002); profile = ($spec.Soak.Profile ?? 'convert')
             scenario = ($spec.Soak.Scenario ?? 'seeded'); refs_cluster = ($spec.Soak.TargetClusterBytes ?? 4096)
             hold_at = ($spec.Hold ?? ''); reached_hold = [bool]$spec.Hold; recovery_mode = ($spec.Recovery ?? 'none')
-            end_after_seconds = 24.8; attached_before_cleanup = @() }
+            end_after_seconds = 0; attached_before_cleanup = @() }
         $row.outcome = $spec.Outcome
-        $row.terminated = [bool]($spec.Hold -or $spec.Timed)
+        $row.terminated = [bool]$spec.Hold
         $nativeRows[$case] = $row
         Save-Json $row (Join-Path $evidence "native-$case/regression.json")
     }
-    foreach ($case in 'convert', 'many', 'resume', 'rollback', 'cancel') { Save-Json $nativeRows[$case] (Join-Path $evidence "soak-records-$case/rounds.jsonl") }
+    foreach ($case in 'convert', 'many', 'resume', 'rollback', 'cancel') {
+        $round = $nativeRows[$case].Clone()
+        if ($case -eq 'cancel') { $round.hold_at = ''; $round.reached_hold = $false; $round.end_after_seconds = 24.8 }
+        Save-Json $round (Join-Path $evidence "soak-records-$case/rounds.jsonl")
+    }
     $cases = @(foreach ($name in 'fixture10', 'admin-fixture40', 'full-system', 'apply-mid-resume', 'apply-mid-rollback', 'seal-recorded-resume', 'handoff-sealed-resume', 'torn-handoff-resume', 'vm-verify-passed-rollback', 'vm-thorough-handoff-resume', 'lived-in', 'restart-convert', 'restart-cancel', 'restart-refs-refusal', 'integrity-native-idle', 'integrity-converted-idle', 'integrity-native-loaded', 'integrity-converted-loaded', 'integrity-lived-in', 'integrity-event-131') {
         $outcome = switch -Wildcard ($name) {
             '*fixture*' { 'converted-not-booted' }
@@ -125,6 +129,7 @@ try {
         @('resume', 'hold_at', '', 'missed its interruption'),
         @('resume', 'recovery_mode', 'none', 'missed its recovery action'),
         @('cancel', 'terminated', $false, 'missed its interruption'),
+        @('cancel', 'end_after_seconds', 24.8, 'missed its interruption'),
         @('handled-preparation', 'attached_before_cleanup', @('shadow.vhdx'), 'shadow detached before cleanup'),
         @('many', 'events', @(@{provider = 'Microsoft-Windows-ReFS'; id = 134}), 'Invalid hosted qualification verdict')
     )) {

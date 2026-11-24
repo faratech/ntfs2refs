@@ -4,7 +4,7 @@ $NativeRegressionCases = [ordered]@{
     many = @{ Soak = @{ Profile = 'many'; Seed = 315782001 }; Outcome = 'converted' }
     resume = @{ Soak = @{ Profile = 'resume'; Seed = 315783001 }; Outcome = 'converted'; Hold = 'verify-passed'; Recovery = 'resume' }
     rollback = @{ Soak = @{ Profile = 'rollback'; Seed = 315784002 }; Outcome = 'ntfs-as-before'; Hold = 'apply-boot-granule-written'; Recovery = 'rollback' }
-    cancel = @{ Soak = @{ Profile = 'cancel'; Seed = 315785001 }; Outcome = 'ntfs-as-before'; Timed = $true; Recovery = 'rollback' }
+    cancel = @{ Soak = @{ Profile = 'cancel'; Seed = 315785001; CancelAtPreparation = $true }; Outcome = 'ntfs-as-before'; Hold = 'preparation-shadow-built'; Recovery = 'rollback' }
     'handled-preparation' = @{ Soak = @{ Scenario = 'handled-preparation' }; Outcome = 'ntfs-as-before' }
     'cancel-preparation' = @{ Soak = @{ Scenario = 'cancel-preparation' }; Outcome = 'ntfs-as-before'; Hold = 'preparation-shadow-built'; Recovery = 'rollback' }
     'tails-4k' = @{ Soak = @{ Scenario = 'tail-boundaries'; TargetClusterBytes = 4096 }; Outcome = 'converted' }
@@ -24,7 +24,7 @@ function Assert-NativeRegressionVerdict([string]$Case, $Row) {
         throw "Unexpected verdict for $Case"
     }
     if ($Row.hold_at -cne ($spec.Hold ?? '') -or $Row.reached_hold -ne [bool]$spec.Hold -or
-        $Row.terminated -ne [bool]($spec.Hold -or $spec.Timed) -or ($spec.Timed -and $Row.end_after_seconds -le 0)) {
+        $Row.terminated -ne [bool]$spec.Hold -or $Row.end_after_seconds -ne 0) {
         throw "$Case missed its interruption"
     }
     if ($Row.recovery_mode -cne ($spec.Recovery ?? 'none')) { throw "$Case missed its recovery action" }

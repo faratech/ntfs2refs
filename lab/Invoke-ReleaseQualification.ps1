@@ -39,8 +39,20 @@ function Add-Case([string]$Name, [string]$Route, [string]$Expected, $Verdict, [b
     if ($Route -eq 'running') { $binaryMatch = $Verdict.converter_sha256 -ceq $identity.hashes['ntfs2refs.exe'] }
     $hold = if ($Verdict.interrupt) { $Verdict.interrupt.point } elseif ($Verdict.interrupted_at) { $Verdict.interrupted_at } elseif ($Route -eq 'restart') { $Verdict.lab_fail_at } else { '' }
     $reached = if ($Verdict.interrupt) { [bool]$Verdict.interrupt.held } elseif ($Verdict.lab_fail_at) { $Verdict.reached_lab_fail_at } elseif ($hold) { $Passed }
-    $kind = if ($Verdict.interrupt) { $Verdict.interrupt.kind } elseif ($Verdict.interrupted_at) { 'process' } elseif ($Verdict.lab_fail_at) { 'injected failure' } elseif ($Route -eq 'restart' -and $Verdict.away_seconds) { 'restart' } else { '' }
+    $kind = if ($Verdict.interrupt) { $Verdict.interrupt.kind } elseif ($Verdict.interrupted_at) { 'process-termination' } elseif ($Verdict.lab_fail_at) { 'injected failure' } else { '' }
     $recovery = if ($Verdict.recovery -is [System.Collections.IDictionary]) { $Verdict.recovery.mode } elseif ($Verdict.recover_mode) { $Verdict.recover_mode } elseif ($Name -eq 'restart-cancel') { 'rollback' } else { '' }
+    $designation = $Verdict.target.windows_reports
+    if ($Route -eq 'boot' -and $Verdict.boot.observed.filesystem -eq 'ReFS') {
+        $stdout = Join-Path $attempts "$prefix-$Name/stdout.log"
+        if (Test-Path -LiteralPath $stdout) {
+            $reported = Select-String -LiteralPath $stdout -Pattern '^Windows reports the converted source: ([^;]+);' | Select-Object -Last 1
+            if ($reported) { $designation = $reported.Matches[0].Groups[1].Value }
+        }
+    }
+    $targetFormat = switch -Regex ($designation) {
+        '^Dev Drive' { 'dev-drive' }
+        '^standard ReFS' { 'standard' }
+    }
     $rows.Add([ordered]@{
         case_id = $Name; route = $Route; expected = $Expected; outcome = $Verdict.outcome; passed = ($Passed -and $binaryMatch -and $Verdict.cleanup_ok -ne $false)
         verify = if ($Verdict.verify) { $Verdict.verify } else { 'fast' }; hold = $hold; reached_hold = $reached
@@ -50,7 +62,10 @@ function Add-Case([string]$Name, [string]$Route, [string]$Expected, $Verdict, [b
         working_filesystem = $Verdict.made.working_filesystem
         scratch_refusal = $Verdict.scratch_refusal
         windows = @($Verdict.integrity.windows, $Verdict.boot.observed.build, $Verdict.windows_build, $Verdict.made.windows_build, $Verdict.control.windows_build) | Where-Object { $_ } | Select-Object -First 1
+        windows_edition = $Verdict.boot.observed.windows_edition ?? $Verdict.windows_edition
         refs = @($Verdict.integrity.refs, $Verdict.volume_after.refs_version, $Verdict.boot.observed.refs_version) | Where-Object { $_ } | Select-Object -First 1
+        observed_target_format = $targetFormat
+        observed_target_clusters = $Verdict.boot.observed.cluster_bytes ?? $Verdict.volume_after.refs_bytes_per_cluster
         source_clusters = $Verdict.source.cluster_bytes; target_clusters = $Verdict.target.cluster_bytes_requested; sector_bytes = $Verdict.source.sector_bytes
         boot = if ($Verdict.boot) { $Verdict.boot.observed | Select-Object -Property filesystem, cluster_bytes, disk, disks, partition, secure_boot, signatures }
         integrity_events = $Verdict.integrity.events; reboot_use = $Verdict.reboot_use; host_load = $Verdict.host_load

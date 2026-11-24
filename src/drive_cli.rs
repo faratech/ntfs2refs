@@ -1841,6 +1841,12 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             clean(&before.label),
             crate::confirmation::format_volume_serial(before.volume_serial_low32)
         );
+        println!("NTFS index records: {} bytes.", geometry.index_record_size);
+        if geometry.index_record_size != 4096 {
+            println!(
+                "This index-record size is admitted. No native lab conversion has qualified it."
+            );
+        }
         if before.binding.layout_profile
             == n2r_win32::general_layout::GeneralDiskLayoutProfile::SharedData
         {
@@ -1893,6 +1899,34 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             },
             target_cluster / 1024
         );
+        if let (Ok(qualification), Ok(edition)) = (
+            crate::capability_evidence::release_qualification(),
+            n2r_win32::run_environment::windows_edition(windows),
+        ) {
+            let format = target_format.to_string();
+            let profiles = qualification.profiles.iter().filter(|row| {
+                row.route == "data"
+                    && row.windows_build == windows[2]
+                    && row.windows_edition == edition
+                    && row.target_format == format
+                    && u64::from(row.target_cluster_bytes) == target_cluster
+            });
+            let mut versions: Vec<&str> = profiles.map(|row| row.refs_version.as_str()).collect();
+            versions.sort_unstable();
+            versions.dedup();
+            if versions.is_empty() {
+                println!(
+                    "This Windows and target profile was not exercised by the release qualification."
+                );
+            } else {
+                println!(
+                    "Release qualification exercised this Windows and target profile with ReFS {} (QUALIFICATION.json).",
+                    versions.join(", ")
+                );
+            }
+        } else {
+            println!("Release qualification evidence is unavailable for this executable.");
+        }
         if let super::boot::GeometryDecision::Shrink {
             target_bytes,
             shrink_bytes,

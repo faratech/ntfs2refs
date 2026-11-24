@@ -523,7 +523,8 @@ function Start-Disk0Alone {
         }
         [pscustomobject]@{
             boot_utc = $os.LastBootUpTime.ToUniversalTime().ToString('o'); newer_than_control_boot = $os.LastBootUpTime.ToUniversalTime() -gt [DateTime]::Parse($controlBoot).ToUniversalTime()
-            windows_directory = $os.WindowsDirectory; build = $os.BuildNumber; disk = $partition.DiskNumber; partition = $partition.PartitionNumber
+            windows_directory = $os.WindowsDirectory; build = $os.BuildNumber; windows_edition = $os.OperatingSystemSKU
+            disk = $partition.DiskNumber; partition = $partition.PartitionNumber
             partition_guid = $partition.Guid; filesystem = [string]$volume.FileSystem; cluster_bytes = $volume.AllocationUnitSize
             health = [string]$volume.HealthStatus; refs_version = (($refs -join "`n") -replace '(?s).*REFS Volume Version\s*:\s*([\d.]+).*', '$1')
             secure_boot = (Confirm-SecureBootUEFI); setup_in_progress = $setup.SystemSetupInProgress; oobe_in_progress = $setup.OOBEInProgress

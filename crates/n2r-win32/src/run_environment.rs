@@ -10,7 +10,7 @@ use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE},
     Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
     System::{
-        SystemInformation::{OSVERSIONINFOEXW, OSVERSIONINFOW},
+        SystemInformation::{GetProductInfo, OSVERSIONINFOEXW, OSVERSIONINFOW},
         Threading::{GetCurrentProcess, OpenProcessToken},
     },
 };
@@ -45,6 +45,16 @@ pub fn windows_version() -> io::Result<[u32; 3]> {
 /// `wProductType` of a workstation edition (VER_NT_WORKSTATION); a domain
 /// controller is 2 and any other server 3.
 const WORKSTATION: u8 = 1;
+
+/// The installed Windows edition's product code, also reported as the OS SKU.
+pub fn windows_edition(version: [u32; 3]) -> io::Result<u32> {
+    let mut sku = 0;
+    // SAFETY: the writable product-code pointer is live for the synchronous call.
+    if unsafe { GetProductInfo(version[0], version[1], 0, 0, &mut sku) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(sku)
+}
 
 /// Whether the running Windows is a server edition (Windows Server, a
 /// domain controller included) and not a workstation one such as Windows 11.

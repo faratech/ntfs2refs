@@ -169,8 +169,11 @@ $fixtureRuns = @(
 $fullRun = @{ Name = 'full-system'; Arguments = @{ MemoryGB = $MaxVmGB } }
 
 $lived = '-Content lived-in -DirectoryEntries 4000'
+$scratchFixture = '-Content mixed -PartitionMB 8192 -TargetClusterBytes 4096'
 $dataCases = @(
     'plain|-Check'
+    'standard-win11-refused|-Content minimal -PartitionMB 8192 -TargetFormat standard -TargetClusterBytes 4096 -Check -ExpectRefusal format'
+    'standard-win11-64k-refused|-Content minimal -PartitionMB 8192 -TargetFormat standard -TargetClusterBytes 65536 -Check -ExpectRefusal format'
     "lived-in|$lived -Check -Acceptance"
     '512-to-4k|-ClusterBytes 512 -Check -Acceptance'
     '512-to-64k|-ClusterBytes 512 -TargetClusterBytes 65536 -Check'
@@ -180,6 +183,10 @@ $dataCases = @(
     "lived-in-512|$lived -ClusterBytes 512 -Check"
     'odd-size|-PartitionMB 51237 -Check'
     'small-8g|-PartitionMB 8192 -Check'
+    "scratch-standard|$scratchFixture"
+    "scratch-minimized|$scratchFixture -ConverterArgs --minimize-scratch"
+    "scratch-minimized-resume|$scratchFixture -ConverterArgs --minimize-scratch -InterruptAt apply-mid-ranges"
+    "scratch-minimized-rollback|$scratchFixture -ConverterArgs --minimize-scratch -InterruptAt apply-mid-ranges -RecoverMode rollback"
     'many-20k|-Content many -Islands 20000 -Check'
     'files-20k|-Content minimal -Features manyfiles -FileCount 20000 -Check'
     # Held to the memory the estimate asks for it: what the run holds only

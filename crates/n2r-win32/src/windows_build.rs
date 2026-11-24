@@ -38,6 +38,19 @@ pub fn lab_builds() -> String {
         .join(" and ")
 }
 
+pub const STANDARD_REFS_FORMAT_REFUSAL: &str = "this Windows does not format ordinary ReFS volumes here; the default target, --target-format dev-drive, may be available";
+
+/// Refusal observed with format.com on a disposable working volume (#185).
+/// Other editions and updates still defer to the native formatter.
+pub fn observed_standard_refs_refusal(
+    version: [u32; 3],
+    sku: u32,
+    revision: u32,
+) -> Option<&'static str> {
+    (version == [10, 0, 26300] && sku == 48 && revision == 9457)
+        .then_some(STANDARD_REFS_FORMAT_REFUSAL)
+}
+
 /// A Windows on which the converter sets a directory's case-sensitive mark
 /// on the new volume.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +110,14 @@ pub fn describe(version: [u32; 3]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standard_refs_refusal_only_applies_to_the_observed_windows_profile() {
+        assert!(observed_standard_refs_refusal([10, 0, 26300], 48, 9457).is_some());
+        assert!(observed_standard_refs_refusal([10, 0, 26300], 4, 9457).is_none());
+        assert!(observed_standard_refs_refusal([10, 0, 26300], 48, 9458).is_none());
+        assert!(observed_standard_refs_refusal([10, 0, 26100], 7, 9457).is_none());
+    }
 
     #[test]
     fn the_lab_builds_and_later_ones_are_accepted_and_older_ones_are_not() {

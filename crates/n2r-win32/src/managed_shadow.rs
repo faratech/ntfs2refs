@@ -847,7 +847,7 @@ fn format_refusal(
         ),
         TargetFormatProfile::StandardReFs => (
             "an ordinary ReFS volume (format /FS:ReFS)",
-            "this Windows does not format ordinary ReFS volumes here; the default target, --target-format dev-drive, may be available",
+            crate::windows_build::STANDARD_REFS_FORMAT_REFUSAL,
         ),
     };
     let said = if said.is_empty() {

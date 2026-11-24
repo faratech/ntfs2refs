@@ -7,9 +7,10 @@
 
 use std::{io, mem, ptr};
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, HANDLE},
+    Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE},
     Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
     System::{
+        Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RegGetValueW},
         SystemInformation::{GetProductInfo, OSVERSIONINFOEXW, OSVERSIONINFOW},
         Threading::{GetCurrentProcess, OpenProcessToken},
     },
@@ -54,6 +55,29 @@ pub fn windows_edition(version: [u32; 3]) -> io::Result<u32> {
         return Err(io::Error::last_os_error());
     }
     Ok(sku)
+}
+
+/// The update revision of the running Windows build.
+pub fn windows_revision() -> io::Result<u32> {
+    let mut revision = 0u32;
+    let mut bytes = mem::size_of_val(&revision) as u32;
+    // SAFETY: the registry names are terminated strings and the live output
+    // buffer has exactly the size of the requested DWORD.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            windows_sys::w!("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"),
+            windows_sys::w!("UBR"),
+            RRF_RT_REG_DWORD,
+            ptr::null_mut(),
+            (&mut revision as *mut u32).cast(),
+            &mut bytes,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    Ok(revision)
 }
 
 /// Whether the running Windows is a server edition (Windows Server, a

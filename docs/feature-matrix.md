@@ -31,6 +31,7 @@ converter prints.
 | A directory of 20,000 entries | `bigdir` |
 | Program files copied with the security Windows gave them | `copy` |
 | All of these on one volume, to 4 KiB and to 64 KiB ReFS clusters, from 512-byte NTFS clusters, as an administrator, and interrupted and then resumed or rolled back | `lived-in` and its variants |
+| Experimental `--minimize-scratch` on an 8 GiB mixed data volume. Conversion and resume gave identical listings. Rollback gave an exact NTFS listing. Sampled peak working storage was 189.4 MiB without the option and 182.0 MiB with it in the paired gate. | `scratch-standard`, `scratch-minimized`, `scratch-minimized-resume`, `scratch-minimized-rollback` |
 | Every NTFS cluster size from 512 bytes to 2 MiB; 4Kn disks; 4096-byte file records | the geometry cases (`512-to-4k`, `4kn-4k`, ...) |
 | A volume that is the one partition of an MBR disk, and a working directory on an MBR disk; both together, interrupted half way through the writes and resumed; a volume that shares its MBR disk with another NTFS volume, which goes offline with it | `mbr-src`, `mbr-work`, `mbr-apply-mid-resume`, `mbr-beside` |
 | A volume that shares its GPT disk with other partitions: an EFI system partition, an NTFS volume, a write-protected NTFS volume and a partition of another operating system. The volume converts; the NTFS volume beside it lists exactly as before, and the bytes of the other three are the same. Also to 64 KiB clusters, as an administrator, with a partition that is shrunk first, interrupted and then resumed or rolled back, and on Windows Server 2025 to standard ReFS | `shared` and its variants (`-Siblings`) |
@@ -102,13 +103,13 @@ These take the same paths as rows above, or are checked by tests only.
 - Index records other than 4 KiB, a ReFS later than 3.14, and a Windows build
   other than 26100 and 26300: nothing in the lab makes them. A run on such a
   build or ReFS version says that it is the first.
-- A conversion to standard ReFS (`--target-format standard`) on Windows 11:
-  the lab's Windows 11 does not format one, and the run stops there with what
-  Windows said, before the volume is touched. Windows Server formats one; see
-  the row for it above.
+- A conversion to standard ReFS (`--target-format standard`) on Windows 11.
+  On Windows 11 Pro 26300.9457 the formatter refused both allocation units
+  before the source was touched. `--list` reports that observation and
+  `--check` reports the same refusal (`standard-win11-refused` and
+  `standard-win11-64k-refused`). Windows Server formats standard ReFS.
 - A Windows boot volume of Windows Server, and Windows 11 on build 26100:
   the lab's Windows 11 is build 26300 and its Windows Server is the control
   OS of data-volume attempts only.
-- `--minimize-scratch`.
 - The restart route (`--restart-media`) on Windows 11, on a physical machine,
   with BitLocker on the Windows volume, and interrupted while it converts.

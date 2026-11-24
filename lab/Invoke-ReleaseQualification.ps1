@@ -1,5 +1,4 @@
 #Requires -Version 7.2
-#Requires -RunAsAdministrator
 param(
     [Parameter(Mandatory)][string]$Candidate,
     [Parameter(Mandatory)][string]$Output,

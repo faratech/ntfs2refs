@@ -101,6 +101,19 @@ try {
         if ($row.case_id -eq 'restart-refs-refusal') { $row.working_filesystem = 'ReFS'; $row.scratch_refusal = $true }
         if ($row.case_id -eq 'vm-thorough-handoff-resume') { $row.verify = 'thorough' }
     }
+    foreach ($mode in 'resume', 'rollback') {
+        $outcome = if ($mode -eq 'resume') { 'resumed' } else { 'rolled-back' }
+        $cases += @{
+            case_id = "restart-postflush-$mode"; route = 'restart'; verify = 'fast'; passed = $true
+            outcome = $outcome; expected = $outcome; manifest = 'identical'; working_filesystem = 'NTFS'
+            hold = 'winpe-postflush-before-discovery'; reached_hold = $true; interruption = 'vm-turned-off'; recovery = $mode
+            boot = @{ filesystem = 'NTFS'; boot_utc = '2026-11-24T12:00:00Z' }
+            cleanup_outcome = 'working storage retained by harness'
+            prompt_wait_seconds = if ($mode -eq 'resume') { 186 } else { 1 }
+            postflush = @{ native_bytes_written = 4096; delayed_discovery_bytes = 4096; released = $false
+                flush_and_pending_readback_succeeded = $true; native_writer_revalidation_succeeded = $true; discovery_write_not_requested = $true }
+        }
+    }
     $torn = $cases | Where-Object { $_.case_id -eq 'torn-handoff-resume' }
     $torn.simulated_torn_marker = $true; $torn.torn_marker_settled = $true
     $boot = $cases | Where-Object { $_.case_id -eq 'full-system' }
@@ -122,12 +135,29 @@ try {
         hold = $running.hold; reached_hold = $running.reached_hold; interruption = $running.kind; recovery = $running.recovery
         boot = @{ filesystem = 'ReFS'; cluster_bytes = 4096 }
     }
+    $restartProfile = $cases | Where-Object case_id -EQ 'restart-convert'
+    $restartProfile.route = 'restart'; $restartProfile.windows = 26100; $restartProfile.windows_edition = 7
+    $restartProfile.refs = '3.14'; $restartProfile.observed_target_format = 'dev-drive'; $restartProfile.observed_target_clusters = 4096
     $labPath = Join-Path $evidence 'release-lab/lab.json'
     $lab = @{ identity = $identity.Clone(); cases = $cases }
     Save-Json $lab $labPath
     Invoke-Gate 'all-valid'
     $record = Get-Content -LiteralPath (Join-Path $root 'all-valid/QUALIFICATION.json') -Raw | ConvertFrom-Json
     $report = Get-Content -LiteralPath (Join-Path $root 'all-valid/QUALIFICATION.md') -Raw
+    $restart = $record.recovery | Where-Object case_id -EQ 'restart-postflush-resume'
+    if ($restart.postflush.native_bytes_written -ne 4096 -or $restart.boot.filesystem -cne 'NTFS' -or
+        $report -notmatch 'restart-postflush-resume \| restart \| fast \| winpe-postflush-before-discovery \| winpe-postflush-before-discovery \| vm-turned-off \| resume \| resumed \| identical \| NTFS \| working storage retained by harness') {
+        throw 'Restart recovery matrix dropped the write, boot or cleanup evidence'
+    }
+    $postflushResume = $cases | Where-Object case_id -EQ 'restart-postflush-resume'
+    $postflushResume.postflush.released = $true
+    Save-Json $lab $labPath
+    Invoke-Gate 'pause-released-before-cut' 'Incomplete durable WinPE write evidence for restart-postflush-resume'
+    $postflushResume.postflush.released = $false
+    $postflushResume.prompt_wait_seconds = 184
+    Save-Json $lab $labPath
+    Invoke-Gate 'missing-delayed-resume' 'Incomplete durable WinPE write evidence for restart-postflush-resume'
+    $postflushResume.prompt_wait_seconds = 186
     $rollback = $record.recovery | Where-Object case_id -EQ 'vm-verify-passed-rollback'
     if ($rollback.requested_hold -cne 'verify-passed' -or $rollback.reached_hold -cne 'verify-passed' -or
         $rollback.interruption -cne 'vm-turned-off' -or $rollback.recovery -cne 'rollback' -or
@@ -142,9 +172,10 @@ try {
         $report -notmatch 'c-cut-apply-mid \| running \| thorough \| apply-mid-ranges \| apply-mid-ranges \| vm-turned-off \| resume \| CUT-RECOVERED-TO-REFS \| - \| ReFS \| -') {
         throw 'Recovery matrix dropped the running-Windows cut or claimed unobserved results'
     }
-    if (@($record.profiles).Count -ne 2 -or $record.profiles[0].case_id -cne 'full-system' -or
+    if (@($record.profiles).Count -ne 3 -or $record.profiles[0].case_id -cne 'full-system' -or
         $record.profiles[0].windows_build -ne 26300 -or $record.profiles[0].windows_edition -ne 48 -or
-        $report -notmatch 'full-system \| boot \| 26300 \| 48 \| dev-drive \| 3.14 \| 4096') {
+        $report -notmatch 'full-system \| boot \| 26300 \| 48 \| dev-drive \| 3.14 \| 4096' -or
+        $report -notmatch 'restart-convert \| restart \| 26100 \| 7 \| dev-drive \| 3.14 \| 4096') {
         throw 'Platform matrix did not preserve the observed profile or included incomplete evidence'
     }
     $data.observed_target_clusters = $null
@@ -211,7 +242,7 @@ try {
     Save-Json $lab $labPath
     Add-Content -LiteralPath (Join-Path $bin 'ntfs2refs-recovery.exe') -Value 'replaced'
     Invoke-Gate 'changed-binary' 'Signed candidate hash differs for ntfs2refs-recovery.exe'
-    'Release qualification passed eighteen gate checks and three interruption reporting checks.'
+    'Release qualification passed twenty gate checks and three interruption reporting checks.'
 } finally {
     $resolved = (Resolve-Path -LiteralPath $root).Path
     if ($resolved -ceq $root -and $resolved.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase)) {

@@ -51,22 +51,27 @@ function Add-Case([string]$Name, [string]$Route, [string]$Expected, $Verdict, [b
         '^Dev Drive' { 'dev-drive' }
         '^standard ReFS' { 'standard' }
     }
+    $restartProfile = if ($Route -eq 'restart') { $Verdict.after.target_profile }
     $rows.Add([ordered]@{
         case_id = $Name; route = $Route; expected = $Expected; outcome = $Verdict.outcome; passed = ($Passed -and $binaryMatch -and $Verdict.cleanup_ok -ne $false)
         verify = if ($Verdict.verify) { $Verdict.verify } else { 'fast' }; hold = $interruption.hold; reached_hold = $interruption.reached_hold
         interruption = $interruption.kind; simulated_torn_marker = [bool]$Verdict.torn_marker
         torn_marker_settled = $Verdict.torn_marker.settled_by_recovery; recovery = $interruption.recovery
+        postflush = $Verdict.interrupt.postflush
+        prompt_wait_seconds = $Verdict.interrupt.prompt_wait_seconds
         manifest = $Verdict.manifest.result; exact_manifest = $Verdict.manifest.exact; cleanup_ok = $Verdict.cleanup_ok
+        cleanup_outcome = $Verdict.cleanup_outcome
         working_filesystem = $Verdict.made.working_filesystem
         scratch_refusal = $Verdict.scratch_refusal
-        windows = @($Verdict.integrity.windows, $Verdict.boot.observed.build, $Verdict.windows_build, $Verdict.made.windows_build, $Verdict.control.windows_build) | Where-Object { $_ } | Select-Object -First 1
-        windows_edition = $Verdict.boot.observed.windows_edition ?? $Verdict.windows_edition
-        refs = @($Verdict.integrity.refs, $Verdict.volume_after.refs_version, $Verdict.boot.observed.refs_version) | Where-Object { $_ } | Select-Object -First 1
-        observed_target_format = $targetFormat
-        observed_target_clusters = $Verdict.boot.observed.cluster_bytes ?? $Verdict.volume_after.refs_bytes_per_cluster
+        windows = @($Verdict.integrity.windows, $Verdict.boot.observed.build, $Verdict.windows_build, $restartProfile.windows_build, $Verdict.made.windows_build, $Verdict.control.windows_build) | Where-Object { $_ } | Select-Object -First 1
+        windows_edition = $Verdict.boot.observed.windows_edition ?? $Verdict.windows_edition ?? $restartProfile.windows_edition
+        refs = @($Verdict.integrity.refs, $Verdict.volume_after.refs_version, $Verdict.boot.observed.refs_version, $restartProfile.refs_version) | Where-Object { $_ } | Select-Object -First 1
+        observed_target_format = $targetFormat ?? $restartProfile.target_format
+        observed_target_clusters = $Verdict.boot.observed.cluster_bytes ?? $Verdict.volume_after.refs_bytes_per_cluster ?? $restartProfile.cluster_bytes
         source_clusters = $Verdict.source.cluster_bytes; target_clusters = $Verdict.target.cluster_bytes_requested; sector_bytes = $Verdict.source.sector_bytes
         boot = if ($Verdict.boot) { $Verdict.boot.observed | Select-Object -Property filesystem, cluster_bytes, disk, disks, partition, secure_boot, signatures }
             elseif ($Route -eq 'running' -and $Verdict.after.boot_utc) { @{ filesystem = $Verdict.after.filesystem; cluster_bytes = $Verdict.after.cluster_bytes; boot_utc = $Verdict.after.boot_utc } }
+            elseif ($Route -eq 'restart') { $Verdict.after.control_boot }
         integrity_events = $Verdict.integrity.events; reboot_use = $Verdict.reboot_use; host_load = $Verdict.host_load
     })
 }
@@ -90,7 +95,7 @@ try {
     $serverBase = Get-VMSnapshot -VM $server -Name 'N2R-Server-Baseline'
     $serverCredential = Join-Path $root '.lab/hyperv/ntfs2refs-server2025/secrets/guest-credential.xml'
     try {
-        foreach ($case in 'restart-refs-refusal', 'restart-convert', 'restart-cancel') {
+        foreach ($case in 'restart-refs-refusal', 'restart-convert', 'restart-cancel', 'restart-postflush-resume', 'restart-postflush-rollback') {
             if ((Get-VM -Id $server.Id).State -ne 'Off') { Stop-VM -VM $server -Force -Confirm:$false }
             Restore-VMSnapshot -VMSnapshot $serverBase -Confirm:$false
             Start-VM -VM $server
@@ -105,6 +110,11 @@ try {
                 if ($case -eq 'restart-cancel') {
                     $argsForRestart.LabFailAt = 'restart-after-arm'
                     $want = 'cancelled-volume-as-before'
+                } elseif ($case -like 'restart-postflush-*') {
+                    $argsForRestart.PostFlushRecovery = $case.Substring('restart-postflush-'.Length)
+                    $argsForRestart.PartitionMB = 2048
+                    if ($argsForRestart.PostFlushRecovery -eq 'resume') { $argsForRestart.RecoveryChoiceDelaySeconds = 185 }
+                    $want = if ($argsForRestart.PostFlushRecovery -eq 'resume') { 'resumed' } else { 'rolled-back' }
                 }
             }
             & $restart @binaryArgs @argsForRestart -Name "$prefix-$case" -VmId $server.Id -CredentialPath $serverCredential

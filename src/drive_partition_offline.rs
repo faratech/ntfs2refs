@@ -1,7 +1,7 @@
 //! One confirmed public command composes the existing Windows preparation,
 //! independent recovery image and persistent boot handoff on the owning PC.
 use super::*;
-use crate::resource_partition_alpha::prepare_and_arm_shared_conversion;
+use crate::resource_partition_alpha::prepare_and_arm_shared_conversion_with_pause;
 use n2r_win32::{
     recovery_boot::RecoveryBootBudget,
     recovery_image::{RecoveryImageBudget, RecoveryImageInput, RecoveryImageRequest},
@@ -130,10 +130,14 @@ pub(super) fn convert(
             && before.source_write_requests == 0,
         "shared conversion requires the actual readonly NTFS/current-Windows-disk route"
     );
+    let pause = args.controlled_post_flush_pause_nonce.clone();
     ensure!(
-        args.controlled_post_flush_pause_nonce.is_none()
-            && !args.acknowledge_controlled_post_flush_pause,
-        "offline shared conversion uses the native allocation-bounded shadow protocol"
+        pause.is_some() == args.acknowledge_controlled_post_flush_pause,
+        "separate controlled post-flush pause acknowledgement required"
+    );
+    ensure!(
+        pause.is_none() || (args.lab_fail_at.is_none() && args.lab_hold_at.is_none()),
+        "choose either the restart post-flush pause or another laboratory interruption"
     );
     let parent = args.scratch_directory.as_deref().context(
         "use --scratch-directory with an existing directory on a different physical disk for restart recovery")?;
@@ -203,7 +207,7 @@ pub(super) fn convert(
         .scratch_available_bytes
         .checked_sub(image_working)
         .context("independent storage cannot cover recovery image construction")?;
-    let mut plan = automatic(preparation_available, parent, true, false)?;
+    let mut plan = automatic(preparation_available, parent, true, pause.is_some())?;
     // Prepare-only has one more evidence artifact than the original live path.
     plan.arena = plan
         .arena
@@ -330,7 +334,9 @@ pub(super) fn convert(
     let worker = std::thread::Builder::new()
         .name("public-shared-offline-workflow".into())
         .stack_size(resource_partition_alpha::WORKER_STACK_BYTES)
-        .spawn(move || prepare_and_arm_shared_conversion(request, &output, image, boot, true))?;
+        .spawn(move || {
+            prepare_and_arm_shared_conversion_with_pause(request, &output, image, boot, true, pause)
+        })?;
     // A failure of the workflow has already been taken back by it, and its
     // error says what became of the volume. A workflow that panicked is
     // taken back here, from the records it left.

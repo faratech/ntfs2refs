@@ -66,6 +66,7 @@ $requiredLab = @{
     'vm-verify-passed-rollback' = 'ROLLED-BACK-NOT-BOOTED'; 'vm-thorough-handoff-resume' = 'RESUMED-NOT-BOOTED'
     'lived-in' = 'converted'; 'restart-convert' = 'converted'; 'restart-cancel' = 'cancelled-volume-as-before'
     'restart-refs-refusal' = 'refused-source-unchanged'
+    'restart-postflush-resume' = 'resumed'; 'restart-postflush-rollback' = 'rolled-back'
     'integrity-native-idle' = 'control-passed'; 'integrity-native-loaded' = 'control-passed'
     'integrity-converted-idle' = 'converted'; 'integrity-converted-loaded' = 'converted'; 'integrity-lived-in' = 'converted'
 }
@@ -89,6 +90,18 @@ $requiredRecovery = @{
     'vm-verify-passed-rollback' = @('fast', 'verify-passed', 'vm-turned-off', 'rollback')
     'vm-thorough-handoff-resume' = @('thorough', 'apply-handoff-durable', 'vm-turned-off', 'resume')
     'restart-cancel' = @('fast', 'restart-after-arm', 'injected failure', 'rollback')
+    'restart-postflush-resume' = @('fast', 'winpe-postflush-before-discovery', 'vm-turned-off', 'resume')
+    'restart-postflush-rollback' = @('fast', 'winpe-postflush-before-discovery', 'vm-turned-off', 'rollback')
+}
+foreach ($case in 'restart-postflush-resume', 'restart-postflush-rollback') {
+    $row = $indexed[$case]; $proof = $row.postflush
+    if ($row.route -cne 'restart' -or $row.working_filesystem -cne 'NTFS' -or -not $row.boot.boot_utc -or
+        $proof.native_bytes_written -le 0 -or $proof.delayed_discovery_bytes -ne 4096 -or
+        $proof.flush_and_pending_readback_succeeded -ne $true -or $proof.native_writer_revalidation_succeeded -ne $true -or
+        $proof.discovery_write_not_requested -ne $true -or $proof.released -ne $false -or
+        ($case -eq 'restart-postflush-resume' -and $row.prompt_wait_seconds -lt 185)) {
+        throw "Incomplete durable WinPE write evidence for $case"
+    }
 }
 foreach ($case in $requiredRecovery.Keys) {
     $row = $indexed[$case]
@@ -121,7 +134,8 @@ $recoveryCases = @(foreach ($row in $lab.cases | Where-Object { $_.interruption 
         requested_hold = $row.hold; reached_hold = if ($row.reached_hold) { $row.hold }
         interruption = $kind; recovery = $row.recovery; outcome = $row.outcome
         manifest = $row.manifest; exact_manifest = $row.exact_manifest
-        boot = $row.boot; cleanup_ok = $row.cleanup_ok; torn_marker_settled = $row.torn_marker_settled
+        boot = $row.boot; cleanup_ok = $row.cleanup_ok; cleanup_outcome = $row.cleanup_outcome
+        postflush = $row.postflush; prompt_wait_seconds = $row.prompt_wait_seconds; torn_marker_settled = $row.torn_marker_settled
     }
 })
 foreach ($suite in 'deterministic', 'soak') {
@@ -139,7 +153,7 @@ foreach ($suite in 'deterministic', 'soak') {
     })
 }
 $profiles = @(foreach ($row in $lab.cases | Sort-Object { $_.case_id }) {
-    if ($row.route -notin 'data', 'boot', 'restart', 'running' -or $row.outcome -notin 'converted', 'BOOTED-ON-REFS' -or
+    if ($row.route -notin 'data', 'boot', 'restart', 'running' -or $row.outcome -notin 'converted', 'resumed', 'BOOTED-ON-REFS' -or
         $row.manifest -cne 'identical' -or "$($row.windows)" -notmatch '^\d+$' -or -not $row.windows_edition -or
         $row.refs -notmatch '^\d+\.\d+$' -or $row.observed_target_format -notin 'standard', 'dev-drive' -or
         $row.observed_target_clusters -notin 4096, 65536) { continue }
@@ -163,7 +177,7 @@ $lines = @(
     'The matched ReFS controls passed. The cause of the original ReFS event 131 in [#253](https://github.com/faratech/ntfs2refs/issues/253) remains unresolved.', '',
     'Physical disks and actual storage-power loss are unqualified.', '',
     '### Exercised platform profiles', '',
-    'Windows edition is reported as its operating-system SKU. Only cases with complete observations are listed.', '',
+    'Windows edition is reported as its operating-system SKU. Restart cases identify the Windows installation that receives the converted partition after WinPE returns. Only cases with complete observations are listed.', '',
     '| Case | Route | Windows build | Windows SKU | Format | ReFS version | Bytes per cluster |',
     '|---|---|---|---|---|---|---|'
 )
@@ -172,14 +186,14 @@ foreach ($row in $profiles) {
 }
 $lines += @(
     '', '### Recovery cases', '',
-    'An interruption during restart-route apply is unqualified unless it appears below. A dash means the runner did not record that field or it did not apply.', '',
+    'The WinPE post-flush cases cut VM power after data writes were flushed and read back, before the discovery write. Combinations without a row are unqualified. A dash means the runner did not record that field or it did not apply.', '',
     '| Suite | Case | Route | Verification | Requested hold | Reached hold | Interruption | Recovery | Outcome | Manifest | Boot | Cleanup |',
     '|---|---|---|---|---|---|---|---|---|---|---|---|'
 )
 foreach ($row in $recoveryCases) {
     $bootResult = if ($row.boot.filesystem) { $row.boot.filesystem } elseif ($row.outcome -match 'NOT-BOOTED$') { 'not booted' }
     $manifest = if ($row.exact_manifest -eq $true) { "$($row.manifest) (exact)" } else { $row.manifest }
-    $cleanup = if ($row.cleanup_ok -eq $true) { 'passed' } elseif ($row.cleanup_ok -eq $false) { 'failed' }
+    $cleanup = if ($row.cleanup_ok -eq $true) { 'passed' } elseif ($row.cleanup_ok -eq $false) { 'failed' } else { $row.cleanup_outcome }
     $cells = $row.suite, $row.case_id, $row.route, $row.verify, $row.requested_hold, $row.reached_hold,
         $row.interruption, $row.recovery, $row.outcome, $manifest, $bootResult, $cleanup
     $rendered = foreach ($cell in $cells) { if ($cell -eq '' -or $null -eq $cell) { '-' } else { $cell } }

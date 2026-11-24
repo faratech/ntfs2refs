@@ -120,6 +120,12 @@ matrix checks alongside the existing CI checks in the main branch rules.
   Conversion and cancellation both use a separate NTFS working disk
   sized from the host's free space. A refusal case asserts that ReFS working
   storage is rejected before the converter creates a run.
+- Run `Invoke-RestartRouteAttempt.ps1 -PostFlushRecovery resume` and
+  `-PostFlushRecovery rollback` from separate baselines for the restart
+  interruption cases. The host reads the WinPE console and turns off the VM
+  only when the post-flush pause appears. The verdict requires the matching
+  durable receipt and confirms that the discovery write had not been
+  requested. The working image is retained as lab evidence.
 
 ```bash
 gh attestation verify ntfs2refs-<version>-windows-x64.zip --repo faratech/ntfs2refs --signer-workflow faratech/ntfs2refs/.github/workflows/release.yml

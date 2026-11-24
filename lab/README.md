@@ -295,6 +295,11 @@ The cases for the test round, and how each is run today:
 | `-Review` with `--minimize-scratch` | refused by the parser | `-ConverterArgs --minimize-scratch`; not a case of the round |
 | a default run at `apply-activated`, `handoff-sealed` | unchanged | `handoff-sealed` by the round; `apply-activated` by the switch |
 
+The `scratch-standard` and `scratch-minimized` gate cases use the same 8 GiB
+fixture. Compare `resources.peak_working_storage_bytes` in their verdicts.
+`scratch-minimized-resume` and `scratch-minimized-rollback` interrupt apply
+on the same fixture. Rollback requires an exact NTFS listing comparison.
+
 `-StopDuringPreparation <phase>` ends the converter as soon as its progress
 names that phase of preparation (`payload_supply`, `recovery_journal`, ...):
 before it has printed a recovery command, and before anything is written to

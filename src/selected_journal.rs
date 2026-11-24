@@ -1219,7 +1219,7 @@ fn capture_free_selected<R: Read + Seek, J: Write>(
     journal: &mut J,
     selected: &mut PinHash,
     buffer: &mut [u8],
-) -> Result<[u8; 32]> {
+) -> Result<([u8; 32], u64)> {
     source.seek(SeekFrom::Start(range.offset))?;
     frame(selected, range)?;
     let mut table_hash = pin_hash(selected.algorithm())?;
@@ -1227,6 +1227,7 @@ fn capture_free_selected<R: Read + Seek, J: Write>(
     // retained record vector by one entry per source-free cluster.
     let mut table = vec![0u8; buffer.len() / GRANULE as usize * FREE_DIGEST as usize];
     let mut remaining = range.length;
+    let mut stored = 0u64;
     while remaining != 0 {
         let count = usize::try_from(remaining.min(buffer.len() as u64))?;
         source.read_exact(&mut buffer[..count])?;
@@ -1239,10 +1240,13 @@ fn capture_free_selected<R: Read + Seek, J: Write>(
             digest.copy_from_slice(&xxhash_rust::xxh3::xxh3_128(granule).to_le_bytes());
         }
         journal.write_all(&table[..table_count])?;
+        stored = stored
+            .checked_add(table_count as u64)
+            .context("journal source-free OLD digest table size overflow")?;
         table_hash.update(&table[..table_count])?;
         remaining -= count as u64;
     }
-    finish(table_hash)
+    Ok((finish(table_hash)?, stored))
 }
 
 fn verify_copy_selected<R: Read + Seek, S: Read + Seek>(
@@ -1411,7 +1415,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         let old_is_zero = plan.is_old_zero(range);
         let old_is_free = plan.is_source_free(range);
         let old_hash = if old_is_free {
-            capture_free_selected(source, range, journal, &mut old_selected, &mut data_buffer)?
+            capture_free_selected(source, range, journal, &mut old_selected, &mut data_buffer)?.0
         } else if old_is_zero {
             verify_zero_selected(
                 source,

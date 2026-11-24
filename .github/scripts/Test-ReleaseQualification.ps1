@@ -48,7 +48,7 @@ try {
         Save-Json $row (Join-Path $evidence "native-$case/regression.json")
     }
     foreach ($case in 'convert', 'many', 'resume', 'rollback', 'cancel') { Save-Json $nativeRows[$case] (Join-Path $evidence "soak-records-$case/rounds.jsonl") }
-    $cases = @(foreach ($name in 'fixture10', 'admin-fixture40', 'full-system', 'apply-mid-resume', 'apply-mid-rollback', 'seal-recorded-resume', 'handoff-sealed-resume', 'torn-handoff-resume', 'vm-verify-passed-rollback', 'vm-thorough-handoff-resume', 'lived-in', 'restart-convert', 'restart-cancel', 'restart-refs-refusal', 'integrity-native-idle', 'integrity-converted-idle', 'integrity-native-loaded', 'integrity-converted-loaded', 'integrity-lived-in') {
+    $cases = @(foreach ($name in 'fixture10', 'admin-fixture40', 'full-system', 'apply-mid-resume', 'apply-mid-rollback', 'seal-recorded-resume', 'handoff-sealed-resume', 'torn-handoff-resume', 'vm-verify-passed-rollback', 'vm-thorough-handoff-resume', 'lived-in', 'restart-convert', 'restart-cancel', 'restart-refs-refusal', 'integrity-native-idle', 'integrity-converted-idle', 'integrity-native-loaded', 'integrity-converted-loaded', 'integrity-lived-in', 'integrity-event-131') {
         $outcome = switch -Wildcard ($name) {
             '*fixture*' { 'converted-not-booted' }
             '*-resume' { 'RESUMED-NOT-BOOTED' }
@@ -85,12 +85,23 @@ try {
     $data = $cases | Where-Object { $_.case_id -eq 'lived-in' }
     $data.route = 'data'; $data.windows = '26300'; $data.windows_edition = 48; $data.refs = '3.14'
     $data.observed_target_format = 'dev-drive'; $data.observed_target_clusters = 4096
+    $eventFixture = $cases | Where-Object case_id -eq 'integrity-event-131'
+    $eventFixture.integrity_fixture = @{ content = 'lived-in'; directory_entries = 4000; check_agrees = $true }
     $labPath = Join-Path $evidence 'release-lab/lab.json'
     $lab = @{ identity = $identity.Clone(); cases = $cases }
     Save-Json $lab $labPath
     Invoke-Gate 'all-valid'
+    $eventFixture.integrity_fixture.directory_entries = 20000
+    Save-Json $lab $labPath
+    Invoke-Gate 'wrong-event-131-directory' 'Incomplete ReFS event 131 fixture evidence'
+    $eventFixture.integrity_fixture.directory_entries = 4000
+    $eventFixture.integrity_fixture.check_agrees = $null
+    Save-Json $lab $labPath
+    Invoke-Gate 'missing-event-131-preflight' 'Incomplete ReFS event 131 fixture evidence'
+    $eventFixture.integrity_fixture.check_agrees = $true
     $record = Get-Content -LiteralPath (Join-Path $root 'all-valid/QUALIFICATION.json') -Raw | ConvertFrom-Json
     $report = Get-Content -LiteralPath (Join-Path $root 'all-valid/QUALIFICATION.md') -Raw
+    if ($report -notmatch '4,000-entry lived-in case with a preflight check passed') { throw 'Integrity fixture is missing from the release report' }
     $rollback = $record.recovery | Where-Object case_id -EQ 'vm-verify-passed-rollback'
     if ($rollback.requested_hold -cne 'verify-passed' -or $rollback.reached_hold -cne 'verify-passed' -or
         $rollback.interruption -cne 'vm-turned-off' -or $rollback.recovery -cne 'rollback' -or
@@ -190,7 +201,7 @@ try {
             $crashes[0].bugcheck -ne '0x139' -or ([datetimeoffset]$crashes[0].time_utc).UtcDateTime -ne $started.AddSeconds(1) -or
             $crashes[0].xml -notmatch $vm.ToString()) { throw 'Host crash evidence did not isolate the expected VM event' }
     }
-    'Release qualification gate passed all seventeen checks.'
+    'Release qualification gate and integrity evidence checks passed.'
 } finally {
     $resolved = (Resolve-Path -LiteralPath $root).Path
     if ($resolved -ceq $root -and $resolved.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase)) {

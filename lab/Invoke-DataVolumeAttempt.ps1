@@ -585,6 +585,7 @@ try {
             }
         } catch { $verdict.outcome = 'feature-not-made'; throw "a feature could not be put on the volume: $($_.Exception.Message)" }
         $verdict.source.features = ($featureJson | Select-Object -Last 1) | ConvertFrom-Json
+        if ($wanted -contains 'bigdir') { $verdict.source.directory_entries = $DirectoryEntries }
         Set-Content -LiteralPath (Join-Path $records 'features.json') -Value ($featureJson | Select-Object -Last 1) -Encoding UTF8
         Say "features: $($wanted -join ', ')"
     }

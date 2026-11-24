@@ -69,6 +69,9 @@ function Add-Case([string]$Name, [string]$Route, [string]$Expected, $Verdict, [b
         source_clusters = $Verdict.source.cluster_bytes; target_clusters = $Verdict.target.cluster_bytes_requested; sector_bytes = $Verdict.source.sector_bytes
         boot = if ($Verdict.boot) { $Verdict.boot.observed | Select-Object -Property filesystem, cluster_bytes, disk, disks, partition, secure_boot, signatures }
         integrity_events = $Verdict.integrity.events; reboot_use = $Verdict.reboot_use; host_load = $Verdict.host_load
+        integrity_fixture = if ($Route -eq 'integrity') {
+            @{ content = $Verdict.source.content; directory_entries = $Verdict.source.directory_entries; check_agrees = $Verdict.check.agrees }
+        }
     })
 }
 
@@ -123,10 +126,13 @@ try {
         & $boot @binaryArgs -Name $setup -NoConvert -KeepScratch -VmId $vmId
         if ((Read-Verdict $setup).outcome -ne 'prepared-only') { throw "$setup did not prepare the control OS" }
         $privateEvidence = Join-Path $attempts "$prefix-integrity-evidence"
-        foreach ($case in 'native-idle', 'converted-idle', 'native-loaded', 'converted-loaded', 'lived-in') {
+        foreach ($case in 'native-idle', 'converted-idle', 'native-loaded', 'converted-loaded', 'lived-in', 'event-131') {
             $name = "$prefix-integrity-$case"
             $native = $case.StartsWith('native-')
-            $loaded = $case.EndsWith('-loaded') -or $case -eq 'lived-in'
+            $eventFixture = $case -eq 'event-131'
+            $livedIn = $case -eq 'lived-in' -or $eventFixture
+            $loaded = $case.EndsWith('-loaded') -or $livedIn
+            $fixtureArgs = if ($eventFixture) { @{ DirectoryEntries = 4000; Check = $true } } else { @{} }
             $workers = [math]::Max(1, [math]::Floor([Environment]::ProcessorCount / 2))
             $null = New-Item -ItemType Directory -Path $privateEvidence -Force
             $samples = Join-Path $privateEvidence "$case-host.jsonl"
@@ -135,7 +141,11 @@ try {
                 while ($true) {
                     $cpu = (Get-CimInstance Win32_Processor | Measure-Object LoadPercentage -Average).Average
                     $os = Get-CimInstance Win32_OperatingSystem
-                    @{ utc = [datetime]::UtcNow.ToString('o'); cpu_percent = $cpu; free_memory_kib = $os.FreePhysicalMemory } |
+                    $disk = Get-CimInstance Win32_PerfFormattedData_PerfDisk_PhysicalDisk -Filter "Name='_Total'"
+                    @{
+                        utc = [datetime]::UtcNow.ToString('o'); cpu_percent = $cpu; free_memory_kib = $os.FreePhysicalMemory
+                        disk_write_bytes_per_second = $disk.DiskWriteBytesPersec; disk_queue = $disk.CurrentDiskQueueLength
+                    } |
                         ConvertTo-Json -Compress | Add-Content -LiteralPath $path
                     Start-Sleep -Seconds 5
                 }
@@ -152,7 +162,7 @@ try {
             }
             try {
                 & $data @binaryArgs -Name $name -VmId $vmId -ClusterBytes 4096 -TargetClusterBytes 4096 -TargetFormat dev-drive `
-                    -Acceptance -NativeRefsControl:$native -Content $(if ($case -eq 'lived-in') { 'lived-in' } else { 'minimal' }) -IntegrityRecords $privateEvidence
+                    -Acceptance -NativeRefsControl:$native -Content $(if ($livedIn) { 'lived-in' } else { 'minimal' }) -IntegrityRecords $privateEvidence @fixtureArgs
             } finally {
                 foreach ($job in @($monitor, $load) | Where-Object { $_ }) { Stop-Job $job; Remove-Job $job -Force }
             }
@@ -160,9 +170,12 @@ try {
             $want = if ($native) { 'control-passed' } else { 'converted' }
             $measurements = @(Get-Content -LiteralPath $samples -ErrorAction SilentlyContinue | ConvertFrom-Json)
             $v.host_load = @{ loaded = $loaded; samples = $measurements.Count; cpu_percent_average = ($measurements | Measure-Object cpu_percent -Average).Average
-                free_memory_kib_min = ($measurements | Measure-Object free_memory_kib -Minimum).Minimum }
+                free_memory_kib_min = ($measurements | Measure-Object free_memory_kib -Minimum).Minimum
+                disk_write_bytes_per_second_peak = ($measurements | Measure-Object disk_write_bytes_per_second -Maximum).Maximum
+                disk_queue_peak = ($measurements | Measure-Object disk_queue -Maximum).Maximum }
             $ok = $v.outcome -eq $want -and $v.reboot_use -and $v.cleanup_ok -and $v.integrity.volume.AllocationUnitSize -eq 4096 -and
                 $v.integrity.serious_count -eq 0 -and $measurements.Count -gt 0 -and ($native -or $v.manifest.result -eq 'identical')
+            if ($eventFixture) { $ok = $ok -and $v.source.directory_entries -eq 4000 -and $v.check.agrees -eq $true }
             Add-Case "integrity-$case" 'integrity' $want $v $ok
             if (-not $ok) { throw "$name failed. Evidence is retained on the private host at $privateEvidence" }
         }

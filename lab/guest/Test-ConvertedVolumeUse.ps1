@@ -46,21 +46,23 @@ function Hash([string]$path) {
 $progress = $null
 if ($ProgressFile) { $progress = [IO.FileStream]::new($ProgressFile, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::Read, 4096, [IO.FileOptions]::WriteThrough) }
 function Note([string]$text) {
-    if ($progress) { $bytes = [Text.Encoding]::UTF8.GetBytes("$((Get-Date).ToString('HH:mm:ss.fff')) $text`r`n"); $progress.Write($bytes, 0, $bytes.Length); $progress.Flush($true) }
+    if ($progress) { $bytes = [Text.Encoding]::UTF8.GetBytes("$([datetime]::UtcNow.ToString('o')) $text`r`n"); $progress.Write($bytes, 0, $bytes.Length); $progress.Flush($true) }
 }
 function Step([string]$name, [scriptblock]$body) {
+    $begin = [datetime]::UtcNow
     Note "step: $name"
     $watch = [Diagnostics.Stopwatch]::StartNew()
+    $ok = $true
     try {
         $detail = & $body
-        $steps.Add([pscustomobject]@{ step = $name; ok = $true; seconds = [Math]::Round($watch.Elapsed.TotalSeconds, 1); detail = "$detail" })
     } catch {
-        if ("$($_.Exception.Message)" -like 'skipped:*') {
-            $steps.Add([pscustomobject]@{ step = $name; ok = $null; seconds = [Math]::Round($watch.Elapsed.TotalSeconds, 1); detail = "$($_.Exception.Message)" })
-        } else {
-            $steps.Add([pscustomobject]@{ step = $name; ok = $false; seconds = [Math]::Round($watch.Elapsed.TotalSeconds, 1); detail = "$($_.Exception.Message)" })
-        }
+        $detail = $_.Exception.Message
+        $ok = if ($detail -like 'skipped:*') { $null } else { $false }
     }
+    $steps.Add([pscustomobject]@{
+        step = $name; ok = $ok; seconds = [Math]::Round($watch.Elapsed.TotalSeconds, 1); detail = "$detail"
+        started_utc = $begin.ToString('o'); finished_utc = [datetime]::UtcNow.ToString('o')
+    })
 }
 $volume = Get-Volume -DriveLetter $letter
 if ($volume.FileSystem -ne 'ReFS') { throw "$drive is $($volume.FileSystem), not ReFS" }

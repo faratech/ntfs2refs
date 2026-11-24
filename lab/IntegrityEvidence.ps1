@@ -75,7 +75,7 @@ function Invoke-IntegrityReboot($Session, [guid]$VmId, [pscredential]$Credential
     $next
 }
 
-function Save-IntegrityEvents($Session, [datetime]$Started, [string]$Name, [string]$Output) {
+function Save-IntegrityEvents($Session, [datetime]$Started, [string]$Name, [string]$Output, $Acceptance) {
     $data = Invoke-Command -Session $Session -ArgumentList $Started, $Name -ScriptBlock {
         param($start, $name)
         try {
@@ -93,10 +93,17 @@ function Save-IntegrityEvents($Session, [datetime]$Started, [string]$Name, [stri
             volume = $volume | Select-Object Path, UniqueId, FileSystem, AllocationUnitSize, HealthStatus
             partition = $partition | Select-Object Guid, DiskNumber, PartitionNumber
             refs = $refs
-            events = @($events | ForEach-Object { @{ provider = $_.ProviderName; id = $_.Id; time = $_.TimeCreated; record = $_.RecordId; xml = $_.ToXml() } })
+            events = @($events | ForEach-Object {
+                $created = $_.TimeCreated
+                $utc = if ($created) { $created.ToUniversalTime().ToString('o') }
+                @{ provider = $_.ProviderName; id = $_.Id; time = $created; time_utc = $utc; record = $_.RecordId; xml = $_.ToXml() }
+            })
             progress = Get-Content -LiteralPath "C:\n2r\datalab\$name\use-progress.log" -Tail 20 -ErrorAction SilentlyContinue
         }
     }
+    $steps = @()
+    if ($Acceptance) { $steps = @($Acceptance.steps) }
+    $data | Add-Member -NotePropertyName acceptance_steps -NotePropertyValue $steps
     $data | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Output 'storage-events.json') -Encoding utf8
     # The isolated acceptance VM is dedicated to one experiment at a time.
     $serious = @($data.events | Where-Object { $_.provider -match 'ReFS' -and $_.id -in 131, 134 })

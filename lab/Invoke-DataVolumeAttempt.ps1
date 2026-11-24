@@ -1734,7 +1734,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     if ($worker) { Remove-PSSession $worker -ErrorAction SilentlyContinue }
     if ($IntegrityRecords) {
         try {
-            $evidence = Save-IntegrityEvents -Session $session -Started $integrityStarted -Name $Name -Output $integrityStorage
+            $evidence = Save-IntegrityEvents -Session $session -Started $integrityStarted -Name $Name -Output $integrityStorage -Acceptance $verdict['acceptance']
             $verdict.integrity = $evidence
             if ($evidence.serious_count) { $verdict.outcome = 'integrity-event' }
             if ($verdict.outcome -notin 'converted', 'control-passed') {

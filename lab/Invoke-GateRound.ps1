@@ -172,6 +172,8 @@ $lived = '-Content lived-in -DirectoryEntries 4000'
 $scratchFixture = '-Content mixed -PartitionMB 8192 -TargetClusterBytes 4096'
 $dataCases = @(
     'plain|-Check'
+    'standard-win11-refused|-Content minimal -PartitionMB 8192 -TargetFormat standard -TargetClusterBytes 4096 -Check -ExpectRefusal format'
+    'standard-win11-64k-refused|-Content minimal -PartitionMB 8192 -TargetFormat standard -TargetClusterBytes 65536 -Check -ExpectRefusal format'
     "lived-in|$lived -Check -Acceptance"
     '512-to-4k|-ClusterBytes 512 -Check -Acceptance'
     '512-to-64k|-ClusterBytes 512 -TargetClusterBytes 65536 -Check'

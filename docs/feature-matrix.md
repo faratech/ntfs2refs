@@ -103,10 +103,11 @@ These take the same paths as rows above, or are checked by tests only.
 - Index records other than 4 KiB, a ReFS later than 3.14, and a Windows build
   other than 26100 and 26300: nothing in the lab makes them. A run on such a
   build or ReFS version says that it is the first.
-- A conversion to standard ReFS (`--target-format standard`) on Windows 11:
-  the lab's Windows 11 does not format one, and the run stops there with what
-  Windows said, before the volume is touched. Windows Server formats one; see
-  the row for it above.
+- A conversion to standard ReFS (`--target-format standard`) on Windows 11.
+  On Windows 11 Pro 26300.9457 the formatter refused both allocation units
+  before the source was touched. `--list` reports that observation and
+  `--check` reports the same refusal (`standard-win11-refused` and
+  `standard-win11-64k-refused`). Windows Server formats standard ReFS.
 - A Windows boot volume of Windows Server, and Windows 11 on build 26100:
   the lab's Windows 11 is build 26300 and its Windows Server is the control
   OS of data-volume attempts only.

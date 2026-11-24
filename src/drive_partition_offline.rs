@@ -163,6 +163,12 @@ pub(super) fn convert(
                 != n2r_win32::layout::guid_bytes(&before.binding.identity.disk_guid)?,
         "recovery directory must be on an actually observed independent physical disk"
     );
+    ensure!(
+        j.filesystem == "NTFS",
+        "restart preparation needs an NTFS --scratch-directory on the independent recovery disk; {} is on {}. Choose an NTFS working volume. No conversion started.",
+        parent.display(),
+        j.filesystem
+    );
     let media = args
         .offline_recovery_media
         .as_ref()

@@ -48,6 +48,7 @@ param(
     # volume is writable NTFS listing exactly as before and Windows' boot
     # selection is its own again.
     [ValidateSet('', 'restart-after-protect', 'restart-after-image', 'restart-after-arm', 'restart-skip-reboot', 'winpe-before-apply')][string]$LabFailAt = '',
+    [switch]$ExpectScratchRefusal,
     [int]$WorkingDiskGB = 0,
     [ValidateSet('NTFS', 'ReFS')][string]$WorkingFileSystem = 'NTFS',
     # How long the machine may be away (restart, WinPE, conversion, return).
@@ -67,9 +68,10 @@ $null = New-Item -ItemType Directory -Path $records
 $progress = Join-Path $records 'progress.log'
 function Say([string]$Text) { $line = '{0} {1}' -f (Get-Date -Format 'HH:mm:ss'), $Text; Add-Content -LiteralPath $progress -Value $line -Encoding UTF8; Write-Host $line }
 $verdict = [ordered]@{
-    name = $Name; outcome = 'harness-error'; vm_id = $VmId; partition_mb = $PartitionMB; files = $Files
+    name = $Name; outcome = 'harness-error'; vm_id = $VmId; partition_mb = $PartitionMB; files = $Files; lab_fail_at = $LabFailAt
     converter_sha256 = (Get-FileHash -LiteralPath $Binary -Algorithm SHA256).Hash.ToLowerInvariant()
     recovery_sha256 = (Get-FileHash -LiteralPath $RecoveryBinary -Algorithm SHA256).Hash.ToLowerInvariant()
+    listing_tool_sha256 = (Get-FileHash -LiteralPath $ManifestBinary -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 function Save-Verdict { [IO.File]::WriteAllText((Join-Path $records 'verdict.json'), ($verdict | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false)) }
 
@@ -100,6 +102,7 @@ function Screenshot([string]$Leaf) {
 
 $hostDisk = $null
 $work = if ($WorkingDiskGB -gt 0) { 'J:\restart' } else { 'S:\restart' }
+if ($ExpectScratchRefusal -and $LabFailAt) { throw 'Test either the working storage refusal or a restart fault' }
 try {
     $session = Connect 60
     if ($WorkingDiskGB -gt 0) {
@@ -160,10 +163,12 @@ try {
         [pscustomobject]@{
             media = "$($media.DriveLetter):\"; disk = $c.DiskNumber; style = "$($disk.PartitionStyle)"; partition = $partition.PartitionNumber
             offset = $partition.Offset; size = $partition.Size; c_size_after = (Get-Partition -DriveLetter C).Size
+            working_filesystem = (Get-Volume -DriveLetter (Split-Path -Qualifier $work).TrimEnd(':')).FileSystem
             windows_build = [Environment]::OSVersion.Version.ToString(); free_memory_bytes = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory * 1KB
         }
     }
     $verdict.made = $made
+    if ($ExpectScratchRefusal -and $made.working_filesystem -ne 'ReFS') { throw 'The restart refusal case needs ReFS working storage' }
     # Windows numbers a disk's partitions anew when it starts, by where they
     # lie: a partition made a moment ago in a gap before another one has a
     # number it will not keep (5 here, 4 after a start), and a run binds its
@@ -187,7 +192,9 @@ try {
     $before = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
         param($root)
         $text = & "$root\lab-volume-manifest.exe" capture --root 'P:\' --output "$root\manifest-before.jsonl" 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { throw "Restart source manifest capture failed (exit $LASTEXITCODE): $text" }
         $list = @(& "$root\ntfs2refs.exe" --list 2>&1 | ForEach-Object { "$_" })
+        if ($LASTEXITCODE -ne 0) { throw "Restart source listing failed (exit $LASTEXITCODE): $list" }
         $row = [string]($list | Where-Object { $_ -match '\sP:\\\s' } | Select-Object -First 1)
         [pscustomobject]@{ exit = $LASTEXITCODE; listing = $text.Trim(); row = $row.Trim(); list = $list
             serial = if ($row -match 'serial ([0-9A-F]{4}-[0-9A-F]{4})') { $Matches[1] } else { $null } }
@@ -200,7 +207,7 @@ try {
 
     $arguments = @('--drive', 'P', '--restart-media', $made.media, '--scratch-directory', $work, '--yes', '--volume-serial', $before.serial) + $ConverterArgs
     if ($LabFailAt) { $arguments += @('--lab-fail-at', $LabFailAt, '--acknowledge-lab-fail-stops-the-run') }
-    $staysInWindows = $LabFailAt -in 'restart-after-protect', 'restart-after-image', 'restart-after-arm', 'restart-skip-reboot'
+    $staysInWindows = $ExpectScratchRefusal -or $LabFailAt -in 'restart-after-protect', 'restart-after-image', 'restart-after-arm', 'restart-skip-reboot'
     $verdict.arguments = $arguments
     Say "converter: ntfs2refs.exe $($arguments -join ' ')"
     # Started as SYSTEM by a task, with its output in files on C:, which is
@@ -233,7 +240,7 @@ try {
             if ($null -ne $state.exit -and $staysInWindows) {
                 # The laboratory point ends the run in Windows.
                 $verdict.exit = $state.exit; $endedInWindows = $true
-                Say "the converter ended in Windows with exit $($state.exit), as the laboratory point $LabFailAt has it"
+                Say "the converter ended in Windows with exit $($state.exit)"
             } elseif ($null -ne $state.exit -and $state.exit -ne '0') {
                 $verdict.outcome = 'refused-or-failed-in-windows'; $verdict.exit = $state.exit
                 throw "the converter ended in Windows with exit $($state.exit) and did not restart"
@@ -249,6 +256,7 @@ try {
             $partition = Get-Partition -DriveLetter P -ErrorAction SilentlyContinue
             [pscustomobject]@{
                 error = [string](Get-Content -LiteralPath "$root\stderr.log" -Tail 3 -ErrorAction SilentlyContinue | Out-String).Trim()
+                output = [string](Get-Content -LiteralPath "$root\stdout.log" -Tail 30 -ErrorAction SilentlyContinue | Out-String)
                 read_only = if ($partition) { [bool]$partition.IsReadOnly } else { $null }
                 boot = [string](& bcdedit.exe /enum '{bootmgr}' 2>&1 | Where-Object { $_ -match '^(default|timeout)' } | Out-String).Trim() -replace '\s+', ' '
             }
@@ -256,6 +264,17 @@ try {
         Say "the run said: $($said.error -replace '\s+', ' ')"
         Say "P: read-only: $($said.read_only); boot manager: $($said.boot)"
         $verdict.after_the_point = $said
+        if ($ExpectScratchRefusal) {
+            $verdict.scratch_refusal = $verdict.exit -ne '0' -and $said.error.Contains('restart preparation needs an NTFS --scratch-directory')
+            if (-not $verdict.scratch_refusal) { throw "Expected an NTFS working-storage refusal. $($said.error)" }
+        } else {
+            $marker = '"kind":"lab-fail-v1","point":"' + $LabFailAt + '"'
+            $verdict.reached_lab_fail_at = $said.output.Contains($marker)
+        }
+        if ($LabFailAt -and -not $verdict.reached_lab_fail_at) {
+            $verdict.outcome = 'failure-point-not-reached'
+            throw "The converter stopped before $LabFailAt. $($said.error)"
+        }
         if ($LabFailAt -in 'restart-after-arm', 'restart-skip-reboot') {
             # Left prepared: asked what it is, then cancelled.
             $recovered = Invoke-Command -Session $session -ArgumentList $guestRoot, $work -ScriptBlock {
@@ -269,6 +288,9 @@ try {
             [IO.File]::WriteAllLines((Join-Path $records 'recover-status.txt'), [string[]]$recovered.status)
             [IO.File]::WriteAllLines((Join-Path $records 'recover-rollback.txt'), [string[]]$recovered.cancel)
             [IO.File]::WriteAllLines((Join-Path $records 'recover-status-after.txt'), [string[]]$recovered.again)
+            if ($recovered.status_exit -ne 0 -or $recovered.cancel_exit -ne 0 -or $recovered.again_exit -ne 0) {
+                throw 'Restart cancellation or its status check failed. See the recovery logs.'
+            }
             $plain = { param($lines) @($lines | Where-Object { $_ -match '^[A-Z].* ' -and $_ -notmatch '^[a-z0-9-]+$' }) -join ' | ' }
             Say "--recover (exit $($recovered.status_exit)): $(& $plain $recovered.status)"
             Say "--recover --rollback (exit $($recovered.cancel_exit)): $(& $plain $recovered.cancel)"
@@ -302,21 +324,27 @@ try {
         $listed = ''; $summary = ''; $compare = $null
         if ($volume) {
             $listed = & "$root\lab-volume-manifest.exe" capture --root 'P:\' --output "$root\manifest-after.jsonl" 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) { throw "Restart result manifest capture failed (exit $LASTEXITCODE): $listed" }
             # Not --exact: Windows writes its own file into System Volume
             # Information as soon as a volume is writable again (a volume
             # given back listed one file more for it). What else the
             # comparison let through is held to nothing below.
             $summary = & "$root\lab-volume-manifest.exe" compare --before "$root\manifest-before.jsonl" --after "$root\manifest-after.jsonl" --report "$root\manifest-report.json" 2>&1 | Out-String
             $compare = $LASTEXITCODE
-            if ($compare -ne 0) {
+            if ($compare -notin 0, 2) { throw "Restart manifest comparison failed (exit ${compare}): $summary" }
+            $report = Get-Content -LiteralPath "$root\manifest-report.json" -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            if ($null -eq $report.allowed -or $null -eq $report.differences -or $null -eq $report.difference_count -or
+                ($report.difference_count -eq 0) -ne ($compare -eq 0)) { throw 'Restart manifest report disagrees with the comparison result' }
+            if ($compare -eq 2) {
                 # The directory System Volume Information itself has new
                 # times once Windows has written into it: that alone is no
                 # difference of the volume's.
-                $other = @((Get-Content -LiteralPath "$root\manifest-report.json" -Raw | ConvertFrom-Json).differences | Where-Object { $_.path -ne '\System Volume Information' })
-                if (-not $other) { $compare = 0; $summary = "only the times of System Volume Information differ. $summary" }
+                $differences = @($report.differences)
+                $other = @($differences | Where-Object { $_.path -ne '\System Volume Information' -or $_.kind -notin 'creation time changed', 'last write time changed', 'change time changed' })
+                if ($differences.Count -eq $report.difference_count -and -not $other) { $compare = 0; $summary = "only the times of System Volume Information differ. $summary" }
             }
             if ($compare -eq 0) {
-                $let = @(((Get-Content -LiteralPath "$root\manifest-report.json" -Raw | ConvertFrom-Json).allowed.PSObject.Properties | ForEach-Object Name) | Where-Object { $_ -ne 'System Volume Information content' })
+                $let = @($report.allowed.PSObject.Properties.Name | Where-Object { $_ -ne 'System Volume Information content' })
                 if ($let) { $compare = 2; $summary = "let through besides Windows' own files: $($let -join ', '). $summary" }
             }
         }
@@ -345,20 +373,26 @@ try {
     }
     # The run's small records, and what WinPE wrote beside them.
     try {
-        Invoke-Command -Session $session -ArgumentList $guestRoot, $work -ScriptBlock {
+        $archived = Invoke-Command -Session $session -ArgumentList $guestRoot, $work -ScriptBlock {
             param($root, $work)
             $files = Get-ChildItem -LiteralPath $work -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -lt 4MB -and $_.Extension -in '.json', '.log', '.txt' }
             if ($files) { Compress-Archive -LiteralPath $files.FullName -DestinationPath "$root\records.zip" -Force }
+            Test-Path -LiteralPath "$root\records.zip" -PathType Leaf
         }
-        Copy-Item -FromSession $session -LiteralPath "$guestRoot\records.zip" -Destination $records -Force -ErrorAction Stop
+        if ($archived) { Copy-Item -FromSession $session -LiteralPath "$guestRoot\records.zip" -Destination $records -Force -ErrorAction Stop }
     } catch { Say "the run's records could not be collected: $($_.Exception.Message)" }
-    $verdict.outcome = if ($LabFailAt) {
+    $verdict.outcome = if ($ExpectScratchRefusal) {
+            if ($verdict.scratch_refusal -and $after.filesystem -eq 'NTFS' -and $after.compare_exit -eq 0 -and $after.writable -and $after.boot_default -match 'default\s+\{current\}' -and -not $after.runs) { 'refused-source-unchanged' }
+            else { 'scratch-refusal-incomplete' }
+        }
+        elseif ($LabFailAt) {
             if ($after.filesystem -eq 'NTFS' -and $after.compare_exit -eq 0 -and $after.read_only -eq $false -and $after.writable -and $after.boot_default -match 'default\s+\{current\}') { 'cancelled-volume-as-before' }
             else { 'cancel-incomplete' }
         }
         elseif ($after.filesystem -ne 'ReFS') { "returned-with-$($after.filesystem)" }
         elseif ($after.compare_exit -ne 0) { 'converted-but-listing-differs' }
         else { 'converted' }
+    $verdict.manifest = @{ result = if ($after.compare_exit -eq 0) { 'identical' } else { 'differs' }; exact = $false }
 }
 catch {
     $verdict.error = "$($_.Exception.Message)"

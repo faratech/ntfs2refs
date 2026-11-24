@@ -114,8 +114,46 @@ if ($boot.manifest -cne 'identical' -or $boot.outcome -notmatch 'BOOTED-ON-REFS$
     $boot.boot.filesystem -ne 'ReFS' -or $boot.boot.disk -ne 0 -or @($boot.boot.disks).Count -ne 1 -or $boot.boot.partition -ne 3 -or $boot.boot.cluster_bytes -ne 4096 -or -not $boot.boot.secure_boot -or
     'System32\winload.efi' -notin $validBootFiles -or 'System32\drivers\refs.sys' -notin $validBootFiles) { throw 'Full Windows boot proof is incomplete' }
 
+$recoveryCases = @(foreach ($row in $lab.cases | Where-Object { $_.interruption } | Sort-Object { $_.route }, { $_.verify }, { $_.case_id }) {
+    $kind = if ($row.simulated_torn_marker) { "$($row.interruption), simulated torn marker" } else { $row.interruption }
+    @{
+        suite = 'Hyper-V'; case_id = $row.case_id; route = $row.route; verify = $row.verify
+        requested_hold = $row.hold; reached_hold = if ($row.reached_hold) { $row.hold }
+        interruption = $kind; recovery = $row.recovery; outcome = $row.outcome
+        manifest = $row.manifest; exact_manifest = $row.exact_manifest
+        boot = $row.boot; cleanup_ok = $row.cleanup_ok; torn_marker_settled = $row.torn_marker_settled
+    }
+})
+foreach ($suite in 'deterministic', 'soak') {
+    $verdicts = if ($suite -eq 'deterministic') { $native } else { $soak }
+    $recoveryCases += @(foreach ($row in $verdicts | Where-Object terminated) {
+        @{
+            suite = $suite; case_id = if ($suite -eq 'deterministic') { $row.case_id } else { "$($row.profile) seed $($row.seed)" }
+            route = 'data'; verify = $row.verify; requested_hold = $row.hold_at
+            reached_hold = if ($row.reached_hold) { $row.hold_at }
+            interruption = if ($row.end_after_seconds -gt 0 -and -not $row.hold_at) { "process termination ($($row.end_after_seconds) s timer)" } else { 'process termination' }
+            recovery = $row.recovery_mode; outcome = $row.outcome
+            manifest = if ($row.manifest_matches) { 'identical' }
+            cleanup_ok = $row.cleanup_ok
+        }
+    })
+}
+$profiles = @(foreach ($row in $lab.cases | Sort-Object { $_.case_id }) {
+    if ($row.route -notin 'data', 'boot', 'restart', 'running' -or $row.outcome -notin 'converted', 'BOOTED-ON-REFS' -or
+        $row.manifest -cne 'identical' -or "$($row.windows)" -notmatch '^\d+$' -or -not $row.windows_edition -or
+        $row.refs -notmatch '^\d+\.\d+$' -or $row.observed_target_format -notin 'standard', 'dev-drive' -or
+        $row.observed_target_clusters -notin 4096, 65536) { continue }
+    @{
+        case_id = $row.case_id; route = $row.route; windows_build = [uint32]$row.windows
+        windows_edition = [uint32]$row.windows_edition; refs_version = $row.refs
+        target_format = $row.observed_target_format; target_cluster_bytes = [uint32]$row.observed_target_clusters
+    }
+})
+foreach ($case in 'full-system', 'lived-in') {
+    if ($case -cnotin $profiles.case_id) { throw "Missing observed platform profile for $case" }
+}
+$record = @{ schema = 1; candidate = $identity; deterministic = $native; soak = $soak; hyper_v = $lab.cases; recovery = $recoveryCases; profiles = $profiles }
 $null = New-Item -ItemType Directory -Path $Output
-$record = @{ schema = 1; candidate = $identity; deterministic = $native; soak = $soak; hyper_v = $lab.cases }
 $record | ConvertTo-Json -Depth 15 | Set-Content -LiteralPath (Join-Path $Output 'QUALIFICATION.json') -Encoding utf8
 $lines = @(
     '## Native qualification', '',
@@ -123,16 +161,27 @@ $lines = @(
     'The three executable hashes, per-case manifest results, platform details, and filesystem findings are in `QUALIFICATION.json`.', '',
     'Data and developer volumes passed continued allocation, deletion, remount, and reboot tests. The installed Windows volume reached the desktop on ReFS 3.14 with Secure Boot enabled.', '',
     'The matched ReFS controls passed. The cause of the original ReFS event 131 in [#253](https://github.com/faratech/ntfs2refs/issues/253) remains unresolved.', '',
-    'Physical disks and actual storage-power loss are unqualified. The table covers the exercised recovery combinations.', '',
-    '| Route | Verification | Hold or stop | Interruption | Recovery | Result |',
-    '|---|---|---|---|---|---|'
+    'Physical disks and actual storage-power loss are unqualified.', '',
+    '### Exercised platform profiles', '',
+    'Windows edition is reported as its operating-system SKU. Only cases with complete observations are listed.', '',
+    '| Case | Route | Windows build | Windows SKU | Format | ReFS version | Bytes per cluster |',
+    '|---|---|---|---|---|---|---|'
 )
-foreach ($row in $lab.cases | Where-Object { $_.interruption } | Sort-Object { $_.route }, { $_.verify }, { $_.case_id }) {
-    $kind = if ($row.simulated_torn_marker) { "$($row.interruption), simulated torn marker" } else { $row.interruption }
-    $lines += "| $($row.route) | $($row.verify) | $($row.hold) | $kind | $($row.recovery) | $($row.outcome) |"
+foreach ($row in $profiles) {
+    $lines += "| $($row.case_id) | $($row.route) | $($row.windows_build) | $($row.windows_edition) | $($row.target_format) | $($row.refs_version) | $($row.target_cluster_bytes) |"
 }
-foreach ($row in $native | Where-Object terminated) {
-    $point = if ($row.hold_at) { $row.hold_at } else { "$($row.end_after_seconds) s timer" }
-    $lines += "| data | $($row.verify) | $point | process | $($row.recovery_mode) | $($row.outcome) |"
+$lines += @(
+    '', '### Recovery cases', '',
+    'An interruption during restart-route apply is unqualified unless it appears below. A dash means the runner did not record that field or it did not apply.', '',
+    '| Suite | Case | Route | Verification | Requested hold | Reached hold | Interruption | Recovery | Outcome | Manifest | Boot | Cleanup |',
+    '|---|---|---|---|---|---|---|---|---|---|---|---|'
+)
+foreach ($row in $recoveryCases) {
+    $bootResult = if ($row.boot.filesystem) { $row.boot.filesystem } elseif ($row.outcome -match 'NOT-BOOTED$') { 'not booted' }
+    $manifest = if ($row.exact_manifest -eq $true) { "$($row.manifest) (exact)" } else { $row.manifest }
+    $cleanup = if ($row.cleanup_ok -eq $true) { 'passed' } elseif ($row.cleanup_ok -eq $false) { 'failed' }
+    $cells = $row.suite, $row.case_id, $row.route, $row.verify, $row.requested_hold, $row.reached_hold,
+        $row.interruption, $row.recovery, $row.outcome, $manifest, $bootResult, $cleanup
+    $lines += '| ' + (($cells | ForEach-Object { if ($_ -eq '' -or $null -eq $_) { '-' } else { $_ } }) -join ' | ') + ' |'
 }
 $lines | Set-Content -LiteralPath (Join-Path $Output 'QUALIFICATION.md') -Encoding utf8

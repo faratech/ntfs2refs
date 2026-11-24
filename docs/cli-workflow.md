@@ -86,6 +86,12 @@ seconds on one of 23,000 files. It prints:
   cluster size asked for (`--target-cluster-bytes`); the working storage and
   the free memory it needs at least; and a range for the time, from the lab's
   runs on virtual disks.
+- **Geometry and release evidence:** the source's NTFS index-record size and
+  the ReFS versions the release exercised with this Windows build, edition and
+  target. The release evidence comes from the adjacent `QUALIFICATION.json`
+  when its version and converter hash match. `ntfs2refs capabilities` lists
+  the exercised profiles and the geometry and platform ranges the converter
+  admits.
 
 On a volume in use a program may have deleted a file that it still holds
 open. Windows keeps such a file until the program closes it. The check does

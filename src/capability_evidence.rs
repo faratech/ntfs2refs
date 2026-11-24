@@ -6,13 +6,78 @@
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::Read,
+    fs::File,
+    io::{BufReader, Read},
     path::Path,
 };
 
 pub const EMBEDDED: &str = include_str!("../evidence/qualification-registry.json");
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ReleaseProfile {
+    pub case_id: String,
+    pub route: String,
+    pub windows_build: u32,
+    pub windows_edition: u32,
+    pub refs_version: String,
+    pub target_format: String,
+    pub target_cluster_bytes: u32,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ReleaseQualification {
+    schema: u32,
+    candidate: ReleaseCandidate,
+    pub profiles: Vec<ReleaseProfile>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct ReleaseCandidate {
+    tag: String,
+    commit: String,
+    hashes: BTreeMap<String, String>,
+}
+
+/// Match the packaged qualification report to the executable presenting it.
+/// The report is informational and never used for admission.
+pub fn release_qualification() -> Result<ReleaseQualification> {
+    read_release_qualification(&std::env::current_exe()?, env!("CARGO_PKG_VERSION"))
+}
+
+fn read_release_qualification(exe: &Path, version: &str) -> Result<ReleaseQualification> {
+    let report = File::open(exe.with_file_name("QUALIFICATION.json"))?;
+    let metadata = report.metadata()?;
+    const MAX_REPORT_BYTES: u64 = 32 * 1024 * 1024;
+    ensure!(
+        metadata.is_file() && metadata.len() <= MAX_REPORT_BYTES,
+        "invalid qualification report size"
+    );
+    let record: ReleaseQualification =
+        serde_json::from_reader(BufReader::new(report.take(MAX_REPORT_BYTES + 1)))?;
+    ensure!(
+        record.schema == 1 && record.candidate.tag == version,
+        "qualification schema or version differs"
+    );
+    let mut executable = File::open(exe)?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let count = executable.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    let actual = hex::encode(hash.finalize());
+    ensure!(
+        record.candidate.hashes.get("ntfs2refs.exe") == Some(&actual),
+        "qualification executable hash differs"
+    );
+    Ok(record)
+}
 
 /// Load a bounded registry. Historical artifact/device paths are not opened.
 pub fn load_registry(path: &Path) -> Result<Registry> {
@@ -682,6 +747,37 @@ pub fn render_markdown(registry: &Registry) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn release_qualification_is_bound_to_the_executable_and_version() {
+        use super::*;
+
+        let directory = tempfile::tempdir().unwrap();
+        let exe = directory.path().join("ntfs2refs.exe");
+        let report = exe.with_file_name("QUALIFICATION.json");
+        let contents = b"candidate executable";
+        std::fs::write(&exe, contents).unwrap();
+        assert!(read_release_qualification(&exe, "0.0.5").is_err());
+
+        let mut evidence = serde_json::json!({
+            "schema": 1,
+            "candidate": {
+                "tag": "0.0.5",
+                "commit": "a".repeat(40),
+                "hashes": { "ntfs2refs.exe": hex::encode(Sha256::digest(contents)) },
+            },
+            "profiles": [],
+        });
+        std::fs::write(&report, evidence.to_string()).unwrap();
+        assert!(read_release_qualification(&exe, "0.0.5").is_ok());
+        assert!(read_release_qualification(&exe, "0.0.4").is_err());
+        std::fs::write(&exe, b"replaced executable").unwrap();
+        assert!(read_release_qualification(&exe, "0.0.5").is_err());
+
+        std::fs::write(&exe, contents).unwrap();
+        evidence["schema"] = serde_json::json!(2);
+        std::fs::write(&report, evidence.to_string()).unwrap();
+        assert!(read_release_qualification(&exe, "0.0.5").is_err());
+    }
     use super::*;
 
     #[test]

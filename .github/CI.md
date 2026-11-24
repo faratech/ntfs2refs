@@ -83,7 +83,11 @@ Dispatch a fresh run to retry qualification after a failure.
 5. It checks the candidate commit and executable hashes against the native
    verdicts. It packages and attests the ZIP and executables and checks the
    executable hashes again inside the ZIP. `QUALIFICATION.json` carries the
-   per-case evidence and `QUALIFICATION.md` carries the recovery matrix.
+   per-case evidence and `QUALIFICATION.md` carries the recovery and platform
+   matrices. `capabilities` and `--check` report platform evidence from the
+   adjacent `QUALIFICATION.json` when its schema, version and converter hash
+   match. The profile table records the observed Windows build and edition
+   (OS SKU), ReFS format, version and allocation unit for each listed case.
 6. With `publish` enabled, it publishes using the classification in
    `.github/release-channel.txt`. The stabilization candidate uses `prerelease`.
 

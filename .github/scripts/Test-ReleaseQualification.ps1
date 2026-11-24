@@ -78,12 +78,36 @@ try {
     $torn.simulated_torn_marker = $true; $torn.torn_marker_settled = $true
     $boot = $cases | Where-Object { $_.case_id -eq 'full-system' }
     $boot.outcome = 'BOOTED-ON-REFS'; $boot.expected = $boot.outcome; $boot.manifest = 'identical'; $boot.refs = '3.14'
+    $boot.route = 'boot'; $boot.windows = '26300'; $boot.windows_edition = 48
+    $boot.observed_target_format = 'dev-drive'; $boot.observed_target_clusters = 4096
     $boot.boot = @{ filesystem = 'ReFS'; disk = 0; disks = @(@{ Number = 0 }); partition = 3; cluster_bytes = 4096; secure_boot = $true
         signatures = @('System32\winload.efi', 'System32\drivers\refs.sys' | ForEach-Object { @{ file = $_; status = 'Valid'; signer = 'CN=Microsoft Windows, O=Microsoft Corporation' } }) }
+    $data = $cases | Where-Object { $_.case_id -eq 'lived-in' }
+    $data.route = 'data'; $data.windows = '26300'; $data.windows_edition = 48; $data.refs = '3.14'
+    $data.observed_target_format = 'dev-drive'; $data.observed_target_clusters = 4096
     $labPath = Join-Path $evidence 'release-lab/lab.json'
     $lab = @{ identity = $identity.Clone(); cases = $cases }
     Save-Json $lab $labPath
     Invoke-Gate 'all-valid'
+    $record = Get-Content -LiteralPath (Join-Path $root 'all-valid/QUALIFICATION.json') -Raw | ConvertFrom-Json
+    $report = Get-Content -LiteralPath (Join-Path $root 'all-valid/QUALIFICATION.md') -Raw
+    $rollback = $record.recovery | Where-Object case_id -EQ 'vm-verify-passed-rollback'
+    if ($rollback.requested_hold -cne 'verify-passed' -or $rollback.reached_hold -cne 'verify-passed' -or
+        $rollback.interruption -cne 'vm-turned-off' -or $rollback.recovery -cne 'rollback' -or
+        -not $rollback.exact_manifest -or -not $rollback.cleanup_ok -or
+        $report -notmatch 'identical \(exact\) \| not booted \| passed' -or
+        -not ($record.recovery | Where-Object { $_.suite -eq 'soak' -and $_.recovery -eq 'resume' })) {
+        throw 'Recovery matrix dropped validated interruption or outcome evidence'
+    }
+    if (@($record.profiles).Count -ne 2 -or $record.profiles[0].case_id -cne 'full-system' -or
+        $record.profiles[0].windows_build -ne 26300 -or $record.profiles[0].windows_edition -ne 48 -or
+        $report -notmatch 'full-system \| boot \| 26300 \| 48 \| dev-drive \| 3.14 \| 4096') {
+        throw 'Platform matrix did not preserve the observed profile or included incomplete evidence'
+    }
+    $data.observed_target_clusters = $null
+    Save-Json $lab $labPath
+    Invoke-Gate 'missing-platform-profile' 'Missing observed platform profile for lived-in'
+    $data.observed_target_clusters = 4096
 
     foreach ($test in @(
         @('rollback', 'outcome', 'converted', 'Unexpected verdict'),
@@ -143,7 +167,7 @@ try {
     Save-Json $lab $labPath
     Add-Content -LiteralPath (Join-Path $bin 'ntfs2refs-recovery.exe') -Value 'replaced'
     Invoke-Gate 'changed-binary' 'Signed candidate hash differs for ntfs2refs-recovery.exe'
-    'Release qualification gate passed all sixteen checks.'
+    'Release qualification gate passed all seventeen checks.'
 } finally {
     $resolved = (Resolve-Path -LiteralPath $root).Path
     if ($resolved -ceq $root -and $resolved.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase)) {

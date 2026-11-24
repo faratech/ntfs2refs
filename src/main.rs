@@ -67,6 +67,15 @@ fn run() -> Result<u8> {
     {
         Command::Capabilities => {
             let registry = ntfs2refs::capability_evidence::Registry::embedded()?;
+            let release_qualification = match ntfs2refs::capability_evidence::release_qualification(
+            ) {
+                Ok(record) => {
+                    serde_json::json!({"status": "available", "evidence": "QUALIFICATION.json", "record": record})
+                }
+                Err(_) => {
+                    serde_json::json!({"status": "unavailable", "evidence": "QUALIFICATION.json"})
+                }
+            };
             let large =
                 ntfs2refs::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1.limits();
             let diagnose_refuses: Vec<_> = ntfs2refs::drive_cli::DriveArgs::DIAGNOSE_REFUSES
@@ -93,6 +102,7 @@ fn run() -> Result<u8> {
                     ],
                     // The rows the boot-volume admission gate enforces.
                     "qualified_boot_profiles": ntfs2refs::boot_profile::QUALIFIED,
+                    "release_qualification": release_qualification,
                     // What the default data-volume route admits. A Windows
                     // boot volume is one of the profiles above.
                     "source_geometry": {

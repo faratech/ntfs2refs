@@ -471,10 +471,12 @@ try {
         $partition = Get-Partition -DriveLetter V
         [pscustomobject]@{ diskpart = $diskpart; format = $format; ntfsinfo = $ntfs; disk = $partition.DiskNumber; partition = $partition.PartitionNumber
             bytes = $partition.Size; offset = $partition.Offset; logical_sector = (Get-Disk -Number $partition.DiskNumber).LogicalSectorSize
-            windows_build = (Get-CimInstance Win32_OperatingSystem).BuildNumber }
+            windows_build = (Get-CimInstance Win32_OperatingSystem).BuildNumber
+            windows_edition = (Get-CimInstance Win32_OperatingSystem).OperatingSystemSKU }
     }
     Set-Content -LiteralPath (Join-Path $records 'volume.log') -Value ($made.diskpart, $made.format, $made.ntfsinfo) -Encoding UTF8
     $verdict.windows_build = $made.windows_build
+    $verdict.windows_edition = $made.windows_edition
     # Where the source is, for the steps that look at its disk while it has no letter.
     $sourceDisk = $made.disk; $sourceOffset = $made.offset
     $field = { param($label) if ($made.ntfsinfo -match "(?m)^\s*$label\s*:\s*([0-9,]+)") { [int64]($Matches[1] -replace ',') } else { $null } }

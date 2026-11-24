@@ -139,11 +139,6 @@ try {
     }
     $reported = (& $binaries[0] --version).Trim()
     if ($reported -ne "ntfs2refs $version") { throw "the executable reports '$reported', not 'ntfs2refs $version'" }
-    $capabilities = (& $binaries[0] capabilities) -join "`n"
-    if ($LASTEXITCODE -ne 0) { throw 'ntfs2refs capabilities failed' }
-    $reportedCapabilities = $capabilities | ConvertFrom-Json
-    if ($reportedCapabilities.tool_version -ne $version) { throw "capabilities reports version '$($reportedCapabilities.tool_version)', not '$version'" }
-
     $compared = @()
     if ($ComparedWith) {
         foreach ($binary in $binaries) {
@@ -159,7 +154,6 @@ try {
     $stage = Join-Path $Output "ntfs2refs-$version-windows-x64"
     $null = New-Item -ItemType Directory -Path $stage, (Join-Path $stage 'docs')
     Copy-Item -LiteralPath $binaries -Destination $stage
-    [IO.File]::WriteAllText((Join-Path $stage 'capabilities.json'), $capabilities, [Text.UTF8Encoding]::new($false))
     Copy-Item -LiteralPath 'README.md', 'DISCLAIMER.md' -Destination $stage
     if (Test-Path -LiteralPath 'LICENSE') { Copy-Item -LiteralPath 'LICENSE' -Destination $stage }
     foreach ($document in 'cli-workflow.md', 'feature-matrix.md', 'recovery-matrix.md') { Copy-Item -LiteralPath (Join-Path 'docs' $document) -Destination (Join-Path $stage 'docs') }
@@ -170,6 +164,14 @@ try {
             Copy-Item -LiteralPath $path -Destination $Output
         }
     }
+    $capabilities = (& (Join-Path $stage 'ntfs2refs.exe') capabilities) -join "`n"
+    if ($LASTEXITCODE -ne 0) { throw 'ntfs2refs capabilities failed' }
+    $reportedCapabilities = $capabilities | ConvertFrom-Json
+    if ($reportedCapabilities.tool_version -ne $version) { throw "capabilities reports version '$($reportedCapabilities.tool_version)', not '$version'" }
+    if ($Qualification -and $reportedCapabilities.release_qualification.status -cne 'available') {
+        throw 'The package does not report the qualification for its converter'
+    }
+    [IO.File]::WriteAllText((Join-Path $stage 'capabilities.json'), $capabilities, [Text.UTF8Encoding]::new($false))
 
     $hash = { param($path) (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
     $notes = New-Object System.Collections.Generic.List[string]

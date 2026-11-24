@@ -138,6 +138,9 @@ try {
     $restartProfile = $cases | Where-Object case_id -EQ 'restart-convert'
     $restartProfile.route = 'restart'; $restartProfile.windows = 26100; $restartProfile.windows_edition = 7
     $restartProfile.refs = '3.14'; $restartProfile.observed_target_format = 'dev-drive'; $restartProfile.observed_target_clusters = 4096
+    $resumedProfile = $cases | Where-Object case_id -EQ 'restart-postflush-resume'
+    $resumedProfile.windows = 26100; $resumedProfile.windows_edition = 7
+    $resumedProfile.refs = '3.14'; $resumedProfile.observed_target_format = 'dev-drive'; $resumedProfile.observed_target_clusters = 4096
     $labPath = Join-Path $evidence 'release-lab/lab.json'
     $lab = @{ identity = $identity.Clone(); cases = $cases }
     Save-Json $lab $labPath
@@ -172,10 +175,11 @@ try {
         $report -notmatch 'c-cut-apply-mid \| running \| thorough \| apply-mid-ranges \| apply-mid-ranges \| vm-turned-off \| resume \| CUT-RECOVERED-TO-REFS \| - \| ReFS \| -') {
         throw 'Recovery matrix dropped the running-Windows cut or claimed unobserved results'
     }
-    if (@($record.profiles).Count -ne 3 -or $record.profiles[0].case_id -cne 'full-system' -or
+    if (@($record.profiles).Count -ne 4 -or $record.profiles[0].case_id -cne 'full-system' -or
         $record.profiles[0].windows_build -ne 26300 -or $record.profiles[0].windows_edition -ne 48 -or
         $report -notmatch 'full-system \| boot \| 26300 \| 48 \| dev-drive \| 3.14 \| 4096' -or
-        $report -notmatch 'restart-convert \| restart \| 26100 \| 7 \| dev-drive \| 3.14 \| 4096') {
+        $report -notmatch 'restart-convert \| restart \| 26100 \| 7 \| dev-drive \| 3.14 \| 4096' -or
+        $report -notmatch 'restart-postflush-resume \| restart \| 26100 \| 7 \| dev-drive \| 3.14 \| 4096') {
         throw 'Platform matrix did not preserve the observed profile or included incomplete evidence'
     }
     $data.observed_target_clusters = $null

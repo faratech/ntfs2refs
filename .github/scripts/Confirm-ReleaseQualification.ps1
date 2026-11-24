@@ -153,7 +153,7 @@ foreach ($suite in 'deterministic', 'soak') {
     })
 }
 $profiles = @(foreach ($row in $lab.cases | Sort-Object { $_.case_id }) {
-    if ($row.route -notin 'data', 'boot', 'restart', 'running' -or $row.outcome -notin 'converted', 'BOOTED-ON-REFS' -or
+    if ($row.route -notin 'data', 'boot', 'restart', 'running' -or $row.outcome -notin 'converted', 'resumed', 'BOOTED-ON-REFS' -or
         $row.manifest -cne 'identical' -or "$($row.windows)" -notmatch '^\d+$' -or -not $row.windows_edition -or
         $row.refs -notmatch '^\d+\.\d+$' -or $row.observed_target_format -notin 'standard', 'dev-drive' -or
         $row.observed_target_clusters -notin 4096, 65536) { continue }

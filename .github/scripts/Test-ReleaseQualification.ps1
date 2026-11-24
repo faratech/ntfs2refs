@@ -167,6 +167,29 @@ try {
     Save-Json $lab $labPath
     Add-Content -LiteralPath (Join-Path $bin 'ntfs2refs-recovery.exe') -Value 'replaced'
     Invoke-Gate 'changed-binary' 'Signed candidate hash differs for ntfs2refs-recovery.exe'
+    & {
+        . "$PSScriptRoot\..\..\lab\IntegrityEvidence.ps1"
+        $vm = [guid]'8f7fc646-8c9f-41d0-b65a-ecfadccfc36a'
+        $started = [datetime]::UtcNow.AddMinutes(-1)
+        function Get-WinEvent($FilterHashtable, $ErrorAction) {
+            if ($FilterHashtable.Id -ne 18590 -or $FilterHashtable.LogName -ne 'Microsoft-Windows-Hyper-V-Worker-Admin' -or
+                $FilterHashtable.StartTime.Kind -ne 'Local' -or $FilterHashtable.StartTime.ToUniversalTime() -ne $started) {
+                throw 'The host query must use the attempt start in local time'
+            }
+            foreach ($id in $vm, [guid]::NewGuid()) {
+                $event = [pscustomobject]@{ VmId = $id; RecordId = 42; TimeCreated = $started.AddSeconds(1) }
+                $event | Add-Member ScriptMethod ToXml {
+                    "<Event><UserData><VmlEventLog><VmId>$($this.VmId)</VmId><VmErrorCode0>0x139</VmErrorCode0></VmlEventLog></UserData></Event>"
+                }
+                $event
+            }
+        }
+        Save-IntegrityHostCrashes -VmId $vm -Started $started -Output $root
+        $crashes = Get-Content -LiteralPath (Join-Path $root 'host-guest-crashes.json') -Raw | ConvertFrom-Json -NoEnumerate
+        if ($crashes -isnot [array] -or $crashes.Count -ne 1 -or $crashes[0].record -ne 42 -or
+            $crashes[0].bugcheck -ne '0x139' -or ([datetimeoffset]$crashes[0].time_utc).UtcDateTime -ne $started.AddSeconds(1) -or
+            $crashes[0].xml -notmatch $vm.ToString()) { throw 'Host crash evidence did not isolate the expected VM event' }
+    }
     'Release qualification gate passed all seventeen checks.'
 } finally {
     $resolved = (Resolve-Path -LiteralPath $root).Path

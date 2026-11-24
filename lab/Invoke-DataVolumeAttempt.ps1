@@ -1746,6 +1746,11 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         } catch {
             $verdict.integrity_error = "$_"
             $verdict.outcome = 'integrity-capture-failed'
+            try {
+                Save-IntegrityHostCrashes -VmId $VmId -Started $integrityStarted -Output $integrityStorage
+            } catch {
+                $verdict.integrity_host_error = "$_"
+            }
             # Leave the live inputs attached for collection when a copy fails.
             $KeepVolume = $true
         }

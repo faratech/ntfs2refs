@@ -78,8 +78,9 @@ function Invoke-IntegrityReboot($Session, [guid]$VmId, [pscredential]$Credential
 function Save-IntegrityEvents($Session, [datetime]$Started, [string]$Name, [string]$Output, $Acceptance) {
     $data = Invoke-Command -Session $Session -ArgumentList $Started, $Name -ScriptBlock {
         param($start, $name)
+        # Get-WinEvent interprets StartTime as local wall-clock time.
         try {
-            $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = $start } -ErrorAction Stop |
+            $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = $start.ToLocalTime() } -ErrorAction Stop |
                 Where-Object { $_.ProviderName -match 'ReFS|Ntfs|volmgr|disk|storport' -and ($_.Level -le 3 -or $_.Id -in 131, 134) })
         } catch {
             if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { throw }
@@ -109,6 +110,34 @@ function Save-IntegrityEvents($Session, [datetime]$Started, [string]$Name, [stri
     $serious = @($data.events | Where-Object { $_.provider -match 'ReFS' -and $_.id -in 131, 134 })
     @{ windows = $data.windows; refs = $data.refs; volume = $data.volume; partition = $data.partition
         serious_count = $serious.Count; events = @($data.events | ForEach-Object { @{ provider = $_.provider; id = $_.id; time = $_.time; record = $_.record } }) }
+}
+
+# A guest bugcheck can break PowerShell Direct before the guest log can be copied.
+function Save-IntegrityHostCrashes([guid]$VmId, [datetime]$Started, [string]$Output) {
+    try {
+        $events = @(Get-WinEvent -FilterHashtable @{
+            LogName = 'Microsoft-Windows-Hyper-V-Worker-Admin'
+            Id = 18590
+            StartTime = $Started.ToLocalTime()
+        } -ErrorAction Stop)
+    } catch {
+        if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { throw }
+        $events = @()
+    }
+    $crashes = @(foreach ($event in $events) {
+        $xml = $event.ToXml()
+        $guest = ([xml]$xml).Event.UserData.VmlEventLog
+        if ($guest.VmId -eq $VmId.ToString()) {
+            [pscustomobject]@{
+                time_utc = $event.TimeCreated.ToUniversalTime().ToString('o')
+                record = $event.RecordId
+                bugcheck = $guest.VmErrorCode0
+                xml = $xml
+            }
+        }
+    })
+    ConvertTo-Json -InputObject $crashes -Depth 3 |
+        Set-Content -LiteralPath (Join-Path $Output 'host-guest-crashes.json') -Encoding utf8
 }
 
 function Save-IntegrityFailure($Session, [string]$Name, [string]$Output) {

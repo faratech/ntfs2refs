@@ -63,19 +63,8 @@ impl StageOwner {
         }
     }
 
-    /// A diagnose run's shadow was built only to be examined; nothing was
-    /// published and nothing depends on it.
-    pub(crate) fn retire_after_diagnose(self) -> RetirementReceipt {
-        match self {
-            Self::Vhdx(owner) => RetirementReceipt::Vhdx(owner.retire_unpublished()),
-        }
-    }
-
-    /// A run that stopped before it recorded anything to recover from
-    /// (`recorded_nothing`) built its shadow for nothing, as a diagnose run
-    /// does: nothing was published from it and nothing can ask for it, so it
-    /// is retired the same way, frozen, detached and removed (#201).
-    pub(crate) fn retire_unrecorded(self) -> RetirementReceipt {
+    /// Retire an unpublished shadow after diagnosis or a resolved preparation failure.
+    pub(crate) fn retire_unpublished(self) -> RetirementReceipt {
         match self {
             Self::Vhdx(owner) => RetirementReceipt::Vhdx(owner.retire_unpublished()),
         }

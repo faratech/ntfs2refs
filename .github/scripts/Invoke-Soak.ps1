@@ -285,6 +285,21 @@ function Capture([string]$path) {
     if ($LASTEXITCODE -ne 0) { throw "lab-volume-manifest capture failed ($LASTEXITCODE): $said" }
 }
 
+# A seed fixes the writes to sparse.bin. Windows chooses their physical clusters.
+function Save-SparseSourceLayout([string]$root, [string]$records) {
+    $path = Join-Path $root 'sparse.bin'
+    $query = & {
+        $ErrorActionPreference = 'Continue'
+        $lines = @(& fsutil.exe file queryextents $path csv 2>&1 | ForEach-Object { "$_" })
+        [pscustomobject]@{ exit = $LASTEXITCODE; lines = $lines }
+    }
+    $leaf = if ($query.exit -eq 0) { 'sparse-extents.csv' } else { 'sparse-extents-error.txt' }
+    $artifact = Join-Path $records $leaf
+    Set-Content -LiteralPath $artifact -Value $query.lines -Encoding utf8
+    [ordered]@{ file = 'sparse.bin'; query_exit = $query.exit; artifact = $leaf
+        artifact_sha256 = (Get-FileHash -LiteralPath $artifact).Hash.ToLowerInvariant(); preflight_estimate = $null }
+}
+
 # Windows writes its own files into System Volume Information when a volume
 # arrives (the storage service's WPSettings.dat; the mount manager's database
 # on a volume with junctions; the indexer's IndexerVolumeGuid where the search
@@ -392,6 +407,11 @@ for ($round = 1; ; $round++) {
         }
         Say "  content: $($result.content)"
         Capture-Settled (Join-Path $dir 'before.jsonl') $diskNumber ($Scenario -eq 'seeded')
+        $sparseLayout = $null
+        if ($Scenario -eq 'seeded' -and $kind -eq 'many' -and $ntfsCluster -lt $refsCluster) {
+            $sparseLayout = Save-SparseSourceLayout "${letter}:\" $dir
+            $result.sparse_source_layout = $sparseLayout
+        }
         $null = New-Item -ItemType Directory -Force -Path $work
         $arguments = @('--drive', $letter, '--scratch-directory', $work, '--target-cluster-bytes', "$refsCluster", '--verify', $verify)
         if ($hold) { $arguments += @('--lab-hold-at', $hold, '--acknowledge-lab-hold-never-completes') }
@@ -400,6 +420,10 @@ for ($round = 1; ; $round++) {
         if ($Scenario -eq 'handled-preparation') { $arguments += '--lab-fail-preparation-after-shadow' }
         $run = Invoke-Converter $arguments (Join-Path $dir 'convert') $hold $endAfter
         $result.convert_seconds = $run.seconds
+        if ($null -ne $sparseLayout) {
+            $estimate = ($run.stdout -split '\r?\n') | Where-Object { $_ -match '^\s*To \d+ KiB ReFS clusters:' } | Select-Object -First 1
+            if ($estimate) { $sparseLayout.preflight_estimate = $estimate.Trim() }
+        }
         $result.reached_hold = $run.held
         $result.terminated = $run.ended
         if ($hold -and -not $run.held) { throw "the run ended with exit $($run.exit) without reporting its hold at $hold" }

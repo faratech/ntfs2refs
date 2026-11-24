@@ -113,7 +113,10 @@ matrix checks alongside the existing CI checks in the main branch rules.
 - The lab records native and converted ReFS acceptance runs at 4 KiB, under
   idle and host CPU load, including a guest reboot and subsequent mutation.
   Failed images, journals and full event XML stay on the private host.
-  Hosted soak failures keep compact evidence. To retain images when replaying
+  Hosted soak failures keep compact evidence. Many-file rounds with larger
+  ReFS clusters also keep the NTFS extents of `sparse.bin` and the preflight
+  estimate of how much data can stay in place. Windows can allocate different
+  extents when a run recreates the same seed. To retain images when replaying
   a hosted failure on a private machine, pass `-FailureStorage` with a new
   private directory and sufficient free space.
 - The restart-route gate restores `N2R-Server-Baseline` before each case.

@@ -256,7 +256,9 @@ param(
     # comparison says other than the harness's ends
     # "...-but-own-listing-disagreed".
     [switch]$CompareListing,
-    [switch]$KeepVolume
+    [switch]$KeepVolume,
+    # Private evidence root for an isolated 4 KiB acceptance experiment.
+    [string]$IntegrityRecords
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 $workspace = Split-Path -Parent $PSScriptRoot
@@ -305,6 +307,10 @@ function Invoke-UseTest([string]$Root) {
     Set-Content -LiteralPath (Join-Path $records 'acceptance.json') -Value ($useJson | Select-Object -Last 1) -Encoding UTF8
     $verdict.acceptance = $use
     foreach ($step in $use.steps) { Say ("use: {0}: {1} ({2} s): {3}" -f $step.step, $(if ($null -eq $step.ok) { 'skipped' } elseif ($step.ok) { 'ok' } else { 'FAILED' }), $step.seconds, $step.detail) }
+    if ($IntegrityRecords -and $use.passed) {
+        $script:session = Invoke-IntegrityReboot -Session $session -VmId $VmId -Credential $credential -Name $Name
+        $verdict.reboot_use = $true
+    }
     $use
 }
 
@@ -313,6 +319,16 @@ if ($vm.State -ne 'Running') { throw "VM $($vm.Name) is $($vm.State). Start its 
 if (-not $CredentialPath) { $CredentialPath = Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml' }
 $saved = Import-Clixml -LiteralPath $CredentialPath
 $credential = [pscredential]::new('LabAdmin', $saved.Password)
+if ($IntegrityRecords) {
+    if ((-not $Acceptance -and -not $NativeRefsControl) -or $SectorBytes -ne 512 -or $ClusterBytes -ne 4096 -or $TargetClusterBytes -ne 4096 -or $Siblings -or $WorkingMbr) {
+        throw 'Integrity qualification needs an isolated 4 KiB acceptance volume in a guest VHDX'
+    }
+    . "$PSScriptRoot\IntegrityEvidence.ps1"
+    $integrityStarted = [datetime]::UtcNow
+    $integrityStorage = Join-Path $IntegrityRecords $Name
+    if (Test-Path -LiteralPath $integrityStorage) { throw "Integrity evidence already exists at $integrityStorage" }
+    $null = New-Item -ItemType Directory -Path $integrityStorage
+}
 $session = New-PSSession -VMId $VmId -Credential $credential
 # The control OS's scheduled drive optimisation holds up writes to its ReFS
 # volumes for minutes when Windows' automatic maintenance starts it (issue
@@ -400,8 +416,8 @@ try {
         Say "working storage: M:\runs on MBR disk $($work.number), signature $($work.signature)"
         $verdict.working_disk = $work
     }
-    $made = Invoke-Command -Session $session -ArgumentList $guestRoot, $Name, $sizeMB, $PartitionMB, $SectorBytes, $unit, ([bool]$LargeRecords), @($ready), $container, ([bool]$NativeRefsControl), $TargetFormat, ([bool]$Siblings), $style, ([bool]$MbrBeside) -ScriptBlock {
-        param($root, $name, $sizeMB, $partitionMB, $sectorBytes, $unit, $largeRecords, $known, $container, $native, $targetFormat, $siblings, $style, $mbrBeside)
+    $made = Invoke-Command -Session $session -ArgumentList $guestRoot, $Name, $sizeMB, $PartitionMB, $SectorBytes, $unit, ([bool]$LargeRecords), @($ready), $container, ([bool]$NativeRefsControl), $TargetFormat, ([bool]$Siblings), $style, ([bool]$MbrBeside), $TargetClusterBytes -ScriptBlock {
+        param($root, $name, $sizeMB, $partitionMB, $sectorBytes, $unit, $largeRecords, $known, $container, $native, $targetFormat, $siblings, $style, $mbrBeside, $targetClusters)
         if ($sectorBytes -eq 4096) {
             $deadline = (Get-Date).AddSeconds(60)
             do { Start-Sleep -Milliseconds 500; $new = @(Get-Disk | Where-Object { $_.Number -notin $known -and $_.LogicalSectorSize -eq 4096 }) } until ($new.Count -eq 1 -or (Get-Date) -gt $deadline)
@@ -428,7 +444,11 @@ try {
         if (-not (Get-Partition -DriveLetter V -ErrorAction SilentlyContinue)) { throw "diskpart made no volume V:`n$diskpart" }
         if ($mbrBeside) { Set-Content -LiteralPath 'W:\kept.txt' -Value 'beside an MBR source' -Encoding ASCII }
         $arguments = @('V:', '/FS:NTFS', "/A:$unit", '/Q', '/Y', '/V:DATALAB'); if ($largeRecords) { $arguments += '/L' }
-        if ($native) { $arguments = @('V:', '/FS:ReFS', '/Q', '/Y', '/V:DATALAB'); if ($targetFormat -eq 'dev-drive') { $arguments += '/DevDrv' } }
+        if ($native) {
+            $arguments = @('V:', '/FS:ReFS', '/Q', '/Y', '/V:DATALAB')
+            if ($targetClusters) { $arguments += "/A:$targetClusters" }
+            if ($targetFormat -eq 'dev-drive') { $arguments += '/DevDrv' }
+        }
         $format = & "$env:SystemRoot\System32\format.com" $arguments 2>&1 | Out-String
         if ($siblings) {
             $content = New-Object byte[] 300000; (New-Object Random 7).NextBytes($content)
@@ -450,9 +470,11 @@ try {
         $ntfs = (& fsutil.exe fsinfo $(if ($native) { 'refsinfo' } else { 'ntfsinfo' }) V: 2>&1 | Out-String)
         $partition = Get-Partition -DriveLetter V
         [pscustomobject]@{ diskpart = $diskpart; format = $format; ntfsinfo = $ntfs; disk = $partition.DiskNumber; partition = $partition.PartitionNumber
-            bytes = $partition.Size; offset = $partition.Offset; logical_sector = (Get-Disk -Number $partition.DiskNumber).LogicalSectorSize }
+            bytes = $partition.Size; offset = $partition.Offset; logical_sector = (Get-Disk -Number $partition.DiskNumber).LogicalSectorSize
+            windows_build = (Get-CimInstance Win32_OperatingSystem).BuildNumber }
     }
     Set-Content -LiteralPath (Join-Path $records 'volume.log') -Value ($made.diskpart, $made.format, $made.ntfsinfo) -Encoding UTF8
+    $verdict.windows_build = $made.windows_build
     # Where the source is, for the steps that look at its disk while it has no letter.
     $sourceDisk = $made.disk; $sourceOffset = $made.offset
     $field = { param($label) if ($made.ntfsinfo -match "(?m)^\s*$label\s*:\s*([0-9,]+)") { [int64]($Matches[1] -replace ',') } else { $null } }
@@ -569,6 +591,9 @@ try {
         $use = Invoke-UseTest $guestRoot
         $verdict.outcome = if ($use.passed) { 'control-passed' } else { 'control-use-failed' }
         return
+    }
+    if ($IntegrityRecords) {
+        Save-IntegritySource -Session $session -Name $Name -Output $integrityStorage
     }
 
     # A volume the bitlocker feature encrypted locks whenever it is mounted
@@ -1705,6 +1730,24 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     Say "error: $($_.Exception.Message)"
 } finally {
     if ($worker) { Remove-PSSession $worker -ErrorAction SilentlyContinue }
+    if ($IntegrityRecords) {
+        try {
+            $evidence = Save-IntegrityEvents -Session $session -Started $integrityStarted -Name $Name -Output $integrityStorage
+            $verdict.integrity = $evidence
+            if ($evidence.serious_count) { $verdict.outcome = 'integrity-event' }
+            if ($verdict.outcome -notin 'converted', 'control-passed') {
+                Save-IntegrityFailure -Session $session -Name $Name -Output $integrityStorage
+            } else {
+                $snapshot = Join-Path $integrityStorage 'before.vhdx'
+                if (Test-Path -LiteralPath $snapshot) { Remove-Item -LiteralPath $snapshot -Force }
+            }
+        } catch {
+            $verdict.integrity_error = "$_"
+            $verdict.outcome = 'integrity-capture-failed'
+            # Leave the live inputs attached for collection when a copy fails.
+            $KeepVolume = $true
+        }
+    }
     try {
         if ($SiblingState) {
             # What -SiblingState set up outside the disk (a shadow copy goes
@@ -1779,7 +1822,8 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                 Remove-Item -LiteralPath $hostDisk -Force
             }
         } elseif ($hostDisk) { Say "kept: the 4Kn disk stays attached to the VM ($hostDisk)" }
-    } catch { Say "cleanup failed: $($_.Exception.Message)" }
+        $verdict.cleanup_ok = -not $KeepVolume
+    } catch { $verdict.cleanup_ok = $false; Say "cleanup failed: $($_.Exception.Message)" }
     Remove-PSSession $session -ErrorAction SilentlyContinue
     Save-Verdict
     Say "outcome: $($verdict.outcome). Records: $records"

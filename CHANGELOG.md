@@ -3,6 +3,16 @@
 What changed for someone who runs the converter. The measurements behind each
 entry are in the pull request named beside it and in `docs/performance.md`.
 
+## Unreleased
+
+- Fixed conversion failures when an NTFS alternate data stream uses a ReFS
+  carrier and its tail would have joined a parallel write. A failed batch
+  identifies the object and stream that failed.
+- A handled preparation failure detaches its working shadow after the
+  original NTFS volume has been restored and guarded cancellation has closed.
+- The evaluation release workflow requires native conversion and recovery
+  evidence for the exact signed executables before packaging or publication.
+
 ## 0.0.4
 
 What changed since 0.0.3:

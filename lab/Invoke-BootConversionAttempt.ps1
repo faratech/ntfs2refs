@@ -151,6 +151,8 @@ $verdict = [ordered]@{ name = $Name; fixture = [bool]$Fixture; diagnose = [bool]
     phases = [ordered]@{}; converter = $null; boot = $null; outcome = 'incomplete'
     evidence = [System.Collections.Generic.List[object]]::new(); evidence_complete = $false }
 $verdict.run_as = $RunAs
+$verdict.converter_sha256 = (Get-FileHash -LiteralPath $Binary).Hash.ToLowerInvariant()
+$verdict.listing_tool_sha256 = (Get-FileHash -LiteralPath $ManifestBinary).Hash.ToLowerInvariant()
 $script:workerSession = $null; $script:workerJob = $null
 $phaseWatch = [Diagnostics.Stopwatch]::StartNew()
 # identical | differs | not-compared | tool-failed; 'not-run' when no comparison was asked for.
@@ -1277,6 +1279,9 @@ try {
         Say "required evidence missing: $(($missing | ForEach-Object { $_.name }) -join ', '); scratch disk kept"
     }
     Stop-AdministratorWorker
-    if (-not $KeepScratch -and -not $NoConvert) { Remove-Scratch }
+    if (-not $KeepScratch -and -not $NoConvert) {
+        Remove-Scratch
+        $verdict.cleanup_ok = -not (Test-Path -LiteralPath (Join-Path $case 'scratch.vhdx'))
+    }
     Save-Verdict; Say "outcome: $($verdict.outcome). Records: $case"
 }

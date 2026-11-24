@@ -154,10 +154,10 @@ it lies on target-cluster boundaries; the rest goes through the working storage.
 
 ## Current work
 
-The first goal is met: `lab\Invoke-BootConversionAttempt.ps1 -VmId <a lab VM>`
-converts the full Windows volume (143,580 objects, 112,609 short-name links) in
-22 minutes with an identical listing and boots it alone, Secure Boot on:
-`BOOTED-ON-REFS`. The second is met for every geometry Windows formats, to both
+The first goal is met: the full Windows volume (143,580 objects, 112,609
+short-name links) converted with an identical listing and booted alone, Secure
+Boot on. Three clean reference runs had a median conversion time of 440.2 s
+(`docs/performance.md`). The second is met for every geometry Windows formats, to both
 target units. Not shown in the lab, because nothing there makes them: index
 records other than 4 KiB, a ReFS after 3.14, a build besides 26100 and 26300.
 
@@ -182,30 +182,25 @@ Keep it that way. Before a change is committed:
 copy of a build, on every lab VM, and ends with one table (`lab/README.md`).
 
 Before a pull request is merged, its GitHub Actions checks (`ci.yml`) pass on
-its head: formatting, Clippy, all tests and every executable built in release
+its head: formatting, Clippy, all tests, native regressions and every executable built in release
 mode (owner, 2026-11-18, when the repository became public; `.github/CI.md`).
 `lab\Invoke-Checks.ps1 -Commit <its head>` runs the same checks locally. The
 nightly soak (`soak.yml`) converts virtual disks on the runners; a failed
-round is a bug, filed with its seed. A pushed version tag on main is built,
-signed and published by `release.yml`.
+round is a bug, filed with its seed. Dispatch `release.yml` from main for a
+version tag after CI passes. Publication requires qualification of the signed
+candidate, including the private Hyper-V lab (`.github/CI.md`).
 
 Open, in the order of the owner's plan (#148), which is where to stop or
 reorder the work:
 
-1. Memory must not grow with the number of files, and a run has to be
-   extremely stable (owner, 2026-11-15). Today it takes about 15 KiB of free
-   memory a file (it was 34): what is held for every object until the end
-   is the new volume's record of it with its open handle (3.4 KiB) and the
-   walks' row for it (3.1 KiB), and those move to working storage next;
-   #129 has the census. A pass that works in batches takes its workspaces
-   as spare memory (`ArtifactArena::reserve_spare_ram`): never let memory
-   that only buys speed be what a run fails for.
-2. A fast default (`--verify fast|thorough`), with the final verification
-   in front of the handoff marker so that a failure can still be rolled
-   back (#148 phase 2, #110): written (#205, owner's "Verify once",
-   2026-11-19: in fast runs each thing is checked once; thorough keeps every
-   check and today's flow). It has not been shown in the lab yet; the gate
-   round has its holds.
+1. Stabilize conversion and qualify the signed candidate. Preserve evidence
+   for #253 and keep recovery results tied to the tested build and mode.
+   Align new fast and thorough handoff ordering in a later change.
+2. Walk rows already spill. A 500,511-object conversion passed on an 8 GB VM
+   under memory pressure (#129). Constructor handles, identities and
+   validation indexes still scale with object count. Measure conversion and
+   recovery at two million files before moving a validation index to working
+   storage. Batch workspaces take spare memory (`ArtifactArena::reserve_spare_ram`).
 3. Speed (#140, `docs/performance.md`). More threads help where a pass
    opens and queries, not where it changes ReFS metadata; measure with
    undisturbed runs and rank steps by `timing-steps:`.

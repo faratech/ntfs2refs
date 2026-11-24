@@ -163,6 +163,8 @@ $fixtureRuns = @(
     # passed, with the disk sealed (#1, #148): the recovery has to report it,
     # settle it as not written, verify again and hand off.
     @{ Name = 'torn-handoff-resume'; Arguments = $fixture40 + @{ InterruptAt = 'verify-passed'; TearMarker = 'handoff' } }
+    @{ Name = 'vm-verify-passed-rollback'; Arguments = $fixture40 + @{ InterruptAt = 'verify-passed'; InterruptKind = 'vm'; RecoverMode = 'rollback' } }
+    @{ Name = 'vm-thorough-handoff-resume'; Arguments = $fixture40 + @{ InterruptAt = 'apply-handoff-durable'; InterruptKind = 'vm'; Verify = 'thorough' } }
 )
 $fullRun = @{ Name = 'full-system'; Arguments = @{ MemoryGB = $MaxVmGB } }
 

@@ -22,10 +22,9 @@ them is typed by hand, so they cannot say more than the tree does.
 
 It refuses a tree with uncommitted changes, a version that is not the one the
 executable reports, and (unless -AllowUntagged) a commit without the tag of
-that version. It publishes nothing. A pushed version tag has
-.github/workflows/release.yml build the executables, sign them, pack them
-with this script (-Binaries) and publish the release; by hand, the last lines
-it prints are the commands.
+that version. The release workflow builds and signs the tagged executables,
+qualifies them, then packs them with this script (-Binaries and
+-Qualification). Dispatch the workflow from main to publish the release.
 
 -ComparedWith <dir> names the executables the lab's final pass ran. They were
 built from the same sources at another moment, so they differ from this build
@@ -43,7 +42,9 @@ param(
     [string]$ComparedWith,
     # A directory with the three executables, built from this commit and
     # signed (the release workflow's): packed as they are, not built again.
-    [Alias('Binaries')][string]$SignedBinaries
+    [Alias('Binaries')][string]$SignedBinaries,
+    # The qualification record validated by the release workflow.
+    [string]$Qualification
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 $workspace = Split-Path -Parent $PSScriptRoot
@@ -162,6 +163,13 @@ try {
     Copy-Item -LiteralPath 'README.md', 'DISCLAIMER.md' -Destination $stage
     if (Test-Path -LiteralPath 'LICENSE') { Copy-Item -LiteralPath 'LICENSE' -Destination $stage }
     foreach ($document in 'cli-workflow.md', 'feature-matrix.md', 'recovery-matrix.md') { Copy-Item -LiteralPath (Join-Path 'docs' $document) -Destination (Join-Path $stage 'docs') }
+    if ($Qualification) {
+        foreach ($leaf in 'QUALIFICATION.json', 'QUALIFICATION.md') {
+            $path = Join-Path $Qualification $leaf
+            Copy-Item -LiteralPath $path -Destination $stage
+            Copy-Item -LiteralPath $path -Destination $Output
+        }
+    }
 
     $hash = { param($path) (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
     $notes = New-Object System.Collections.Generic.List[string]
@@ -220,7 +228,5 @@ try {
     "release $version of commit $commit written to $Output"
     Get-ChildItem -LiteralPath $Output | ForEach-Object { '  {0,12:N0}  {1}' -f $_.Length, $_.Name }
     ''
-    'To publish it by hand (a pushed version tag has .github/workflows/release.yml build, sign and publish it):'
-    "  git push origin $version"
-    "  gh release create $version --prerelease --title `"ntfs2refs $version`" --notes-file `"$(Join-Path $Output 'RELEASE-NOTES.md')`" `"$zip`" `"$zip.sha256`""
+    'Publication uses the release workflow from main with the version tag and required native qualification.'
 } finally { Pop-Location }

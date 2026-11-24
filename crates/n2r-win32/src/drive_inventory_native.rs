@@ -67,7 +67,7 @@ fn open_device(path: &str) -> io::Result<File> {
 /// The first sector of a partition, read through its disk: the only read of
 /// stored data this inventory makes, and only when asked (it needs
 /// administrator rights). One 4096-byte read covers a sector of either size.
-fn first_sector(disk_number: u32, offset: u64) -> io::Result<[u8; 4096]> {
+pub(super) fn first_sector(disk_number: u32, offset: u64) -> io::Result<[u8; 4096]> {
     use std::os::windows::fs::FileExt;
     let disk = OpenOptions::new()
         .read(true)

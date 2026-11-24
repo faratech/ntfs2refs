@@ -49,6 +49,9 @@ param(
     # selection is its own again.
     [ValidateSet('', 'restart-after-protect', 'restart-after-image', 'restart-after-arm', 'restart-skip-reboot', 'winpe-before-apply')][string]$LabFailAt = '',
     [switch]$ExpectScratchRefusal,
+    # On a disposable Windows fixture, protect C: and prove the
+    # data-partition restart route refuses before changing its source or BCD.
+    [switch]$ExpectWindowsBitLockerRefusal,
     [int]$WorkingDiskGB = 0,
     [ValidateSet('NTFS', 'ReFS')][string]$WorkingFileSystem = 'NTFS',
     # How long the machine may be away (restart, WinPE, conversion, return).
@@ -103,6 +106,7 @@ function Screenshot([string]$Leaf) {
 $hostDisk = $null
 $work = if ($WorkingDiskGB -gt 0) { 'J:\restart' } else { 'S:\restart' }
 if ($ExpectScratchRefusal -and $LabFailAt) { throw 'Test either the working storage refusal or a restart fault' }
+if ($ExpectWindowsBitLockerRefusal -and ($ExpectScratchRefusal -or $LabFailAt)) { throw 'Choose only one expected restart refusal or interruption' }
 try {
     $session = Connect 60
     if ($WorkingDiskGB -gt 0) {
@@ -185,6 +189,37 @@ try {
     Say "after a start of Windows, P: is $numbered (it was partition $($made.partition))"
     Say "P: is partition $($made.partition) of disk $($made.disk) ($($made.style)), the disk of the running Windows; media at $($made.media)"
 
+    if ($ExpectWindowsBitLockerRefusal) {
+        $verdict.windows_bitlocker_before = Invoke-Command -Session $session -ArgumentList $AwayMinutes -ScriptBlock {
+            param($minutes)
+            $initial = Get-BitLockerVolume -MountPoint 'C:'
+            if ($initial.VolumeStatus -ne 'FullyDecrypted') { throw 'BitLocker refusal test requires the disposable decrypted Windows baseline' }
+            # The cloned lab TPM is not a valid OS protector on this fixture.
+            # Its branch is discarded after the test and is never restarted encrypted.
+            $policy = 'HKLM:\SOFTWARE\Policies\Microsoft\FVE'
+            $null = New-Item -Path $policy -Force
+            foreach ($setting in 'UseAdvancedStartup', 'EnableBDEWithNoTPM', 'OSPassphrase') {
+                $null = New-ItemProperty -LiteralPath $policy -Name $setting -PropertyType DWord -Value 1 -Force
+            }
+            $password = ConvertTo-SecureString ([guid]::NewGuid().ToString('N')) -AsPlainText -Force
+            $null = Enable-BitLocker -MountPoint 'C:' -PasswordProtector -Password $password -UsedSpaceOnly -SkipHardwareTest -ErrorAction Stop
+            $deadline = (Get-Date).AddMinutes($minutes)
+            do {
+                $state = Get-BitLockerVolume -MountPoint 'C:'
+                if ($state.ProtectionStatus -eq 'On' -and $state.VolumeStatus -ne 'FullyDecrypted') { break }
+                if ($state.VolumeStatus -eq 'FullyEncrypted') {
+                    $null = Resume-BitLocker -MountPoint 'C:' -ErrorAction Stop
+                    $state = Get-BitLockerVolume -MountPoint 'C:'
+                    break
+                }
+                Start-Sleep -Seconds 5
+            } until ((Get-Date) -ge $deadline)
+            if ($state.ProtectionStatus -ne 'On' -or $state.VolumeStatus -eq 'FullyDecrypted') { throw 'The disposable Windows volume did not start BitLocker protection' }
+            [pscustomobject]@{ volume = [string]$state.VolumeStatus; protection = [string]$state.ProtectionStatus }
+        }
+        Say "Windows BitLocker is $($verdict.windows_bitlocker_before.protection) on C:"
+    }
+
     Copy-Item -ToSession $session -LiteralPath $Binary -Destination "$guestRoot\ntfs2refs.exe" -Force
     Copy-Item -ToSession $session -LiteralPath $RecoveryBinary -Destination "$guestRoot\ntfs2refs-recovery.exe" -Force
     Copy-Item -ToSession $session -LiteralPath $ManifestBinary -Destination "$guestRoot\lab-volume-manifest.exe" -Force
@@ -207,7 +242,7 @@ try {
 
     $arguments = @('--drive', 'P', '--restart-media', $made.media, '--scratch-directory', $work, '--yes', '--volume-serial', $before.serial) + $ConverterArgs
     if ($LabFailAt) { $arguments += @('--lab-fail-at', $LabFailAt, '--acknowledge-lab-fail-stops-the-run') }
-    $staysInWindows = $ExpectScratchRefusal -or $LabFailAt -in 'restart-after-protect', 'restart-after-image', 'restart-after-arm', 'restart-skip-reboot'
+    $staysInWindows = $ExpectScratchRefusal -or $ExpectWindowsBitLockerRefusal -or $LabFailAt -in 'restart-after-protect', 'restart-after-image', 'restart-after-arm', 'restart-skip-reboot'
     $verdict.arguments = $arguments
     Say "converter: ntfs2refs.exe $($arguments -join ' ')"
     # Started as SYSTEM by a task, with its output in files on C:, which is
@@ -267,6 +302,9 @@ try {
         if ($ExpectScratchRefusal) {
             $verdict.scratch_refusal = $verdict.exit -ne '0' -and $said.error.Contains('restart preparation needs an NTFS --scratch-directory')
             if (-not $verdict.scratch_refusal) { throw "Expected an NTFS working-storage refusal. $($said.error)" }
+        } elseif ($ExpectWindowsBitLockerRefusal) {
+            $verdict.windows_bitlocker_refusal = $verdict.exit -ne '0' -and $said.error.Contains('the running Windows volume is encrypted with BitLocker')
+            if (-not $verdict.windows_bitlocker_refusal) { throw "Expected a BitLocker refusal for the running Windows volume. $($said.error)" }
         } else {
             $marker = '"kind":"lab-fail-v1","point":"' + $LabFailAt + '"'
             $verdict.reached_lab_fail_at = $said.output.Contains($marker)
@@ -381,9 +419,22 @@ try {
         }
         if ($archived) { Copy-Item -FromSession $session -LiteralPath "$guestRoot\records.zip" -Destination $records -Force -ErrorAction Stop }
     } catch { Say "the run's records could not be collected: $($_.Exception.Message)" }
+    if ($ExpectWindowsBitLockerRefusal) {
+        $verdict.windows_bitlocker_after = Invoke-Command -Session $session -ScriptBlock {
+            $state = Get-BitLockerVolume -MountPoint 'C:'
+            [pscustomobject]@{ volume = [string]$state.VolumeStatus; protection = [string]$state.ProtectionStatus }
+        }
+    }
     $verdict.outcome = if ($ExpectScratchRefusal) {
             if ($verdict.scratch_refusal -and $after.filesystem -eq 'NTFS' -and $after.compare_exit -eq 0 -and $after.writable -and $after.boot_default -match 'default\s+\{current\}' -and -not $after.runs) { 'refused-source-unchanged' }
             else { 'scratch-refusal-incomplete' }
+        }
+        elseif ($ExpectWindowsBitLockerRefusal) {
+            if ($verdict.windows_bitlocker_refusal -and $after.filesystem -eq 'NTFS' -and $after.compare_exit -eq 0 -and
+                $after.writable -and $after.read_only -eq $false -and $after.boot_default -match 'default\s+\{current\}' -and
+                -not $after.runs -and $verdict.windows_bitlocker_after.protection -eq 'On') {
+                'refused-windows-bitlocker-source-unchanged'
+            } else { 'windows-bitlocker-refusal-incomplete' }
         }
         elseif ($LabFailAt) {
             if ($after.filesystem -eq 'NTFS' -and $after.compare_exit -eq 0 -and $after.read_only -eq $false -and $after.writable -and $after.boot_default -match 'default\s+\{current\}') { 'cancelled-volume-as-before' }

@@ -1261,6 +1261,32 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                 target_cluster == n2r_win32::target_cluster::DEFAULT_BYTES,
                 "a {target_cluster}-byte ReFS allocation unit is for a volume on a disk of its own; a partition on the running Windows disk uses 4096"
             );
+            if args.offline_recovery_media.is_some() {
+                let mut windows_partitions = inventory
+                    .disks
+                    .iter()
+                    .flat_map(|disk| &disk.partitions)
+                    .filter(|partition| partition.contains_running_windows == Some(true));
+                let windows = windows_partitions
+                    .next()
+                    .context("could not identify the running Windows partition before restart")?;
+                ensure!(
+                    windows_partitions.next().is_none()
+                        && windows.disk_number == selected.disk_number,
+                    "the running Windows partition is ambiguous before restart"
+                );
+                let context = || {
+                    format!(
+                        "checking the running Windows volume on \\\\.\\PhysicalDrive{} partition {} before restart",
+                        windows.disk_number, windows.partition_number
+                    )
+                };
+                ensure!(
+                    !drive_inventory::probe_partition_bitlocker(windows).with_context(context)?,
+                    "{}: the running Windows volume is encrypted with BitLocker. Decrypt it fully before using --restart-media. Nothing was changed.",
+                    context()
+                );
+            }
             // This route has no diagnose stop; refuse before discovering anything.
             let authority = mode
                 .source_change_authority("conversion of a partition on the running Windows disk")?;

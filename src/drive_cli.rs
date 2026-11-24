@@ -551,6 +551,14 @@ mod windows {
             .map(|n| format!("{:.2} GiB", n as f64 / 1073741824.0))
             .unwrap_or_else(|| "unknown".into())
     }
+    fn observed_standard_refs_refusal(windows: [u32; 3]) -> Option<&'static str> {
+        n2r_win32::windows_build::observed_standard_refs_refusal(
+            windows,
+            n2r_win32::run_environment::windows_edition(windows).ok()?,
+            n2r_win32::run_environment::windows_revision().ok()?,
+        )
+    }
+
     fn list(inventory: &DriveInventory) {
         println!("DISK  PART  DRIVE/MOUNT       FILESYSTEM  SIZE          LABEL / STATUS");
         for disk in &inventory.disks {
@@ -1142,6 +1150,15 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                 drive_inventory::annotate_bitlocker(&mut inventory);
             }
             list(&inventory);
+            if n2r_win32::run_environment::windows_version()
+                .ok()
+                .and_then(observed_standard_refs_refusal)
+                .is_some()
+            {
+                println!(
+                    "The lab's Windows formatter refused standard ReFS on this build and edition. The default target here is Dev Drive (--target-format dev-drive)."
+                );
+            }
             return Ok(super::list_exit_code(inventory.enumeration_complete));
         }
         let action = match mode {
@@ -1793,6 +1810,11 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             // sector, in the words a run uses.
             Some(_) if partition.bitlocker == Some(true) => {}
             Some(note) => return stopped(note.trim_start_matches("not convertible: ")),
+        }
+        if args.target_format.as_deref() == Some("standard")
+            && let Some(reason) = observed_standard_refs_refusal(windows)
+        {
+            return stopped(reason);
         }
         let before = match discovery::discover(&selected.volume_guid_path, Role::Source) {
             Ok(found) if found.filesystem == "NTFS" => found,

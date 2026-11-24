@@ -93,6 +93,12 @@ seconds on one of 23,000 files. It prints:
   the exercised profiles and the geometry and platform ranges the converter
   admits.
 
+The lab's Windows 11 Pro build 26300.9457 refused standard ReFS formatting.
+On that exact edition and update, `--list` reports the formatter result and
+`--check --target-format standard` reports the refusal before inspecting the
+source contents. Other editions and updates still use the native formatter
+to determine whether standard ReFS is available.
+
 On a volume in use a program may have deleted a file that it still holds
 open. Windows keeps such a file until the program closes it. The check does
 not count it and does not refuse the volume for it: a conversion takes the

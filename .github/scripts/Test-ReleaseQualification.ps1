@@ -1,6 +1,29 @@
 #Requires -Version 7.2
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\NativeRegressionCases.ps1"
+. "$PSScriptRoot/../../lab/QualificationInterruption.ps1"
+
+$cut = @{ hold_at = 'apply-mid-ranges'; hold_reported = $true; recovered_after_it = $true
+    recovery_mode = Get-RunningRecoveryMode 'The recovery finished: the volume is converted.' }
+$observed = Get-QualificationInterruption 'running' 'c-cut-apply-mid' @{ cut = $cut }
+if ($observed.hold -cne 'apply-mid-ranges' -or $observed.reached_hold -ne $true -or
+    $observed.kind -cne 'vm-turned-off' -or $observed.recovery -cne 'resume') {
+    throw 'Running-Windows interruption lost its reported hold or recovery'
+}
+$cut.hold_reported = $false
+$cut.recovered_after_it = $false
+$observed = Get-QualificationInterruption 'running' 'c-cut-apply-mid' @{ cut = $cut }
+if ($observed.reached_hold -ne $false -or $null -ne $observed.recovery) {
+    throw 'Running-Windows interruption claimed a missed hold or unobserved recovery'
+}
+$cut.hold_at = 'none'
+$cut.recovered_after_it = $true
+$cut.recovery_mode = Get-RunningRecoveryMode 'The recovery finished: the run had not started writing, and the volume is NTFS as it was.'
+$observed = Get-QualificationInterruption 'running' 'c-cut-preparation' @{ cut = $cut }
+if ($null -ne $observed.hold -or $null -ne $observed.reached_hold -or $observed.recovery -cne 'cancel' -or
+    (Get-RunningRecoveryMode 'The recovery put the NTFS volume back.') -cne 'rollback') {
+    throw 'Timed preparation cancellation was reported as a named hold'
+}
 $temp = [IO.Path]::GetTempPath()
 $root = Join-Path $temp ('n2r-release-check-' + [guid]::NewGuid().ToString('N'))
 $candidate = Join-Path $root 'candidate'
@@ -85,6 +108,16 @@ try {
     $data = $cases | Where-Object { $_.case_id -eq 'lived-in' }
     $data.route = 'data'; $data.windows = '26300'; $data.windows_edition = 48; $data.refs = '3.14'
     $data.observed_target_format = 'dev-drive'; $data.observed_target_clusters = 4096
+    $running = Get-QualificationInterruption 'running' 'c-cut-apply-mid' @{ cut = @{
+        hold_at = 'apply-mid-ranges'; hold_reported = $true; recovered_after_it = $true
+        recovery_mode = Get-RunningRecoveryMode 'The recovery finished: the volume is converted.'
+    } }
+    $cases += @{
+        case_id = 'c-cut-apply-mid'; route = 'running'; passed = $true
+        expected = 'CUT-RECOVERED-TO-REFS'; outcome = 'CUT-RECOVERED-TO-REFS'; verify = 'thorough'
+        hold = $running.hold; reached_hold = $running.reached_hold; interruption = $running.kind; recovery = $running.recovery
+        boot = @{ filesystem = 'ReFS'; cluster_bytes = 4096 }
+    }
     $labPath = Join-Path $evidence 'release-lab/lab.json'
     $lab = @{ identity = $identity.Clone(); cases = $cases }
     Save-Json $lab $labPath
@@ -98,6 +131,12 @@ try {
         $report -notmatch 'identical \(exact\) \| not booted \| passed' -or
         -not ($record.recovery | Where-Object { $_.suite -eq 'soak' -and $_.recovery -eq 'resume' })) {
         throw 'Recovery matrix dropped validated interruption or outcome evidence'
+    }
+    $runningRecord = $record.recovery | Where-Object case_id -EQ 'c-cut-apply-mid'
+    if ($runningRecord.route -cne 'running' -or $runningRecord.reached_hold -cne 'apply-mid-ranges' -or
+        $runningRecord.recovery -cne 'resume' -or $runningRecord.boot.filesystem -cne 'ReFS' -or $null -ne $runningRecord.manifest -or
+        $report -notmatch 'c-cut-apply-mid \| running \| thorough \| apply-mid-ranges \| apply-mid-ranges \| vm-turned-off \| resume \| CUT-RECOVERED-TO-REFS \| - \| ReFS \| -') {
+        throw 'Recovery matrix dropped the running-Windows cut or claimed unobserved results'
     }
     if (@($record.profiles).Count -ne 2 -or $record.profiles[0].case_id -cne 'full-system' -or
         $record.profiles[0].windows_build -ne 26300 -or $record.profiles[0].windows_edition -ne 48 -or
@@ -167,7 +206,7 @@ try {
     Save-Json $lab $labPath
     Add-Content -LiteralPath (Join-Path $bin 'ntfs2refs-recovery.exe') -Value 'replaced'
     Invoke-Gate 'changed-binary' 'Signed candidate hash differs for ntfs2refs-recovery.exe'
-    'Release qualification gate passed all seventeen checks.'
+    'Release qualification passed seventeen gate checks and three interruption reporting checks.'
 } finally {
     $resolved = (Resolve-Path -LiteralPath $root).Path
     if ($resolved -ceq $root -and $resolved.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase)) {

@@ -182,6 +182,7 @@ foreach ($row in $recoveryCases) {
     $cleanup = if ($row.cleanup_ok -eq $true) { 'passed' } elseif ($row.cleanup_ok -eq $false) { 'failed' }
     $cells = $row.suite, $row.case_id, $row.route, $row.verify, $row.requested_hold, $row.reached_hold,
         $row.interruption, $row.recovery, $row.outcome, $manifest, $bootResult, $cleanup
-    $lines += '| ' + (($cells | ForEach-Object { if ($_ -eq '' -or $null -eq $_) { '-' } else { $_ } }) -join ' | ') + ' |'
+    $rendered = foreach ($cell in $cells) { if ($cell -eq '' -or $null -eq $cell) { '-' } else { $cell } }
+    $lines += '| ' + ($rendered -join ' | ') + ' |'
 }
 $lines | Set-Content -LiteralPath (Join-Path $Output 'QUALIFICATION.md') -Encoding utf8

@@ -7,6 +7,7 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^\d+-\d+$')][string]$Request
 )
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot/QualificationInterruption.ps1"
 $root = Split-Path -Parent $PSScriptRoot
 $attempts = Join-Path $root '.lab/hyperv/attempts'
 $identity = Get-Content -LiteralPath (Join-Path $Candidate 'candidate.json') -Raw | ConvertFrom-Json -AsHashtable
@@ -37,10 +38,7 @@ function Add-Case([string]$Name, [string]$Route, [string]$Expected, $Verdict, [b
     if ($Route -eq 'restart') { $binaryMatch = $binaryMatch -and $Verdict.recovery_sha256 -ceq $identity.hashes['ntfs2refs-recovery.exe'] }
     # Running-Windows cases use a separate guest route. Its verdict carries its converter hash.
     if ($Route -eq 'running') { $binaryMatch = $Verdict.converter_sha256 -ceq $identity.hashes['ntfs2refs.exe'] }
-    $hold = if ($Verdict.interrupt) { $Verdict.interrupt.point } elseif ($Verdict.interrupted_at) { $Verdict.interrupted_at } elseif ($Route -eq 'restart') { $Verdict.lab_fail_at } else { '' }
-    $reached = if ($Verdict.interrupt) { [bool]$Verdict.interrupt.held } elseif ($Verdict.lab_fail_at) { $Verdict.reached_lab_fail_at } elseif ($hold) { $Passed }
-    $kind = if ($Verdict.interrupt) { $Verdict.interrupt.kind } elseif ($Verdict.interrupted_at) { 'process-termination' } elseif ($Verdict.lab_fail_at) { 'injected failure' } else { '' }
-    $recovery = if ($Verdict.recovery -is [System.Collections.IDictionary]) { $Verdict.recovery.mode } elseif ($Verdict.recover_mode) { $Verdict.recover_mode } elseif ($Name -eq 'restart-cancel') { 'rollback' } else { '' }
+    $interruption = Get-QualificationInterruption $Route $Name $Verdict
     $designation = $Verdict.target.windows_reports
     if ($Route -eq 'boot' -and $Verdict.boot.observed.filesystem -eq 'ReFS') {
         $stdout = Join-Path $attempts "$prefix-$Name/stdout.log"
@@ -55,9 +53,9 @@ function Add-Case([string]$Name, [string]$Route, [string]$Expected, $Verdict, [b
     }
     $rows.Add([ordered]@{
         case_id = $Name; route = $Route; expected = $Expected; outcome = $Verdict.outcome; passed = ($Passed -and $binaryMatch -and $Verdict.cleanup_ok -ne $false)
-        verify = if ($Verdict.verify) { $Verdict.verify } else { 'fast' }; hold = $hold; reached_hold = $reached
-        interruption = $kind; simulated_torn_marker = [bool]$Verdict.torn_marker
-        torn_marker_settled = $Verdict.torn_marker.settled_by_recovery; recovery = $recovery
+        verify = if ($Verdict.verify) { $Verdict.verify } else { 'fast' }; hold = $interruption.hold; reached_hold = $interruption.reached_hold
+        interruption = $interruption.kind; simulated_torn_marker = [bool]$Verdict.torn_marker
+        torn_marker_settled = $Verdict.torn_marker.settled_by_recovery; recovery = $interruption.recovery
         manifest = $Verdict.manifest.result; exact_manifest = $Verdict.manifest.exact; cleanup_ok = $Verdict.cleanup_ok
         working_filesystem = $Verdict.made.working_filesystem
         scratch_refusal = $Verdict.scratch_refusal
@@ -68,6 +66,7 @@ function Add-Case([string]$Name, [string]$Route, [string]$Expected, $Verdict, [b
         observed_target_clusters = $Verdict.boot.observed.cluster_bytes ?? $Verdict.volume_after.refs_bytes_per_cluster
         source_clusters = $Verdict.source.cluster_bytes; target_clusters = $Verdict.target.cluster_bytes_requested; sector_bytes = $Verdict.source.sector_bytes
         boot = if ($Verdict.boot) { $Verdict.boot.observed | Select-Object -Property filesystem, cluster_bytes, disk, disks, partition, secure_boot, signatures }
+            elseif ($Route -eq 'running' -and $Verdict.after.boot_utc) { @{ filesystem = $Verdict.after.filesystem; cluster_bytes = $Verdict.after.cluster_bytes; boot_utc = $Verdict.after.boot_utc } }
         integrity_events = $Verdict.integrity.events; reboot_use = $Verdict.reboot_use; host_load = $Verdict.host_load
     })
 }

@@ -141,6 +141,15 @@ try {
     $resumedProfile = $cases | Where-Object case_id -EQ 'restart-postflush-resume'
     $resumedProfile.windows = 26100; $resumedProfile.windows_edition = 7
     $resumedProfile.refs = '3.14'; $resumedProfile.observed_target_format = 'dev-drive'; $resumedProfile.observed_target_clusters = 4096
+    foreach ($mode in 'resume', 'rollback') {
+        $source = $cases | Where-Object case_id -EQ "restart-postflush-$mode"
+        $client = $source.Clone()
+        $client.postflush = $source.postflush.Clone()
+        $client.case_id = "restart-w11-postflush-$mode"
+        $client.windows = 26300; $client.windows_edition = 48; $client.windows_revision = 9457
+        $client.prompt_wait_seconds = 1
+        $cases += $client
+    }
     $labPath = Join-Path $evidence 'release-lab/lab.json'
     $lab = @{ identity = $identity.Clone(); cases = $cases }
     Save-Json $lab $labPath
@@ -175,13 +184,23 @@ try {
         $report -notmatch 'c-cut-apply-mid \| running \| thorough \| apply-mid-ranges \| apply-mid-ranges \| vm-turned-off \| resume \| CUT-RECOVERED-TO-REFS \| - \| ReFS \| -') {
         throw 'Recovery matrix dropped the running-Windows cut or claimed unobserved results'
     }
-    if (@($record.profiles).Count -ne 4 -or $record.profiles[0].case_id -cne 'full-system' -or
+    if (@($record.profiles).Count -ne 5 -or $record.profiles[0].case_id -cne 'full-system' -or
         $record.profiles[0].windows_build -ne 26300 -or $record.profiles[0].windows_edition -ne 48 -or
         $report -notmatch 'full-system \| boot \| 26300 \| 48 \| dev-drive \| 3.14 \| 4096' -or
         $report -notmatch 'restart-convert \| restart \| 26100 \| 7 \| dev-drive \| 3.14 \| 4096' -or
-        $report -notmatch 'restart-postflush-resume \| restart \| 26100 \| 7 \| dev-drive \| 3.14 \| 4096') {
+        $report -notmatch 'restart-postflush-resume \| restart \| 26100 \| 7 \| dev-drive \| 3.14 \| 4096' -or
+        $report -notmatch 'restart-w11-postflush-resume \| restart \| 26300 \| 48 \| dev-drive \| 3.14 \| 4096') {
         throw 'Platform matrix did not preserve the observed profile or included incomplete evidence'
     }
+    $windowsResume = $cases | Where-Object case_id -EQ 'restart-w11-postflush-resume'
+    $windowsResume.windows_revision = $null
+    Save-Json $lab $labPath
+    Invoke-Gate 'missing-windows11-fixture-profile' 'Incomplete Windows 11 fixture profile for restart-w11-postflush-resume'
+    $windowsResume.windows_revision = 9457
+    $windowsResume.observed_target_format = $null
+    Save-Json $lab $labPath
+    Invoke-Gate 'missing-windows11-refs-profile' 'Missing observed platform profile for restart-w11-postflush-resume'
+    $windowsResume.observed_target_format = 'dev-drive'
     $data.observed_target_clusters = $null
     Save-Json $lab $labPath
     Invoke-Gate 'missing-platform-profile' 'Missing observed platform profile for lived-in'
@@ -246,7 +265,7 @@ try {
     Save-Json $lab $labPath
     Add-Content -LiteralPath (Join-Path $bin 'ntfs2refs-recovery.exe') -Value 'replaced'
     Invoke-Gate 'changed-binary' 'Signed candidate hash differs for ntfs2refs-recovery.exe'
-    'Release qualification passed twenty gate checks and three interruption reporting checks.'
+    'Release qualification passed twenty-two gate checks and three interruption reporting checks.'
 } finally {
     $resolved = (Resolve-Path -LiteralPath $root).Path
     if ($resolved -ceq $root -and $resolved.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase)) {

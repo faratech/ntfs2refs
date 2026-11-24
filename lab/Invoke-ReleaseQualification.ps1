@@ -27,6 +27,7 @@ $gate = Join-Path $PSScriptRoot 'Invoke-GateRound.ps1'
 $boot = Join-Path $PSScriptRoot 'Invoke-BootConversionAttempt.ps1'
 $data = Join-Path $PSScriptRoot 'Invoke-DataVolumeAttempt.ps1'
 $restart = Join-Path $PSScriptRoot 'Invoke-RestartRouteAttempt.ps1'
+$restartWindows11 = Join-Path $PSScriptRoot 'Invoke-Windows11RestartAttempt.ps1'
 $binaryArgs = @{ Binary = Join-Path $binaries 'ntfs2refs.exe'; ManifestBinary = Join-Path $binaries 'lab-volume-manifest.exe' }
 
 function Read-Verdict([string]$Name) {
@@ -65,6 +66,7 @@ function Add-Case([string]$Name, [string]$Route, [string]$Expected, $Verdict, [b
         scratch_refusal = $Verdict.scratch_refusal
         windows = @($Verdict.integrity.windows, $Verdict.boot.observed.build, $Verdict.windows_build, $restartProfile.windows_build, $Verdict.made.windows_build, $Verdict.control.windows_build) | Where-Object { $_ } | Select-Object -First 1
         windows_edition = $Verdict.boot.observed.windows_edition ?? $Verdict.windows_edition ?? $restartProfile.windows_edition
+        windows_revision = $Verdict.windows_revision
         refs = @($Verdict.integrity.refs, $Verdict.volume_after.refs_version, $Verdict.boot.observed.refs_version, $restartProfile.refs_version) | Where-Object { $_ } | Select-Object -First 1
         observed_target_format = $targetFormat ?? $restartProfile.target_format
         observed_target_clusters = $Verdict.boot.observed.cluster_bytes ?? $Verdict.volume_after.refs_bytes_per_cluster ?? $restartProfile.cluster_bytes
@@ -124,6 +126,27 @@ try {
         }
     } finally {
         if ((Get-VM -Id $server.Id).State -ne 'Off') { Stop-VM -VM $server -Force -Confirm:$false }
+    }
+
+    $windows11 = Get-VM -Name ntfs2refs-reference-c
+    $windows11Media = @(Get-VMDvdDrive -VMName ntfs2refs-reference-b | Where-Object { $_.Path -and (Test-Path -LiteralPath $_.Path) })
+    if ($windows11Media.Count -ne 1) { throw 'Expected one accessible Windows 11 installation medium on reference-b' }
+    foreach ($mode in 'resume', 'rollback') {
+        $case = "restart-w11-postflush-$mode"
+        $name = "$prefix-$case"
+        & $restartWindows11 @binaryArgs -Name $name -VmId $windows11.Id -InstallationMedia $windows11Media[0].Path -PostFlushRecovery $mode
+        $v = Read-Verdict $name
+        $control = Get-Content -LiteralPath (Join-Path $attempts "$name/control-profile.json") -Raw | ConvertFrom-Json -AsHashtable
+        if ($v.outcome -eq 'resumed' -and ($v.after.target_profile.windows_build -ne $control.windows_build -or
+            $v.after.target_profile.windows_edition -ne $control.windows_edition)) {
+            throw "$case returned to a different Windows profile"
+        }
+        $v.windows_build = $control.windows_build
+        $v.windows_edition = $control.windows_edition
+        $v.windows_revision = $control.windows_revision
+        $want = if ($mode -eq 'resume') { 'resumed' } else { 'rolled-back' }
+        Add-Case $case 'restart' $want $v ($v.outcome -ceq $want)
+        if ($v.outcome -cne $want) { throw "$case ended $($v.outcome)" }
     }
 
     $vmId = (Get-VM -Name ntfs2refs-reference-isolated).Id

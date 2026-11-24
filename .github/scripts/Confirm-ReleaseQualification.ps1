@@ -67,6 +67,7 @@ $requiredLab = @{
     'lived-in' = 'converted'; 'restart-convert' = 'converted'; 'restart-cancel' = 'cancelled-volume-as-before'
     'restart-refs-refusal' = 'refused-source-unchanged'
     'restart-postflush-resume' = 'resumed'; 'restart-postflush-rollback' = 'rolled-back'
+    'restart-w11-postflush-resume' = 'resumed'; 'restart-w11-postflush-rollback' = 'rolled-back'
     'integrity-native-idle' = 'control-passed'; 'integrity-native-loaded' = 'control-passed'
     'integrity-converted-idle' = 'converted'; 'integrity-converted-loaded' = 'converted'; 'integrity-lived-in' = 'converted'
 }
@@ -92,8 +93,10 @@ $requiredRecovery = @{
     'restart-cancel' = @('fast', 'restart-after-arm', 'injected failure', 'rollback')
     'restart-postflush-resume' = @('fast', 'winpe-postflush-before-discovery', 'vm-turned-off', 'resume')
     'restart-postflush-rollback' = @('fast', 'winpe-postflush-before-discovery', 'vm-turned-off', 'rollback')
+    'restart-w11-postflush-resume' = @('fast', 'winpe-postflush-before-discovery', 'vm-turned-off', 'resume')
+    'restart-w11-postflush-rollback' = @('fast', 'winpe-postflush-before-discovery', 'vm-turned-off', 'rollback')
 }
-foreach ($case in 'restart-postflush-resume', 'restart-postflush-rollback') {
+foreach ($case in 'restart-postflush-resume', 'restart-postflush-rollback', 'restart-w11-postflush-resume', 'restart-w11-postflush-rollback') {
     $row = $indexed[$case]; $proof = $row.postflush
     if ($row.route -cne 'restart' -or $row.working_filesystem -cne 'NTFS' -or -not $row.boot.boot_utc -or
         $proof.native_bytes_written -le 0 -or $proof.delayed_discovery_bytes -ne 4096 -or
@@ -101,6 +104,9 @@ foreach ($case in 'restart-postflush-resume', 'restart-postflush-rollback') {
         $proof.discovery_write_not_requested -ne $true -or $proof.released -ne $false -or
         ($case -eq 'restart-postflush-resume' -and $row.prompt_wait_seconds -lt 185)) {
         throw "Incomplete durable WinPE write evidence for $case"
+    }
+    if ($case -like 'restart-w11-*' -and ($row.windows -ne 26300 -or -not $row.windows_edition -or $null -eq $row.windows_revision)) {
+        throw "Incomplete Windows 11 fixture profile for $case"
     }
 }
 foreach ($case in $requiredRecovery.Keys) {
@@ -163,7 +169,7 @@ $profiles = @(foreach ($row in $lab.cases | Sort-Object { $_.case_id }) {
         target_format = $row.observed_target_format; target_cluster_bytes = [uint32]$row.observed_target_clusters
     }
 })
-foreach ($case in 'full-system', 'lived-in') {
+foreach ($case in 'full-system', 'lived-in', 'restart-w11-postflush-resume') {
     if ($case -cnotin $profiles.case_id) { throw "Missing observed platform profile for $case" }
 }
 $record = @{ schema = 1; candidate = $identity; deterministic = $native; soak = $soak; hyper_v = $lab.cases; recovery = $recoveryCases; profiles = $profiles }

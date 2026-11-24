@@ -75,7 +75,7 @@ try {
         if ($case -eq 'cancel') { $round.hold_at = ''; $round.reached_hold = $false; $round.end_after_seconds = 24.8 }
         Save-Json $round (Join-Path $evidence "soak-records-$case/rounds.jsonl")
     }
-    $cases = @(foreach ($name in 'fixture10', 'admin-fixture40', 'full-system', 'apply-mid-resume', 'apply-mid-rollback', 'seal-recorded-resume', 'handoff-sealed-resume', 'torn-handoff-resume', 'vm-verify-passed-rollback', 'vm-thorough-handoff-resume', 'lived-in', 'restart-convert', 'restart-cancel', 'restart-refs-refusal', 'integrity-native-idle', 'integrity-converted-idle', 'integrity-native-loaded', 'integrity-converted-loaded', 'integrity-lived-in') {
+    $cases = @(foreach ($name in 'fixture10', 'admin-fixture40', 'full-system', 'apply-mid-resume', 'apply-mid-rollback', 'seal-recorded-resume', 'handoff-sealed-resume', 'torn-handoff-resume', 'vm-verify-passed-rollback', 'vm-thorough-handoff-resume', 'lived-in', 'restart-convert', 'restart-cancel', 'restart-refs-refusal', 'integrity-native-idle', 'integrity-converted-idle', 'integrity-native-loaded', 'integrity-converted-loaded', 'integrity-lived-in', 'integrity-event-131') {
         $outcome = switch -Wildcard ($name) {
             '*fixture*' { 'converted-not-booted' }
             '*-resume' { 'RESUMED-NOT-BOOTED' }
@@ -150,10 +150,20 @@ try {
         $client.prompt_wait_seconds = 1
         $cases += $client
     }
+    $eventFixture = $cases | Where-Object case_id -eq 'integrity-event-131'
+    $eventFixture.integrity_fixture = @{ content = 'lived-in'; directory_entries = 4000; check_agrees = $true }
     $labPath = Join-Path $evidence 'release-lab/lab.json'
     $lab = @{ identity = $identity.Clone(); cases = $cases }
     Save-Json $lab $labPath
     Invoke-Gate 'all-valid'
+    $eventFixture.integrity_fixture.directory_entries = 20000
+    Save-Json $lab $labPath
+    Invoke-Gate 'wrong-event-131-directory' 'Incomplete ReFS event 131 fixture evidence'
+    $eventFixture.integrity_fixture.directory_entries = 4000
+    $eventFixture.integrity_fixture.check_agrees = $null
+    Save-Json $lab $labPath
+    Invoke-Gate 'missing-event-131-preflight' 'Incomplete ReFS event 131 fixture evidence'
+    $eventFixture.integrity_fixture.check_agrees = $true
     $record = Get-Content -LiteralPath (Join-Path $root 'all-valid/QUALIFICATION.json') -Raw | ConvertFrom-Json
     $report = Get-Content -LiteralPath (Join-Path $root 'all-valid/QUALIFICATION.md') -Raw
     $restart = $record.recovery | Where-Object case_id -EQ 'restart-postflush-resume'
@@ -170,6 +180,7 @@ try {
     Save-Json $lab $labPath
     Invoke-Gate 'missing-delayed-resume' 'Incomplete durable WinPE write evidence for restart-postflush-resume'
     $postflushResume.prompt_wait_seconds = 186
+    if ($report -notmatch '4,000-entry lived-in case with a preflight check passed') { throw 'Integrity fixture is missing from the release report' }
     $rollback = $record.recovery | Where-Object case_id -EQ 'vm-verify-passed-rollback'
     if ($rollback.requested_hold -cne 'verify-passed' -or $rollback.reached_hold -cne 'verify-passed' -or
         $rollback.interruption -cne 'vm-turned-off' -or $rollback.recovery -cne 'rollback' -or
@@ -265,7 +276,30 @@ try {
     Save-Json $lab $labPath
     Add-Content -LiteralPath (Join-Path $bin 'ntfs2refs-recovery.exe') -Value 'replaced'
     Invoke-Gate 'changed-binary' 'Signed candidate hash differs for ntfs2refs-recovery.exe'
-    'Release qualification passed twenty-two gate checks and three interruption reporting checks.'
+    & {
+        . "$PSScriptRoot\..\..\lab\IntegrityEvidence.ps1"
+        $vm = [guid]'8f7fc646-8c9f-41d0-b65a-ecfadccfc36a'
+        $started = [datetime]::UtcNow.AddMinutes(-1)
+        function Get-WinEvent($FilterHashtable, $ErrorAction) {
+            if ($FilterHashtable.Id -ne 18590 -or $FilterHashtable.LogName -ne 'Microsoft-Windows-Hyper-V-Worker-Admin' -or
+                $FilterHashtable.StartTime.Kind -ne 'Local' -or $FilterHashtable.StartTime.ToUniversalTime() -ne $started) {
+                throw 'The host query must use the attempt start in local time'
+            }
+            foreach ($id in $vm, [guid]::NewGuid()) {
+                $event = [pscustomobject]@{ VmId = $id; RecordId = 42; TimeCreated = $started.AddSeconds(1) }
+                $event | Add-Member ScriptMethod ToXml {
+                    "<Event><UserData><VmlEventLog><VmId>$($this.VmId)</VmId><VmErrorCode0>0x139</VmErrorCode0></VmlEventLog></UserData></Event>"
+                }
+                $event
+            }
+        }
+        Save-IntegrityHostCrashes -VmId $vm -Started $started -Output $root
+        $crashes = Get-Content -LiteralPath (Join-Path $root 'host-guest-crashes.json') -Raw | ConvertFrom-Json -NoEnumerate
+        if ($crashes -isnot [array] -or $crashes.Count -ne 1 -or $crashes[0].record -ne 42 -or
+            $crashes[0].bugcheck -ne '0x139' -or ([datetimeoffset]$crashes[0].time_utc).UtcDateTime -ne $started.AddSeconds(1) -or
+            $crashes[0].xml -notmatch $vm.ToString()) { throw 'Host crash evidence did not isolate the expected VM event' }
+    }
+    'Release qualification gate and integrity evidence checks passed.'
 } finally {
     $resolved = (Resolve-Path -LiteralPath $root).Path
     if ($resolved -ceq $root -and $resolved.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase)) {

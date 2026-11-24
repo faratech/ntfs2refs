@@ -70,6 +70,7 @@ $requiredLab = @{
     'restart-w11-postflush-resume' = 'resumed'; 'restart-w11-postflush-rollback' = 'rolled-back'
     'integrity-native-idle' = 'control-passed'; 'integrity-native-loaded' = 'control-passed'
     'integrity-converted-idle' = 'converted'; 'integrity-converted-loaded' = 'converted'; 'integrity-lived-in' = 'converted'
+    'integrity-event-131' = 'converted'
 }
 foreach ($case in $requiredLab.Keys) {
     if (-not $indexed.ContainsKey($case)) { throw "Missing required Hyper-V case $case" }
@@ -80,6 +81,10 @@ foreach ($case in $requiredLab.Keys) {
     if ($case -like 'integrity-*' -and ($row.reboot_use -ne $true -or $row.cleanup_ok -ne $true -or
         $null -eq $row.integrity_events -or @($row.integrity_events | Where-Object { $_.provider -match 'ReFS' -and $_.id -in 131, 134 }).Count)) {
         throw "Incomplete integrity evidence for Hyper-V case $case"
+    }
+    if ($case -eq 'integrity-event-131' -and ($row.integrity_fixture.content -ne 'lived-in' -or
+        $row.integrity_fixture.directory_entries -ne 4000 -or $row.integrity_fixture.check_agrees -ne $true)) {
+        throw 'Incomplete ReFS event 131 fixture evidence'
     }
 }
 $requiredRecovery = @{
@@ -180,7 +185,7 @@ $lines = @(
     "Candidate ``$Tag`` from ``$Commit`` passed $($native.Count) deterministic native cases, $($soak.Count) seeded soak rounds, and $($lab.cases.Count) Hyper-V cases.", '',
     'The three executable hashes, per-case manifest results, platform details, and filesystem findings are in `QUALIFICATION.json`.', '',
     'Data and developer volumes passed continued allocation, deletion, remount, and reboot tests. The installed Windows volume reached the desktop on ReFS 3.14 with Secure Boot enabled.', '',
-    'The matched ReFS controls passed. The cause of the original ReFS event 131 in [#253](https://github.com/faratech/ntfs2refs/issues/253) remains unresolved.', '',
+    'The matched ReFS controls and the 4,000-entry lived-in case with a preflight check passed. The cause of the original ReFS event 131 in [#253](https://github.com/faratech/ntfs2refs/issues/253) remains unresolved.', '',
     'Physical disks and actual storage-power loss are unqualified.', '',
     '### Exercised platform profiles', '',
     'Windows edition is reported as its operating-system SKU. Restart cases identify the Windows installation that receives the converted partition after WinPE returns. Only cases with complete observations are listed.', '',

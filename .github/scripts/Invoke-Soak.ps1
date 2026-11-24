@@ -329,9 +329,36 @@ function Capture-Settled([string]$path, [int]$diskNumber, [bool]$hasJunction) {
         $settled = (& $has 'WPSettings.dat') -and (-not $hasJunction -or (& $has 'MountPointManagerRemoteDatabase')) -and
             (-not $indexer -or (& $has 'IndexerVolumeGuid')) -and $own.Count -eq $previous
         $previous = $own.Count
-        if (-not $settled -and (Get-Date) -ge $remount) { & $afresh; $remount = (Get-Date).AddSeconds(20); $previous = -1 }
-    } until ($settled -or (Get-Date) -gt $deadline)
+        $now = Get-Date
+        if (-not $settled -and $now -lt $deadline -and $now -ge $remount) {
+            & $afresh
+            $remount = (Get-Date).AddSeconds(20)
+            $previous = -1
+        }
+    } until ($settled -or $now -ge $deadline)
     if (-not $settled) { Say "  (System Volume Information did not settle in 150 s: $($own.Count) entries)" }
+
+    # The manifest records the root first. Windows can update it during a
+    # long capture even if the System Volume Information entry count agrees.
+    $root = "${letter}:\"
+    $captureLimit = 3
+    for ($capture = 1; $capture -le $captureLimit; $capture++) {
+        try {
+            $entry = Get-Content -LiteralPath $path -TotalCount 1 | ConvertFrom-Json -AsHashtable -NoEnumerate
+        } catch { throw "Cannot read the first record of before-listing '$path': $($_.Exception.Message)" }
+        if ($entry -isnot [System.Collections.IDictionary] -or $entry['path'] -cne '\' -or
+            $entry['directory'] -ne $true -or $entry['written'] -isnot [long]) {
+            throw "Before-listing '$path' must start with a root directory record and its last-write FILETIME"
+        }
+        try {
+            $observed = (Get-Item -LiteralPath $root -Force).LastWriteTimeUtc.ToFileTimeUtc()
+        } catch { throw "Cannot read the last-write time of '$root' after capturing '$path': $($_.Exception.Message)" }
+        if ($entry['written'] -eq $observed) { return }
+        $difference = "the root of '$root' has last-write FILETIME $observed, and '$path' recorded $($entry['written'])"
+        if ($capture -eq $captureLimit) { throw "Before-listing remained unstable after $captureLimit capture checks because $difference" }
+        Say "  (recapturing before-listing without a remount because $difference)"
+        Capture $path
+    }
 }
 
 function Wait-Volume([string]$fileSystem) {

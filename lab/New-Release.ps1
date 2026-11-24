@@ -10,7 +10,8 @@ A release is what this script makes from a clean checkout of a tagged commit:
       ntfs2refs.exe, ntfs2refs-recovery.exe, lab-volume-manifest.exe,
       capabilities.json (what this
       executable says it admits), README.md, the guide, the feature matrix,
-      the recovery matrix, and RELEASE-NOTES.md
+      the recovery matrix, RELEASE-NOTES.md, and, with -Qualification,
+      QUALIFICATION.json and QUALIFICATION.md
   ntfs2refs-<version>-windows-x64.zip.sha256
   ntfs2refs-<version>-source.zip          (git archive of the commit)
   RELEASE-NOTES.md                        (also inside the ZIP)
@@ -150,6 +151,24 @@ try {
         }
     }
 
+    $hash = { param($path) (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
+    if ($Qualification) {
+        $report = Get-Content -LiteralPath (Join-Path $Qualification 'QUALIFICATION.json') -Raw | ConvertFrom-Json
+        if ($report.schema -ne 1 -or $report.candidate.tag -cne $version -or $report.candidate.commit -cne $commit) {
+            throw 'Qualification does not identify the version and commit being packaged'
+        }
+        foreach ($binary in $binaries) {
+            $name = Split-Path -Leaf $binary
+            $recorded = $report.candidate.hashes.PSObject.Properties[$name]
+            if (-not $recorded -or $recorded.Value -cne (& $hash $binary)) {
+                throw "Qualification hash differs for $name"
+            }
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $Qualification 'QUALIFICATION.md') -PathType Leaf)) {
+            throw 'Qualification.md is missing from the candidate evidence'
+        }
+    }
+
     $null = New-Item -ItemType Directory -Path $Output
     $stage = Join-Path $Output "ntfs2refs-$version-windows-x64"
     $null = New-Item -ItemType Directory -Path $stage, (Join-Path $stage 'docs')
@@ -173,7 +192,6 @@ try {
     }
     [IO.File]::WriteAllText((Join-Path $stage 'capabilities.json'), $capabilities, [Text.UTF8Encoding]::new($false))
 
-    $hash = { param($path) (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
     $notes = New-Object System.Collections.Generic.List[string]
     $notes.Add("# ntfs2refs $version")
     $notes.Add('')
@@ -211,6 +229,13 @@ try {
     foreach ($item in $reportedCapabilities.data_volume.refused_by_name) { $notes.Add("- $($item.what)$(if ($item.PSObject.Properties['remedy']) { ". To do: $($item.remedy)" }).") }
     $notes.Add('')
     $notes.Add('## What was shown, and what was not')
+    $notes.Add('')
+    if ($Qualification) {
+        $assetBase = if ($tagged -and $env:GITHUB_REPOSITORY) { "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$version/" } else { '' }
+        $notes.Add("The release candidate platform and recovery matrices are in [QUALIFICATION.md](${assetBase}QUALIFICATION.md). [QUALIFICATION.json](${assetBase}QUALIFICATION.json) carries the observed Windows and ReFS profiles, per-case results, and the executable hashes.")
+    } else {
+        $notes.Add('Candidate qualification evidence is unavailable for this package.')
+    }
     $notes.Add('')
     $notes.Add("``$($reportedCapabilities.lab_evidence.feature_matrix)`` lists every NTFS feature with what a conversion does with it and the lab case that shows it; ``$($reportedCapabilities.lab_evidence.recovery_matrix)`` lists every point at which a conversion was interrupted and how each recovery ended. ``$($reportedCapabilities.lab_evidence.guide)`` is the operating and recovery guide.")
     $notes.Add('')

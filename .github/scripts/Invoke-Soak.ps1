@@ -60,9 +60,14 @@ param(
     [ValidateSet(4096, 65536)][int]$TargetClusterBytes,
     [int]$MemoryLimitMiB,
     [switch]$WriteTailsSingly,
+    # Deterministic qualification of the seeded cancel workload at the live preparation guard.
+    [switch]$CancelAtPreparation,
     [string]$FailureStorage
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
+if ($CancelAtPreparation -and ($Scenario -ne 'seeded' -or @($Profile | Where-Object { $_ -ne 'cancel' }).Count)) {
+    throw '-CancelAtPreparation requires the seeded cancel profile'
+}
 
 $converter = Join-Path $Binaries 'ntfs2refs.exe'
 $manifest = Join-Path $Binaries 'lab-volume-manifest.exe'
@@ -356,6 +361,7 @@ for ($round = 1; ; $round++) {
     $hold = switch ($kind) { 'resume' { $holdPoints[$verify][$draw.Next(0, $holdPoints[$verify].Count)] } 'rollback' { $rollbackPoints[$verify][$draw.Next(0, $rollbackPoints[$verify].Count)] } default { '' } }
     $endAfter = if ($kind -eq 'cancel') { [Math]::Round(0.5 + $draw.NextDouble() * 40, 1) } else { 0 }
     if ($Scenario -ne 'seeded') { $verify = 'fast'; $endAfter = 0; $hold = if ($Scenario -eq 'cancel-preparation') { 'preparation-shadow-built' } else { '' } }
+    if ($CancelAtPreparation) { $hold = 'preparation-shadow-built'; $endAfter = 0 }
     $name = 'r{0:d3}-{1}-{2}' -f $round, $kind, $roundSeed
     $dir = Join-Path $Records $name
     $null = New-Item -ItemType Directory -Force -Path $dir
@@ -405,9 +411,11 @@ for ($round = 1; ; $round++) {
         } elseif ($run.ended) {
             $recover = [regex]::Match($run.said, $recoverLine, 'Multiline')
             $cancel = [regex]::Match($run.said, $cancelLine)
-            if ($Scenario -eq 'cancel-preparation') {
+            if ($hold -eq 'preparation-shadow-built') {
                 $intent = if ($cancel.Success) { Join-Path $cancel.Groups[1].Value 'preparation-intent.json' }
-                if (-not $intent -or -not (Test-Path -LiteralPath $intent)) { throw 'The interrupted preparation did not preserve its guard' }
+                if ($recover.Success -or -not $intent -or -not (Test-Path -LiteralPath $intent)) {
+                    throw 'The interrupted preparation must preserve its unpublished guard'
+                }
             }
             $recovery = $null
             if ($kind -eq 'rollback' -and $recover.Success) { $recovery = @('--recover', $recover.Groups[1].Value, '--recovery-sha256', $recover.Groups[2].Value, '--rollback'); $expect = 'NTFS' }

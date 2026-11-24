@@ -329,16 +329,37 @@ fn decode_sha(value: &str) -> Result<[u8; 32]> {
 /// are reserved before NTFS preparation; the image builder receives the exact
 /// bundle returned by that same preparation, never a caller's READY boolean.
 pub fn prepare_and_arm_shared_conversion(
-    mut request: PartitionAlphaRequest,
+    request: PartitionAlphaRequest,
     output: &Path,
     image: RecoveryImageRequest,
     boot_budget: RecoveryBootBudget,
     acknowledge: bool,
 ) -> Result<RecoveryBootReceipt> {
+    prepare_and_arm_shared_conversion_with_pause(
+        request,
+        output,
+        image,
+        boot_budget,
+        acknowledge,
+        None,
+    )
+}
+
+pub(crate) fn prepare_and_arm_shared_conversion_with_pause(
+    mut request: PartitionAlphaRequest,
+    output: &Path,
+    image: RecoveryImageRequest,
+    boot_budget: RecoveryBootBudget,
+    acknowledge: bool,
+    controlled_pause_nonce: Option<String>,
+) -> Result<RecoveryBootReceipt> {
     ensure!(
         acknowledge,
         "shared conversion and persistent recovery boot require confirmation"
     );
+    if let Some(nonce) = &controlled_pause_nonce {
+        super::controlled_pause::require_nonce(nonce)?;
+    }
     ensure!(
         request.schema_version == 1 && output.is_absolute() && !output.exists(),
         "fresh shared conversion namespace required"
@@ -409,7 +430,8 @@ pub fn prepare_and_arm_shared_conversion(
         &serde_json::json!({
             "kind":"shared-native-shadow-offline-workflow-admission-v1", "preparation":request,
             "recovery_image":image, "boot_budget":boot_budget, "required_independent_capacity":required,
-            "actual_available":actual, "source_payload_write_authority":false
+            "actual_available":actual, "source_payload_write_authority":false,
+            "controlled_postflush_pause":controlled_pause_nonce.is_some()
         }),
         request.maximum_evidence_bytes,
     )?;
@@ -433,7 +455,7 @@ pub fn prepare_and_arm_shared_conversion(
         image,
         boot_budget,
         additional,
-        acknowledge,
+        controlled_pause_nonce,
     )
     .map_err(|cause| way_back::after_failure_in_windows(output, cause))
 }
@@ -445,14 +467,14 @@ fn prepare_and_arm_admitted(
     mut image: RecoveryImageRequest,
     boot_budget: RecoveryBootBudget,
     additional: u64,
-    acknowledge: bool,
+    controlled_pause_nonce: Option<String>,
 ) -> Result<RecoveryBootReceipt> {
     let source = request.expected_source.clone();
     let total_ram = request.total_ram_bytes;
     let evidence = request.maximum_evidence_bytes;
     let minimum_free = request.minimum_free_bytes - additional;
     let observation = request.observation_budget;
-    let prepared = prepare_for_offline_apply(request, &output.join("prepared"), acknowledge)?;
+    let prepared = prepare_for_offline_apply(request, &output.join("prepared"), true)?;
     let available_after = n2r_win32::resource_native::observe_available_resources(output)?;
     let metadata = SourceMetadataBudget::from_resource_budget(derive_budget(
         total_ram / 4,
@@ -487,7 +509,7 @@ fn prepare_and_arm_admitted(
         boot_intent: output_guid.join("boot/selection/recovery-boot-guard-intent.json"),
         boot_budget,
         action: PreparedOfflineAction::AutoResume,
-        controlled_pause_nonce: None,
+        controlled_pause_nonce,
         // Present only when the hidden laboratory switch armed the point of
         // the recovery environment.
         lab_fail_at: n2r_win32::lab_fail::armed()
@@ -532,6 +554,6 @@ fn prepare_and_arm_admitted(
             boot: boot_budget,
         },
         &output.join("boot"),
-        acknowledge,
+        true,
     )
 }

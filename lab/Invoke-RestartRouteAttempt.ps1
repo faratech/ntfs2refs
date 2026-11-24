@@ -48,6 +48,11 @@ param(
     # volume is writable NTFS listing exactly as before and Windows' boot
     # selection is its own again.
     [ValidateSet('', 'restart-after-protect', 'restart-after-image', 'restart-after-arm', 'restart-skip-reboot', 'winpe-before-apply')][string]$LabFailAt = '',
+    # Turn the VM off at the durable WinPE post-flush pause and answer its
+    # recovery prompt after restart. A timed or missed cut fails the case.
+    [ValidateSet('', 'resume', 'rollback')][string]$PostFlushRecovery = '',
+    # Exercise a delay at the real WinPE recovery prompt when requested.
+    [int]$RecoveryChoiceDelaySeconds,
     [switch]$ExpectScratchRefusal,
     # On a disposable Windows fixture, protect C: and prove the
     # data-partition restart route refuses before changing its source or BCD.
@@ -92,21 +97,50 @@ function Connect([int]$Seconds) {
         catch { if ((Get-Date) -gt $deadline) { throw }; Start-Sleep -Seconds 5 }
     }
 }
-function Screenshot([string]$Leaf) {
+function Screenshot([string]$Leaf, [switch]$ReturnPath) {
     # What the console shows while no session can be had (WinPE).
     try {
         $service = Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_VirtualSystemManagementService
         $system = Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_ComputerSystem -Filter "Name='$($VmId.ToString().ToUpper())'"
         $setting = Get-CimAssociatedInstance -InputObject $system -ResultClassName Msvm_VirtualSystemSettingData | Where-Object VirtualSystemType -eq 'Microsoft:Hyper-V:System:Realized'
         $image = Invoke-CimMethod -InputObject $service -MethodName GetVirtualSystemThumbnailImage -Arguments @{ TargetSystem = $setting; WidthPixels = [uint16]1024; HeightPixels = [uint16]768 }
-        if ($image.ReturnValue -eq 0) { [IO.File]::WriteAllBytes((Join-Path $records "$Leaf.rgb565"), [byte[]]$image.ImageData) }
+        if ($image.ReturnValue -eq 0) {
+            $path = Join-Path $records "$Leaf.rgb565"
+            [IO.File]::WriteAllBytes($path, [byte[]]$image.ImageData)
+            if ($ReturnPath) { $path }
+        }
     } catch { }
+}
+function Wait-ConsoleMarker([string]$Marker, [string]$Evidence, [datetime]$Deadline, [switch]$AtTail) {
+    while ((Get-Date) -lt $Deadline) {
+        $frame = Screenshot 'current-console' -ReturnPath
+        if ($frame) {
+            $screen = & powershell.exe -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'Read-RestartConsole.ps1') -Frame $frame -Width 1024 -Height 768
+            if ($LASTEXITCODE -ne 0) { throw "Could not read WinPE console for $Name" }
+            $text = $screen -join ' '
+            if ($text -match 'Conversion stopped\.\s*Preserve recovery artifacts') {
+                Copy-Item -LiteralPath $frame -Destination (Join-Path $records 'winpe-refusal.rgb565')
+                throw "WinPE stopped before $Evidence for $Name. See winpe-refusal.rgb565."
+            }
+            $observed = if ($AtTail) { $screen | Where-Object { $_.Trim() } | Select-Object -Last 1 } else { $text }
+            if ($observed -match $Marker) {
+                Copy-Item -LiteralPath $frame -Destination (Join-Path $records "$Evidence.rgb565")
+                return
+            }
+        }
+        Start-Sleep -Seconds 3
+    }
+    throw "WinPE did not display $Marker for $Name before the deadline"
 }
 
 $hostDisk = $null
 $work = if ($WorkingDiskGB -gt 0) { 'J:\restart' } else { 'S:\restart' }
 if ($ExpectScratchRefusal -and $LabFailAt) { throw 'Test either the working storage refusal or a restart fault' }
-if ($ExpectWindowsBitLockerRefusal -and ($ExpectScratchRefusal -or $LabFailAt)) { throw 'Choose only one expected restart refusal or interruption' }
+if ($ExpectWindowsBitLockerRefusal -and ($ExpectScratchRefusal -or $LabFailAt -or $PostFlushRecovery)) { throw 'Choose only one expected restart refusal or interruption' }
+if ($PostFlushRecovery -and ($ExpectScratchRefusal -or $LabFailAt)) { throw 'Choose one restart interruption or refusal case' }
+if ($RecoveryChoiceDelaySeconds -and -not $PostFlushRecovery) { throw '-RecoveryChoiceDelaySeconds requires -PostFlushRecovery' }
+if ($RecoveryChoiceDelaySeconds -lt 0) { throw '-RecoveryChoiceDelaySeconds must be nonnegative' }
+$pauseNonce = if ($PostFlushRecovery) { [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant() }
 try {
     $session = Connect 60
     if ($WorkingDiskGB -gt 0) {
@@ -242,8 +276,10 @@ try {
 
     $arguments = @('--drive', 'P', '--restart-media', $made.media, '--scratch-directory', $work, '--yes', '--volume-serial', $before.serial) + $ConverterArgs
     if ($LabFailAt) { $arguments += @('--lab-fail-at', $LabFailAt, '--acknowledge-lab-fail-stops-the-run') }
+    if ($pauseNonce) { $arguments += @('--controlled-post-flush-pause-nonce', $pauseNonce, '--acknowledge-controlled-post-flush-pause') }
     $staysInWindows = $ExpectScratchRefusal -or $ExpectWindowsBitLockerRefusal -or $LabFailAt -in 'restart-after-protect', 'restart-after-image', 'restart-after-arm', 'restart-skip-reboot'
     $verdict.arguments = $arguments
+    $verdict.verify = if (($arguments -join ' ') -match '--verify(?:=|\s+)thorough(?:\s|$)|--verify-full-content(?:\s|$)') { 'thorough' } else { 'fast' }
     Say "converter: ntfs2refs.exe $($arguments -join ' ')"
     # Started as SYSTEM by a task, with its output in files on C:, which is
     # there again after the restart: the session does not outlive it.
@@ -342,6 +378,27 @@ try {
     # Away: WinPE, the conversion, the return. No session can be had in
     # WinPE; the console is pictured once a minute.
     $away = Get-Date; $shot = 0
+    if ($PostFlushRecovery) {
+        $deadline = $away.AddMinutes($AwayMinutes)
+        $verdict.interrupt = [ordered]@{ point = 'winpe-postflush-before-discovery'; kind = 'vm-turned-off'; held = $false }
+        Wait-ConsoleMarker 'POSTFLUSH\s+PAUSED.*BEFORE-VBR(?!.*POSTFLUSH\s+RELEASED)' 'postflush-at-cut' $deadline
+        Stop-VM -VM (Get-VM -Id $VmId) -TurnOff -Force
+        $verdict.interrupt.cut_utc = [datetime]::UtcNow.ToString('o')
+        Say 'Turned off the VM at the WinPE post-flush pause'
+        Start-VM -VM (Get-VM -Id $VmId)
+        Wait-ConsoleMarker 'interrupted conversion is protected.*Enter R to resume conversion or B to restore' 'recovery-at-prompt' $deadline -AtTail
+        $promptWait = [Diagnostics.Stopwatch]::StartNew()
+        if ($RecoveryChoiceDelaySeconds) {
+            if ((Get-Date).AddSeconds($RecoveryChoiceDelaySeconds) -ge $deadline) { throw 'The requested recovery choice delay exceeds the remaining test time' }
+            Start-Sleep -Seconds $RecoveryChoiceDelaySeconds
+            Wait-ConsoleMarker 'interrupted conversion is protected.*Enter R to resume conversion or B to restore' 'recovery-after-delay' $deadline -AtTail
+        }
+        $verdict.interrupt.choice_delay_seconds = $RecoveryChoiceDelaySeconds
+        $key = if ($PostFlushRecovery -eq 'resume') { 'R' } else { 'B' }
+        & (Join-Path $PSScriptRoot 'Send-VmKeys.ps1') -VmId $VmId.ToString() -Text $key
+        $verdict.interrupt.prompt_wait_seconds = $promptWait.Elapsed.TotalSeconds
+        Say "Answered the protected WinPE recovery prompt with $key"
+    }
     while ($true) {
         Start-Sleep -Seconds 20
         if (((Get-Date) - $away).TotalSeconds -ge 60 * ($shot + 1)) { $shot++; Screenshot ('console-{0:d2}' -f $shot) }
@@ -356,8 +413,8 @@ try {
     Say "Windows is back after $($verdict.away_seconds) s away"
     }
 
-    $after = Invoke-Command -Session $session -ArgumentList $guestRoot, $work -ScriptBlock {
-        param($root, $work)
+    $after = Invoke-Command -Session $session -ArgumentList $guestRoot, $work, $pauseNonce -ScriptBlock {
+        param($root, $work, $nonce)
         $volume = Get-Volume -DriveLetter P -ErrorAction SilentlyContinue
         $listed = ''; $summary = ''; $compare = $null
         if ($volume) {
@@ -391,6 +448,35 @@ try {
         # (After the listing: a write changes the root directory's times.)
         $writable = $null
         try { [IO.File]::WriteAllText('P:\written-after.txt', 'x'); Remove-Item -LiteralPath 'P:\written-after.txt' -Force; $writable = $true } catch { $writable = $false }
+        $pauses = @(if ($nonce) {
+            Get-ChildItem -LiteralPath $work -Recurse -Directory -Filter 'postflush-pause' | ForEach-Object {
+                $ready = Join-Path $_.FullName 'ready.json'
+                if (Test-Path -LiteralPath $ready -PathType Leaf) {
+                    $receipt = Get-Content -LiteralPath $ready -Raw | ConvertFrom-Json
+                    if ($receipt.nonce -ceq $nonce) {
+                        [pscustomobject]@{ receipt = $receipt; released = (Test-Path -LiteralPath (Join-Path $_.FullName 'released.json')) }
+                    }
+                }
+            }
+        })
+        $targetProfile = if ($volume -and $volume.FileSystem -eq 'ReFS') {
+            $refs = (& fsutil.exe fsinfo refsinfo P: 2>&1 | Out-String)
+            $refsExit = $LASTEXITCODE
+            $policy = (& fsutil.exe devdrv query P: 2>&1 | Out-String)
+            $policyExit = $LASTEXITCODE
+            $os = Get-CimInstance Win32_OperatingSystem
+            $version = $null
+            if ($refsExit -eq 0 -and $refs -match 'REFS Volume Version\s*:\s*(\d+\.\d+)') { $version = $Matches[1] }
+            $format = $null
+            if ($policyExit -eq 0) {
+                if ($policy -match '(?m)^The volume is formatted as a developer volume\b') { $format = 'dev-drive' }
+                elseif ($policy -match '(?m)^This is not a developer volume\.\s*$') { $format = 'standard' }
+            }
+            @{
+                windows_build = [int]$os.BuildNumber; windows_edition = [int]$os.OperatingSystemSKU
+                refs_version = $version; cluster_bytes = $volume.AllocationUnitSize; target_format = $format
+            }
+        }
         [pscustomobject]@{
             filesystem = if ($volume) { "$($volume.FileSystem)" } else { $null }; health = if ($volume) { "$($volume.HealthStatus)" } else { $null }
             read_only = if ($partition) { [bool]$partition.IsReadOnly } else { $null }
@@ -399,6 +485,12 @@ try {
             listed = $listed.Trim(); summary = $summary.Trim(); compare_exit = $compare
             boot_default = [string](& bcdedit.exe /enum '{bootmgr}' 2>&1 | Where-Object { $_ -match '^(default|displayorder|timeout)' } | Out-String).Trim()
             runs = @(Get-ChildItem -LiteralPath $work -Directory -ErrorAction SilentlyContinue | ForEach-Object Name)
+            postflush_pauses = $pauses
+            target_profile = $targetProfile
+            control_boot = if ($nonce) {
+                $c = Get-Volume -DriveLetter C
+                @{ filesystem = [string]$c.FileSystem; boot_utc = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o') }
+            }
         }
     }
     $verdict.after = $after
@@ -425,6 +517,28 @@ try {
             [pscustomobject]@{ volume = [string]$state.VolumeStatus; protection = [string]$state.ProtectionStatus }
         }
     }
+    if ($PostFlushRecovery) {
+        $pauses = @($after.postflush_pauses)
+        if ($pauses.Count -ne 1) { throw "Expected exactly one nonce-bound WinPE pause receipt, found $($pauses.Count)" }
+        $pause = $pauses[0]; $receipt = $pause.receipt; $actual = $receipt.actual_postflush
+        $source = $actual.source.storage.identity
+        if ($pause.released -or $receipt.kind -cne 'offline-prepared-controlled-postflush-ready-v1' -or
+            $actual.kind -cne 'offline-prepared-actual-nondiscovery-postflush-v1' -or
+            $actual.native_bytes_written -le 0 -or $actual.delayed_discovery_bytes -ne 4096 -or
+            $actual.flush_and_pending_readback_succeeded -ne $true -or $actual.native_writer_revalidation_succeeded -ne $true -or
+            $actual.discovery_write_not_requested -ne $true -or $source.partition_offset -ne $made.offset -or $source.partition_bytes -ne $made.size) {
+            throw 'WinPE pause receipt does not prove a cut after verified data writes and before the discovery write'
+        }
+        $verdict.interrupt.held = $true
+        $verdict.interrupt.postflush = [ordered]@{
+            native_bytes_written = $actual.native_bytes_written
+            delayed_discovery_bytes = $actual.delayed_discovery_bytes
+            flush_and_pending_readback_succeeded = $actual.flush_and_pending_readback_succeeded
+            native_writer_revalidation_succeeded = $actual.native_writer_revalidation_succeeded
+            discovery_write_not_requested = $actual.discovery_write_not_requested
+            released = $pause.released
+        }
+    }
     $verdict.outcome = if ($ExpectScratchRefusal) {
             if ($verdict.scratch_refusal -and $after.filesystem -eq 'NTFS' -and $after.compare_exit -eq 0 -and $after.writable -and $after.boot_default -match 'default\s+\{current\}' -and -not $after.runs) { 'refused-source-unchanged' }
             else { 'scratch-refusal-incomplete' }
@@ -439,6 +553,14 @@ try {
         elseif ($LabFailAt) {
             if ($after.filesystem -eq 'NTFS' -and $after.compare_exit -eq 0 -and $after.read_only -eq $false -and $after.writable -and $after.boot_default -match 'default\s+\{current\}') { 'cancelled-volume-as-before' }
             else { 'cancel-incomplete' }
+        }
+        elseif ($PostFlushRecovery) {
+            $expectedFs = if ($PostFlushRecovery -eq 'resume') { 'ReFS' } else { 'NTFS' }
+            if ($after.filesystem -eq $expectedFs -and $after.health -eq 'Healthy' -and $after.compare_exit -eq 0 -and
+                $after.writable -and $after.boot_default -match 'default\s+\{current\}') {
+                $verdict.recover_mode = $PostFlushRecovery
+                if ($PostFlushRecovery -eq 'resume') { 'resumed' } else { 'rolled-back' }
+            } else { 'postflush-recovery-incomplete' }
         }
         elseif ($after.filesystem -ne 'ReFS') { "returned-with-$($after.filesystem)" }
         elseif ($after.compare_exit -ne 0) { 'converted-but-listing-differs' }
@@ -466,6 +588,7 @@ finally {
     if ($session) { Remove-PSSession $session -ErrorAction SilentlyContinue }
     # The working disk stays attached: the caller turns the VM off and
     # restores its checkpoint, and removes the file then.
+    $verdict.cleanup_outcome = 'working storage retained by harness'
     Save-Verdict
     Say "outcome: $($verdict.outcome). Records: $records"
 }

@@ -7,6 +7,7 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^\d+-\d+$')][string]$Request
 )
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot/QualificationInterruption.ps1"
 $root = Split-Path -Parent $PSScriptRoot
 $attempts = Join-Path $root '.lab/hyperv/attempts'
 $identity = Get-Content -LiteralPath (Join-Path $Candidate 'candidate.json') -Raw | ConvertFrom-Json -AsHashtable
@@ -26,6 +27,7 @@ $gate = Join-Path $PSScriptRoot 'Invoke-GateRound.ps1'
 $boot = Join-Path $PSScriptRoot 'Invoke-BootConversionAttempt.ps1'
 $data = Join-Path $PSScriptRoot 'Invoke-DataVolumeAttempt.ps1'
 $restart = Join-Path $PSScriptRoot 'Invoke-RestartRouteAttempt.ps1'
+$restartWindows11 = Join-Path $PSScriptRoot 'Invoke-Windows11RestartAttempt.ps1'
 $binaryArgs = @{ Binary = Join-Path $binaries 'ntfs2refs.exe'; ManifestBinary = Join-Path $binaries 'lab-volume-manifest.exe' }
 
 function Read-Verdict([string]$Name) {
@@ -37,10 +39,7 @@ function Add-Case([string]$Name, [string]$Route, [string]$Expected, $Verdict, [b
     if ($Route -eq 'restart') { $binaryMatch = $binaryMatch -and $Verdict.recovery_sha256 -ceq $identity.hashes['ntfs2refs-recovery.exe'] }
     # Running-Windows cases use a separate guest route. Its verdict carries its converter hash.
     if ($Route -eq 'running') { $binaryMatch = $Verdict.converter_sha256 -ceq $identity.hashes['ntfs2refs.exe'] }
-    $hold = if ($Verdict.interrupt) { $Verdict.interrupt.point } elseif ($Verdict.interrupted_at) { $Verdict.interrupted_at } elseif ($Route -eq 'restart') { $Verdict.lab_fail_at } else { '' }
-    $reached = if ($Verdict.interrupt) { [bool]$Verdict.interrupt.held } elseif ($Verdict.lab_fail_at) { $Verdict.reached_lab_fail_at } elseif ($hold) { $Passed }
-    $kind = if ($Verdict.interrupt) { $Verdict.interrupt.kind } elseif ($Verdict.interrupted_at) { 'process-termination' } elseif ($Verdict.lab_fail_at) { 'injected failure' } else { '' }
-    $recovery = if ($Verdict.recovery -is [System.Collections.IDictionary]) { $Verdict.recovery.mode } elseif ($Verdict.recover_mode) { $Verdict.recover_mode } elseif ($Name -eq 'restart-cancel') { 'rollback' } else { '' }
+    $interruption = Get-QualificationInterruption $Route $Name $Verdict
     $designation = $Verdict.target.windows_reports
     if ($Route -eq 'boot' -and $Verdict.boot.observed.filesystem -eq 'ReFS') {
         $stdout = Join-Path $attempts "$prefix-$Name/stdout.log"
@@ -53,21 +52,28 @@ function Add-Case([string]$Name, [string]$Route, [string]$Expected, $Verdict, [b
         '^Dev Drive' { 'dev-drive' }
         '^standard ReFS' { 'standard' }
     }
+    $restartProfile = if ($Route -eq 'restart') { $Verdict.after.target_profile }
     $rows.Add([ordered]@{
         case_id = $Name; route = $Route; expected = $Expected; outcome = $Verdict.outcome; passed = ($Passed -and $binaryMatch -and $Verdict.cleanup_ok -ne $false)
-        verify = if ($Verdict.verify) { $Verdict.verify } else { 'fast' }; hold = $hold; reached_hold = $reached
-        interruption = $kind; simulated_torn_marker = [bool]$Verdict.torn_marker
-        torn_marker_settled = $Verdict.torn_marker.settled_by_recovery; recovery = $recovery
+        verify = if ($Verdict.verify) { $Verdict.verify } else { 'fast' }; hold = $interruption.hold; reached_hold = $interruption.reached_hold
+        interruption = $interruption.kind; simulated_torn_marker = [bool]$Verdict.torn_marker
+        torn_marker_settled = $Verdict.torn_marker.settled_by_recovery; recovery = $interruption.recovery
+        postflush = $Verdict.interrupt.postflush
+        prompt_wait_seconds = $Verdict.interrupt.prompt_wait_seconds
         manifest = $Verdict.manifest.result; exact_manifest = $Verdict.manifest.exact; cleanup_ok = $Verdict.cleanup_ok
+        cleanup_outcome = $Verdict.cleanup_outcome
         working_filesystem = $Verdict.made.working_filesystem
         scratch_refusal = $Verdict.scratch_refusal
-        windows = @($Verdict.integrity.windows, $Verdict.boot.observed.build, $Verdict.windows_build, $Verdict.made.windows_build, $Verdict.control.windows_build) | Where-Object { $_ } | Select-Object -First 1
-        windows_edition = $Verdict.boot.observed.windows_edition ?? $Verdict.windows_edition
-        refs = @($Verdict.integrity.refs, $Verdict.volume_after.refs_version, $Verdict.boot.observed.refs_version) | Where-Object { $_ } | Select-Object -First 1
-        observed_target_format = $targetFormat
-        observed_target_clusters = $Verdict.boot.observed.cluster_bytes ?? $Verdict.volume_after.refs_bytes_per_cluster
+        windows = @($Verdict.integrity.windows, $Verdict.boot.observed.build, $Verdict.windows_build, $restartProfile.windows_build, $Verdict.made.windows_build, $Verdict.control.windows_build) | Where-Object { $_ } | Select-Object -First 1
+        windows_edition = $Verdict.boot.observed.windows_edition ?? $Verdict.windows_edition ?? $restartProfile.windows_edition
+        windows_revision = $Verdict.windows_revision
+        refs = @($Verdict.integrity.refs, $Verdict.volume_after.refs_version, $Verdict.boot.observed.refs_version, $restartProfile.refs_version) | Where-Object { $_ } | Select-Object -First 1
+        observed_target_format = $targetFormat ?? $restartProfile.target_format
+        observed_target_clusters = $Verdict.boot.observed.cluster_bytes ?? $Verdict.volume_after.refs_bytes_per_cluster ?? $restartProfile.cluster_bytes
         source_clusters = $Verdict.source.cluster_bytes; target_clusters = $Verdict.target.cluster_bytes_requested; sector_bytes = $Verdict.source.sector_bytes
         boot = if ($Verdict.boot) { $Verdict.boot.observed | Select-Object -Property filesystem, cluster_bytes, disk, disks, partition, secure_boot, signatures }
+            elseif ($Route -eq 'running' -and $Verdict.after.boot_utc) { @{ filesystem = $Verdict.after.filesystem; cluster_bytes = $Verdict.after.cluster_bytes; boot_utc = $Verdict.after.boot_utc } }
+            elseif ($Route -eq 'restart') { $Verdict.after.control_boot }
         integrity_events = $Verdict.integrity.events; reboot_use = $Verdict.reboot_use; host_load = $Verdict.host_load
     })
 }
@@ -91,7 +97,7 @@ try {
     $serverBase = Get-VMSnapshot -VM $server -Name 'N2R-Server-Baseline'
     $serverCredential = Join-Path $root '.lab/hyperv/ntfs2refs-server2025/secrets/guest-credential.xml'
     try {
-        foreach ($case in 'restart-refs-refusal', 'restart-convert', 'restart-cancel') {
+        foreach ($case in 'restart-refs-refusal', 'restart-convert', 'restart-cancel', 'restart-postflush-resume', 'restart-postflush-rollback') {
             if ((Get-VM -Id $server.Id).State -ne 'Off') { Stop-VM -VM $server -Force -Confirm:$false }
             Restore-VMSnapshot -VMSnapshot $serverBase -Confirm:$false
             Start-VM -VM $server
@@ -106,6 +112,11 @@ try {
                 if ($case -eq 'restart-cancel') {
                     $argsForRestart.LabFailAt = 'restart-after-arm'
                     $want = 'cancelled-volume-as-before'
+                } elseif ($case -like 'restart-postflush-*') {
+                    $argsForRestart.PostFlushRecovery = $case.Substring('restart-postflush-'.Length)
+                    $argsForRestart.PartitionMB = 2048
+                    if ($argsForRestart.PostFlushRecovery -eq 'resume') { $argsForRestart.RecoveryChoiceDelaySeconds = 185 }
+                    $want = if ($argsForRestart.PostFlushRecovery -eq 'resume') { 'resumed' } else { 'rolled-back' }
                 }
             }
             & $restart @binaryArgs @argsForRestart -Name "$prefix-$case" -VmId $server.Id -CredentialPath $serverCredential
@@ -115,6 +126,27 @@ try {
         }
     } finally {
         if ((Get-VM -Id $server.Id).State -ne 'Off') { Stop-VM -VM $server -Force -Confirm:$false }
+    }
+
+    $windows11 = Get-VM -Name ntfs2refs-reference-c
+    $windows11Media = @(Get-VMDvdDrive -VMName ntfs2refs-reference-b | Where-Object { $_.Path -and (Test-Path -LiteralPath $_.Path) })
+    if ($windows11Media.Count -ne 1) { throw 'Expected one accessible Windows 11 installation medium on reference-b' }
+    foreach ($mode in 'resume', 'rollback') {
+        $case = "restart-w11-postflush-$mode"
+        $name = "$prefix-$case"
+        & $restartWindows11 @binaryArgs -Name $name -VmId $windows11.Id -InstallationMedia $windows11Media[0].Path -PostFlushRecovery $mode
+        $v = Read-Verdict $name
+        $control = Get-Content -LiteralPath (Join-Path $attempts "$name/control-profile.json") -Raw | ConvertFrom-Json -AsHashtable
+        if ($v.outcome -eq 'resumed' -and ($v.after.target_profile.windows_build -ne $control.windows_build -or
+            $v.after.target_profile.windows_edition -ne $control.windows_edition)) {
+            throw "$case returned to a different Windows profile"
+        }
+        $v.windows_build = $control.windows_build
+        $v.windows_edition = $control.windows_edition
+        $v.windows_revision = $control.windows_revision
+        $want = if ($mode -eq 'resume') { 'resumed' } else { 'rolled-back' }
+        Add-Case $case 'restart' $want $v ($v.outcome -ceq $want)
+        if ($v.outcome -cne $want) { throw "$case ended $($v.outcome)" }
     }
 
     $vmId = (Get-VM -Name ntfs2refs-reference-isolated).Id

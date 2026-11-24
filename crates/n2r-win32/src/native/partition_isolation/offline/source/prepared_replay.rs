@@ -123,7 +123,18 @@ impl OfflinePreparedSource {
             // before setting disk3. Both paths still authenticate CURRENT mixed
             // bytes, the sealed publication, J/index and boot guard below;
             // neither authorizes a fresh NTFS scan or an allOLD assumption.
-            self.state(events)?;
+            self.state(events).map_err(|error| {
+                let storage = &self.binding().storage;
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "opening CURRENT prepared recovery for \\\\.\\PhysicalDrive{} partition {} (native_error={:?}): {error}",
+                        storage.disk_number,
+                        storage.identity.partition_number,
+                        error.raw_os_error(),
+                    ),
+                )
+            })?;
             let outer_file =
                 self.require_sealed_publication(outer, independent_outer_sha256, pins, None)?;
             let current = paged::authenticate(

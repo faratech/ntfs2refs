@@ -339,6 +339,41 @@ fn run_prepared_offline_mode(
     let gpt: [u8; 32] = hex::decode(&bundle.core().source_readonly_gpt_sha256)?
         .try_into()
         .map_err(|_| anyhow::anyhow!("prepared GPT hash width"))?;
+    let profile = JournalProfile::from_schema_and_capacity(
+        bundle.core().journal_profile_version,
+        Some(bundle.core().journal_profile_max_bytes),
+    )?;
+    let (mut journal, observed_journal) = BoundNativeRecoveryJournal::open(
+        &bundle.core().journal_path,
+        &request.journal,
+        profile,
+        &bundle.core().ticket,
+        None,
+        MarkerStorageUse::QualifiedProduction,
+    )?;
+    observer.lock()?.record(
+        &serde_json::json!({"kind":"actual-exclusive-cold-J-open","observed":observed_journal}),
+    )?;
+    use crate::selected_journal::SelectedLifecycle;
+    // The prompt can remain open while WinPE finishes discovering disks.
+    // Read an intact J only to decide whether to prompt, before taking the
+    // whole-disk exclusion lease. Marker settlement and the authoritative
+    // lifecycle check below still run with the source excluded.
+    let early_direction = if !closed_only_boot_repair
+        && matches!(request.action, PreparedOfflineAction::AutoResume)
+    {
+        let (native, _) = journal.split_for_observation()?;
+        let ticket = &bundle.core().ticket;
+        if crate::selected_journal::find_interrupted_marker(native, ticket)?.is_none()
+            && crate::selected_journal::classify(native, ticket)? == SelectedLifecycle::ApplyIntent
+        {
+            Some(choose_recovery_direction()?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let excluded = OfflinePreparedSource::exclude(
         environment,
         gpt,
@@ -367,21 +402,6 @@ fn run_prepared_offline_mode(
             };
         }
     };
-    let profile = JournalProfile::from_schema_and_capacity(
-        bundle.core().journal_profile_version,
-        Some(bundle.core().journal_profile_max_bytes),
-    )?;
-    let (mut journal, observed_journal) = BoundNativeRecoveryJournal::open(
-        &bundle.core().journal_path,
-        &request.journal,
-        profile,
-        &bundle.core().ticket,
-        None,
-        MarkerStorageUse::QualifiedProduction,
-    )?;
-    observer.lock()?.record(
-        &serde_json::json!({"kind":"actual-exclusive-cold-J-open","observed":observed_journal}),
-    )?;
     let boot = PreparedOfflineBootRequest {
         closed_only_boot_repair,
         interrupted_recovery_boot_repair,
@@ -428,7 +448,10 @@ fn run_prepared_offline_mode(
         let (native, _) = journal.split_for_observation()?;
         crate::selected_journal::classify(native, &bundle.core().ticket)?
     };
-    use crate::selected_journal::SelectedLifecycle;
+    ensure!(
+        early_direction.is_none() || lifecycle == SelectedLifecycle::ApplyIntent,
+        "prepared journal lifecycle changed while choosing recovery; no replay was attempted"
+    );
     *seen = Some(lifecycle);
     if closed_only_boot_repair {
         ensure!(
@@ -479,7 +502,10 @@ fn run_prepared_offline_mode(
                 (_, PreparedOfflineAction::Rollback) | (SelectedLifecycle::RollbackIntent, _) => {
                     PagedRecoveryDirection::Rollback
                 }
-                _ => choose_recovery_direction()?,
+                _ => match early_direction {
+                    Some(direction) => direction,
+                    None => choose_recovery_direction()?,
+                },
             };
             resource_prepared_offline_apply::recover_prepared(
                 bundle,

@@ -585,6 +585,7 @@ try {
             }
         } catch { $verdict.outcome = 'feature-not-made'; throw "a feature could not be put on the volume: $($_.Exception.Message)" }
         $verdict.source.features = ($featureJson | Select-Object -Last 1) | ConvertFrom-Json
+        if ($wanted -contains 'bigdir') { $verdict.source.directory_entries = $DirectoryEntries }
         Set-Content -LiteralPath (Join-Path $records 'features.json') -Value ($featureJson | Select-Object -Last 1) -Encoding UTF8
         Say "features: $($wanted -join ', ')"
     }
@@ -1734,7 +1735,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     if ($worker) { Remove-PSSession $worker -ErrorAction SilentlyContinue }
     if ($IntegrityRecords) {
         try {
-            $evidence = Save-IntegrityEvents -Session $session -Started $integrityStarted -Name $Name -Output $integrityStorage
+            $evidence = Save-IntegrityEvents -Session $session -Started $integrityStarted -Name $Name -Output $integrityStorage -Acceptance $verdict['acceptance']
             $verdict.integrity = $evidence
             if ($evidence.serious_count) { $verdict.outcome = 'integrity-event' }
             if ($verdict.outcome -notin 'converted', 'control-passed') {
@@ -1746,6 +1747,11 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         } catch {
             $verdict.integrity_error = "$_"
             $verdict.outcome = 'integrity-capture-failed'
+            try {
+                Save-IntegrityHostCrashes -VmId $VmId -Started $integrityStarted -Output $integrityStorage
+            } catch {
+                $verdict.integrity_host_error = "$_"
+            }
             # Leave the live inputs attached for collection when a copy fails.
             $KeepVolume = $true
         }

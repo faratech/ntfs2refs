@@ -174,8 +174,24 @@ $profiles = @(foreach ($row in $lab.cases | Sort-Object { $_.case_id }) {
         target_format = $row.observed_target_format; target_cluster_bytes = [uint32]$row.observed_target_clusters
     }
 })
-foreach ($case in 'full-system', 'lived-in', 'restart-w11-postflush-resume') {
+foreach ($case in 'full-system', 'restart-w11-postflush-resume') {
     if ($case -cnotin $profiles.case_id) { throw "Missing observed platform profile for $case" }
+}
+$requiredDataProfiles = [ordered]@{
+    'lived-in' = @(26300, 48, 'dev-drive', 4096)
+    'lived-in-64k' = @(26300, 48, 'dev-drive', 65536)
+    'std-4k' = @(26100, 79, 'standard', 4096)
+    'std-64k' = @(26100, 79, 'standard', 65536)
+    'devdrive' = @(26100, 79, 'dev-drive', 4096)
+}
+foreach ($case in $requiredDataProfiles.Keys) {
+    $observed = $profiles | Where-Object case_id -CEQ $case
+    if (-not $observed) { throw "Missing observed platform profile for $case" }
+    $build, $edition, $format, $cluster = $requiredDataProfiles[$case]
+    if ($observed.route -cne 'data' -or $observed.windows_build -ne $build -or $observed.windows_edition -ne $edition -or
+        $observed.refs_version -cne '3.14' -or $observed.target_format -cne $format -or $observed.target_cluster_bytes -ne $cluster) {
+        throw "Observed platform profile differs for $case"
+    }
 }
 $record = @{ schema = 1; candidate = $identity; deterministic = $native; soak = $soak; hyper_v = $lab.cases; recovery = $recoveryCases; profiles = $profiles }
 $null = New-Item -ItemType Directory -Path $Output
@@ -188,7 +204,7 @@ $lines = @(
     'The matched ReFS controls and the 4,000-entry lived-in case with a preflight check passed. The cause of the original ReFS event 131 in [#253](https://github.com/faratech/ntfs2refs/issues/253) remains unresolved.', '',
     'Physical disks and actual storage-power loss are unqualified.', '',
     '### Exercised platform profiles', '',
-    'Windows edition is reported as its operating-system SKU. Restart cases identify the Windows installation that receives the converted partition after WinPE returns. Only cases with complete observations are listed.', '',
+    'Windows edition is reported as its operating-system SKU. Restart cases identify the Windows installation that receives the converted partition after WinPE returns. Candidate coverage is limited to the observed combinations listed below.', '',
     '| Case | Route | Windows build | Windows SKU | Format | ReFS version | Bytes per cluster |',
     '|---|---|---|---|---|---|---|'
 )

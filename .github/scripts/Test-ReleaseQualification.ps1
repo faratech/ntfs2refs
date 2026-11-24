@@ -75,7 +75,7 @@ try {
         if ($case -eq 'cancel') { $round.hold_at = ''; $round.reached_hold = $false; $round.end_after_seconds = 24.8 }
         Save-Json $round (Join-Path $evidence "soak-records-$case/rounds.jsonl")
     }
-    $cases = @(foreach ($name in 'fixture10', 'admin-fixture40', 'full-system', 'apply-mid-resume', 'apply-mid-rollback', 'seal-recorded-resume', 'handoff-sealed-resume', 'torn-handoff-resume', 'vm-verify-passed-rollback', 'vm-thorough-handoff-resume', 'lived-in', 'restart-convert', 'restart-cancel', 'restart-refs-refusal', 'integrity-native-idle', 'integrity-converted-idle', 'integrity-native-loaded', 'integrity-converted-loaded', 'integrity-lived-in', 'integrity-event-131') {
+    $cases = @(foreach ($name in 'fixture10', 'admin-fixture40', 'full-system', 'apply-mid-resume', 'apply-mid-rollback', 'seal-recorded-resume', 'handoff-sealed-resume', 'torn-handoff-resume', 'vm-verify-passed-rollback', 'vm-thorough-handoff-resume', 'lived-in', 'lived-in-64k', 'std-4k', 'std-64k', 'devdrive', 'restart-convert', 'restart-cancel', 'restart-refs-refusal', 'integrity-native-idle', 'integrity-converted-idle', 'integrity-native-loaded', 'integrity-converted-loaded', 'integrity-lived-in', 'integrity-event-131') {
         $outcome = switch -Wildcard ($name) {
             '*fixture*' { 'converted-not-booted' }
             '*-resume' { 'RESUMED-NOT-BOOTED' }
@@ -152,6 +152,14 @@ try {
     }
     $eventFixture = $cases | Where-Object case_id -eq 'integrity-event-131'
     $eventFixture.integrity_fixture = @{ content = 'lived-in'; directory_entries = 4000; check_agrees = $true }
+    $wide = $cases | Where-Object case_id -eq 'lived-in-64k'
+    $wide.route = 'data'; $wide.windows = '26300'; $wide.windows_edition = 48; $wide.refs = '3.14'
+    $wide.observed_target_format = 'dev-drive'; $wide.observed_target_clusters = 65536
+    foreach ($server in $cases | Where-Object case_id -in @('std-4k', 'std-64k', 'devdrive')) {
+        $server.route = 'data'; $server.windows = '26100'; $server.windows_edition = 79; $server.refs = '3.14'
+        $server.observed_target_format = if ($server.case_id -eq 'devdrive') { 'dev-drive' } else { 'standard' }
+        $server.observed_target_clusters = if ($server.case_id -eq 'std-64k') { 65536 } else { 4096 }
+    }
     $labPath = Join-Path $evidence 'release-lab/lab.json'
     $lab = @{ identity = $identity.Clone(); cases = $cases }
     Save-Json $lab $labPath
@@ -195,9 +203,12 @@ try {
         $report -notmatch 'c-cut-apply-mid \| running \| thorough \| apply-mid-ranges \| apply-mid-ranges \| vm-turned-off \| resume \| CUT-RECOVERED-TO-REFS \| - \| ReFS \| -') {
         throw 'Recovery matrix dropped the running-Windows cut or claimed unobserved results'
     }
-    if (@($record.profiles).Count -ne 5 -or $record.profiles[0].case_id -cne 'full-system' -or
-        $record.profiles[0].windows_build -ne 26300 -or $record.profiles[0].windows_edition -ne 48 -or
+    $bootProfile = $record.profiles | Where-Object case_id -CEQ 'full-system'
+    if (@($record.profiles).Count -ne 9 -or
+        $bootProfile.windows_build -ne 26300 -or $bootProfile.windows_edition -ne 48 -or
         $report -notmatch 'full-system \| boot \| 26300 \| 48 \| dev-drive \| 3.14 \| 4096' -or
+        $report -notmatch 'std-64k \| data \| 26100 \| 79 \| standard \| 3\.14 \| 65536' -or
+        $report -notmatch 'lived-in-64k \| data \| 26300 \| 48 \| dev-drive \| 3\.14 \| 65536' -or
         $report -notmatch 'restart-convert \| restart \| 26100 \| 7 \| dev-drive \| 3.14 \| 4096' -or
         $report -notmatch 'restart-postflush-resume \| restart \| 26100 \| 7 \| dev-drive \| 3.14 \| 4096' -or
         $report -notmatch 'restart-w11-postflush-resume \| restart \| 26300 \| 48 \| dev-drive \| 3.14 \| 4096') {
@@ -216,6 +227,19 @@ try {
     Save-Json $lab $labPath
     Invoke-Gate 'missing-platform-profile' 'Missing observed platform profile for lived-in'
     $data.observed_target_clusters = 4096
+    $lab.cases = $cases | Where-Object case_id -ne 'std-64k'
+    Save-Json $lab $labPath
+    Invoke-Gate 'missing-server-allocation-unit' 'Missing observed platform profile for std-64k'
+    $lab.cases = $cases
+    $serverWide = $cases | Where-Object case_id -eq 'std-64k'
+    $serverWide.observed_target_clusters = 4096
+    Save-Json $lab $labPath
+    Invoke-Gate 'wrong-server-allocation-unit' 'Observed platform profile differs for std-64k'
+    $serverWide.observed_target_clusters = 65536
+    $serverWide.windows_edition = 48
+    Save-Json $lab $labPath
+    Invoke-Gate 'wrong-server-edition' 'Observed platform profile differs for std-64k'
+    $serverWide.windows_edition = 79
 
     foreach ($test in @(
         @('rollback', 'outcome', 'converted', 'Unexpected verdict'),
@@ -299,7 +323,7 @@ try {
             $crashes[0].bugcheck -ne '0x139' -or ([datetimeoffset]$crashes[0].time_utc).UtcDateTime -ne $started.AddSeconds(1) -or
             $crashes[0].xml -notmatch $vm.ToString()) { throw 'Host crash evidence did not isolate the expected VM event' }
     }
-    'Release qualification gate and integrity evidence checks passed.'
+    'Release qualification gate, integrity evidence, and platform reporting checks passed.'
 } finally {
     $resolved = (Resolve-Path -LiteralPath $root).Path
     if ($resolved -ceq $root -and $resolved.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase)) {

@@ -322,7 +322,6 @@ fn run() -> Result<u8> {
                             "a power cut to the storage itself: the lab ends the converter's process or turns the virtual machine off",
                             "a Windows build other than those in windows_builds.confirmed_builds, and a ReFS version other than 3.14",
                             "a conversion to standard ReFS on Windows 11 (the lab's does not format one), a Windows boot volume of Windows Server, and Windows 11 on build 26100",
-                            "--minimize-scratch",
                             "the restart route (--restart-media) on Windows 11, on a physical machine, with BitLocker on the Windows volume, and interrupted while it converts",
                         ],
                     },

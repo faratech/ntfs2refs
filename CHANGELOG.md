@@ -5,6 +5,9 @@ entry are in the pull request named beside it and in `docs/performance.md`.
 
 ## Unreleased
 
+- Fixed journal preparation for `--minimize-scratch` when a record stores
+  digests of unused NTFS space. The lab exercises conversion, resume, and
+  rollback with that option.
 - Fixed conversion failures when an NTFS alternate data stream uses a ReFS
   carrier and its tail would have joined a parallel write. A failed batch
   identifies the object and stream that failed.

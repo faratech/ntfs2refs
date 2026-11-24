@@ -126,6 +126,12 @@ matrix checks alongside the existing CI checks in the main branch rules.
   only when the post-flush pause appears. The verdict requires the matching
   durable receipt and confirms that the discovery write had not been
   requested. The working image is retained as lab evidence.
+- The Windows 11 restart cases use `Invoke-Windows11RestartAttempt.ps1` to
+  restore the NTFS checkpoint on `ntfs2refs-reference-c` and boot its disk0.
+  The lab takes the matching installation medium from `ntfs2refs-reference-b`
+  and records the Windows build, revision and edition before preparation.
+  The signed gate requires the resume and rollback results and the observed
+  ReFS profile after resume.
 
 ```bash
 gh attestation verify ntfs2refs-<version>-windows-x64.zip --repo faratech/ntfs2refs --signer-workflow faratech/ntfs2refs/.github/workflows/release.yml

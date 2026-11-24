@@ -926,7 +926,8 @@ after any run:
 unused NTFS space. It first moves files on the volume through NTFS, and those
 moves are not undone if the run stops; a rollback then restores files and
 metadata but not what unused space held. It is refused on a volume with shadow
-copies. The lab's matrices do not cover it.
+copies. The lab's `scratch-minimized` cases cover conversion, resume after
+interrupted apply, and rollback with an exact NTFS listing comparison.
 
 The routes and commands of earlier designs
 were removed with 0.0.1: `--whole-image-verification`, the thin temporary

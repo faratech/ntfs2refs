@@ -1628,13 +1628,10 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 length: row.capture.length,
             };
             let old = if row.capture.old_is_source_free {
-                RowDigest::Known(capture_free_selected(
-                    source,
-                    &range,
-                    buf,
-                    &mut old_selected,
-                    &mut buffer,
-                )?)
+                let (digest, stored) =
+                    capture_free_selected(source, &range, buf, &mut old_selected, &mut buffer)?;
+                position = add(position, stored)?;
+                RowDigest::Known(digest)
             } else if row.capture.old_is_zero && old_zero.unread() {
                 old_zero_unread_selected(
                     &range,
@@ -1671,7 +1668,11 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
             };
             ensure!(
                 position == row.new_storage_offset,
-                "diagnostic old payload length differs"
+                "preparing journal {}: OLD record for source range {:#x}+{:#x} ends at {position:#x}, expected {:#x}",
+                journal_path.display(),
+                range.offset,
+                range.length,
+                row.new_storage_offset
             );
             let new = if row.capture.new_is_zero {
                 verify_zero_selected_with(
@@ -1743,13 +1744,10 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
             length: row.capture.length,
         };
         let old = if row.capture.old_is_source_free {
-            RowDigest::Known(capture_free_selected(
-                source,
-                &range,
-                &mut file,
-                &mut old_selected,
-                &mut buffer,
-            )?)
+            let (digest, stored) =
+                capture_free_selected(source, &range, &mut file, &mut old_selected, &mut buffer)?;
+            position = add(position, stored)?;
+            RowDigest::Known(digest)
         } else if row.capture.old_is_zero && old_zero.unread() {
             old_zero_unread_selected(
                 &range,
@@ -1786,7 +1784,11 @@ fn write_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         };
         ensure!(
             position == row.new_storage_offset,
-            "diagnostic old payload length differs"
+            "preparing journal {}: OLD record for source range {:#x}+{:#x} ends at {position:#x}, expected {:#x}",
+            journal_path.display(),
+            range.offset,
+            range.length,
+            row.new_storage_offset
         );
         let new = if row.capture.new_is_zero {
             verify_zero_selected_with(
@@ -2382,6 +2384,28 @@ mod tests {
     }
 
     const ROW: u64 = 4096;
+
+    #[test]
+    fn source_free_old_records_the_digest_table_bytes_written() {
+        let range = SelectedRange {
+            offset: ROW,
+            length: 2 * ROW,
+        };
+        let mut source = Cursor::new(vec![0x69; 3 * ROW as usize]);
+        let mut table = Vec::new();
+        let mut selected = aggregate_pin_hash(Algorithm::WRITTEN).unwrap();
+        let mut buffer = vec![0u8; ROW as usize];
+        let (digest, stored) =
+            capture_free_selected(&mut source, &range, &mut table, &mut selected, &mut buffer)
+                .unwrap();
+
+        assert_eq!(table.len() as u64, 2 * FREE_DIGEST);
+        assert_eq!(stored, table.len() as u64);
+        assert_eq!(
+            digest,
+            n2r_win32::bulk_digest::digest(Algorithm::WRITTEN, &table).unwrap()
+        );
+    }
 
     fn facts(rows: u32) -> JournalLayoutFacts {
         JournalLayoutFacts {

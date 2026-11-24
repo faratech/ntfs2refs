@@ -106,6 +106,54 @@ pub struct TailBatchItem<'a> {
     pub digest_from: Option<usize>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TailTarget {
+    Direct,
+    Sparse,
+    Carrier,
+    Absent,
+}
+
+impl TailBatchItem<'_> {
+    fn error(&self, target: TailTarget, cause: io::Error) -> io::Error {
+        io::Error::new(
+            cause.kind(),
+            TailItemError {
+                object: self.object_index,
+                path: format!("\\{}", self.components.join("\\")),
+                stream: String::from_utf16_lossy(self.name),
+                target,
+                cause,
+            },
+        )
+    }
+}
+
+#[derive(Debug)]
+struct TailItemError {
+    object: usize,
+    path: String,
+    stream: String,
+    target: TailTarget,
+    cause: io::Error,
+}
+
+impl std::fmt::Display for TailItemError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "object {} path={:?} stream={:?} target={:?}: {}",
+            self.object, self.path, self.stream, self.target, self.cause
+        )
+    }
+}
+
+impl std::error::Error for TailItemError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
+}
+
 /// The part of a write of `length` bytes at `offset` that is recorded as a
 /// stream's materialized tail (its bytes beyond the last whole target
 /// cluster), as offsets into the write; `None` where the write records no
@@ -1260,6 +1308,19 @@ impl PrivateTree {
     /// 340 MB of tails hashed one after the other on the full Windows volume,
     /// on a processor without SHA instructions.
     ///
+    pub fn tail_target(&self, object_index: usize, name: &[u16]) -> TailTarget {
+        self.tail_target_key(&StreamKey::named(object_index, name))
+    }
+
+    fn tail_target_key(&self, key: &StreamKey) -> TailTarget {
+        match self.sparse_targets.get(key) {
+            Some(target) if target.sparse_mode => TailTarget::Sparse,
+            Some(_) => TailTarget::Carrier,
+            None if self.files.contains_key(key) => TailTarget::Direct,
+            None => TailTarget::Absent,
+        }
+    }
+
     /// Returns, for each item, the digest the caller asked for.
     pub fn materialize_tails_batch_unhashed(
         &mut self,
@@ -1270,16 +1331,22 @@ impl PrivateTree {
         }
         if items.len() == 1 {
             let item = &items[0];
-            let write = self.materialize_range_named_unhashed(
-                item.object_index,
-                item.name,
-                item.components,
-                item.logical_length,
-                item.offset,
-                item.bytes,
-            )?;
+            let target = self.tail_target(item.object_index, item.name);
+            let write = self
+                .materialize_range_named_unhashed(
+                    item.object_index,
+                    item.name,
+                    item.components,
+                    item.logical_length,
+                    item.offset,
+                    item.bytes,
+                )
+                .map_err(|error| item.error(target, error))?;
             if write["readback_verified"] != true {
-                return Err(invalid("routed remaining materialization readback differs"));
+                return Err(item.error(
+                    target,
+                    invalid("routed remaining materialization readback differs"),
+                ));
             }
             return Ok(vec![
                 item.digest_from
@@ -1293,15 +1360,23 @@ impl PrivateTree {
         let mut ordered: Vec<(StreamKey, usize, String)> = Vec::with_capacity(items.len());
         for (idx, item) in items.iter().enumerate() {
             let key = StreamKey::named(item.object_index, item.name);
-            if self.sparse_targets.contains_key(&key) {
-                return Err(invalid(
-                    "sparse target must use single-stream materialization",
-                ));
+            let target = self.tail_target_key(&key);
+            match target {
+                TailTarget::Direct => (),
+                TailTarget::Sparse | TailTarget::Carrier => {
+                    return Err(item.error(
+                        target,
+                        invalid("sparse target must use single-stream materialization"),
+                    ));
+                }
+                TailTarget::Absent => {
+                    return Err(item.error(target, invalid("private materialization file absent")));
+                }
             }
             let write_end = item
                 .offset
                 .checked_add(item.bytes.len() as u64)
-                .ok_or_else(|| invalid("materialization range overflow"))?;
+                .ok_or_else(|| item.error(target, invalid("materialization range overflow")))?;
             if self.materialized_tails.get(&key).is_some_and(|proof| {
                 item.offset < proof.offset + proof.bytes && proof.offset < write_end
             }) {
@@ -1315,21 +1390,26 @@ impl PrivateTree {
                         .any(|(start, _, len)| item.offset < *start + *len && *start < write_end)
                 })
             {
-                return Err(invalid(
-                    "materialization overlaps an original-coordinate source reference",
+                return Err(item.error(
+                    target,
+                    invalid("materialization overlaps an original-coordinate source reference"),
                 ));
             }
             total_bytes = total_bytes
                 .checked_add(item.bytes.len() as u64)
                 .ok_or_else(|| invalid("materialization batch byte overflow"))?;
-            let expected_path = streams::path(&volume_path, item.components, item.name)?;
+            let expected_path = streams::path(&volume_path, item.components, item.name)
+                .map_err(|error| item.error(target, error))?;
             ordered.push((key, idx, expected_path));
         }
         self.before_backing_mutation(total_bytes)?;
         ordered.sort_by(|a, b| a.0.cmp(&b.0));
         for pair in ordered.windows(2) {
             if pair[0].0 == pair[1].0 {
-                return Err(invalid("duplicate stream in parallel tail batch"));
+                return Err(items[pair[1].1].error(
+                    TailTarget::Direct,
+                    invalid("duplicate stream in parallel tail batch"),
+                ));
             }
         }
         let first_key = ordered[0].0.clone();
@@ -1343,14 +1423,20 @@ impl PrivateTree {
             if *key == ordered[cursor].0 {
                 let item = &items[ordered[cursor].1];
                 if file.path != ordered[cursor].2 || file.logical_length() != item.logical_length {
-                    return Err(invalid("private materialization object binding differs"));
+                    return Err(item.error(
+                        TailTarget::Direct,
+                        invalid("private materialization object binding differs"),
+                    ));
                 }
                 work.push((ordered[cursor].1, file));
                 cursor += 1;
             }
         }
         if work.len() != ordered.len() {
-            return Err(invalid("private materialization file absent"));
+            return Err(items[ordered[cursor].1].error(
+                TailTarget::Absent,
+                invalid("private materialization file absent"),
+            ));
         }
         let workers = std::thread::available_parallelism()
             .map_or(1, |cores| cores.get())
@@ -1412,7 +1498,8 @@ impl PrivateTree {
         for (idx, item) in items.iter().enumerate() {
             let (native_file_id, recorded, digest) = results[idx]
                 .take()
-                .ok_or_else(|| invalid("parallel tail materialization worker panicked"))??;
+                .unwrap_or_else(|| Err(invalid("parallel tail materialization worker panicked")))
+                .map_err(|error| item.error(TailTarget::Direct, error))?;
             let key = StreamKey::named(item.object_index, item.name);
             if let Some(sha256) = recorded {
                 self.record_materialized_tail_digest(
@@ -1420,7 +1507,8 @@ impl PrivateTree {
                     item.logical_length,
                     sha256,
                     native_file_id,
-                )?;
+                )
+                .map_err(|error| item.error(TailTarget::Direct, error))?;
             }
             asked.push(digest);
         }
@@ -2985,6 +3073,32 @@ pub(super) fn private_descriptor() -> io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tail_record_tests {
     use super::*;
+
+    #[test]
+    fn tail_item_error_keeps_its_stream_identity_and_os_error() {
+        let components = ["folder".into(), "file.bin".into()];
+        let name: Vec<u16> = "stream".encode_utf16().collect();
+        let item = TailBatchItem {
+            object_index: 17,
+            name: &name,
+            components: &components,
+            logical_length: 5,
+            offset: 0,
+            bytes: b"bytes",
+            digest_from: None,
+        };
+        let error = item.error(TailTarget::Carrier, io::Error::from_raw_os_error(5));
+        let context = error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<TailItemError>()
+            .unwrap();
+        assert_eq!(context.path, r"\folder\file.bin");
+        assert_eq!(context.stream, "stream");
+        assert_eq!(context.object, 17);
+        assert_eq!(context.target, TailTarget::Carrier);
+        assert_eq!(context.cause.raw_os_error(), Some(5));
+    }
 
     /// The digest a batch's helper takes of a tail is of the bytes the
     /// tail's record was always taken of.

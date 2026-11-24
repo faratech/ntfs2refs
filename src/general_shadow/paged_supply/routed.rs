@@ -6,7 +6,7 @@ use crate::general_shadow::source_backed::{TAIL_BATCH, TAIL_BATCH_BYTES, tail_pl
 use crate::shadow_tree::{SourceStreamEvidence, pages::LeasedExpectedObject};
 use n2r_win32::progress::{Counters, Phase, Reporter, Unit, Update};
 use n2r_win32::shadow_native::private_tree::{
-    SUPPLY_BATCH_STREAMS, SupplyStreamRequest, SupplyStreamSeen,
+    SUPPLY_BATCH_STREAMS, SupplyStreamRequest, SupplyStreamSeen, TailTarget,
 };
 
 fn supply_progress(
@@ -1487,11 +1487,14 @@ impl TailBatchReads {
 
 /// The one range of a stream a run that verifies once writes together with
 /// other streams' ([`PendingTails`]): a single materialized interval of at
-/// most one window, of a stream that is not sparse.
-fn batchable(at_once: bool, stream: StreamRef<'_>, intervals: &[(u64, u64)]) -> Option<(u64, u64)> {
+/// most one window, written directly to its native target.
+fn batchable(at_once: bool, target: TailTarget, intervals: &[(u64, u64)]) -> Option<(u64, u64)> {
     match intervals {
         [(at, length)]
-            if at_once && stream.sparse.is_none() && *length > 0 && *length <= WINDOW as u64 =>
+            if at_once
+                && target == TailTarget::Direct
+                && *length > 0
+                && *length <= WINDOW as u64 =>
         {
             Some((*at, *length))
         }
@@ -1519,11 +1522,19 @@ const PENDING_RECORD_BYTES: u64 = 256;
 /// no spare room for all of a batch's.
 const PENDING_FALLBACK_BYTES: u64 = 4 * 1024 * 1024;
 
+static WRITE_TAILS_SINGLY_FOR_LAB: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn write_tails_singly_for_lab() {
+    WRITE_TAILS_SINGLY_FOR_LAB.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// What the tails of `held` (the first of which is object `first`) that
 /// wait to be written with their batch hold at most, with their records
 /// where the supplied tails are `recorded`. Nothing waits in a run that
 /// does not verify once.
 fn pending_need(
+    template: &PrivateTree,
     held: &[LeasedExpectedObject],
     first: usize,
     planned: &MaterializedPlan,
@@ -1531,7 +1542,7 @@ fn pending_need(
     recorded: bool,
 ) -> u64 {
     let mut need = 0u64;
-    if !at_once {
+    if !at_once || WRITE_TAILS_SINGLY_FOR_LAB.load(std::sync::atomic::Ordering::Relaxed) {
         return need;
     }
     for (index, object) in (first..).zip(held) {
@@ -1542,7 +1553,11 @@ fn pending_need(
             let Some((_, intervals)) = planned.get(&(index, ordinal)) else {
                 continue;
             };
-            if let Some((_, length)) = batchable(at_once, stream, intervals) {
+            if let Some((_, length)) = batchable(
+                at_once,
+                template.tail_target(index, stream.name_utf16),
+                intervals,
+            ) {
                 need = need
                     .saturating_add(length)
                     .saturating_add(pending_overhead(object, stream));
@@ -1613,6 +1628,16 @@ struct PendingTails<'o> {
     budget: u64,
     _lease: Option<crate::artifact_arena::ArenaRamLease>,
 }
+
+#[derive(Debug)]
+struct TailFlush;
+
+impl std::fmt::Display for TailFlush {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("payload materialization: flushing pending tails")
+    }
+}
+
 impl<'o> PendingTails<'o> {
     fn new(arena: Option<&crate::artifact_arena::ArtifactArena>, need: u64) -> Self {
         let mut pending = Self {
@@ -1722,7 +1747,9 @@ impl<'o> PendingTails<'o> {
                     },
                 )
                 .collect();
-            let digests = template.materialize_tails_batch_unhashed(&items)?;
+            let digests = template
+                .materialize_tails_batch_unhashed(&items)
+                .context(TailFlush)?;
             drop(items);
             ensure!(
                 digests.len() == self.writes.len(),
@@ -1945,6 +1972,7 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
             let mut pending = PendingTails::new(
                 supply_arena.as_ref(),
                 pending_need(
+                    template,
                     &held,
                     first,
                     &materialized_streams,
@@ -2027,7 +2055,11 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                             }
                             (observed.summary, intervals)
                         };
-                        if let Some((at, length)) = batchable(at_once, stream, &intervals) {
+                        if let Some((at, length)) = batchable(
+                            at_once,
+                            template.tail_target(index, stream.name_utf16),
+                            &intervals,
+                        ) {
                             let n = usize::try_from(length)?;
                             let next_written = written
                                 .checked_add(n as u64)
@@ -2216,6 +2248,9 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
         Ok(())
     })()
     .map_err(|error| {
+        if error.is::<TailFlush>() {
+            return error;
+        }
         at_object(
             expected,
             "payload materialization",
@@ -2789,7 +2824,7 @@ mod tests {
 
     #[test]
     fn only_one_short_range_of_a_plain_stream_waits_with_its_batch() {
-        let plain = stream(None, Some(SourceStreamEvidence::ExtentIdentityV1));
+        let plain = TailTarget::Direct;
         let window = WINDOW as u64;
         assert_eq!(batchable(true, plain, &[(4096, 100)]), Some((4096, 100)));
         assert_eq!(batchable(true, plain, &[(0, window)]), Some((0, window)));
@@ -2800,6 +2835,9 @@ mod tests {
         assert_eq!(batchable(true, plain, &[(0, window + 1)]), None);
         assert_eq!(batchable(true, plain, &[(0, 100), (8192, 100)]), None);
         assert_eq!(batchable(true, plain, &[]), None);
+        for target in [TailTarget::Carrier, TailTarget::Sparse, TailTarget::Absent] {
+            assert_eq!(batchable(true, target, &[(4096, 100)]), None);
+        }
     }
 
     fn span_bytes(spans: &[(u64, u64, usize)]) -> u64 {

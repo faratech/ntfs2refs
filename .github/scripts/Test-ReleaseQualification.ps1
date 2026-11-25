@@ -48,6 +48,51 @@ function Invoke-Gate([string]$Name, [string]$ErrorPattern) {
     } elseif ($failure -or -not (Test-Path -LiteralPath (Join-Path $output 'QUALIFICATION.json'))) { throw "$Name failed: $failure" }
 }
 
+function Test-ReleaseArchive([string]$Qualification) {
+    $distribution = Join-Path $root 'distribution'
+    $null = New-Item -ItemType Directory -Path $distribution
+    $archive = Join-Path $distribution 'candidate.zip'
+    $reports = 'QUALIFICATION.json', 'QUALIFICATION.md' | ForEach-Object { Join-Path $Qualification $_ }
+    Copy-Item -LiteralPath $reports -Destination $distribution
+    $files = @(Get-ChildItem -LiteralPath $bin -File | ForEach-Object FullName) + $reports
+    Compress-Archive -LiteralPath $files -DestinationPath $archive
+
+    function Check-Archive([string]$ErrorPattern) {
+        $failure = $null
+        try {
+            & "$PSScriptRoot/Confirm-ReleaseArchive.ps1" -Archive $archive -Candidate $candidate -Qualification $Qualification
+        } catch { $failure = $_ }
+        if ($ErrorPattern) {
+            if (-not $failure -or "$failure" -notmatch $ErrorPattern) { throw "Archive should have been rejected: $failure" }
+        } elseif ($failure) { throw "Valid archive was rejected: $failure" }
+    }
+
+    Check-Archive
+    $published = Join-Path $distribution 'QUALIFICATION.json'
+    Add-Content -LiteralPath $published -Value 'changed'
+    Check-Archive 'Published qualification file differs for QUALIFICATION\.json'
+    Copy-Item -LiteralPath (Join-Path $Qualification 'QUALIFICATION.json') -Destination $distribution -Force
+
+    $zip = [IO.Compression.ZipFile]::Open($archive, [IO.Compression.ZipArchiveMode]::Update)
+    try { $zip.GetEntry('QUALIFICATION.md').Delete() } finally { $zip.Dispose() }
+    Check-Archive 'Expected one ZIP entry named QUALIFICATION\.md'
+    $zip = [IO.Compression.ZipFile]::Open($archive, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $writer = [IO.StreamWriter]::new($zip.CreateEntry('QUALIFICATION.md').Open())
+        try { $writer.Write('changed') } finally { $writer.Dispose() }
+    } finally { $zip.Dispose() }
+    Check-Archive 'ZIP entry differs for QUALIFICATION\.md'
+
+    $zip = [IO.Compression.ZipFile]::Open($archive, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $zip.GetEntry('QUALIFICATION.md').Delete()
+        $null = [IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+            $zip, (Join-Path $Qualification 'QUALIFICATION.md'), 'QUALIFICATION.md')
+        $null = $zip.CreateEntry('Ntfs2refs.exe')
+    } finally { $zip.Dispose() }
+    Check-Archive 'Expected one ZIP entry named ntfs2refs\.exe'
+}
+
 try {
     $hashes = @{}
     foreach ($file in 'ntfs2refs.exe', 'lab-volume-manifest.exe', 'ntfs2refs-recovery.exe') {
@@ -189,6 +234,7 @@ try {
     $lab = @{ identity = $identity.Clone(); cases = $cases }
     Save-Json $lab $labPath
     Invoke-Gate 'all-valid'
+    Test-ReleaseArchive (Join-Path $root 'all-valid')
     foreach ($test in @(
         @('resume', 'hold_at', '', 'Invalid interruption evidence'),
         @('resume', 'hold_at', 'apply-mid-ranges', 'Invalid interruption evidence'),
@@ -486,7 +532,7 @@ try {
             $crashes[0].bugcheck -ne '0x139' -or ([datetimeoffset]$crashes[0].time_utc).UtcDateTime -ne $started.AddSeconds(1) -or
             $crashes[0].xml -notmatch $vm.ToString()) { throw 'Host crash evidence did not isolate the expected VM event' }
     }
-    'Release qualification gate, integrity evidence, and platform reporting checks passed.'
+    'Release archive, qualification gate, integrity evidence, and platform reporting checks passed.'
 } finally {
     $resolved = (Resolve-Path -LiteralPath $root).Path
     if ($resolved -ceq $root -and $resolved.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase)) {

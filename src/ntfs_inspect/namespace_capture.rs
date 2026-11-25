@@ -209,7 +209,7 @@ struct PendingDirectory {
 }
 #[cfg(windows)]
 impl EvidenceAhead {
-    /// Directories whose digest the worker makes, at most at once.
+    /// Directory rows awaiting ordered output, including locally hashed rows.
     const IN_FLIGHT: usize = 256;
     /// The index bytes handed to it, at most at once.
     const POOL_BYTES: u64 = 64 * 1024 * 1024;
@@ -784,6 +784,10 @@ impl PagedNamespaceCapture {
         mut allocation: Option<HeldAttribute>,
         mut bitmap: Option<HeldAttribute>,
     ) -> Result<()> {
+        // A locally hashed row can still wait behind a worker row.
+        if self.pending.len() >= EvidenceAhead::IN_FLIGHT {
+            self.write_next(true)?;
+        }
         let mut job = None;
         if !tail.is_empty() {
             let mut bytes = 0u64;
@@ -803,10 +807,8 @@ impl PagedNamespaceCapture {
             }
             // Only indexes held in memory are worth the worker's while.
             if bytes > 0 && bytes <= EvidenceAhead::POOL_BYTES {
-                // Room in the pool, and among the directories in flight, is
-                // made by writing the oldest first.
-                while (self.in_flight.saturating_add(bytes) > EvidenceAhead::POOL_BYTES
-                    || self.pending.len() >= EvidenceAhead::IN_FLIGHT)
+                // Make room for the index bytes by writing the oldest first.
+                while self.in_flight.saturating_add(bytes) > EvidenceAhead::POOL_BYTES
                     && self.write_next(true)?
                 {}
                 if let Ok(paid) = self.scratch.lease_spare_ram(bytes) {
@@ -1166,6 +1168,47 @@ mod evidence_tests {
         (0..length as u64)
             .map(|n| (n.wrapping_mul(seed | 1) >> 3) as u8)
             .collect()
+    }
+
+    #[test]
+    fn locally_hashed_directory_cannot_enqueue_past_a_full_queue() {
+        let directory = tempfile::tempdir().unwrap();
+        let arena_path = directory.path().join("arena");
+        std::fs::create_dir(&arena_path).unwrap();
+        let (_arena, scratch) = scratch(directory.path());
+        let namespace = arena_path.join("namespace");
+        std::fs::create_dir(&namespace).unwrap();
+        let mut capture = PagedNamespaceCapture::new(&namespace, &scratch).unwrap();
+        let header = |record_number| SourceDirectoryHeader {
+            record_number,
+            sequence_number: 1,
+            entries: 0,
+            index_blocks: 0,
+            evidence_sha256: String::new(),
+        };
+        let (finished, done) = std::sync::mpsc::channel();
+        capture.ahead.as_mut().unwrap().done = done;
+        for index in 0..EvidenceAhead::IN_FLIGHT {
+            capture.pending.push_back(PendingDirectory {
+                header: header(16 + index as u64),
+                waiting: index == 0,
+                bytes: 0,
+                _paid: None,
+            });
+        }
+        drop(finished);
+        // A stopped worker must be reported before appending another row.
+        let error = capture
+            .queue_directory(
+                header(16 + EvidenceAhead::IN_FLIGHT as u64),
+                Sha256::new(),
+                &[],
+                None,
+                None,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("I30 evidence worker stopped"));
+        assert_eq!(capture.pending.len(), EvidenceAhead::IN_FLIGHT);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Operating and recovery guide
 
-For ntfs2refs 0.0.4. **It is experimental software:** every run starts with
+For ntfs2refs 0.0.5. **It is experimental software:** every run starts with
 a warning saying so, on the error stream, and [DISCLAIMER.md](../DISCLAIMER.md)
 says what that means. [The README](../README.md) says what the tool is;
 this guide says how to run it, what it refuses and why, and what to do if a
@@ -434,6 +434,9 @@ What it needs beside what every conversion needs:
   minimal Windows. A release holds both.
 - **The working directory on an NTFS volume of another disk**, a USB disk
   for example. It stays connected until Windows is back.
+- **The running Windows volume must be fully decrypted.** The restart route
+  refuses an encrypted Windows volume before preparing the conversion.
+  Suspending BitLocker protection leaves the volume encrypted.
 - **A GPT disk, UEFI and Secure Boot on.** The run changes no firmware
   setting; it adds its own entry to Windows' boot configuration and removes
   the selection again.
@@ -467,11 +470,10 @@ Once the conversion has started, the way is forward: if the machine is
 switched off or loses power meanwhile, it returns to the minimal Windows at
 the next start, which asks whether to go on (R) or to put NTFS back (B).
 
-The lab converted such a partition on Windows Server 2025, and cancelled runs
-at each of these points with the volume listing exactly as before. It has
-not run this route on Windows 11, on a physical machine, with BitLocker on
-the Windows volume, or interrupted while it converts; `ntfs2refs
-capabilities` says the same.
+The lab converted such a partition on Windows Server 2025 and on Windows 11
+Pro build 26300.9457 (`w11restart-1124-095639`). It also cancelled runs at
+these preparation points on Server 2025 with the listing unchanged. A
+physical machine and recovery after interrupted apply still need qualification.
 
 ## Convert an installed Windows
 

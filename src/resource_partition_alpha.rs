@@ -34,6 +34,7 @@ use prepare_only::RunPurpose;
 pub use prepare_only::{WindowsPreparedOfflineApplyReceipt, prepare_for_offline_apply};
 #[path = "resource_prepared_boot.rs"]
 mod prepared_boot;
+pub(crate) use prepared_boot::prepare_and_arm_shared_conversion_with_pause;
 pub use prepared_boot::{
     PreparedBootRequest, arm_existing_prepared_boot, arm_prepared_boot,
     prepare_and_arm_shared_conversion,

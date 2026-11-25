@@ -1,6 +1,29 @@
 #Requires -Version 7.2
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\NativeRegressionCases.ps1"
+. "$PSScriptRoot/../../lab/QualificationInterruption.ps1"
+
+$cut = @{ hold_at = 'apply-mid-ranges'; hold_reported = $true; recovered_after_it = $true
+    recovery_mode = Get-RunningRecoveryMode 'The recovery finished: the volume is converted.' }
+$observed = Get-QualificationInterruption 'running' 'c-cut-apply-mid' @{ cut = $cut }
+if ($observed.hold -cne 'apply-mid-ranges' -or $observed.reached_hold -ne $true -or
+    $observed.kind -cne 'vm-turned-off' -or $observed.recovery -cne 'resume') {
+    throw 'Running-Windows interruption lost its reported hold or recovery'
+}
+$cut.hold_reported = $false
+$cut.recovered_after_it = $false
+$observed = Get-QualificationInterruption 'running' 'c-cut-apply-mid' @{ cut = $cut }
+if ($observed.reached_hold -ne $false -or $null -ne $observed.recovery) {
+    throw 'Running-Windows interruption claimed a missed hold or unobserved recovery'
+}
+$cut.hold_at = 'none'
+$cut.recovered_after_it = $true
+$cut.recovery_mode = Get-RunningRecoveryMode 'The recovery finished: the run had not started writing, and the volume is NTFS as it was.'
+$observed = Get-QualificationInterruption 'running' 'c-cut-preparation' @{ cut = $cut }
+if ($null -ne $observed.hold -or $null -ne $observed.reached_hold -or $observed.recovery -cne 'cancel' -or
+    (Get-RunningRecoveryMode 'The recovery put the NTFS volume back.') -cne 'rollback') {
+    throw 'Timed preparation cancellation was reported as a named hold'
+}
 $temp = [IO.Path]::GetTempPath()
 $root = Join-Path $temp ('n2r-release-check-' + [guid]::NewGuid().ToString('N'))
 $candidate = Join-Path $root 'candidate'
@@ -42,6 +65,8 @@ try {
             scenario = ($spec.Soak.Scenario ?? 'seeded'); refs_cluster = ($spec.Soak.TargetClusterBytes ?? 4096)
             hold_at = ($spec.Hold ?? ''); reached_hold = [bool]$spec.Hold; recovery_mode = ($spec.Recovery ?? 'none')
             end_after_seconds = 0; attached_before_cleanup = @() }
+        if ($spec.NtfsClusterBytes) { $row.ntfs_cluster = $spec.NtfsClusterBytes }
+        if ($spec.Verify) { $row.verify = $spec.Verify }
         $row.outcome = $spec.Outcome
         $row.terminated = [bool]$spec.Hold
         $nativeRows[$case] = $row
@@ -52,7 +77,7 @@ try {
         if ($case -eq 'cancel') { $round.hold_at = ''; $round.reached_hold = $false; $round.end_after_seconds = 24.8 }
         Save-Json $round (Join-Path $evidence "soak-records-$case/rounds.jsonl")
     }
-    $cases = @(foreach ($name in 'fixture10', 'admin-fixture40', 'full-system', 'apply-mid-resume', 'apply-mid-rollback', 'seal-recorded-resume', 'handoff-sealed-resume', 'torn-handoff-resume', 'vm-verify-passed-rollback', 'vm-thorough-handoff-resume', 'lived-in', 'restart-convert', 'restart-cancel', 'restart-refs-refusal', 'integrity-native-idle', 'integrity-converted-idle', 'integrity-native-loaded', 'integrity-converted-loaded', 'integrity-lived-in', 'integrity-event-131') {
+    $cases = @(foreach ($name in 'fixture10', 'admin-fixture40', 'full-system', 'apply-mid-resume', 'apply-mid-rollback', 'seal-recorded-resume', 'handoff-sealed-resume', 'torn-handoff-resume', 'vm-verify-passed-rollback', 'vm-thorough-handoff-resume', 'lived-in', 'lived-in-64k', 'std-4k', 'std-64k', 'devdrive', 'restart-convert', 'restart-cancel', 'restart-refs-refusal', 'integrity-native-idle', 'integrity-converted-idle', 'integrity-native-loaded', 'integrity-converted-loaded', 'integrity-lived-in', 'integrity-event-131') {
         $outcome = switch -Wildcard ($name) {
             '*fixture*' { 'converted-not-booted' }
             '*-resume' { 'RESUMED-NOT-BOOTED' }
@@ -78,6 +103,19 @@ try {
         if ($row.case_id -eq 'restart-refs-refusal') { $row.working_filesystem = 'ReFS'; $row.scratch_refusal = $true }
         if ($row.case_id -eq 'vm-thorough-handoff-resume') { $row.verify = 'thorough' }
     }
+    foreach ($mode in 'resume', 'rollback') {
+        $outcome = if ($mode -eq 'resume') { 'resumed' } else { 'rolled-back' }
+        $cases += @{
+            case_id = "restart-postflush-$mode"; route = 'restart'; verify = 'fast'; passed = $true
+            outcome = $outcome; expected = $outcome; manifest = 'identical'; working_filesystem = 'NTFS'
+            hold = 'winpe-postflush-before-discovery'; reached_hold = $true; interruption = 'vm-turned-off'; recovery = $mode
+            boot = @{ filesystem = 'NTFS'; boot_utc = '2026-11-24T12:00:00Z' }
+            cleanup_outcome = 'working storage retained by harness'
+            prompt_wait_seconds = if ($mode -eq 'resume') { 186 } else { 1 }
+            postflush = @{ native_bytes_written = 4096; delayed_discovery_bytes = 4096; released = $false
+                flush_and_pending_readback_succeeded = $true; native_writer_revalidation_succeeded = $true; discovery_write_not_requested = $true }
+        }
+    }
     $torn = $cases | Where-Object { $_.case_id -eq 'torn-handoff-resume' }
     $torn.simulated_torn_marker = $true; $torn.torn_marker_settled = $true
     $boot = $cases | Where-Object { $_.case_id -eq 'full-system' }
@@ -89,8 +127,41 @@ try {
     $data = $cases | Where-Object { $_.case_id -eq 'lived-in' }
     $data.route = 'data'; $data.windows = '26300'; $data.windows_edition = 48; $data.refs = '3.14'
     $data.observed_target_format = 'dev-drive'; $data.observed_target_clusters = 4096
+    $running = Get-QualificationInterruption 'running' 'c-cut-apply-mid' @{ cut = @{
+        hold_at = 'apply-mid-ranges'; hold_reported = $true; recovered_after_it = $true
+        recovery_mode = Get-RunningRecoveryMode 'The recovery finished: the volume is converted.'
+    } }
+    $cases += @{
+        case_id = 'c-cut-apply-mid'; route = 'running'; passed = $true
+        expected = 'CUT-RECOVERED-TO-REFS'; outcome = 'CUT-RECOVERED-TO-REFS'; verify = 'thorough'
+        hold = $running.hold; reached_hold = $running.reached_hold; interruption = $running.kind; recovery = $running.recovery
+        boot = @{ filesystem = 'ReFS'; cluster_bytes = 4096 }
+    }
+    $restartProfile = $cases | Where-Object case_id -EQ 'restart-convert'
+    $restartProfile.route = 'restart'; $restartProfile.windows = 26100; $restartProfile.windows_edition = 7
+    $restartProfile.refs = '3.14'; $restartProfile.observed_target_format = 'dev-drive'; $restartProfile.observed_target_clusters = 4096
+    $resumedProfile = $cases | Where-Object case_id -EQ 'restart-postflush-resume'
+    $resumedProfile.windows = 26100; $resumedProfile.windows_edition = 7
+    $resumedProfile.refs = '3.14'; $resumedProfile.observed_target_format = 'dev-drive'; $resumedProfile.observed_target_clusters = 4096
+    foreach ($mode in 'resume', 'rollback') {
+        $source = $cases | Where-Object case_id -EQ "restart-postflush-$mode"
+        $client = $source.Clone()
+        $client.postflush = $source.postflush.Clone()
+        $client.case_id = "restart-w11-postflush-$mode"
+        $client.windows = 26300; $client.windows_edition = 48; $client.windows_revision = 9457
+        $client.prompt_wait_seconds = 1
+        $cases += $client
+    }
     $eventFixture = $cases | Where-Object case_id -eq 'integrity-event-131'
     $eventFixture.integrity_fixture = @{ content = 'lived-in'; directory_entries = 4000; check_agrees = $true }
+    $wide = $cases | Where-Object case_id -eq 'lived-in-64k'
+    $wide.route = 'data'; $wide.windows = '26300'; $wide.windows_edition = 48; $wide.refs = '3.14'
+    $wide.observed_target_format = 'dev-drive'; $wide.observed_target_clusters = 65536
+    foreach ($server in $cases | Where-Object case_id -in @('std-4k', 'std-64k', 'devdrive')) {
+        $server.route = 'data'; $server.windows = '26100'; $server.windows_edition = 79; $server.refs = '3.14'
+        $server.observed_target_format = if ($server.case_id -eq 'devdrive') { 'dev-drive' } else { 'standard' }
+        $server.observed_target_clusters = if ($server.case_id -eq 'std-64k') { 65536 } else { 4096 }
+    }
     $labPath = Join-Path $evidence 'release-lab/lab.json'
     $lab = @{ identity = $identity.Clone(); cases = $cases }
     Save-Json $lab $labPath
@@ -105,6 +176,20 @@ try {
     $eventFixture.integrity_fixture.check_agrees = $true
     $record = Get-Content -LiteralPath (Join-Path $root 'all-valid/QUALIFICATION.json') -Raw | ConvertFrom-Json
     $report = Get-Content -LiteralPath (Join-Path $root 'all-valid/QUALIFICATION.md') -Raw
+    $restart = $record.recovery | Where-Object case_id -EQ 'restart-postflush-resume'
+    if ($restart.postflush.native_bytes_written -ne 4096 -or $restart.boot.filesystem -cne 'NTFS' -or
+        $report -notmatch 'restart-postflush-resume \| restart \| fast \| winpe-postflush-before-discovery \| winpe-postflush-before-discovery \| vm-turned-off \| resume \| resumed \| identical \| NTFS \| working storage retained by harness') {
+        throw 'Restart recovery matrix dropped the write, boot or cleanup evidence'
+    }
+    $postflushResume = $cases | Where-Object case_id -EQ 'restart-postflush-resume'
+    $postflushResume.postflush.released = $true
+    Save-Json $lab $labPath
+    Invoke-Gate 'pause-released-before-cut' 'Incomplete durable WinPE write evidence for restart-postflush-resume'
+    $postflushResume.postflush.released = $false
+    $postflushResume.prompt_wait_seconds = 184
+    Save-Json $lab $labPath
+    Invoke-Gate 'missing-delayed-resume' 'Incomplete durable WinPE write evidence for restart-postflush-resume'
+    $postflushResume.prompt_wait_seconds = 186
     if ($report -notmatch '4,000-entry lived-in case with a preflight check passed') { throw 'Integrity fixture is missing from the release report' }
     $rollback = $record.recovery | Where-Object case_id -EQ 'vm-verify-passed-rollback'
     if ($rollback.requested_hold -cne 'verify-passed' -or $rollback.reached_hold -cne 'verify-passed' -or
@@ -114,17 +199,55 @@ try {
         -not ($record.recovery | Where-Object { $_.suite -eq 'soak' -and $_.recovery -eq 'resume' })) {
         throw 'Recovery matrix dropped validated interruption or outcome evidence'
     }
-    if (@($record.profiles).Count -ne 2 -or $record.profiles[0].case_id -cne 'full-system' -or
-        $record.profiles[0].windows_build -ne 26300 -or $record.profiles[0].windows_edition -ne 48 -or
-        $report -notmatch 'full-system \| boot \| 26300 \| 48 \| dev-drive \| 3.14 \| 4096') {
+    $runningRecord = $record.recovery | Where-Object case_id -EQ 'c-cut-apply-mid'
+    if ($runningRecord.route -cne 'running' -or $runningRecord.reached_hold -cne 'apply-mid-ranges' -or
+        $runningRecord.recovery -cne 'resume' -or $runningRecord.boot.filesystem -cne 'ReFS' -or $null -ne $runningRecord.manifest -or
+        $report -notmatch 'c-cut-apply-mid \| running \| thorough \| apply-mid-ranges \| apply-mid-ranges \| vm-turned-off \| resume \| CUT-RECOVERED-TO-REFS \| - \| ReFS \| -') {
+        throw 'Recovery matrix dropped the running-Windows cut or claimed unobserved results'
+    }
+    $bootProfile = $record.profiles | Where-Object case_id -CEQ 'full-system'
+    if (@($record.profiles).Count -ne 9 -or
+        $bootProfile.windows_build -ne 26300 -or $bootProfile.windows_edition -ne 48 -or
+        $report -notmatch 'full-system \| boot \| 26300 \| 48 \| dev-drive \| 3.14 \| 4096' -or
+        $report -notmatch 'std-64k \| data \| 26100 \| 79 \| standard \| 3\.14 \| 65536' -or
+        $report -notmatch 'lived-in-64k \| data \| 26300 \| 48 \| dev-drive \| 3\.14 \| 65536' -or
+        $report -notmatch 'restart-convert \| restart \| 26100 \| 7 \| dev-drive \| 3.14 \| 4096' -or
+        $report -notmatch 'restart-postflush-resume \| restart \| 26100 \| 7 \| dev-drive \| 3.14 \| 4096' -or
+        $report -notmatch 'restart-w11-postflush-resume \| restart \| 26300 \| 48 \| dev-drive \| 3.14 \| 4096') {
         throw 'Platform matrix did not preserve the observed profile or included incomplete evidence'
     }
+    $windowsResume = $cases | Where-Object case_id -EQ 'restart-w11-postflush-resume'
+    $windowsResume.windows_revision = $null
+    Save-Json $lab $labPath
+    Invoke-Gate 'missing-windows11-fixture-profile' 'Incomplete Windows 11 fixture profile for restart-w11-postflush-resume'
+    $windowsResume.windows_revision = 9457
+    $windowsResume.observed_target_format = $null
+    Save-Json $lab $labPath
+    Invoke-Gate 'missing-windows11-refs-profile' 'Missing observed platform profile for restart-w11-postflush-resume'
+    $windowsResume.observed_target_format = 'dev-drive'
     $data.observed_target_clusters = $null
     Save-Json $lab $labPath
     Invoke-Gate 'missing-platform-profile' 'Missing observed platform profile for lived-in'
     $data.observed_target_clusters = 4096
+    $lab.cases = $cases | Where-Object case_id -ne 'std-64k'
+    Save-Json $lab $labPath
+    Invoke-Gate 'missing-server-allocation-unit' 'Missing observed platform profile for std-64k'
+    $lab.cases = $cases
+    $serverWide = $cases | Where-Object case_id -eq 'std-64k'
+    $serverWide.observed_target_clusters = 4096
+    Save-Json $lab $labPath
+    Invoke-Gate 'wrong-server-allocation-unit' 'Observed platform profile differs for std-64k'
+    $serverWide.observed_target_clusters = 65536
+    $serverWide.windows_edition = 48
+    Save-Json $lab $labPath
+    Invoke-Gate 'wrong-server-edition' 'Observed platform profile differs for std-64k'
+    $serverWide.windows_edition = 79
 
     foreach ($test in @(
+        @('many-16k-to-64k', 'ntfs_cluster', 4096, 'Wrong source geometry or verification mode'),
+        @('many-16k-to-64k', 'refs_cluster', 4096, 'Wrong profile, seed, scenario or target'),
+        @('many-16k-to-64k', 'verify', 'fast', 'Wrong source geometry or verification mode'),
+        @('many-16k-to-64k', 'seed', 315782001, 'Wrong profile, seed, scenario or target'),
         @('rollback', 'outcome', 'converted', 'Unexpected verdict'),
         @('resume', 'hold_at', '', 'missed its interruption'),
         @('resume', 'recovery_mode', 'none', 'missed its recovery action'),
@@ -206,7 +329,7 @@ try {
             $crashes[0].bugcheck -ne '0x139' -or ([datetimeoffset]$crashes[0].time_utc).UtcDateTime -ne $started.AddSeconds(1) -or
             $crashes[0].xml -notmatch $vm.ToString()) { throw 'Host crash evidence did not isolate the expected VM event' }
     }
-    'Release qualification gate and integrity evidence checks passed.'
+    'Release qualification gate, integrity evidence, and platform reporting checks passed.'
 } finally {
     $resolved = (Resolve-Path -LiteralPath $root).Path
     if ($resolved -ceq $root -and $resolved.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase)) {

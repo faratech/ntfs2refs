@@ -198,3 +198,52 @@ fn resource_and_space_exhaustion_return_no_partial_plan() {
     let full = bitmap(24, &(0..24).collect::<Vec<_>>());
     assert!(plan(&full, &full, &source, &owned, 24 * C, Limits::default()).is_err());
 }
+
+#[test]
+fn a_fresh_evacuation_plan_keeps_finished_moves_and_avoids_new_metadata() {
+    let partition = 32 * C;
+    let map = |clusters: &[u64]| {
+        bitmap_layout::allocated_ranges(&bitmap(32, clusters), partition).unwrap()
+    };
+    let desired = [extent(0, 0, 10, 1), extent(1, 0, 12, 1)];
+    let plan_for = |legacy, metadata, owners: &[Extent], remaining| {
+        shadow_evacuation::plan_ranges(
+            &legacy,
+            &metadata,
+            &desired,
+            owners,
+            partition,
+            remaining,
+            shadow_evacuation::LEGACY_LIMITS,
+        )
+        .unwrap()
+    };
+    let original = plan_for(
+        map(&[10, 12]),
+        map(&[10, 12]),
+        &[extent(7, 0, 10, 1), extent(8, 0, 12, 1)],
+        2,
+    );
+    assert_eq!(original.moves.len(), 2);
+    assert_eq!(original.moves[0].destination_lcn, 0);
+    assert_eq!(original.moves[1].destination_lcn, 1);
+
+    // Slot 7 has moved. ReFS now uses slot 8's proposed destination for metadata.
+    let replanned = plan_for(
+        map(&[0, 12]),
+        map(&[0, 1, 12]),
+        &[extent(7, 0, 0, 1), extent(8, 0, 12, 1)],
+        1,
+    );
+    assert_eq!(replanned.moves.len(), 1);
+    let pending = replanned.moves[0];
+    assert_eq!(
+        (
+            pending.file_index,
+            pending.starting_vcn,
+            pending.source_offset,
+            pending.destination_lcn
+        ),
+        (8, 0, 12 * C, 2)
+    );
+}

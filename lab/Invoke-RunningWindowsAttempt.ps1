@@ -79,6 +79,7 @@ param(
     [switch]$Reattach
 )
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot/QualificationInterruption.ps1"
 $workspace = Split-Path -Parent $PSScriptRoot
 if (-not $ScratchVhdx) { $ScratchVhdx = Join-Path $workspace '.lab\hyperv\attempts\envprobe-c-up\scratch.vhdx' }
 if ($Hold -and ($HoldAt -or $Acceptance -or $Reattach)) { throw '-Hold leaves the VM at a command prompt in the recovery environment: not with -HoldAt, -Acceptance or -Reattach' }
@@ -107,6 +108,9 @@ function Wait-Guest([int]$Minutes) {
 }
 $verdict = [ordered]@{ name = $Name; vm_id = $VmId; started = (Get-Date).ToString('o'); outcome = 'harness-error' }
 $verdict.converter_sha256 = (Get-FileHash -LiteralPath $Binary).Hash.ToLowerInvariant()
+$verifyAt = [array]::IndexOf([string[]]$ConverterArgs, '--verify')
+$verdict.verify = if ($ConverterArgs -contains '--verify=thorough' -or $ConverterArgs -contains '--verify-full-content' -or
+    ($verifyAt -ge 0 -and $verifyAt + 1 -lt $ConverterArgs.Count -and $ConverterArgs[$verifyAt + 1] -eq 'thorough')) { 'thorough' } else { 'fast' }
 function Save-Verdict { [IO.File]::WriteAllText((Join-Path $records 'verdict.json'), ($verdict | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false)) }
 
 # The VM's screen as Hyper-V shows it (800 by 600, two bytes a pixel), which
@@ -613,9 +617,10 @@ try {
                 # was cut before the converter had begun: it converted anew,
                 # and nothing was recovered.
                 $recovered = $report -match 'An earlier start of this run was cut off'
-                $saidTo = if ($report -match 'The recovery finished: the volume is converted') { 'ReFS' }
-                    elseif ($report -match 'The recovery finished: the run had not started writing' -or $report -match 'The recovery put the NTFS volume back') { 'NTFS' } else { '' }
+                $mode = Get-RunningRecoveryMode $report
+                $saidTo = if ($mode -eq 'resume') { 'ReFS' } elseif ($mode) { 'NTFS' } else { '' }
                 $verdict.cut.recovered_after_it = [bool]$recovered; $verdict.cut.recovery_said = $saidTo
+                $verdict.cut.recovery_mode = $mode
                 # Whether the converter had reported the hold before the power went.
                 $transcript = Join-Path $records 'converter-output.txt'
                 $verdict.cut.hold_reported = if ($timedCut) { $null } elseif (Test-Path -LiteralPath $transcript) {

@@ -287,6 +287,9 @@ mod imp {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             for (_, helper) in helpers.iter() {
+                #[cfg(test)]
+                let busy_helper_entered =
+                    tests::BUSY_HELPER_ENTERED.load(std::sync::atomic::Ordering::Acquire);
                 // SAFETY: an open handle to another thread of this process
                 // with the same access, kept open by the lock held here.
                 let count = unsafe { capture(*helper as HANDLE, &mut frames) };
@@ -295,7 +298,9 @@ mod imp {
                         .entry((label | HELPER_SAMPLE, frames[..count].into()))
                         .or_default() += 1;
                     #[cfg(test)]
-                    tests::OBSERVED_THREADS.fetch_or(2, Relaxed);
+                    if busy_helper_entered {
+                        tests::OBSERVED_THREADS.fetch_or(2, Relaxed);
+                    }
                 }
             }
         }
@@ -540,21 +545,47 @@ mod imp {
     #[cfg(test)]
     mod tests {
         use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+        use std::sync::atomic::{
+            AtomicBool, AtomicUsize,
+            Ordering::{Relaxed, Release},
+        };
         use std::time::{Duration, Instant};
 
         pub(super) static OBSERVED_THREADS: AtomicUsize = AtomicUsize::new(0);
+        pub(super) static BUSY_HELPER_ENTERED: AtomicBool = AtomicBool::new(false);
 
         #[test]
         fn a_busy_thread_is_sampled_and_its_frames_are_named() {
+            // The sampler registers helpers and phases process-wide. Run this
+            // test alone so other tests cannot supply its samples or labels.
+            const CHILD_ENV: &str = "N2R_STACK_SAMPLER_TEST_CHILD";
+            if std::env::var_os(CHILD_ENV).is_none() {
+                let child = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "stack_sampler::imp::tests::a_busy_thread_is_sampled_and_its_frames_are_named",
+                    ])
+                    .env(CHILD_ENV, "1")
+                    .output()
+                    .unwrap();
+                let stdout = String::from_utf8_lossy(&child.stdout);
+                assert!(
+                    child.status.success() && stdout.contains("1 passed"),
+                    "{stdout}\n{}",
+                    String::from_utf8_lossy(&child.stderr)
+                );
+                return;
+            }
+
             let directory = tempfile::tempdir().unwrap();
             let output = directory.path().join("stacks.txt");
             OBSERVED_THREADS.store(0, Relaxed);
+            BUSY_HELPER_ENTERED.store(false, Relaxed);
             super::start(output.clone());
             super::note(Some("sampler-test"), None);
             #[inline(never)]
             fn busy_helper(stop: &AtomicBool) -> u64 {
-                let _sampled = super::helper().expect("register the sampled helper");
+                BUSY_HELPER_ENTERED.store(true, Release);
                 let mut value = 3u64;
                 while !stop.load(Relaxed) {
                     value = std::hint::black_box(value.wrapping_mul(33).wrapping_add(5));
@@ -563,11 +594,13 @@ mod imp {
             }
             let stop = Arc::new(AtomicBool::new(false));
             let helper_stop = Arc::clone(&stop);
-            let helper = std::thread::spawn(move || busy_helper(&helper_stop));
+            let helper = std::thread::spawn(move || {
+                let _sampled = super::helper().expect("register the sampled helper");
+                busy_helper(&helper_stop)
+            });
             let started = Instant::now();
             let mut value = 1u64;
-            // Wait for actual captures, not a fixed window that can expire
-            // before the helper or sampler is scheduled on a loaded runner.
+            // Wait for a helper capture after it has entered the busy function.
             while OBSERVED_THREADS.load(Relaxed) != 3 && started.elapsed() < Duration::from_secs(10)
             {
                 value = std::hint::black_box(value.wrapping_mul(31).wrapping_add(7));

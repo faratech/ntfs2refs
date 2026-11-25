@@ -3,7 +3,7 @@
 What changed for someone who runs the converter. The measurements behind each
 entry are in the pull request named beside it and in `docs/performance.md`.
 
-## Unreleased
+## 0.0.5
 
 - Fixed journal preparation for `--minimize-scratch` when a record stores
   digests of unused NTFS space. The lab exercises conversion, resume, and

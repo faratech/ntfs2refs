@@ -311,6 +311,16 @@ pub fn is_bitlocker_boot_sector(bytes: &[u8]) -> bool {
     bytes.get(3..11) == Some(b"-FVE-FS-")
 }
 
+/// Observes the partition's BitLocker signature through its physical disk.
+#[cfg(windows)]
+pub fn probe_partition_bitlocker(partition: &PartitionInventory) -> io::Result<bool> {
+    let offset = partition
+        .offset_bytes
+        .ok_or_else(|| invalid("partition offset is unavailable"))?;
+    let sector = native::first_sector(partition.disk_number, offset)?;
+    Ok(is_bitlocker_boot_sector(&sector))
+}
+
 /// Whether a root such as `E:\` is an optical drive: a disc, or a mounted
 /// disc image. Such a volume lies on no disk and is never a source.
 #[cfg(windows)]

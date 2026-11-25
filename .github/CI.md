@@ -113,13 +113,28 @@ matrix checks alongside the existing CI checks in the main branch rules.
 - The lab records native and converted ReFS acceptance runs at 4 KiB, under
   idle and host CPU load, including a guest reboot and subsequent mutation.
   Failed images, journals and full event XML stay on the private host.
-  Hosted soak failures keep compact evidence. To retain images when replaying
+  Hosted soak failures keep compact evidence. Many-file rounds with larger
+  ReFS clusters also keep the NTFS extents of `sparse.bin` and the preflight
+  estimate of how much data can stay in place. Windows can allocate different
+  extents when a run recreates the same seed. To retain images when replaying
   a hosted failure on a private machine, pass `-FailureStorage` with a new
   private directory and sufficient free space.
 - The restart-route gate restores `N2R-Server-Baseline` before each case.
   Conversion and cancellation both use a separate NTFS working disk
   sized from the host's free space. A refusal case asserts that ReFS working
   storage is rejected before the converter creates a run.
+- Run `Invoke-RestartRouteAttempt.ps1 -PostFlushRecovery resume` and
+  `-PostFlushRecovery rollback` from separate baselines for the restart
+  interruption cases. The host reads the WinPE console and turns off the VM
+  only when the post-flush pause appears. The verdict requires the matching
+  durable receipt and confirms that the discovery write had not been
+  requested. The working image is retained as lab evidence.
+- The Windows 11 restart cases use `Invoke-Windows11RestartAttempt.ps1` to
+  restore the NTFS checkpoint on `ntfs2refs-reference-c` and boot its disk0.
+  The lab takes the matching installation medium from `ntfs2refs-reference-b`
+  and records the Windows build, revision and edition before preparation.
+  The signed gate requires the resume and rollback results and the observed
+  ReFS profile after resume.
 
 ```bash
 gh attestation verify ntfs2refs-<version>-windows-x64.zip --repo faratech/ntfs2refs --signer-workflow faratech/ntfs2refs/.github/workflows/release.yml

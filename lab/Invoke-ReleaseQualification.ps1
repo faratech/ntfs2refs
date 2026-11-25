@@ -8,6 +8,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/QualificationInterruption.ps1"
+. "$PSScriptRoot/IntegrityWindowProof.ps1"
 $root = Split-Path -Parent $PSScriptRoot
 $attempts = Join-Path $root '.lab/hyperv/attempts'
 $identity = Get-Content -LiteralPath (Join-Path $Candidate 'candidate.json') -Raw | ConvertFrom-Json -AsHashtable
@@ -77,8 +78,14 @@ function Add-Case([string]$Name, [string]$Route, [string]$Expected, $Verdict, [b
             elseif ($Route -eq 'restart') { $Verdict.after.control_boot }
         integrity_events = $Verdict.integrity.events; reboot_use = $Verdict.reboot_use; host_load = $Verdict.host_load
         integrity_fixture = if ($Route -eq 'integrity') {
-            @{ content = $Verdict.source.content; directory_entries = $Verdict.source.directory_entries; check_agrees = $Verdict.check.agrees }
+            @{
+                content = $Verdict.source.content; directory_entries = $Verdict.source.directory_entries; check_agrees = $Verdict.check.agrees
+                source_bytes = $Verdict.source.observed.partition_bytes; ntfs_sector_bytes = $Verdict.source.observed.bytes_per_sector
+                ntfs_cluster_bytes = $Verdict.source.observed.bytes_per_cluster; ntfs_record_bytes = $Verdict.source.observed.bytes_per_file_record
+                mounted_refs_clusters = $Verdict.integrity.volume.AllocationUnitSize; refs_version = $Verdict.volume_after.refs_version
+            }
         }
+        integrity_windows = $Verdict.integrity_windows
     }
     if ($Route -ne 'running') { $row.listing_tool_sha256 = $Verdict.listing_tool_sha256 }
     if ($Route -eq 'restart') { $row.recovery_sha256 = $Verdict.recovery_sha256 }
@@ -168,7 +175,7 @@ try {
             $eventFixture = $case -eq 'event-131'
             $livedIn = $case -eq 'lived-in' -or $eventFixture
             $loaded = $case.EndsWith('-loaded') -or $livedIn
-            $fixtureArgs = if ($eventFixture) { @{ DirectoryEntries = 4000; Check = $true } } else { @{} }
+            $fixtureArgs = if ($eventFixture) { @{ DirectoryEntries = 4000; Check = $true; PartitionMB = 51200; SectorBytes = 512 } } else { @{} }
             $workers = [math]::Max(1, [math]::Floor([Environment]::ProcessorCount / 2))
             $null = New-Item -ItemType Directory -Path $privateEvidence -Force
             $samples = Join-Path $privateEvidence "$case-host.jsonl"
@@ -186,13 +193,32 @@ try {
                     Start-Sleep -Seconds 5
                 }
             }
+            $heartbeat = if ($eventFixture) { Join-Path $privateEvidence "$case-cpu.jsonl" }
             $load = if ($loaded) {
-                Start-Job -ArgumentList $workers -ScriptBlock {
-                    param([int]$workers)
+                Start-Job -ArgumentList $workers, $heartbeat -ScriptBlock {
+                    param([int]$workers, [string]$heartbeat)
                     1..$workers | ForEach-Object -ThrottleLimit $workers -Parallel {
+                        $path = $using:heartbeat
                         $bytes = [byte[]]::new(1MB)
                         $sha = [Security.Cryptography.SHA256]::Create()
-                        try { while ($true) { $null = $sha.ComputeHash($bytes) } } finally { $sha.Dispose() }
+                        try {
+                            if ($_ -ne 1 -or -not $path) {
+                                while ($true) { $null = $sha.ComputeHash($bytes) }
+                            }
+                            while ($true) {
+                                $started = [datetime]::UtcNow
+                                $watch = [Diagnostics.Stopwatch]::StartNew()
+                                $hashes = 0
+                                do {
+                                    $null = $sha.ComputeHash($bytes)
+                                    $hashes++
+                                } while ($watch.ElapsedMilliseconds -lt 500)
+                                $row = @{
+                                    started_utc = $started.ToString('o'); finished_utc = [datetime]::UtcNow.ToString('o'); hashes = $hashes
+                                } | ConvertTo-Json -Compress
+                                [IO.File]::AppendAllText($path, $row + [Environment]::NewLine)
+                            }
+                        } finally { $sha.Dispose() }
                     }
                 }
             }
@@ -211,8 +237,16 @@ try {
                 disk_queue_peak = ($measurements | Measure-Object disk_queue -Maximum).Maximum }
             $ok = $v.outcome -eq $want -and $v.reboot_use -and $v.cleanup_ok -and $v.integrity.volume.AllocationUnitSize -eq 4096 -and
                 $v.integrity.serious_count -eq 0 -and $measurements.Count -gt 0 -and ($native -or $v.manifest.result -eq 'identical')
-            if ($eventFixture) { $ok = $ok -and $v.source.directory_entries -eq 4000 -and $v.check.agrees -eq $true }
+            if ($eventFixture -and (Test-Path -LiteralPath $heartbeat)) {
+                $batches = @(Get-Content -LiteralPath $heartbeat | ConvertFrom-Json -AsHashtable)
+                $v.integrity_windows = @(Get-Integrity131Windows $v.acceptance $batches)
+            }
             Add-Case "integrity-$case" 'integrity' $want $v $ok
+            if ($eventFixture -and $ok) {
+                $row = $rows[$rows.Count - 1]
+                try { Assert-Integrity131Case $row }
+                catch { $row.passed = $false; throw }
+            }
             if (-not $ok) { throw "$name failed. Evidence is retained on the private host at $privateEvidence" }
         }
     } finally {

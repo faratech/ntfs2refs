@@ -223,11 +223,7 @@ jobs:
           ./.github/scripts/Confirm-ReleaseQualification.ps1 -Candidate "$env:RUNNER_TEMP/dist" -Evidence "$env:RUNNER_TEMP/evidence" -Tag $env:TAG -Commit $env:COMMIT -Request "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" -Output "$env:RUNNER_TEMP/qualification"
           ./.github/scripts/Install-Toolchain.ps1
           ./lab/New-Release.ps1 -Binaries "$env:RUNNER_TEMP/dist/bin" -Output "$env:RUNNER_TEMP/dist/release" -Qualification "$env:RUNNER_TEMP/qualification"
-          Expand-Archive -LiteralPath "$env:RUNNER_TEMP/dist/release/ntfs2refs-$env:TAG-windows-x64.zip" -DestinationPath "$env:RUNNER_TEMP/unpacked"
-          $manifest = Get-Content -LiteralPath "$env:RUNNER_TEMP/dist/candidate.json" -Raw | ConvertFrom-Json -AsHashtable
-          foreach ($name in $manifest.hashes.Keys) {
-            if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP/unpacked/$name").Hash.ToLowerInvariant() -cne $manifest.hashes[$name]) { throw "Packaging changed $name" }
-          }
+          ./.github/scripts/Confirm-ReleaseArchive.ps1 -Archive "$env:RUNNER_TEMP/dist/release/ntfs2refs-$env:TAG-windows-x64.zip" -Candidate "$env:RUNNER_TEMP/dist" -Qualification "$env:RUNNER_TEMP/qualification"
 
       - name: Attest
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

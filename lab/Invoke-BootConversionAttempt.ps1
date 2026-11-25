@@ -518,8 +518,10 @@ function Start-Disk0Alone {
         $refs = @(& "$env:SystemRoot\System32\fsutil.exe" fsinfo refsinfo "$env:SystemDrive" 2>&1)
         $setup = Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\Setup'
         $signatures = foreach ($relative in 'System32\winload.efi', 'System32\drivers\refs.sys') {
-            $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $env:SystemRoot $relative)
-            [pscustomobject]@{ file = $relative; status = [string]$signature.Status; signer = $signature.SignerCertificate.Subject }
+            $path = Join-Path $env:SystemRoot $relative
+            $signature = Get-AuthenticodeSignature -LiteralPath $path
+            [pscustomobject]@{ file = $relative; status = [string]$signature.Status; signer = $signature.SignerCertificate.Subject
+                sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
         }
         [pscustomobject]@{
             boot_utc = $os.LastBootUpTime.ToUniversalTime().ToString('o'); newer_than_control_boot = $os.LastBootUpTime.ToUniversalTime() -gt [DateTime]::Parse($controlBoot).ToUniversalTime()

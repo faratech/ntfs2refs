@@ -31,7 +31,7 @@ pub const QUALIFIED: &[BootProfile] = &[BootProfile {
     id: "windows-11-build-26300-dev-drive",
     winload_efi_sha256: "1c1a978448b8e0fc2284c13d6e55fde8bf9827dca432cdc8a9be66c2e729adda",
     refs_sys_sha256: "3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4",
-    kernel_rule: "the source's ntoskrnl.exe is byte-identical to that of the Windows running the converter",
+    kernel_rule: "The source and converting Windows have identical ntoskrnl.exe files or ReFS drivers of the same Windows build.",
     target_format: "dev-drive",
     refs_major_version: 3,
     refs_minor_version: 14,

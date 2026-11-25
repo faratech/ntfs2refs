@@ -93,22 +93,7 @@ if ($Seed -eq 0) { $Seed = Get-Random -Minimum 1 -Maximum 1000000000 }
 $automountWasOff = [bool]((& mountvol.exe) -match 'automatic mounting of new volumes disabled')
 if ($automountWasOff) { $null = & mountvol.exe /E; "automatic mounting of new volumes was off on this machine; turned on for the soak (mountvol /E)" }
 
-# The points a run reaches, in order, by its --verify mode; a hold at a point
-# the run does not reach would never be reported. With fast, the default,
-# the handoff follows the verification of the converted volume (#148): such
-# a run does not reach apply-handoff-durable, finalize-authenticated or
-# finalize-source-readonly. With thorough the apply step writes the handoff
-# and the run does not reach the points of a verification before it.
-$holdPoints = @{
-    fast     = @('apply-activated', 'apply-mid-ranges', 'apply-ranges-written', 'apply-before-boot-granule', 'apply-boot-granule-written',
-        'apply-before-handoff', 'apply-sealed', 'apply-seal-recorded', 'verify-authenticated', 'verify-source-readonly', 'verify-passed',
-        'handoff-sealed', 'finalize-before-online', 'finalize-online')
-    thorough = @('apply-activated', 'apply-mid-ranges', 'apply-ranges-written', 'apply-before-boot-granule', 'apply-boot-granule-written',
-        'apply-before-handoff', 'apply-handoff-durable', 'handoff-sealed', 'finalize-authenticated', 'finalize-source-readonly',
-        'finalize-before-online', 'finalize-online')
-}
-# The points a rollback is designed for: before the handoff marker is durable.
-$rollbackPoints = @{ fast = $holdPoints.fast[0..10]; thorough = $holdPoints.thorough[0..5] }
+. "$PSScriptRoot/SeededSoakPlan.ps1"
 $recoverLine = '^To recover: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64})'
 $cancelLine = 'To get it back as NTFS: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64}) --rollback'
 
@@ -387,21 +372,14 @@ for ($round = 1; ; $round++) {
     if ($Rounds -and $round -gt $Rounds) { break }
     if (((Get-Date) - $started).TotalMinutes -ge $Minutes) { break }
     $roundSeed = $Seed + $round - 1
-    $draw = [Random]::new($roundSeed)
     $kind = $Profile[($round - 1) % $Profile.Count]
-    # (A VHDX made by diskpart has 4 KiB physical sectors: no 512-byte clusters.)
-    $ntfsCluster = @(4096, 4096, 4096, 8192, 16384, 32768, 65536)[$draw.Next(0, 7)]
-    $refsCluster = @(4096, 65536)[$draw.Next(0, 2)]
-    if ($TargetClusterBytes) { $refsCluster = $TargetClusterBytes }
-    $gib = if ($kind -eq 'many') { 8 } else { $draw.Next(2, 7) }
-    # One round of four (by its seed, so that -Seed makes it again) runs with
-    # --verify thorough, whose apply step writes the handoff: the flow every
-    # run had before #148, which a fast run no longer takes. The others run
-    # with fast, the default. Taken from the seed, not drawn, so that the
-    # draws after it come out as they did before it was added.
-    $verify = if ($roundSeed % 4 -eq 0) { 'thorough' } else { 'fast' }
-    $hold = switch ($kind) { 'resume' { $holdPoints[$verify][$draw.Next(0, $holdPoints[$verify].Count)] } 'rollback' { $rollbackPoints[$verify][$draw.Next(0, $rollbackPoints[$verify].Count)] } default { '' } }
-    $endAfter = if ($kind -eq 'cancel') { [Math]::Round(0.5 + $draw.NextDouble() * 40, 1) } else { 0 }
+    $plan = Get-SeededSoakPlan $roundSeed $kind $TargetClusterBytes
+    $ntfsCluster = $plan.ntfs_cluster
+    $refsCluster = $plan.refs_cluster
+    $gib = $plan.disk_gib
+    $verify = $plan.verify
+    $hold = $plan.hold_at
+    $endAfter = $plan.end_after_seconds
     if ($Scenario -ne 'seeded') { $verify = 'fast'; $endAfter = 0; $hold = if ($Scenario -eq 'cancel-preparation') { 'preparation-shadow-built' } else { '' } }
     if ($CancelAtPreparation) { $hold = 'preparation-shadow-built'; $endAfter = 0 }
     $name = 'r{0:d3}-{1}-{2}' -f $round, $kind, $roundSeed

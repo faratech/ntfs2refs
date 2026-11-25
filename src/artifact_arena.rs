@@ -1842,7 +1842,10 @@ impl ArtifactArena {
             .lock()
             .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
         let held = add(state.leased_ram_bytes, state.index_bytes)?;
-        let granted = state.spare.asked(self.speed_budget(), held, bytes);
+        let caches = state.optional_ram_bytes;
+        let granted = state
+            .spare
+            .asked_with_caches(self.speed_budget(), held, caches, bytes);
         ensure!(!state.ram_poisoned && granted, "spare memory refused");
         let leased = add(state.leased_ram_bytes, bytes)?;
         state.leased_ram_bytes = leased;
@@ -1937,7 +1940,12 @@ impl ArtifactArena {
                     .leased_ram_bytes
                     .checked_add(state.index_bytes)
                     .and_then(|held| held.checked_add(needed))
-                    .is_some_and(|held| spare_fits(self.speed_budget(), held, spare, beside))
+                    .is_some_and(|held| {
+                        let budget = self.speed_budget();
+                        let non_cache = held.saturating_sub(state.optional_ram_bytes);
+                        held.checked_add(spare).is_some_and(|total| total <= budget)
+                            && spare_fits(budget, non_cache, spare, beside)
+                    })
         })
     }
     /// The most the ledger may hold with a cache in it: seven eighths of
@@ -3303,10 +3311,21 @@ impl SpareMemory {
     }
     /// The ledger, of `budget` bytes and holding `held`, was asked for
     /// `bytes` of spare memory: whether it grants them, counted if it does.
+    #[cfg(test)]
     fn asked(&mut self, budget: u64, held: u64, bytes: u64) -> bool {
+        self.asked_with_caches(budget, held, 0, bytes)
+    }
+    /// Like [`Self::asked`], while `caches` bytes of `held` are evictable
+    /// caches (`optional_ram_bytes`). Total leased RAM (`held + bytes`) still
+    /// stays within `budget` so a `--memory-limit` is never exceeded, while
+    /// headroom for needed reservations is measured against `held - caches`
+    /// because `reserve_ram` evicts caches before failing.
+    fn asked_with_caches(&mut self, budget: u64, held: u64, caches: u64, bytes: u64) -> bool {
         let beside = self.largest_beside.max(self.largest_since);
         self.largest_since = 0;
-        let granted = spare_fits(budget, held, bytes, beside);
+        let non_cache = held.saturating_sub(caches);
+        let granted = held.checked_add(bytes).is_some_and(|total| total <= budget)
+            && spare_fits(budget, non_cache, bytes, beside);
         if granted {
             self.held = self.held.saturating_add(bytes);
         }
@@ -3450,6 +3469,35 @@ mod ram_site_tests {
         spare.needed(5_000_000_000);
         assert!(!spare.asked(BUDGET, base + WORKSPACE, WORKSPACE));
         assert_eq!(spare.largest_beside, 5_000_000_000);
+    }
+
+    #[test]
+    fn evictable_caches_do_not_starve_spare_batch_headroom() {
+        // Under --memory-limit 1240 MiB, caches fill up to 7/8 of the budget
+        // (1,085 MiB), leaving 155 MiB free. A 100 MiB needed reservation
+        // seen beside a batch requires 200 MiB of headroom, which fits easily
+        // against non-cache memory (385 MiB) because reserve_ram evicts caches.
+        const BUDGET: u64 = 1240 << 20;
+        const CACHES: u64 = 700 << 20;
+        const NON_CACHE: u64 = 385 << 20;
+        const HELD: u64 = NON_CACHE + CACHES;
+        const WORKSPACE: u64 = 2 << 20;
+        let mut spare = SpareMemory::default();
+        spare.needed(100 << 20);
+        assert!(
+            !spare.asked(BUDGET, HELD, WORKSPACE),
+            "without cache awareness, headroom against total held starves the batch"
+        );
+        spare.needed(100 << 20);
+        assert!(
+            spare.asked_with_caches(BUDGET, HELD, CACHES, WORKSPACE),
+            "with cache awareness, spare fits within remaining budget and non-cache headroom"
+        );
+        // Total leased RAM still never exceeds BUDGET.
+        assert!(
+            !spare.asked_with_caches(BUDGET, BUDGET - WORKSPACE + 1, CACHES, WORKSPACE),
+            "total RAM including caches must never exceed the budget"
+        );
     }
 
     #[test]
@@ -3836,13 +3884,16 @@ mod cache_tests {
         let spare = LIMIT - held - headroom;
         assert!(arena.spare_would_fit_beside(0, 0, spare));
         assert!(!arena.spare_would_fit_beside(0, 0, spare + 1));
-        // A cache held counts: spare memory gives none of them up.
+        // A cache held still counts against the total budget (spare memory
+        // gives no cache up), while headroom for needed reservations is
+        // measured against non-cache memory because `reserve_ram` evicts caches.
         let cache = Evictable::new(arena.reserve_optional_ram(LIMIT / 8).unwrap());
-        assert!(!arena.spare_would_fit_beside(0, 0, spare));
-        assert!(arena.spare_would_fit_beside(0, 0, spare - LIMIT / 8));
+        let with_cache = LIMIT - held - LIMIT / 8;
+        assert!(!arena.spare_would_fit_beside(0, 0, with_cache + 1));
+        assert!(arena.spare_would_fit_beside(0, 0, with_cache));
         // So do the pass's own reservations, and twice its largest.
-        assert!(!arena.spare_would_fit_beside(1, 0, spare - LIMIT / 8));
-        let beside_largest = spare + headroom - LIMIT / 2 - LIMIT / 8;
+        assert!(!arena.spare_would_fit_beside(1, 0, with_cache));
+        let beside_largest = LIMIT - held - LIMIT / 2;
         assert!(arena.spare_would_fit_beside(0, LIMIT / 4, beside_largest));
         assert!(!arena.spare_would_fit_beside(0, LIMIT / 4, beside_largest + 1));
         assert!(cache.is_held());

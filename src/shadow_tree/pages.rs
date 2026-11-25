@@ -2890,12 +2890,36 @@ impl PagedExpectedTree {
             return None;
         };
         let row = admission.budget.max_row_bytes;
-        // The workspace of `reserve_decode_ram`, and then what
-        // `object_leased` keeps of it.
+        // Fast path: when the decoded cache already holds this object, no
+        // page-decode workspace is needed—only the retained native-view lease.
+        if self.keeps_decoded()
+            && let Some(object) = self
+                .decoded
+                .0
+                .borrow()
+                .rows
+                .get(index)
+                .and_then(Option::as_ref)
+                .map(Arc::clone)
+        {
+            self.decoded.1.set(n2r_win32::evict::now());
+            let keep = object_memory_bytes(&object, 0, row)
+                .ok()
+                .and_then(|bytes| bytes.checked_mul(3))?;
+            let ram = arena.reserve_spare_ram(keep).ok()?;
+            return Some(LeasedExpectedObject {
+                object,
+                _ram: ram,
+                _more: None,
+            });
+        }
+        // `self._reader_ram` already permanently reserves `3 * max_page_bytes`
+        // for the page reader; charge only the per-object decode workspace
+        // (compact buffers + one chunk window) and then shrink to `keep`.
         let compact = self.directory.get(index)?.bytes;
         let workspace = compact
             .checked_mul(8)
-            .and_then(|n| n.checked_add(u64::from(self.budget.max_page_bytes) * 3))
+            .and_then(|n| n.checked_add(u64::from(self.budget.max_page_bytes)))
             .and_then(|n| n.checked_add(DECODED_OBJECT_ALLOWANCE))
             .filter(|_| compact <= row)?;
         let mut ram = arena.reserve_spare_ram(workspace).ok()?;

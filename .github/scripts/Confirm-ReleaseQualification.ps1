@@ -9,6 +9,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\NativeRegressionCases.ps1"
+. "$PSScriptRoot/SeededSoakPlan.ps1"
 function Read-Json([string]$Path) { Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable }
 $identity = Read-Json (Join-Path $Candidate 'candidate.json')
 $files = 'ntfs2refs.exe', 'ntfs2refs-recovery.exe', 'lab-volume-manifest.exe'
@@ -26,6 +27,34 @@ function Assert-HostedRow($Row, [string]$Label) {
         throw "Invalid hosted qualification verdict for $Label"
     }
 }
+function Assert-SeededSoakVerdict($Row, [string]$Profile) {
+    $label = "soak $Profile seed $($Row.seed)"
+    if ($Row.scenario -cne 'seeded' -or $null -eq $Row.seed) { throw "Wrong scenario or seed for $label" }
+    $plan = Get-SeededSoakPlan $Row.seed $Profile
+    if ($Row.verify -cne $plan.verify -or $Row.hold_at -cne $plan.hold_at -or
+        $Row.end_after_seconds -ne $plan.end_after_seconds -or $Row.reached_hold -isnot [bool] -or
+        $Row.reached_hold -ne [bool]$plan.hold_at -or $Row.terminated -isnot [bool] -or
+        ($plan.hold_at -and -not $Row.terminated) -or
+        ($Row.terminated -and -not ($plan.hold_at -or $plan.end_after_seconds))) {
+        throw "Invalid interruption evidence for $label"
+    }
+
+    $validRecovery = if (-not $Row.terminated) {
+        # A timer can expire after the converter has already finished.
+        $Row.recovery_mode -ceq 'none' -and $Row.outcome -ceq 'converted'
+    } elseif ($Profile -eq 'resume') {
+        # An early interruption may have written nothing. Resume can return
+        # the original NTFS volume in that case.
+        $Row.recovery_mode -ceq 'resume' -and $Row.outcome -cin 'converted', 'ntfs-as-before'
+    } elseif ($Profile -eq 'rollback') {
+        $Row.recovery_mode -ceq 'rollback' -and $Row.outcome -ceq 'ntfs-as-before'
+    } else {
+        # A timed cancellation follows the command already printed, if any.
+        ($Row.recovery_mode -ceq 'resume' -and $Row.outcome -cin 'converted', 'ntfs-as-before') -or
+            ($Row.recovery_mode -cin 'none', 'rollback' -and $Row.outcome -ceq 'ntfs-as-before')
+    }
+    if (-not $validRecovery) { throw "Invalid recovery action or outcome for $label" }
+}
 $native = @(foreach ($case in $NativeRegressionCases.Keys) {
     $row = Read-Json (Join-Path $Evidence "native-$case/regression.json")
     Assert-HostedRow $row $case
@@ -42,6 +71,7 @@ $soak = @(foreach ($profile in 'convert', 'many', 'resume', 'rollback', 'cancel'
     foreach ($row in $rows) {
         Assert-HostedRow $row "soak $profile seed $($row.seed)"
         if ($row.profile -cne $profile) { throw "Wrong soak profile for seed $($row.seed)" }
+        Assert-SeededSoakVerdict $row $profile
         $null = $row.Remove('recovery')
         $null = $row.Remove('attached_before_cleanup')
         $row

@@ -2,6 +2,7 @@
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\NativeRegressionCases.ps1"
 . "$PSScriptRoot/../../lab/QualificationInterruption.ps1"
+. "$PSScriptRoot/SeededSoakPlan.ps1"
 
 $cut = @{ hold_at = 'apply-mid-ranges'; hold_reported = $true; recovered_after_it = $true
     recovery_mode = Get-RunningRecoveryMode 'The recovery finished: the volume is converted.' }
@@ -72,9 +73,15 @@ try {
         $nativeRows[$case] = $row
         Save-Json $row (Join-Path $evidence "native-$case/regression.json")
     }
+    $soakRows = @{}
     foreach ($case in 'convert', 'many', 'resume', 'rollback', 'cancel') {
         $round = $nativeRows[$case].Clone()
-        if ($case -eq 'cancel') { $round.hold_at = ''; $round.reached_hold = $false; $round.end_after_seconds = 24.8 }
+        $plan = Get-SeededSoakPlan $round.seed $case
+        $round.verify = $plan.verify
+        $round.hold_at = $plan.hold_at
+        $round.reached_hold = [bool]$plan.hold_at
+        $round.end_after_seconds = $plan.end_after_seconds
+        $soakRows[$case] = $round
         Save-Json $round (Join-Path $evidence "soak-records-$case/rounds.jsonl")
     }
     $cases = @(foreach ($name in 'fixture10', 'admin-fixture40', 'full-system', 'apply-mid-resume', 'apply-mid-rollback', 'seal-recorded-resume', 'handoff-sealed-resume', 'verify-readonly-rollback', 'torn-handoff-resume', 'vm-verify-passed-rollback', 'vm-thorough-handoff-resume', 'lived-in', 'lived-in-64k', 'std-4k', 'std-64k', 'devdrive', 'restart-convert', 'restart-cancel', 'restart-refs-refusal', 'integrity-native-idle', 'integrity-converted-idle', 'integrity-native-loaded', 'integrity-converted-loaded', 'integrity-lived-in', 'integrity-event-131') {
@@ -182,6 +189,46 @@ try {
     $lab = @{ identity = $identity.Clone(); cases = $cases }
     Save-Json $lab $labPath
     Invoke-Gate 'all-valid'
+    foreach ($test in @(
+        @('resume', 'hold_at', '', 'Invalid interruption evidence'),
+        @('resume', 'hold_at', 'apply-mid-ranges', 'Invalid interruption evidence'),
+        @('resume', 'reached_hold', $false, 'Invalid hosted qualification verdict'),
+        @('resume', 'terminated', $false, 'Invalid interruption evidence'),
+        @('resume', 'recovery_mode', 'none', 'Invalid recovery action or outcome'),
+        @('rollback', 'recovery_mode', 'resume', 'Invalid recovery action or outcome'),
+        @('rollback', 'outcome', 'converted', 'Invalid recovery action or outcome'),
+        @('cancel', 'end_after_seconds', 0, 'Invalid interruption evidence'),
+        @('cancel', 'terminated', $null, 'Invalid interruption evidence'),
+        @('cancel', 'outcome', 'converted', 'Invalid recovery action or outcome'),
+        @('convert', 'terminated', $true, 'Invalid interruption evidence')
+    )) {
+        $profile, $key, $value, $message = $test
+        $row = $soakRows[$profile].Clone()
+        $row[$key] = $value
+        $path = Join-Path $evidence "soak-records-$profile/rounds.jsonl"
+        Save-Json $row $path
+        Invoke-Gate "soak-$profile-$key-$value" "$message for soak $profile"
+        Save-Json $soakRows[$profile] $path
+    }
+
+    foreach ($test in @(
+        @('resume', $true, 'resume', 'ntfs-as-before'),
+        @('cancel', $false, 'none', 'converted'),
+        @('cancel', $true, 'none', 'ntfs-as-before'),
+        @('cancel', $true, 'resume', 'converted'),
+        @('cancel', $true, 'resume', 'ntfs-as-before')
+    )) {
+        $profile, $terminated, $action, $outcome = $test
+        $row = $soakRows[$profile].Clone()
+        $row.terminated = $terminated
+        $row.recovery_mode = $action
+        $row.outcome = $outcome
+        $path = Join-Path $evidence "soak-records-$profile/rounds.jsonl"
+        Save-Json $row $path
+        Invoke-Gate "soak-$profile-$terminated-$action-$outcome"
+        Save-Json $soakRows[$profile] $path
+    }
+
     foreach ($test in @(
         @('fixture10', 'converter_sha256', 'ntfs2refs.exe'),
         @('lived-in', 'listing_tool_sha256', 'lab-volume-manifest.exe'),

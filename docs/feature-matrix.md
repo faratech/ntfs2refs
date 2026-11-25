@@ -3,8 +3,9 @@
 One row per feature of a volume, with what the default route does with it and
 the lab case that shows it. A lab case is an attempt of
 `lab\Invoke-DataVolumeAttempt.ps1` (its `-Content` or `-Features` name is the
-last word of the case) or of `lab\Invoke-BootConversionAttempt.ps1`; `lab/README.md`
-describes both. "Identical" means that the listing of the volume before and
+last word of the case) or of `lab\Invoke-BootConversionAttempt.ps1`. The
+preformatted index-record fixtures use `lab/guest/Prepare-NtfsIndexFixture.ps1`.
+`lab/README.md` describes the fixture and harness procedures. "Identical" means that the listing of the volume before and
 after the conversion is the same under `lab-volume-manifest compare`, which
 reads every file and stream in full.
 
@@ -33,6 +34,7 @@ converter prints.
 | All of these on one volume, to 4 KiB and to 64 KiB ReFS clusters, from 512-byte NTFS clusters, as an administrator, and interrupted and then resumed or rolled back | `lived-in` and its variants |
 | Experimental `--minimize-scratch` on an 8 GiB mixed data volume. Conversion and resume gave identical listings. Rollback gave an exact NTFS listing. Sampled peak working storage was 189.4 MiB without the option and 182.0 MiB with it in the paired gate. | `scratch-standard`, `scratch-minimized`, `scratch-minimized-resume`, `scratch-minimized-rollback` |
 | Every NTFS cluster size from 512 bytes to 2 MiB; 4Kn disks; 4096-byte file records | the geometry cases (`512-to-4k`, `4kn-4k`, ...) |
+| A preformatted NTFS data volume with 2 KiB index records, 512-byte sectors, 4 KiB clusters and 1 KiB file records. Windows Server 2025 build 26100 (SKU 79) converted it to standard ReFS 3.14 with 4 KiB clusters. All 1,029 objects compared identically. The converted volume mounted read-only after a guest restart. | `index184-2k`, with `index184-4k` as the control. [Native verdicts](https://github.com/faratech/ntfs2refs/issues/184#issuecomment-7142377380) |
 | A volume that is the one partition of an MBR disk, and a working directory on an MBR disk; both together, interrupted half way through the writes and resumed; a volume that shares its MBR disk with another NTFS volume, which goes offline with it | `mbr-src`, `mbr-work`, `mbr-apply-mid-resume`, `mbr-beside` |
 | A volume that shares its GPT disk with other partitions: an EFI system partition, an NTFS volume, a write-protected NTFS volume and a partition of another operating system. The volume converts; the NTFS volume beside it lists exactly as before, and the bytes of the other three are the same. Also to 64 KiB clusters, as an administrator, with a partition that is shrunk first, interrupted and then resumed or rolled back, and on Windows Server 2025 to standard ReFS | `shared` and its variants (`-Siblings`) |
 | A Windows boot volume with its short names, 25 nested directories and 320 object IDs | `used-windows-fixture40` (boot harness, `-ShapeSource Add-UsedWindowsObjects.ps1`) |
@@ -101,9 +103,13 @@ These take the same paths as rows above, or are checked by tests only.
   converts in 45 minutes; a run wants about 15 KiB of free memory a file as
   things are, and with less takes the rest from the page file and is slower
   (#129).
-- Index records other than 4 KiB, a ReFS later than 3.14, and a Windows build
-  other than 26100 and 26300: nothing in the lab makes them. A run on such a
-  build or ReFS version says that it is the first.
+- Native conversion of NTFS index record sizes besides 2 KiB and 4 KiB.
+  On Windows Server 2025 build 26100, the filesystem query for the tested
+  8 KiB fixture returned Windows error 1392 before preflight could read its
+  NTFS geometry. [Index fixture results](https://github.com/faratech/ntfs2refs/issues/184#issuecomment-7142377380)
+- ReFS versions later than 3.14 and Windows builds besides 26100 and 26300.
+  Both lab drivers reported 3.14 as their maximum supported ReFS version
+  (`index184-2k` on Server 2025 and `pairedio-105413-native` on Windows 11).
 - A conversion to standard ReFS (`--target-format standard`) on Windows 11.
   On Windows 11 Pro 26300.9457 the formatter refused both allocation units
   before the source was touched. `--list` reports that observation and

@@ -158,8 +158,8 @@ The first goal is met: the full Windows volume (143,580 objects, 112,609
 short-name links) converted with an identical listing and booted alone, Secure
 Boot on. Three clean reference runs had a median conversion time of 440.2 s
 (`docs/performance.md`). The second is met for every geometry Windows formats, to both
-target units. Not shown in the lab, because nothing there makes them: index
-records other than 4 KiB, a ReFS after 3.14, a build besides 26100 and 26300.
+target units. Consult `docs/feature-matrix.md` for the NTFS index-record widths
+exercised in the lab and the Windows and ReFS profiles still awaiting a run.
 
 Keep it that way. Before a change is committed:
 

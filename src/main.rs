@@ -110,7 +110,8 @@ fn run() -> Result<u8> {
                         "cluster_bytes": {"minimum": 512, "maximum": 2 * 1024 * 1024},
                         "file_record_bytes": [1024, 4096],
                         "index_record_bytes": {"minimum": 512, "maximum": 65536,
-                            "note": "Windows formats 4096; other sizes are checked by constructed indexes only"},
+                            "native_lab_converted_bytes": [2048, 4096],
+                            "note": ntfs2refs::capability_evidence::NTFS_INDEX_LAB_NOTE},
                         "partition_length": "any; one that is not a multiple of 64 MiB is first shrunk to one",
                     },
                     "target": {

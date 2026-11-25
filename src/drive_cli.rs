@@ -1892,7 +1892,8 @@ The machine restarts, possibly more than once. Do not switch it off while the co
         println!("NTFS index records: {} bytes.", geometry.index_record_size);
         if geometry.index_record_size != 4096 {
             println!(
-                "This index-record size is admitted. No native lab conversion has qualified it."
+                "This index-record size is admitted. {}",
+                crate::capability_evidence::NTFS_INDEX_LAB_NOTE
             );
         }
         if before.binding.layout_profile

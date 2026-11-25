@@ -121,6 +121,10 @@ fn capabilities_report_what_the_executable_enforces() {
     };
     let profile = ntfs2refs::ntfs_admission::ResourceProfile::ResourceBoundedV4(None);
     let source = &capabilities["source_geometry"];
+    assert_eq!(
+        source["index_record_bytes"]["native_lab_converted_bytes"],
+        serde_json::json!([2048, 4096])
+    );
     let (low, high) = (
         source["cluster_bytes"]["minimum"].as_u64().unwrap() as u32,
         source["cluster_bytes"]["maximum"].as_u64().unwrap() as u32,

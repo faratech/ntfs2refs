@@ -232,6 +232,43 @@ NTFS volume listing exactly as before (`rolled-back`). `-Diagnose` runs the
 converter with `--diagnose`; whatever it reports, the volume must list exactly
 as before (`diagnose-clean`, `diagnose-found-failures`).
 
+### Preformatted NTFS index records
+
+`fixtures/make_ntfs_index_fixtures.py` builds matching GPT data VHDXs with
+2 KiB, 4 KiB and 8 KiB NTFS index records. Run it on Linux with Python 3,
+a C compiler, Make, tar, sfdisk, and qemu-img. Supply the upstream archive and
+a new output directory. The generator verifies the archive checksum and each
+image's geometry, checks the MFT and its mirror, and compares the VHDX with
+the partitioned disk image. [NTFS-3G 2026.9.28 archive and checksums](https://github.com/tuxera/ntfs-3g/releases/tag/2026.9.28)
+
+```sh
+python3 lab/fixtures/make_ntfs_index_fixtures.py ntfs-3g_ntfsprogs-2026.9.28.tgz index-fixtures
+```
+
+`fixtures.json` gives the SHA-256, GPT identities and measured geometry for
+each image. Copy this manifest and the image to the disposable Hyper-V guest
+and run the preparation helper in an elevated guest PowerShell.
+`guest/Prepare-NtfsIndexFixture.ps1` creates and mounts a separate writable
+copy, checks its disk and partition, writes the root DACL through Windows and
+creates 1,024 files in one directory. Short-name creation is disabled while
+Windows first mounts the copy. The helper then disables it on the NTFS copy
+and restores the guest's original setting. Run the normal data preflight and
+conversion against that drive, keeping the before and after listings.
+
+```powershell
+$fixture = .\Prepare-NtfsIndexFixture.ps1 -ImagePath S:\fixtures\ntfs-index-2048.vhdx -CopyPath S:\index-test.vhdx
+.\ntfs2refs.exe --drive $fixture.drive --check --scratch-directory S:\runs --target-format standard --target-cluster-bytes 4096
+.\lab-volume-manifest.exe capture --root V:\ --output before.jsonl
+.\ntfs2refs.exe --drive $fixture.drive --scratch-directory S:\runs --target-format standard --target-cluster-bytes 4096
+.\lab-volume-manifest.exe capture --root V:\ --output after.jsonl
+.\lab-volume-manifest.exe compare --before before.jsonl --after after.jsonl --report comparison.json
+Dismount-DiskImage -ImagePath $fixture.copy_path
+```
+
+The Server 2025 lab converted the 2 KiB and 4 KiB sources with identical
+listings. Windows returned error 1392 on the filesystem query for the 8 KiB
+fixture. [Native index cases](https://github.com/faratech/ntfs2refs/issues/184#issuecomment-7142377380)
+
 #### `--review` (#110): cases for the test round
 
 A review run stops before its handoff with the volume mounted read-only as

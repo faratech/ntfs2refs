@@ -16,6 +16,11 @@ use std::{
 
 pub const EMBEDDED: &str = include_str!("../evidence/qualification-registry.json");
 
+/// Historical lab evidence. Release-specific observations come from the packaged report.
+pub const NTFS_INDEX_LAB_NOTE: &str = "Windows formatted 4096-byte index records in the lab. \
+    A preformatted source with 2048-byte index records converted to standard ReFS 3.14 with \
+    4096-byte clusters on Windows Server 2025 build 26100 (SKU 79). See docs/feature-matrix.md.";
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ReleaseProfile {
     pub case_id: String,

@@ -30,6 +30,32 @@ pub struct ReleaseProfile {
     pub refs_version: String,
     pub target_format: String,
     pub target_cluster_bytes: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boot_files: Option<ReleaseBootFiles>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ReleaseBootFiles {
+    pub winload_efi_sha256: String,
+    pub refs_sys_sha256: String,
+}
+
+#[cfg(any(windows, test))]
+impl ReleaseProfile {
+    pub(crate) fn matches_boot_profile(&self, profile: &crate::boot_profile::BootProfile) -> bool {
+        self.route == "boot"
+            && self.target_format == profile.target_format
+            && self.target_cluster_bytes == profile.cluster_bytes
+            && self.refs_version
+                == format!(
+                    "{}.{}",
+                    profile.refs_major_version, profile.refs_minor_version
+                )
+            && self.boot_files.as_ref().is_some_and(|files| {
+                files.winload_efi_sha256 == profile.winload_efi_sha256
+                    && files.refs_sys_sha256 == profile.refs_sys_sha256
+            })
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -52,16 +78,29 @@ pub fn release_qualification() -> Result<ReleaseQualification> {
     read_release_qualification(&std::env::current_exe()?, env!("CARGO_PKG_VERSION"))
 }
 
+const RELEASE_QUALIFICATION_FILE: &str = "QUALIFICATION.json";
+const MAX_REPORT_BYTES: u64 = 32 * 1024 * 1024;
+
 fn read_release_qualification(exe: &Path, version: &str) -> Result<ReleaseQualification> {
-    let report = File::open(exe.with_file_name("QUALIFICATION.json"))?;
+    validate_release_qualification(exe, version, open_release_qualification(exe)?)
+}
+
+fn open_release_qualification(exe: &Path) -> Result<std::io::Take<File>> {
+    let report = File::open(exe.with_file_name(RELEASE_QUALIFICATION_FILE))?;
     let metadata = report.metadata()?;
-    const MAX_REPORT_BYTES: u64 = 32 * 1024 * 1024;
     ensure!(
         metadata.is_file() && metadata.len() <= MAX_REPORT_BYTES,
         "invalid qualification report size"
     );
-    let record: ReleaseQualification =
-        serde_json::from_reader(BufReader::new(report.take(MAX_REPORT_BYTES + 1)))?;
+    Ok(report.take(MAX_REPORT_BYTES + 1))
+}
+
+fn validate_release_qualification(
+    exe: &Path,
+    version: &str,
+    report: impl Read,
+) -> Result<ReleaseQualification> {
+    let record: ReleaseQualification = serde_json::from_reader(BufReader::new(report))?;
     ensure!(
         record.schema == 1 && record.candidate.tag == version,
         "qualification schema or version differs"
@@ -82,6 +121,39 @@ fn read_release_qualification(exe: &Path, version: &str) -> Result<ReleaseQualif
         "qualification executable hash differs"
     );
     Ok(record)
+}
+
+/// Place the original report beside the converter that WinRE will launch.
+/// Keep only a complete report that identifies the staged executable.
+#[cfg(any(windows, test))]
+pub(crate) fn stage_release_qualification(
+    source_exe: &Path,
+    staged_exe: &Path,
+    version: &str,
+) -> Result<()> {
+    use std::io::Seek;
+
+    let mut source = open_release_qualification(source_exe)?;
+    let path = staged_exe.with_file_name(RELEASE_QUALIFICATION_FILE);
+    let mut staged = File::options()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    let checked = (|| -> Result<()> {
+        ensure!(
+            std::io::copy(&mut source, &mut staged)? <= MAX_REPORT_BYTES,
+            "invalid qualification report size"
+        );
+        staged.rewind()?;
+        validate_release_qualification(staged_exe, version, &mut staged)?;
+        Ok(())
+    })();
+    drop(staged);
+    if checked.is_err() {
+        let _ = std::fs::remove_file(path);
+    }
+    checked
 }
 
 /// Load a bounded registry. Historical artifact/device paths are not opened.
@@ -784,6 +856,83 @@ mod tests {
         assert!(read_release_qualification(&exe, "0.0.5").is_err());
     }
     use super::*;
+
+    #[test]
+    fn winre_staging_keeps_only_evidence_for_the_staged_converter() {
+        let package = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let source = package.path().join("ntfs2refs.exe");
+        let staged = work.path().join("ntfs2refs.exe");
+        let source_report = source.with_file_name(RELEASE_QUALIFICATION_FILE);
+        let staged_report = staged.with_file_name(RELEASE_QUALIFICATION_FILE);
+        let contents = b"candidate executable";
+        std::fs::write(&source, contents).unwrap();
+        std::fs::write(&staged, contents).unwrap();
+        assert!(stage_release_qualification(&source, &staged, "0.0.5").is_err());
+        assert!(!staged_report.exists());
+
+        let report = serde_json::json!({
+            "schema": 1,
+            "candidate": {
+                "tag": "0.0.5",
+                "commit": "a".repeat(40),
+                "hashes": { "ntfs2refs.exe": hex::encode(Sha256::digest(contents)) },
+            },
+            "profiles": [],
+            "recovery": [{"case_id": "retained-in-the-original-report"}],
+        })
+        .to_string();
+        std::fs::write(&source_report, &report).unwrap();
+
+        std::fs::write(&staged, b"different executable").unwrap();
+        assert!(stage_release_qualification(&source, &staged, "0.0.5").is_err());
+        assert!(!staged_report.exists());
+
+        std::fs::write(&staged, contents).unwrap();
+        assert!(stage_release_qualification(&source, &staged, "0.0.4").is_err());
+        assert!(!staged_report.exists());
+        stage_release_qualification(&source, &staged, "0.0.5").unwrap();
+        assert_eq!(std::fs::read_to_string(&staged_report).unwrap(), report);
+        assert!(read_release_qualification(&staged, "0.0.5").is_ok());
+        assert!(stage_release_qualification(&source, &staged, "0.0.5").is_err());
+        assert_eq!(std::fs::read_to_string(&staged_report).unwrap(), report);
+    }
+
+    #[test]
+    fn a_release_boot_case_matches_both_files_and_target_geometry() {
+        let expected = &crate::boot_profile::QUALIFIED[0];
+        let mut row = serde_json::json!({
+            "case_id": "full-system", "route": "boot", "windows_build": 26300,
+            "windows_edition": 48, "refs_version": "3.14",
+            "target_format": expected.target_format, "target_cluster_bytes": expected.cluster_bytes,
+        });
+        let matches = |value| {
+            serde_json::from_value::<ReleaseProfile>(value)
+                .unwrap()
+                .matches_boot_profile(expected)
+        };
+        assert!(!matches(row.clone()));
+        row["boot_files"] = serde_json::json!({
+            "winload_efi_sha256": expected.winload_efi_sha256,
+            "refs_sys_sha256": expected.refs_sys_sha256,
+        });
+        assert!(matches(row.clone()));
+        for component in ["winload_efi_sha256", "refs_sys_sha256"] {
+            let mut changed = row.clone();
+            changed["boot_files"][component] = serde_json::json!("0".repeat(64));
+            assert!(!matches(changed));
+        }
+        for (field, value) in [
+            ("route", serde_json::json!("data")),
+            ("target_cluster_bytes", serde_json::json!(65536)),
+            ("target_format", serde_json::json!("standard")),
+            ("refs_version", serde_json::json!("3.15")),
+        ] {
+            let mut changed = row.clone();
+            changed[field] = value;
+            assert!(!matches(changed));
+        }
+    }
 
     #[test]
     fn embedded_registry_is_typed_and_does_not_inherit_unrecorded_stages() {

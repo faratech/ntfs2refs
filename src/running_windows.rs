@@ -472,8 +472,17 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
         )
         .context("copying boot.sdi from the running Windows")?;
         let exe = std::env::current_exe()?;
-        fs::copy(&exe, directory.join("ntfs2refs.exe"))
-            .with_context(|| format!("copying {}", exe.display()))?;
+        let staged_exe = directory.join("ntfs2refs.exe");
+        fs::copy(&exe, &staged_exe).with_context(|| format!("copying {}", exe.display()))?;
+        if request.diagnose {
+            // Qualification is informational. The child reports unavailable
+            // evidence if the package supplied no matching report.
+            let _ = crate::capability_evidence::stage_release_qualification(
+                &exe,
+                &staged_exe,
+                env!("CARGO_PKG_VERSION"),
+            );
+        }
 
         // The boot partition's own store: the recovery environment first and
         // the default, Windows second.

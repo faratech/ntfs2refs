@@ -162,6 +162,9 @@ failure on the volume.
 
 A diagnose run of a data volume makes the check of `--check` first, as a
 conversion does, and stops there if that refuses the volume.
+A boot-volume diagnosis reports whether the release exercised the exact
+loader and ReFS driver profile and gives the case IDs in the adjacent
+`QUALIFICATION.json` when available.
 
 A diagnosis never shrinks a partition, and the ReFS file system has to be
 built at the length the partition has when it is converted. So where a
@@ -441,6 +444,10 @@ What it needs beside what every conversion needs:
   setting; it adds its own entry to Windows' boot configuration and removes
   the selection again.
 
+Before confirmation, the restart route reports whether release qualification
+exercised the selected Windows and ReFS profile and points to the matching
+case IDs in the adjacent `QUALIFICATION.json` when available.
+
 What happens:
 
 1. In Windows the run builds the new file system and its recovery records in
@@ -540,8 +547,9 @@ it, and `S:` is working storage on a third place.
 
 This is admitted for one profile, which `ntfs2refs capabilities` lists: the
 Windows 11 build 26300 whose `winload.efi` and `refs.sys` have the listed
-checksums, converted by a running Windows with the identical kernel, to a
-Dev Drive with 4 KiB clusters. Any other installation is refused before
+checksums. The converting Windows must have an identical kernel or a ReFS
+driver from the same Windows build. The target is a Dev Drive with 4 KiB
+clusters. Any other installation is refused before
 anything is written. In the lab that installation was converted, started from
 its own disk with no other disk attached and Secure Boot on, reached the
 desktop, and was then used: `sfc /scannow` and a DISM component-store scan

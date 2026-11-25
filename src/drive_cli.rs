@@ -835,6 +835,9 @@ mod windows {
             .volume_serial
             .map(crate::confirmation::format_volume_serial)
             .context("the volume's serial number could not be read")?;
+        let windows = n2r_win32::current_windows_directory()?;
+        super::boot::require_qualified_profile(&windows)
+            .context("The running Windows boot profile check failed. Nothing was changed.")?;
         // Working storage, measured in the lab on a volume with 19.6 GiB in
         // use: the shadow and its capture take about twice that, and the run
         // keeps a quarter of what is free (at most 16 GiB) untouched besides.
@@ -1319,7 +1322,7 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                 !n2r_win32::mbr_layout::is_mbr_disk(&before.binding.identity.disk_guid),
                 "the selected volume's disk is MBR, and the converter takes volumes on GPT disks only. Nothing was changed."
             );
-            return super::partition::convert(&args, selected, before, &authority);
+            return super::partition::convert(&args, selected, before, windows, &authority);
         }
         ensure!(
             args.controlled_post_flush_pause_nonce.is_none()
@@ -1446,7 +1449,10 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             let decision = super::boot::geometry_decision(partition_bytes)?;
             if args.windows_boot_volume {
                 super::boot::admit_geometry(decision, partition_bytes, mode)?;
-                super::boot::validate(&before.binding)?;
+                let profile = super::boot::validate(&before.binding)?;
+                if mode == crate::execution_mode::ExecutionMode::Diagnose {
+                    print_boot_qualification(profile);
+                }
             }
             Some(decision)
         };
@@ -1782,6 +1788,83 @@ The machine restarts, possibly more than once. Do not switch it off while the co
         }
     }
 
+    fn print_boot_qualification(profile: &crate::boot_profile::BootProfile) {
+        let Ok(release) = crate::capability_evidence::release_qualification() else {
+            println!("Release qualification evidence is unavailable for this executable.");
+            return;
+        };
+        let mut cases = release
+            .profiles
+            .iter()
+            .filter(|row| row.matches_boot_profile(profile))
+            .map(|row| clean(&row.case_id))
+            .collect::<Vec<_>>();
+        cases.sort_unstable();
+        cases.dedup();
+        if cases.is_empty() {
+            println!("The release qualification has no case for this exact Windows boot profile.");
+        } else {
+            println!(
+                "Release qualification exercised this Windows boot profile. See adjacent QUALIFICATION.json for case IDs {}.",
+                cases.join(", ")
+            );
+        }
+    }
+
+    pub(super) fn print_target_qualification(
+        route: &str,
+        windows: [u32; 3],
+        target_format: &str,
+        target_cluster: u64,
+    ) {
+        let qualification = crate::capability_evidence::release_qualification().ok();
+        let edition = n2r_win32::run_environment::windows_edition(windows).ok();
+        let evidence = qualification
+            .as_ref()
+            .map(|record| record.profiles.as_slice())
+            .zip(edition);
+        println!(
+            "{}",
+            target_qualification_line(evidence, route, windows[2], target_format, target_cluster)
+        );
+    }
+
+    pub(super) fn target_qualification_line(
+        evidence: Option<(&[crate::capability_evidence::ReleaseProfile], u32)>,
+        route: &str,
+        build: u32,
+        target_format: &str,
+        target_cluster: u64,
+    ) -> String {
+        let Some((profiles, edition)) = evidence else {
+            return "Release qualification evidence is unavailable for this executable.".into();
+        };
+        let (mut versions, mut cases): (Vec<_>, Vec<_>) = profiles
+            .iter()
+            .filter(|row| {
+                row.route == route
+                    && row.windows_build == build
+                    && row.windows_edition == edition
+                    && row.target_format == target_format
+                    && u64::from(row.target_cluster_bytes) == target_cluster
+            })
+            .map(|row| (clean(&row.refs_version), clean(&row.case_id)))
+            .unzip();
+        if versions.is_empty() {
+            return "This Windows and target profile was not exercised by the release qualification."
+                .into();
+        }
+        versions.sort_unstable();
+        versions.dedup();
+        cases.sort_unstable();
+        cases.dedup();
+        format!(
+            "Release qualification exercised this Windows and target profile with ReFS {}. See adjacent QUALIFICATION.json for case IDs {}.",
+            versions.join(", "),
+            cases.join(", ")
+        )
+    }
+
     /// `--check`: reads the volume while it stays online and in use, and
     /// says what a conversion would refuse and what it would take.
     fn check(
@@ -1948,34 +2031,7 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             },
             target_cluster / 1024
         );
-        if let (Ok(qualification), Ok(edition)) = (
-            crate::capability_evidence::release_qualification(),
-            n2r_win32::run_environment::windows_edition(windows),
-        ) {
-            let format = target_format.to_string();
-            let profiles = qualification.profiles.iter().filter(|row| {
-                row.route == "data"
-                    && row.windows_build == windows[2]
-                    && row.windows_edition == edition
-                    && row.target_format == format
-                    && u64::from(row.target_cluster_bytes) == target_cluster
-            });
-            let mut versions: Vec<&str> = profiles.map(|row| row.refs_version.as_str()).collect();
-            versions.sort_unstable();
-            versions.dedup();
-            if versions.is_empty() {
-                println!(
-                    "This Windows and target profile was not exercised by the release qualification."
-                );
-            } else {
-                println!(
-                    "Release qualification exercised this Windows and target profile with ReFS {} (QUALIFICATION.json).",
-                    versions.join(", ")
-                );
-            }
-        } else {
-            println!("Release qualification evidence is unavailable for this executable.");
-        }
+        print_target_qualification("data", windows, &target_format.to_string(), target_cluster);
         if let super::boot::GeometryDecision::Shrink {
             target_bytes,
             shrink_bytes,
@@ -2436,6 +2492,116 @@ The machine restarts, possibly more than once. Do not switch it off while the co
 mod tests {
     use super::*;
     use crate::execution_mode::ExecutionMode;
+
+    #[cfg(windows)]
+    #[test]
+    fn data_preflight_names_the_matching_candidate_evidence() {
+        use crate::capability_evidence::ReleaseProfile;
+
+        let data = |case_id: &str| ReleaseProfile {
+            case_id: case_id.into(),
+            route: "data".into(),
+            windows_build: 26300,
+            windows_edition: 48,
+            refs_version: "3.14".into(),
+            target_format: "dev-drive".into(),
+            target_cluster_bytes: 4096,
+            boot_files: None,
+        };
+        let profiles = [
+            data("lived-in"),
+            data("lived-in"),
+            data("converted-idle"),
+            ReleaseProfile {
+                route: "boot".into(),
+                ..data("full-system")
+            },
+            ReleaseProfile {
+                route: "restart".into(),
+                ..data("restart-w11-postflush-resume")
+            },
+            ReleaseProfile {
+                target_cluster_bytes: 65536,
+                ..data("lived-in-64k")
+            },
+        ];
+        assert_eq!(
+            windows::target_qualification_line(
+                Some((&profiles, 48)),
+                "data",
+                26300,
+                "dev-drive",
+                4096
+            ),
+            "Release qualification exercised this Windows and target profile with ReFS 3.14. See adjacent QUALIFICATION.json for case IDs converted-idle, lived-in."
+        );
+        assert_eq!(
+            windows::target_qualification_line(
+                Some((&profiles, 79)),
+                "data",
+                26300,
+                "dev-drive",
+                4096
+            ),
+            "This Windows and target profile was not exercised by the release qualification."
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn restart_preflight_reports_the_selected_target_and_route() {
+        use crate::capability_evidence::ReleaseProfile;
+
+        let restart = |case_id: &str, format: &str| ReleaseProfile {
+            case_id: case_id.into(),
+            route: "restart".into(),
+            windows_build: 26300,
+            windows_edition: 48,
+            refs_version: "3.14".into(),
+            target_format: format.into(),
+            target_cluster_bytes: 4096,
+            boot_files: None,
+        };
+        let profiles = [
+            restart("restart-w11-postflush-resume", "dev-drive"),
+            restart("restart-standard", "standard"),
+            ReleaseProfile {
+                route: "data".into(),
+                ..restart("lived-in", "dev-drive")
+            },
+            ReleaseProfile {
+                target_cluster_bytes: 65536,
+                ..restart("other-allocation-unit", "dev-drive")
+            },
+        ];
+        let line = |build, edition, target| {
+            windows::target_qualification_line(
+                Some((&profiles, edition)),
+                "restart",
+                build,
+                target,
+                4096,
+            )
+        };
+        assert_eq!(
+            line(26300, 48, "dev-drive"),
+            "Release qualification exercised this Windows and target profile with ReFS 3.14. See adjacent QUALIFICATION.json for case IDs restart-w11-postflush-resume."
+        );
+        assert_eq!(
+            line(26300, 48, "standard"),
+            "Release qualification exercised this Windows and target profile with ReFS 3.14. See adjacent QUALIFICATION.json for case IDs restart-standard."
+        );
+        for mismatch in [line(26100, 48, "dev-drive"), line(26300, 79, "standard")] {
+            assert_eq!(
+                mismatch,
+                "This Windows and target profile was not exercised by the release qualification."
+            );
+        }
+        assert_eq!(
+            windows::target_qualification_line(None, "restart", 26300, "dev-drive", 4096),
+            "Release qualification evidence is unavailable for this executable."
+        );
+    }
 
     #[cfg(windows)]
     #[test]

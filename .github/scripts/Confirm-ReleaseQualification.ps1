@@ -133,10 +133,23 @@ if ($indexed['restart-refs-refusal'].working_filesystem -cne 'ReFS' -or $indexed
     throw 'Incomplete ReFS working storage refusal evidence'
 }
 $boot = $indexed['full-system']
-$validBootFiles = @($boot.boot.signatures | Where-Object { $_.status -eq 'Valid' -and $_.signer -match '(?:^|,\s*)O=Microsoft Corporation(?:,|$)' } | ForEach-Object file)
 if ($boot.manifest -cne 'identical' -or $boot.outcome -notmatch 'BOOTED-ON-REFS$' -or $boot.refs -ne '3.14' -or
-    $boot.boot.filesystem -ne 'ReFS' -or $boot.boot.disk -ne 0 -or @($boot.boot.disks).Count -ne 1 -or $boot.boot.partition -ne 3 -or $boot.boot.cluster_bytes -ne 4096 -or -not $boot.boot.secure_boot -or
-    'System32\winload.efi' -notin $validBootFiles -or 'System32\drivers\refs.sys' -notin $validBootFiles) { throw 'Full Windows boot proof is incomplete' }
+    $boot.boot.filesystem -ne 'ReFS' -or $boot.boot.disk -ne 0 -or @($boot.boot.disks).Count -ne 1 -or $boot.boot.partition -ne 3 -or $boot.boot.cluster_bytes -ne 4096 -or -not $boot.boot.secure_boot) { throw 'Full Windows boot proof is incomplete' }
+$bootComponents = [ordered]@{ 'System32\winload.efi' = 'winload_efi_sha256'; 'System32\drivers\refs.sys' = 'refs_sys_sha256' }
+$bootFiles = [ordered]@{}
+foreach ($file in $bootComponents.Keys) {
+    $items = @($boot.boot.signatures | Where-Object file -CEQ $file)
+    if ($items.Count -ne 1 -or $items[0].status -cne 'Valid' -or
+        $items[0].signer -notmatch '(?:^|,\s*)O=Microsoft Corporation(?:,|$)' -or $items[0].sha256 -cnotmatch '^[a-f0-9]{64}$') {
+        throw "Full Windows boot proof is incomplete for $file"
+    }
+    $bootFiles[$bootComponents[$file]] = $items[0].sha256
+}
+if ($boot.route -cne 'boot' -or [string]$boot.windows -cne [string]$boot.boot.build -or
+    $boot.windows_edition -ne $boot.boot.windows_edition -or $boot.refs -cne $boot.boot.refs_version -or
+    $boot.observed_target_clusters -ne $boot.boot.cluster_bytes -or $boot.observed_target_format -cne 'dev-drive') {
+    throw 'Full Windows boot platform differs from the observed boot'
+}
 
 $recoveryCases = @(foreach ($row in $lab.cases | Where-Object { $_.interruption } | Sort-Object { $_.route }, { $_.verify }, { $_.case_id }) {
     $kind = if ($row.simulated_torn_marker) { "$($row.interruption), simulated torn marker" } else { $row.interruption }
@@ -168,11 +181,13 @@ $profiles = @(foreach ($row in $lab.cases | Sort-Object { $_.case_id }) {
         $row.manifest -cne 'identical' -or "$($row.windows)" -notmatch '^\d+$' -or -not $row.windows_edition -or
         $row.refs -notmatch '^\d+\.\d+$' -or $row.observed_target_format -notin 'standard', 'dev-drive' -or
         $row.observed_target_clusters -notin 4096, 65536) { continue }
-    @{
+    $profile = @{
         case_id = $row.case_id; route = $row.route; windows_build = [uint32]$row.windows
         windows_edition = [uint32]$row.windows_edition; refs_version = $row.refs
         target_format = $row.observed_target_format; target_cluster_bytes = [uint32]$row.observed_target_clusters
     }
+    if ($row.case_id -ceq 'full-system') { $profile.boot_files = $bootFiles }
+    $profile
 })
 foreach ($case in 'full-system', 'restart-w11-postflush-resume') {
     if ($case -cnotin $profiles.case_id) { throw "Missing observed platform profile for $case" }

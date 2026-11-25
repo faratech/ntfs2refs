@@ -120,6 +120,7 @@ pub(super) fn convert(
     args: &DriveArgs,
     selected: PartitionSelection,
     before: VolumeDiscovery,
+    windows_version: [u32; 3],
     _authority: &crate::execution_mode::SourceChangeAuthority,
 ) -> Result<u8> {
     ensure!(
@@ -238,6 +239,12 @@ pub(super) fn convert(
     );
     println!(
         "This experimental conversion restarts this PC into recovery, converts only the selected data partition, then returns to Windows. Keep the recovery disk connected until completion."
+    );
+    windows::print_target_qualification(
+        "restart",
+        windows_version,
+        &format.to_string(),
+        n2r_win32::target_cluster::DEFAULT_BYTES,
     );
     if !windows::confirm("Convert this NTFS data partition to ReFS and restart this PC? [y/N]")? {
         println!("Cancelled. No conversion started.");

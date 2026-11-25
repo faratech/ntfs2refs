@@ -570,7 +570,30 @@ try{
 }catch{$message=$_.Exception.Message;$id=[string]$_.FullyQualifiedErrorId;if($null-ne$request){try{$after=State}catch{}};Emit @{success=$false;resize_attempted=$attempted;before=$before;after=$after;error=$message.Substring(0,[Math]::Min(4096,$message.Length));error_id=$id.Substring(0,[Math]::Min(256,$id.Length));raw_source_writes=$false;source_may_already_be_resized=$attempted};exit 1}
 "#;
 
-pub(super) fn validate(binding: &GeneralDiskBinding) -> Result<()> {
+/// Read the installed loader and ReFS driver before admitting a boot profile.
+/// Conversion still validates the offline installation and its control OS.
+pub(super) fn require_qualified_profile(
+    root: &Path,
+) -> Result<&'static crate::boot_profile::BootProfile> {
+    let component_hash = |relative| {
+        let path = root.join(relative);
+        hash(&path)
+            .with_context(|| format!("could not read Windows boot component {}", path.display()))
+    };
+    let winload = component_hash("System32\\winload.efi")?;
+    let refs = component_hash("System32\\drivers\\refs.sys")?;
+    crate::boot_profile::matching(&winload, &refs).with_context(|| {
+        format!(
+            "Windows at {} is outside every qualified boot profile. System32\\winload.efi SHA-256 is {winload}. System32\\drivers\\refs.sys SHA-256 is {refs}. Qualified profiles are {}.",
+            root.display(),
+            crate::boot_profile::qualified_ids()
+        )
+    })
+}
+
+pub(super) fn validate(
+    binding: &GeneralDiskBinding,
+) -> Result<&'static crate::boot_profile::BootProfile> {
     ensure!(
         binding.layout_profile == GeneralDiskLayoutProfile::OfflineWindows,
         "offline Windows topology required"
@@ -592,17 +615,7 @@ pub(super) fn validate(binding: &GeneralDiskBinding) -> Result<()> {
         );
         held.push(file);
     }
-    // The loader and the ReFS driver that will boot the converted volume must
-    // be exactly those of a qualified profile. The same table is what
-    // `capabilities` reports.
-    let winload = hash(&root.join("System32\\winload.efi"))?;
-    let refs = hash(&root.join("System32\\drivers\\refs.sys"))?;
-    let profile = crate::boot_profile::matching(&winload, &refs).with_context(|| {
-        format!(
-            "offline Windows is outside every qualified boot profile: System32\\winload.efi is {winload}, System32\\drivers\\refs.sys is {refs}; qualified profiles: {}",
-            crate::boot_profile::qualified_ids()
-        )
-    })?;
+    let profile = require_qualified_profile(&root)?;
     ensure!(
         profile.geometry_unit_bytes == REFS_GEOMETRY_UNIT,
         "boot profile {} expects a different ReFS geometry unit",
@@ -642,18 +655,18 @@ pub(super) fn validate(binding: &GeneralDiskBinding) -> Result<()> {
     }
     match refs_build {
         None => println!(
-            "Offline Windows boot profile: demonstrated Windows 11 loader/ReFS driver ({}); matching recovery kernel.",
+            "Offline Windows boot profile: admitted loader and ReFS driver ({}). The recovery kernel is identical.",
             profile.id
         ),
         Some((offline, converting)) => println!(
-            "Offline Windows boot profile: demonstrated Windows 11 loader/ReFS driver ({}); converting ReFS driver {converting} of the same build as the offline Windows' {offline}.",
+            "Offline Windows boot profile: admitted loader and ReFS driver ({}). The converting ReFS driver {converting} has the same build as the offline driver {offline}.",
             profile.id
         ),
     }
     println!(
         "The running Windows disk remains excluded. EFI, MSR and WinRE partitions are preserved."
     );
-    Ok(())
+    Ok(profile)
 }
 fn ordinary(path: &Path) -> Result<File> {
     let file = OpenOptions::new()
@@ -664,7 +677,7 @@ fn ordinary(path: &Path) -> Result<File> {
     let meta = file.metadata()?;
     ensure!(
         meta.is_file() && meta.len() > 0 && meta.file_attributes() & 0x400 == 0,
-        "ordinary offline Windows component required"
+        "ordinary Windows component required"
     );
     Ok(file)
 }
@@ -717,6 +730,38 @@ mod tests {
                 profile.id
             );
         }
+    }
+
+    #[test]
+    fn boot_profile_preflight_refuses_an_unmatched_loader_and_driver() {
+        let windows = tempfile::tempdir().unwrap();
+        let system = windows.path().join("System32");
+        let drivers = system.join("drivers");
+        std::fs::create_dir_all(&drivers).unwrap();
+        let loader = b"MZ unqualified loader";
+        let refs = b"MZ unqualified ReFS driver";
+        std::fs::write(system.join("winload.efi"), loader).unwrap();
+        std::fs::write(drivers.join("refs.sys"), refs).unwrap();
+
+        let error = require_qualified_profile(windows.path())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("outside every qualified boot profile"),
+            "{error}"
+        );
+        assert!(
+            error.contains(&hex::encode(Sha256::digest(loader))),
+            "{error}"
+        );
+        assert!(
+            error.contains(&hex::encode(Sha256::digest(refs))),
+            "{error}"
+        );
+        assert!(
+            error.contains(&crate::boot_profile::qualified_ids()),
+            "{error}"
+        );
     }
 
     #[test]

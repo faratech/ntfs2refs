@@ -123,7 +123,11 @@ try {
     $boot.route = 'boot'; $boot.windows = '26300'; $boot.windows_edition = 48
     $boot.observed_target_format = 'dev-drive'; $boot.observed_target_clusters = 4096
     $boot.boot = @{ filesystem = 'ReFS'; disk = 0; disks = @(@{ Number = 0 }); partition = 3; cluster_bytes = 4096; secure_boot = $true
-        signatures = @('System32\winload.efi', 'System32\drivers\refs.sys' | ForEach-Object { @{ file = $_; status = 'Valid'; signer = 'CN=Microsoft Windows, O=Microsoft Corporation' } }) }
+        build = '26300'; windows_edition = 48; refs_version = '3.14'
+        signatures = @(
+            @{ file = 'System32\winload.efi'; status = 'Valid'; signer = 'CN=Microsoft Windows, O=Microsoft Corporation'; sha256 = '1' * 64 },
+            @{ file = 'System32\drivers\refs.sys'; status = 'Valid'; signer = 'CN=Microsoft Windows, O=Microsoft Corporation'; sha256 = '2' * 64 }
+        ) }
     $data = $cases | Where-Object { $_.case_id -eq 'lived-in' }
     $data.route = 'data'; $data.windows = '26300'; $data.windows_edition = 48; $data.refs = '3.14'
     $data.observed_target_format = 'dev-drive'; $data.observed_target_clusters = 4096
@@ -175,6 +179,11 @@ try {
     Invoke-Gate 'missing-event-131-preflight' 'Incomplete ReFS event 131 fixture evidence'
     $eventFixture.integrity_fixture.check_agrees = $true
     $record = Get-Content -LiteralPath (Join-Path $root 'all-valid/QUALIFICATION.json') -Raw | ConvertFrom-Json
+    $bootProfile = $record.profiles | Where-Object case_id -CEQ 'full-system'
+    if ($bootProfile.boot_files.winload_efi_sha256 -cne $boot.boot.signatures[0].sha256 -or
+        $bootProfile.boot_files.refs_sys_sha256 -cne $boot.boot.signatures[1].sha256) {
+        throw 'The Windows boot profile lost the observed loader or ReFS driver hash'
+    }
     $report = Get-Content -LiteralPath (Join-Path $root 'all-valid/QUALIFICATION.md') -Raw
     $restart = $record.recovery | Where-Object case_id -EQ 'restart-postflush-resume'
     if ($restart.postflush.native_bytes_written -ne 4096 -or $restart.boot.filesystem -cne 'NTFS' -or
@@ -277,6 +286,32 @@ try {
     Save-Json $lab $labPath
     Invoke-Gate 'wrong-boot-signature' 'Full Windows boot proof is incomplete'
     $boot.boot.signatures[1].file = 'System32\drivers\refs.sys'
+    $boot.boot.signatures[1].sha256 = $null
+    Save-Json $lab $labPath
+    Invoke-Gate 'missing-boot-driver-hash' 'Full Windows boot proof is incomplete'
+    $boot.boot.signatures[1].sha256 = '2' * 64
+    $signatures = $boot.boot.signatures
+    $boot.boot.signatures += $signatures[0]
+    Save-Json $lab $labPath
+    Invoke-Gate 'ambiguous-boot-loader-hash' 'Full Windows boot proof is incomplete'
+    $boot.boot.signatures = $signatures
+
+    foreach ($mismatch in @(
+        @{ field = 'windows'; value = '26100' },
+        @{ field = 'windows_edition'; value = 79 },
+        @{ field = 'observed_target_format'; value = 'standard' },
+        @{ field = 'observed_target_clusters'; value = 65536 }
+    )) {
+        $prior = $boot[$mismatch.field]
+        $boot[$mismatch.field] = $mismatch.value
+        Save-Json $lab $labPath
+        Invoke-Gate "wrong-boot-profile-$($mismatch.field)" 'Full Windows boot platform differs from the observed boot'
+        $boot[$mismatch.field] = $prior
+    }
+    $boot.boot.refs_version = '3.15'
+    Save-Json $lab $labPath
+    Invoke-Gate 'wrong-observed-boot-refs-version' 'Full Windows boot platform differs from the observed boot'
+    $boot.boot.refs_version = '3.14'
 
     $restartCancel = $cases | Where-Object { $_.case_id -eq 'restart-cancel' }
     $restartCancel.working_filesystem = 'ReFS'

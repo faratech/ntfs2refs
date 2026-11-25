@@ -131,14 +131,12 @@ $verifyMode = if ($Verify) { $Verify } else {
     else { 'fast' }
 }
 if ($TearMarker) {
-    # Where each mode's run is held with its handoff marker either whole and
-    # nothing after it done (thorough), or about to be written (fast).
-    $tearAt = @{ 'apply-handoff-durable' = 'thorough'; 'verify-passed' = 'fast' }
-    if (-not $InterruptAt -or -not $tearAt.ContainsKey($InterruptAt) -or $RecoverMode -eq 'none') {
-        throw '-TearMarker handoff needs -InterruptAt apply-handoff-durable (with --verify thorough) or verify-passed (with --verify fast, the default), and a -RecoverMode: nothing after the marker may be done when it is torn'
-    }
-    if ($tearAt[$InterruptAt] -ne $verifyMode) {
-        throw "-TearMarker handoff with -InterruptAt $InterruptAt needs --verify $($tearAt[$InterruptAt]); this run would use --verify $verifyMode and never reach that point"
+    # New conversions (both fast and thorough) verify before writing handoff,
+    # so `verify-passed` is valid for either mode. `apply-handoff-durable`
+    # remains valid for legacy thorough journals that handed off during apply.
+    $validTearPoints = @('verify-passed', 'apply-handoff-durable')
+    if (-not $InterruptAt -or $InterruptAt -notin $validTearPoints -or $RecoverMode -eq 'none') {
+        throw '-TearMarker handoff needs -InterruptAt verify-passed (new fast or thorough conversions) or apply-handoff-durable (legacy thorough), and a -RecoverMode: nothing after the marker may be done when it is torn'
     }
 }
 $case = Join-Path $workspace ".lab\hyperv\attempts\$Name"

@@ -600,13 +600,12 @@ any.
 
 This finishes the conversion. With `--rollback` added it puts the NTFS volume
 back as it was, which is possible up to the handoff: the point at which the
-journal records the conversion as committed. When that is depends on the
-[verification](#verification): with `--verify fast`, the default, once the
-converted volume has passed its verification; with `--verify thorough`, as
-soon as every new sector is on the disk, before the verification. After the
-handoff recovery only finishes. Once the converted volume has been used as
-ReFS, the journal's old content no longer matches it and must not be put
-back.
+journal records the conversion as committed. For new whole-disk conversions (in
+both `--verify fast` and `--verify thorough`), the handoff is written only after
+the converted volume has passed its read-only verification; journals from older
+releases recover using the lifecycle they recorded. After the handoff recovery
+only finishes. Once the converted volume has been used as ReFS, the journal's
+old content no longer matches it and must not be put back.
 
 If the machine lost power and the printed command with it: the directory is
 the `conversion` folder of the run under the working directory you gave
@@ -735,7 +734,7 @@ differences it accepts.
 | `--recover <dir> --recovery-sha256 <sum>` `[--rollback]` | Finishes, or undoes, an interrupted run |
 | `--review` | Stops before the conversion is committed, with the volume mounted read-only as ReFS; see below |
 | `--yes` `--volume-serial XXXX-XXXX` | Runs without asking; see below |
-| `--verify fast\|thorough` | What is verified, and when the conversion is committed: `fast` (the default) proves data that stays in place by its extents and commits after the verification; `thorough` reads and hashes every stream in full and commits before it |
+| `--verify fast\|thorough` | What is verified: `fast` (the default) proves data that stays in place by its extents; `thorough` reads and hashes every stream in full. Both commit only after the converted volume passes read-only verification |
 | `--recheck-everything` | Repeats the full re-reads at every checkpoint |
 | `--minimize-scratch` | Experimental: less working storage; see below |
 
@@ -829,8 +828,10 @@ it to its run.
   mapping, and each changed range is read again just before it is written.
   Not with `--minimize-scratch`. The earlier spelling
   `--verify-full-content` is still accepted and means the same.
-  It commits as soon as every new sector is written and read back, before
-  the verification: from then on a rollback is closed.
+  Like `--verify fast`, a new whole-disk `--verify thorough` conversion verifies
+  the converted volume read-only before writing the handoff, so rollback stays
+  open if verification fails. Journals from older releases recover using the
+  lifecycle they recorded.
 - **`--recheck-everything`** changes *how often*: the full re-reads happen at
   every checkpoint instead of once at the gate. With `--verify fast` it also
   makes every check a fast run leaves out. Much slower.
@@ -878,10 +879,9 @@ the run printed:
 
 - `--recover <dir> --recovery-sha256 <sum>` commits: the volume is dismounted
   and sealed again, checked against the fingerprint, and the conversion is
-  finished as any other: with `--verify fast` the converted volume is
-  verified and then the handoff is written, with `--verify thorough` the
-  handoff is written and then the volume is verified; then label, letter,
-  online.
+  finished as any other: the converted volume is verified read-only and then
+  the handoff is written (journals from older thorough releases keep the
+  lifecycle they recorded); then label, letter, online.
 - The same with `--rollback` puts NTFS back. The restored volume is then also
   checked against the fingerprint of the source taken before the conversion,
   before it is put online.

@@ -267,3 +267,65 @@ pub(crate) fn failed_before_handoff(
         dir = directory.display()
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verify_before_handoff_rules_distinguish_new_and_legacy_journals() {
+        // New journals (both fast and thorough) record verify_before_handoff = true:
+        // under ApplyIntent with the seal recorded, recovery stays sealed and an
+        // interrupted read-only mount is recognized as reversible.
+        assert!(stays_sealed_in_recovery_environment(
+            true,
+            SelectedLifecycle::ApplyIntent,
+            true
+        ));
+        assert!(!stays_sealed_in_recovery_environment(
+            true,
+            SelectedLifecycle::Handoff,
+            true
+        ));
+        assert!(!stays_sealed_in_recovery_environment(
+            true,
+            SelectedLifecycle::ApplyIntent,
+            false
+        ));
+        assert!(interrupted_verification_left_source_online(
+            true,
+            SelectedLifecycle::ApplyIntent,
+            2,
+            true
+        ));
+        assert!(check_restored_source(
+            true,
+            SelectedLifecycle::ApplyIntent,
+            false
+        ));
+        assert!(!check_restored_source(
+            true,
+            SelectedLifecycle::ApplyIntent,
+            true
+        ));
+
+        // Legacy journals (verify_before_handoff = false) never stay sealed or
+        // adopt the verify-before-handoff online-readonly rule.
+        assert!(!stays_sealed_in_recovery_environment(
+            false,
+            SelectedLifecycle::ApplyIntent,
+            true
+        ));
+        assert!(!interrupted_verification_left_source_online(
+            false,
+            SelectedLifecycle::ApplyIntent,
+            2,
+            true
+        ));
+        assert!(!check_restored_source(
+            false,
+            SelectedLifecycle::ApplyIntent,
+            false
+        ));
+    }
+}

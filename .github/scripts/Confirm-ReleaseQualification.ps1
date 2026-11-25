@@ -54,9 +54,32 @@ if ($lab.identity.schema -ne $identity.schema -or $lab.identity.tag -cne $Tag -o
 foreach ($file in $files) {
     if ($lab.identity.hashes[$file] -cne $identity.hashes[$file]) { throw "Hyper-V qualification hash differs for $file" }
 }
+function Assert-CaseBinaryHash($Row, [string]$Field, [string]$File) {
+    if ($Row[$Field] -isnot [string] -or $Row[$Field] -cne $identity.hashes[$File]) {
+        throw "Hyper-V case $($Row.case_id) hash differs for $File"
+    }
+}
 $indexed = @{}
 foreach ($row in $lab.cases) {
     if (-not $row.case_id -or $indexed.ContainsKey($row.case_id) -or -not $row.passed -or $row.outcome -cne $row.expected) { throw "Failed, duplicate or invalid Hyper-V case $($row.case_id)" }
+    $runningCase = $row.case_id -like 'c-*'
+    $restartCase = $row.case_id -like 'restart-*'
+    $bootOutcome = $row.outcome -cin 'converted-not-booted', 'RESUMED-NOT-BOOTED', 'ROLLED-BACK-NOT-BOOTED',
+        'BOOTED-ON-REFS', 'RESUMED-BOOTED-ON-REFS', 'ROLLED-BACK-BOOTED-ON-NTFS'
+    if (($row.route -ceq 'running') -ne $runningCase -or ($row.route -ceq 'restart') -ne $restartCase -or
+        ($bootOutcome -and $row.route -cne 'boot')) {
+        throw "Unexpected route for Hyper-V case $($row.case_id)"
+    }
+    Assert-CaseBinaryHash $row 'converter_sha256' 'ntfs2refs.exe'
+    if (-not $runningCase) { Assert-CaseBinaryHash $row 'listing_tool_sha256' 'lab-volume-manifest.exe' }
+    if ($restartCase) { Assert-CaseBinaryHash $row 'recovery_sha256' 'ntfs2refs-recovery.exe' }
+    $cleanupMatches = if ($restartCase) {
+        $row.cleanup_outcome -ceq 'working storage retained by harness' -and
+            ($null -eq $row.cleanup_ok -or ($row.cleanup_ok -is [bool] -and $row.cleanup_ok))
+    } elseif ($row.route -ceq 'boot') {
+        $row.cleanup_ok -is [bool] -and $row.cleanup_ok
+    } else { $true }
+    if (-not $cleanupMatches) { throw "Incomplete Hyper-V cleanup evidence for $($row.case_id)" }
     $indexed[$row.case_id] = $row
 }
 $requiredLab = @{

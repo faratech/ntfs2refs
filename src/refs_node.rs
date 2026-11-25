@@ -87,6 +87,99 @@ pub struct NodeBodyObservation {
     pub rows: Vec<NodeRowObservation>,
 }
 
+/// One bounded row and its fields, borrowing the exact bytes that were parsed.
+pub(crate) struct NodeRow<'a> {
+    pub(crate) index: usize,
+    pub(crate) index_entry_offset: usize,
+    pub(crate) relative_offset: u16,
+    pub(crate) page_offset: usize,
+    pub(crate) marker: u16,
+    pub(crate) size: u32,
+    pub(crate) key_offset: u16,
+    pub(crate) key_length: u16,
+    pub(crate) reserved_at_8: u16,
+    pub(crate) value_offset: u16,
+    pub(crate) value_length: u16,
+    pub(crate) reserved_at_14: u16,
+    pub(crate) key_value_overlap: bool,
+    pub(crate) bytes: &'a [u8],
+    pub(crate) key: &'a [u8],
+    pub(crate) value: &'a [u8],
+}
+
+impl NodeRow<'_> {
+    fn observe(self) -> NodeRowObservation {
+        NodeRowObservation {
+            index: self.index,
+            index_entry_offset: self.index_entry_offset,
+            relative_offset: self.relative_offset,
+            page_offset: self.page_offset,
+            marker: self.marker,
+            size: self.size,
+            key_offset: self.key_offset,
+            key_length: self.key_length,
+            reserved_at_8: self.reserved_at_8,
+            value_offset: self.value_offset,
+            value_length: self.value_length,
+            reserved_at_14: self.reserved_at_14,
+            key_value_overlap: self.key_value_overlap,
+            row_bytes_hex: hex::encode(self.bytes),
+            row_sha256: hex::encode(Sha256::digest(self.bytes)),
+            key_sha256: hex::encode(Sha256::digest(self.key)),
+            value_sha256: hex::encode(Sha256::digest(self.value)),
+        }
+    }
+}
+
+struct NodeBody<'a, Row> {
+    node_offset: usize,
+    prefix: &'a [u8],
+    header: &'a [u8],
+    level: u8,
+    flags: u8,
+    index_start: u32,
+    index_end: u32,
+    row_count: u32,
+    rows: Vec<Row>,
+}
+
+impl NodeBody<'_, NodeRowObservation> {
+    fn observe(self) -> NodeBodyObservation {
+        NodeBodyObservation {
+            node_offset: self.node_offset,
+            node_prefix_bytes_hex: hex::encode(self.prefix),
+            node_header_bytes_hex: hex::encode(self.header),
+            node_level: self.level,
+            node_flags: self.flags,
+            index_node: self.flags & 1 != 0,
+            row_index_start_relative: self.index_start,
+            row_index_end_relative: self.index_end,
+            node_row_count: self.row_count,
+            rows: self.rows,
+        }
+    }
+}
+
+pub(crate) struct RootDescriptor {
+    node_offset: usize,
+    size: u16,
+    pub(crate) auxiliary: u16,
+    pub(crate) schema_id: u32,
+    pub(crate) whole_table_row_count: u64,
+    leaf_extent_count: u64,
+}
+
+pub(crate) enum NativeTable {
+    System(u64),
+    Object(u64),
+}
+
+pub(crate) struct NativeNodeRows<'a> {
+    pub(crate) root: Option<RootDescriptor>,
+    pub(crate) level: u8,
+    pub(crate) rows: Vec<NodeRow<'a>>,
+}
+
 fn u16le(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes(bytes[offset..offset + 2].try_into().expect("bounded field"))
 }
@@ -141,6 +234,11 @@ pub fn inspect_root_node(bytes: &[u8]) -> Result<RootNodeObservation> {
 /// authenticates the exact table/volume/page reference before calling. Schema
 /// IDs are observed only; this does not establish their comparison semantics.
 pub fn inspect_system_root_node(bytes: &[u8], table: u64) -> Result<RootNodeObservation> {
+    validate_system_identity(bytes, table, "unsupported authenticated system root")?;
+    decode_root_node(bytes, None)
+}
+
+fn validate_system_identity(bytes: &[u8], table: u64, error: &'static str) -> Result<()> {
     ensure!(
         bytes.len() == PAGE_BYTES
             && &bytes[..4] == b"MSB+"
@@ -148,13 +246,12 @@ pub fn inspect_system_root_node(bytes: &[u8], table: u64) -> Result<RootNodeObse
             && u64le(bytes, 0x40) == 0
             && u64le(bytes, 0x48) == table
             && matches!(table, 1 | 2 | 3 | 4 | 5 | 6 | 14 | 15 | 32 | 33),
-        "unsupported authenticated system root"
+        "{error}"
     );
-    decode_root_node(bytes, None)
+    Ok(())
 }
 
-fn decode_root_node(bytes: &[u8], expected_schema: Option<u32>) -> Result<RootNodeObservation> {
-    let table_id_low = u64le(bytes, 0x48);
+fn decode_root_descriptor(bytes: &[u8], expected_schema: Option<u32>) -> Result<RootDescriptor> {
     let descriptor_size = u16le(bytes, ROOT_OFFSET + 4);
     ensure!(
         usize::from(descriptor_size) == ROOT_DESCRIPTOR_BYTES,
@@ -172,17 +269,29 @@ fn decode_root_node(bytes: &[u8], expected_schema: Option<u32>) -> Result<RootNo
         node_offset >= ROOT_OFFSET + ROOT_DESCRIPTOR_BYTES,
         "node header overlaps page/root descriptor"
     );
-    let node = inspect_node_body(bytes, node_offset)?;
+    Ok(RootDescriptor {
+        node_offset,
+        size: descriptor_size,
+        auxiliary: u16le(bytes, ROOT_OFFSET + 6),
+        schema_id,
+        whole_table_row_count: u64le(bytes, ROOT_OFFSET + 0x20),
+        leaf_extent_count: u64le(bytes, ROOT_OFFSET + 0x18),
+    })
+}
+
+fn decode_root_node(bytes: &[u8], expected_schema: Option<u32>) -> Result<RootNodeObservation> {
+    let root = decode_root_descriptor(bytes, expected_schema)?;
+    let node = inspect_node_body(bytes, root.node_offset)?;
     Ok(RootNodeObservation {
         page_bytes: bytes.len(),
         page_sha256: hex::encode(Sha256::digest(bytes)),
         page_header_bytes_hex: hex::encode(&bytes[..ROOT_OFFSET]),
-        table_id_low,
-        root_descriptor_size: descriptor_size,
-        root_descriptor_auxiliary: u16le(bytes, ROOT_OFFSET + 6),
-        schema_id,
-        whole_table_row_count: u64le(bytes, ROOT_OFFSET + 0x20),
-        leaf_extent_count_observed: u64le(bytes, ROOT_OFFSET + 0x18),
+        table_id_low: u64le(bytes, 0x48),
+        root_descriptor_size: root.size,
+        root_descriptor_auxiliary: root.auxiliary,
+        schema_id: root.schema_id,
+        whole_table_row_count: root.whole_table_row_count,
+        leaf_extent_count_observed: root.leaf_extent_count,
         root_region_bytes_hex: node.node_prefix_bytes_hex,
         node_offset: node.node_offset,
         node_header_bytes_hex: node.node_header_bytes_hex,
@@ -203,6 +312,11 @@ fn decode_root_node(bytes: &[u8], expected_schema: Option<u32>) -> Result<RootNo
 /// Structural root referenced by an authenticated Object Table row. Object
 /// identity and schema semantics still need independent higher-level checks.
 pub fn inspect_object_root_node(bytes: &[u8], object_id: u64) -> Result<RootNodeObservation> {
+    validate_object_identity(bytes, object_id, "object root header or identity differs")?;
+    decode_root_node(bytes, None)
+}
+
+fn validate_object_identity(bytes: &[u8], object_id: u64, error: &'static str) -> Result<()> {
     ensure!(
         bytes.len() == PAGE_BYTES
             && object_id >= 7
@@ -210,9 +324,9 @@ pub fn inspect_object_root_node(bytes: &[u8], object_id: u64) -> Result<RootNode
             && u32le(bytes, 4) == 2
             && u64le(bytes, 0x40) == 0
             && u64le(bytes, 0x48) == object_id,
-        "object root header or identity differs"
+        "{error}"
     );
-    decode_root_node(bytes, None)
+    Ok(())
 }
 
 /// Initial native container-child profile: an eight-byte prefix at 0x50, then
@@ -236,37 +350,63 @@ pub fn inspect_child_node(bytes: &[u8]) -> Result<NodeBodyObservation> {
 
 /// Structural system-child counterpart to `inspect_system_root_node`.
 pub fn inspect_system_child_node(bytes: &[u8], table: u64) -> Result<NodeBodyObservation> {
-    ensure!(
-        bytes.len() == PAGE_BYTES
-            && &bytes[..4] == b"MSB+"
-            && u32le(bytes, 4) == 2
-            && u64le(bytes, 0x40) == 0
-            && u64le(bytes, 0x48) == table
-            && matches!(table, 1 | 2 | 3 | 4 | 5 | 6 | 14 | 15 | 32 | 33),
-        "unsupported authenticated system child"
-    );
+    validate_system_identity(bytes, table, "unsupported authenticated system child")?;
     decode_child_node(bytes)
 }
 
-fn decode_child_node(bytes: &[u8]) -> Result<NodeBodyObservation> {
+fn child_node_offset(bytes: &[u8]) -> Result<usize> {
     ensure!(
         u32le(bytes, ROOT_OFFSET) == 8,
         "unsupported non-root node prefix"
     );
-    inspect_node_body(bytes, ROOT_OFFSET + 8)
+    Ok(ROOT_OFFSET + 8)
+}
+
+fn decode_child_node(bytes: &[u8]) -> Result<NodeBodyObservation> {
+    inspect_node_body(bytes, child_node_offset(bytes)?)
 }
 
 pub fn inspect_object_child_node(bytes: &[u8], object_id: u64) -> Result<NodeBodyObservation> {
-    ensure!(
-        bytes.len() == PAGE_BYTES
-            && object_id >= 7
-            && &bytes[..4] == b"MSB+"
-            && u32le(bytes, 4) == 2
-            && u64le(bytes, 0x40) == 0
-            && u64le(bytes, 0x48) == object_id,
-        "object child header or identity differs"
-    );
+    validate_object_identity(bytes, object_id, "object child header or identity differs")?;
     decode_child_node(bytes)
+}
+
+/// Inspect bounded row slices in a caller-authenticated native table page.
+/// The caller owns checksum, volume and address authentication.
+pub(crate) fn inspect_native_table_rows(
+    bytes: &[u8],
+    table: NativeTable,
+    is_root: bool,
+) -> Result<NativeNodeRows<'_>> {
+    match (table, is_root) {
+        (NativeTable::System(table), true) => {
+            validate_system_identity(bytes, table, "unsupported authenticated system root")?
+        }
+        (NativeTable::System(table), false) => {
+            validate_system_identity(bytes, table, "unsupported authenticated system child")?
+        }
+        (NativeTable::Object(object_id), true) => {
+            validate_object_identity(bytes, object_id, "object root header or identity differs")?
+        }
+        (NativeTable::Object(object_id), false) => {
+            validate_object_identity(bytes, object_id, "object child header or identity differs")?
+        }
+    }
+    let root = if is_root {
+        Some(decode_root_descriptor(bytes, None)?)
+    } else {
+        None
+    };
+    let node_offset = match &root {
+        Some(root) => root.node_offset,
+        None => child_node_offset(bytes)?,
+    };
+    let node = decode_node_body(bytes, node_offset, ROOT_OFFSET, std::convert::identity)?;
+    Ok(NativeNodeRows {
+        root,
+        level: node.level,
+        rows: node.rows,
+    })
 }
 
 pub fn inspect_container_child_node(bytes: &[u8]) -> Result<NodeBodyObservation> {
@@ -274,7 +414,7 @@ pub fn inspect_container_child_node(bytes: &[u8]) -> Result<NodeBodyObservation>
 }
 
 fn inspect_node_body(bytes: &[u8], node_offset: usize) -> Result<NodeBodyObservation> {
-    inspect_node_body_with_prefix(bytes, node_offset, ROOT_OFFSET)
+    Ok(decode_node_body(bytes, node_offset, ROOT_OFFSET, NodeRow::observe)?.observe())
 }
 
 /// A bounded inline node inside an authenticated record's value. Offsets in
@@ -285,14 +425,15 @@ pub fn inspect_embedded_node(bytes: &[u8], node_offset: usize) -> Result<NodeBod
         bytes.len() <= PAGE_BYTES,
         "embedded node exceeds one metadata page"
     );
-    inspect_node_body_with_prefix(bytes, node_offset, 0)
+    Ok(decode_node_body(bytes, node_offset, 0, NodeRow::observe)?.observe())
 }
 
-fn inspect_node_body_with_prefix(
-    bytes: &[u8],
+fn decode_node_body<'a, Row>(
+    bytes: &'a [u8],
     node_offset: usize,
     prefix_start: usize,
-) -> Result<NodeBodyObservation> {
+    mut view: impl FnMut(NodeRow<'a>) -> Row,
+) -> Result<NodeBody<'a, Row>> {
     ensure!(
         node_offset >= prefix_start,
         "node overlaps its prefix origin"
@@ -362,7 +503,7 @@ fn inspect_node_body_with_prefix(
         let value_length = u16le(row, 12);
         let key = row_field(key_offset, key_length, row.len())?;
         let value = row_field(value_offset, value_length, row.len())?;
-        rows.push(NodeRowObservation {
+        rows.push(view(NodeRow {
             index,
             index_entry_offset: entry,
             relative_offset,
@@ -376,23 +517,21 @@ fn inspect_node_body_with_prefix(
             value_length,
             reserved_at_14: u16le(row, 14),
             key_value_overlap: overlaps(&key, &value),
-            row_bytes_hex: hex::encode(row),
-            row_sha256: hex::encode(Sha256::digest(row)),
-            key_sha256: hex::encode(Sha256::digest(&row[key])),
-            value_sha256: hex::encode(Sha256::digest(&row[value])),
-        });
+            bytes: row,
+            key: &row[key],
+            value: &row[value],
+        }));
         spans.push(row_range);
     }
-    Ok(NodeBodyObservation {
+    Ok(NodeBody {
         node_offset,
-        node_prefix_bytes_hex: hex::encode(&bytes[prefix_start..node_offset]),
-        node_header_bytes_hex: hex::encode(header),
-        node_level: level,
-        node_flags: flags,
-        index_node: flags & 1 != 0,
-        row_index_start_relative: index_start,
-        row_index_end_relative: index_end,
-        node_row_count: row_count,
+        prefix: &bytes[prefix_start..node_offset],
+        header,
+        level,
+        flags,
+        index_start,
+        index_end,
+        row_count,
         rows,
     })
 }

@@ -462,6 +462,20 @@ in ten small enough to live in their file record, the tenth of 4 to 36 KiB.
 Every attempt records what its run took, sampled every two seconds: the
 converter's peak memory and the working storage at its largest (`resources`
 in the verdict).
+The verdict also retains each worker's reported ledger peaks and
+`memory-steps:` lines when available. The conversion's ledger appears in
+`resources` and the recovery's in `recovery_resources`. `ledger_complete`
+is true when the worker printed its final memory summary.
+For `manyfiles`, `worker-resources.jsonl` also records each observed converter
+process's handle count, working set, private bytes and cumulative process I/O,
+along with guest committed memory, the guest commit limit and working storage.
+The executable path, process ID and start time distinguish a conversion from
+its recovery. The I/O counters cover all transfers by that process.
+An interrupted `manyfiles` attempt passes the conversion's explicit
+`--memory-limit` to recovery as well.
+When `-SampleStacks` is used on an interrupted run, the last profile written
+before the cut is collected as `interrupted-stacks.txt` when available.
+The recovery writes its own `stacks.txt`.
 
 These are refused, each by name: `shortnames`, `temporary`, `offline`, `efs`,
 `wof` (a `compact /exe` file), `quota`, `casesensitive` (two names in one

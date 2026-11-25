@@ -335,6 +335,33 @@ Windows, most of it the minimal Windows made from the installation media,
 then 54 s away (two restarts and the conversion) before Windows was back
 with the partition as ReFS.
 
+## Evaluating the 100,000-file workload
+
+Three runs used the same 0.0.5 evaluation build on a four-vCPU Server
+2025 build 26100 VM with 8 GiB of RAM. The 50 GiB source used 512-byte
+sectors and 4 KiB NTFS clusters. The target was standard ReFS 3.14 with
+4 KiB clusters. Each before listing contained 100,106 objects, and
+each completed conversion or recovery compared with zero differences.
+
+| Worker | Seconds | Peak sampled handles | Peak sampled private memory | Peak working storage |
+|---|---:|---:|---:|---:|
+| Conversion with the default budget | 769.1 | 200,298 | 2,189 MiB | 4.68 GiB |
+| Conversion with `--memory-limit 1240` | 994.8 | 200,196 | 1,227 MiB | 4.74 GiB |
+| Interrupted conversion with the same limit, through the last sample before the `apply-mid-ranges` cut | 783.2 | 199,368 | 1,230 MiB | 4.92 GiB |
+| Resume with the same limit | 225.5 | 194 | 596 MiB | 4.92 GiB |
+
+The closing shadow walk took 163.9 s with the default budget and 341.3 s
+with the limit. The limited walk processed one object at a time, and most
+stack samples in that step were Windows file opens. This step accounted for
+177.4 s of the 225.7 s added by the limit. Protected volume observation took
+206.7 s of the recovery.
+
+The default run set aside 4,228 MiB at startup and its adaptive reservations
+peaked at 5,380 MiB. The limited conversion and recovery reserved at most
+1,234 and 1,165 MiB respectively. The recorder captures whole-process I/O and
+working-file lengths. The next size series will measure larger conversions
+and recoveries for [#111](https://github.com/faratech/ntfs2refs/issues/111).
+
 ## The cycle: checks and gates
 
 `lab\Invoke-Checks.ps1` is what a commit has to pass as source code, and

@@ -425,6 +425,10 @@ in ten small enough to live in their file record, the tenth of 4 to 36 KiB.
 Every attempt records what its run took, sampled every two seconds: the
 converter's peak memory and the working storage at its largest (`resources`
 in the verdict).
+The verdict also retains each worker's reported ledger peaks and
+`memory-steps:` lines when available. The conversion's ledger appears in
+`resources` and the recovery's in `recovery_resources`. `ledger_complete`
+is true when the worker printed its final memory summary.
 For `manyfiles`, `worker-resources.jsonl` also records each observed converter
 process's handle count, working set, private bytes and cumulative process I/O,
 along with guest committed memory, the guest commit limit and working storage.

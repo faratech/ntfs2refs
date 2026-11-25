@@ -295,6 +295,32 @@ $verdict = [ordered]@{
 }
 function Save-Verdict { [IO.File]::WriteAllText((Join-Path $records 'verdict.json'), ($verdict | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false)) }
 
+function Add-WorkerLedgerEvidence([System.Collections.IDictionary]$Resources, [string[]]$Lines) {
+    $steps = @($Lines | Where-Object { $_ -like 'memory-steps: *' })
+    if ($steps.Count) {
+        $Resources.memory_steps = $steps
+        $Resources.ledger_complete = $false
+    }
+
+    $summary = $Lines | Where-Object { $_ -like 'memory: the run set aside *' } | Select-Object -Last 1
+    if ($summary -match '^memory: the run set aside (\d+) MiB at its start .*?reservations peaked at (\d+) MiB, of which (\d+) MiB it could not do without') {
+        $Resources.reserved_limit_mib = [int]$Matches[1]
+        $Resources.reserved_peak_mib = [int]$Matches[2]
+        $Resources.needed_peak_mib = [int]$Matches[3]
+        $Resources.ledger_complete = $true
+        return
+    }
+
+    # A worker stopped at a hold point may have printed only an interim summary.
+    $interim = $Lines | Where-Object { $_ -like 'memory-so-far: *' } | Select-Object -Last 1
+    if ($interim -match '^memory-so-far: reservations peaked at (\d+) MiB with (\d+) MiB set aside at the start; needed at most (\d+) MiB;') {
+        $Resources.reserved_peak_mib = [int]$Matches[1]
+        $Resources.reserved_limit_mib = [int]$Matches[2]
+        $Resources.needed_peak_mib = [int]$Matches[3]
+        $Resources.ledger_complete = $false
+    }
+}
+
 # Runs guest\Test-ConvertedVolumeUse.ps1 on V:, records every step and answers its result.
 function Invoke-UseTest([string]$Root) {
     Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Test-ConvertedVolumeUse.ps1') -Destination "$Root\use.ps1" -Force
@@ -1189,11 +1215,18 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     $waited = Wait-Worker $guestRoot $InterruptAt $StopDuringPreparation
     $verdict.resources = [ordered]@{ peak_working_set_bytes = $usage.peak_working_set; peak_private_bytes = $usage.private_bytes
         peak_working_storage_bytes = $usage.working_bytes; samples = $usage.samples; sampled_every_seconds = 2 }
-    # What the run's own memory ledger reached, which is what refuses a volume for memory.
-    $ledger = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock { param($root) if (Test-Path "$root\stderr.log") { [string](Get-Content -LiteralPath "$root\stderr.log" -Encoding UTF8 | Where-Object { $_ -match '^memory: the run''s reservations peaked at' } | Select-Object -Last 1) } }
-    if ("$ledger" -match 'set aside (\d+) MiB at its start.*?reservations peaked at (\d+) MiB') { $verdict.resources.reserved_peak_mib = [int]$Matches[2]; $verdict.resources.reserved_limit_mib = [int]$Matches[1]; Say "its reservations peaked at $($Matches[2]) MiB, with $($Matches[1]) MiB set aside at its start" }
-    # What the volume itself took of that: without the caches and the batches' spare memory.
-    if ("$ledger" -match 'of which (\d+) MiB it could not do without') { $verdict.resources.needed_peak_mib = [int]$Matches[1]; Say "of which it could not do without $($Matches[1]) MiB" }
+    # Read the conversion's stderr before the harness switches to a recovery worker.
+    $ledgerLines = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
+        param($root)
+        if (Test-Path -LiteralPath "$root\stderr.log") {
+            Get-Content -LiteralPath "$root\stderr.log" -Encoding UTF8 | Where-Object { $_ -match '^memory(?:-steps|-so-far)?: ' }
+        }
+    }
+    Add-WorkerLedgerEvidence $verdict.resources $ledgerLines
+    if ($verdict.resources.Contains('reserved_peak_mib')) {
+        $period = if ($verdict.resources.ledger_complete) { 'at exit' } else { 'before interruption' }
+        Say "its reservations $period peaked at $($verdict.resources.reserved_peak_mib) MiB, with $($verdict.resources.reserved_limit_mib) MiB set aside at its start and $($verdict.resources.needed_peak_mib) MiB needed"
+    }
     Say "the converter took at most $([Math]::Round($usage.peak_working_set / 1MB)) MiB of memory and $([Math]::Round($usage.working_bytes / 1MB)) MiB of working storage ($($usage.samples) samples)"
     $ended = $waited.ended
     if ($StopDuringPreparation) {
@@ -1571,13 +1604,18 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     foreach ($leaf in 'stdout.log', 'stderr.log') {
         try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\$leaf" -Destination $records } catch { Say "could not collect ${leaf}: $($_.Exception.Message)" }
     }
+    $stderr = Join-Path $records 'stderr.log'
+    if ($verdict.Contains('recovery_arguments') -and (Test-Path -LiteralPath $stderr)) {
+        $recoveryResources = [ordered]@{}
+        Add-WorkerLedgerEvidence $recoveryResources (Get-Content -LiteralPath $stderr -Encoding UTF8)
+        if ($recoveryResources.Count) { $verdict.recovery_resources = $recoveryResources }
+    }
     if ($SampleStacks) {
         try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\stacks.txt" -Destination $records } catch { Say "could not collect stacks.txt: $($_.Exception.Message)" }
     }
     if (-not $ended) { $verdict.outcome = 'converter-timed-out'; throw "the converter did not end within $TimeoutMinutes minutes" }
     if ($run.worker_error) { throw "guest worker failed: $($run.worker_error)" }
     $errorLine = ''
-    $stderr = Join-Path $records 'stderr.log'
     if (Test-Path -LiteralPath $stderr) { $errorLine = [string](Get-Content -LiteralPath $stderr -Encoding UTF8 | Where-Object { $_ -match '^error:' } | Select-Object -Last 1) }
     $refsField = { param($label) if ($run.refsinfo -match "(?m)^\s*$label\s*:\s*(\S+)") { $Matches[1] } else { $null } }
     $verdict.converter = [ordered]@{ exit = $run.exit; seconds = $run.seconds; error = $errorLine }

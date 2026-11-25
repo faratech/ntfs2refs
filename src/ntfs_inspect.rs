@@ -4429,3 +4429,128 @@ mod usa_fixup_tests {
         assert!(parse_record(zero_seq, &geometry).is_err());
     }
 }
+
+#[cfg(all(test, windows))]
+mod in_place_mapping_tests {
+    use super::*;
+
+    fn extent(logical_offset: u64, physical_offset: Option<u64>, length: u64) -> Extent {
+        Extent {
+            logical_offset,
+            physical_offset,
+            length,
+        }
+    }
+
+    // These sessions isolate the mapping decision. Production sessions are
+    // opened from checked, frozen NTFS records rather than constructed here.
+    fn session(extents: Vec<Extent>) -> PlainStreamRangeSession {
+        PlainStreamRangeSession {
+            record_number: 42,
+            stream_name_utf16: Vec::new(),
+            allow_sparse: false,
+            attribute: Attribute {
+                report: AttributeInventory {
+                    type_code: 0x80,
+                    instance: 0,
+                    name_utf16: Vec::new(),
+                    flags: 0,
+                    resident: false,
+                    logical_size: 8192,
+                    initialized_size: 8192,
+                    allocated_size: 8192,
+                    lowest_vcn: 0,
+                    compression_unit: 0,
+                    total_allocated_size: None,
+                    extents,
+                    resident_sha256: None,
+                    resident_metadata_hex: None,
+                },
+                resident_value: None,
+            },
+            compression: None,
+            expected: None,
+            poisoned: false,
+            _domain_record_ram: None,
+        }
+    }
+
+    #[test]
+    fn only_a_complete_contiguous_initialized_mapping_has_a_physical_start() {
+        let contiguous = session(vec![
+            extent(0, Some(16384), 4096),
+            extent(4096, Some(20480), 4096),
+        ]);
+        assert_eq!(
+            contiguous.contiguous_physical_range(0, 8192).unwrap(),
+            Some(16384)
+        );
+        assert_eq!(
+            contiguous.contiguous_physical_range(512, 7680).unwrap(),
+            Some(16896)
+        );
+        assert_eq!(
+            contiguous.contiguous_physical_range(4096, 4096).unwrap(),
+            Some(20480)
+        );
+        assert_eq!(contiguous.contiguous_physical_range(8192, 0).unwrap(), None);
+        assert!(contiguous.contiguous_physical_range(8191, 2).is_err());
+
+        let fragmented = session(vec![
+            extent(0, Some(16384), 4096),
+            extent(4096, Some(32768), 4096),
+        ]);
+        assert_eq!(fragmented.contiguous_physical_range(0, 8192).unwrap(), None);
+        assert_eq!(
+            fragmented.contiguous_physical_range(4096, 4096).unwrap(),
+            Some(32768)
+        );
+        let hole = session(vec![extent(0, Some(16384), 4096), extent(4096, None, 4096)]);
+        assert_eq!(hole.contiguous_physical_range(0, 8192).unwrap(), None);
+        let gap = session(vec![
+            extent(0, Some(16384), 4096),
+            extent(4608, Some(20992), 3584),
+        ]);
+        assert_eq!(gap.contiguous_physical_range(0, 8192).unwrap(), None);
+    }
+
+    #[test]
+    fn resident_encoded_and_uninitialized_bytes_cannot_be_omitted() {
+        let mut source = session(vec![extent(0, Some(16384), 8192)]);
+        source.attribute.report.resident = true;
+        assert_eq!(source.contiguous_physical_range(0, 4096).unwrap(), None);
+        source.attribute.report.resident = false;
+        source.attribute.report.flags = 1;
+        assert_eq!(source.contiguous_physical_range(0, 4096).unwrap(), None);
+        source.attribute.report.flags = 0x4000;
+        assert_eq!(source.contiguous_physical_range(0, 4096).unwrap(), None);
+        source.attribute.report.flags = 0;
+        source.attribute.report.initialized_size = 4096;
+        assert_eq!(
+            source.contiguous_physical_range(0, 4096).unwrap(),
+            Some(16384)
+        );
+        assert_eq!(source.contiguous_physical_range(0, 4097).unwrap(), None);
+        source.attribute.report.flags = 0x8000;
+        source.attribute.report.compression_unit = 4;
+        assert_eq!(
+            source.contiguous_physical_range(0, 4096).unwrap(),
+            Some(16384)
+        );
+        source.attribute.report.compression_unit = 5;
+        assert_eq!(source.contiguous_physical_range(0, 4096).unwrap(), None);
+    }
+
+    #[test]
+    fn invalid_ranges_and_poisoned_sessions_do_not_produce_a_mapping() {
+        let mut source = session(vec![extent(0, Some(16384), 8192)]);
+        assert!(source.contiguous_physical_range(u64::MAX, 1).is_err());
+        source.attribute.report.extents[0].physical_offset = Some(u64::MAX);
+        assert!(source.contiguous_physical_range(1, 1).is_err());
+        source.attribute.report.extents[0].logical_offset = 1;
+        source.attribute.report.extents[0].length = u64::MAX;
+        assert!(source.contiguous_physical_range(1, 1).is_err());
+        source.poisoned = true;
+        assert!(source.contiguous_physical_range(0, 1).is_err());
+    }
+}

@@ -320,13 +320,15 @@ pub(crate) fn convert_owned_with_provider_commitment(
         marker_use: MarkerStorageUse::QualifiedProduction,
     };
     request.validate()?;
-    // Verify once (#148): with the fast verification the handoff follows the
-    // one verification of the converted volume, and rollback stays open
-    // until it has passed. Decided here, once, before the recovery
-    // publication is written: the publication records it and the apply step
-    // below ends before the handoff because of the same choice. A thorough
-    // run keeps its flow: the handoff in the apply step.
-    if mode == crate::execution_mode::ExecutionMode::Convert && verification_policy.is_fast() {
+    // Verify before handoff (#148, #277): for all new whole-disk conversions
+    // (both `--verify fast` and `--verify thorough`), the handoff follows the
+    // read-only verification of the converted volume so rollback stays open
+    // through final verification. Decided here, once, before the recovery
+    // publication is written: the publication records `verify_before_handoff`
+    // and the apply step below ends before the handoff because of this choice.
+    // Journals from older releases that did not record `verify_before_handoff`
+    // continue to recover using their recorded apply-time handoff lifecycle.
+    if mode == crate::execution_mode::ExecutionMode::Convert {
         crate::verify_first::choose();
         // No recovery command on this line: the recovery environment of
         // the running-Windows route takes one from any line that has it.

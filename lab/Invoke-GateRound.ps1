@@ -164,7 +164,8 @@ $fixtureRuns = @(
     # settle it as not written, verify again and hand off.
     @{ Name = 'torn-handoff-resume'; Arguments = $fixture40 + @{ InterruptAt = 'verify-passed'; TearMarker = 'handoff' } }
     @{ Name = 'vm-verify-passed-rollback'; Arguments = $fixture40 + @{ InterruptAt = 'verify-passed'; InterruptKind = 'vm'; RecoverMode = 'rollback' } }
-    @{ Name = 'vm-thorough-handoff-resume'; Arguments = $fixture40 + @{ InterruptAt = 'apply-handoff-durable'; InterruptKind = 'vm'; Verify = 'thorough' } }
+    @{ Name = 'vm-thorough-verify-passed-resume'; Arguments = $fixture40 + @{ InterruptAt = 'verify-passed'; InterruptKind = 'vm'; Verify = 'thorough' } }
+    @{ Name = 'vm-thorough-verify-passed-rollback'; Arguments = $fixture40 + @{ InterruptAt = 'verify-passed'; InterruptKind = 'vm'; RecoverMode = 'rollback'; Verify = 'thorough' } }
 )
 $fullRun = @{ Name = 'full-system'; Arguments = @{ MemoryGB = $MaxVmGB } }
 
@@ -211,10 +212,11 @@ $dataCases = @(
     "lived-in-seal-recorded-rollback|$lived -InterruptAt apply-seal-recorded -RecoverMode rollback -Check"
     "lived-in-verify-readonly-resume|$lived -InterruptAt verify-source-readonly -Check"
     "lived-in-verify-passed-rollback|$lived -InterruptAt verify-passed -RecoverMode rollback -Check"
-    # --verify thorough keeps the flow before #148: the handoff is written by
-    # the apply, before anything is mounted.
+    # New --verify thorough conversions also verify before handoff (#277),
+    # keeping rollback open through final verification.
     "thorough|$lived -Verify thorough -Check"
-    "thorough-handoff-durable-resume|$lived -Verify thorough -InterruptAt apply-handoff-durable -Check"
+    "thorough-verify-passed-resume|$lived -Verify thorough -InterruptAt verify-passed -Check"
+    "thorough-verify-passed-rollback|$lived -Verify thorough -InterruptAt verify-passed -RecoverMode rollback -Check"
     'shared-apply-rollback|-Siblings -InterruptAt apply-mid-ranges -RecoverMode rollback -Check'
     "stop-supply-cancel|$lived -StopDuringPreparation payload_supply"
     "stop-journal-cancel|$lived -StopDuringPreparation recovery_journal"

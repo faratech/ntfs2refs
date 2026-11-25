@@ -13,7 +13,7 @@
 use crate::{
     refs_bootstrap::{AnchorProbe, crc32c, crc64_nvme},
     refs_containers::ContainerAddressView,
-    refs_node::{self, NodeRowObservation},
+    refs_node::{self, NativeTable, NodeRow},
     refs_security_descriptor::{self, TrustLabelPlaceholder},
 };
 use anyhow::{Context, Result, ensure};
@@ -260,7 +260,7 @@ fn reference(bytes: &[u8]) -> Result<([u64; 4], u64)> {
     ))
 }
 
-fn value_range(row: &NodeRowObservation) -> Result<std::ops::Range<usize>> {
+fn value_range(row: &NodeRow<'_>) -> Result<std::ops::Range<usize>> {
     ensure!(
         row.reserved_at_8 == 0 && row.reserved_at_14 == 0 && !row.key_value_overlap,
         "trust-label row has unsupported reserved fields or overlapping key/value"
@@ -277,8 +277,8 @@ fn value_range(row: &NodeRowObservation) -> Result<std::ops::Range<usize>> {
 }
 
 fn index_value_range(
-    row: &NodeRowObservation,
-    rows: &[NodeRowObservation],
+    row: &NodeRow<'_>,
+    rows: &[NodeRow<'_>],
     oid: u64,
     level: u8,
 ) -> Result<std::ops::Range<usize>> {
@@ -512,27 +512,26 @@ impl<R: Read + Seek> Walker<'_, R> {
                 && (0..4).all(|i| u64le(&before, 0x20 + i * 8) == slots[i]),
             "trust-label page CRC, signature, table or self-slots disagree"
         );
-        let (level, rows, expected_rows) = if depth == 0 {
-            let node = match kind {
-                Tree::Objects(oid) => refs_node::inspect_system_root_node(&before, oid)?,
-                Tree::Security => refs_node::inspect_object_root_node(&before, SECURITY_OID)?,
-            };
+        let table = match kind {
+            Tree::Objects(oid) => NativeTable::System(oid),
+            Tree::Security => NativeTable::Object(SECURITY_OID),
+        };
+        let node = refs_node::inspect_native_table_rows(&before, table, depth == 0)?;
+        let expected_rows = if let Some(root) = node.root {
             if matches!(kind, Tree::Objects(_)) {
-                ensure!(node.schema_id == 0xe030, "Object Table schema differs");
+                ensure!(root.schema_id == 0xe030, "Object Table schema differs");
             } else {
                 ensure!(
-                    node.schema_id == 0x140 && node.root_descriptor_auxiliary == 1,
+                    root.schema_id == 0x140 && root.auxiliary == 1,
                     "OID 0x530 native root descriptor differs from observed profile"
                 );
             }
-            (node.node_level, node.rows, Some(node.whole_table_row_count))
+            Some(root.whole_table_row_count)
         } else {
-            let node = match kind {
-                Tree::Objects(oid) => refs_node::inspect_system_child_node(&before, oid)?,
-                Tree::Security => refs_node::inspect_object_child_node(&before, SECURITY_OID)?,
-            };
-            (node.node_level, node.rows, None)
+            None
         };
+        let level = node.level;
+        let rows = node.rows;
         ensure!(
             expected_level.is_none_or(|expected| expected == level)
                 && level <= MAX_DEPTH
@@ -567,7 +566,7 @@ impl<R: Read + Seek> Walker<'_, R> {
                 .context("trust-label row count overflow")?;
             match kind {
                 Tree::Objects(_) => {
-                    let object = crate::refs_object_refs::decode_object_leaf_row(row)?;
+                    let object = crate::refs_object_refs::decode_native_object_leaf_row(row)?;
                     ensure!(
                         counts
                             .last_object
@@ -602,7 +601,7 @@ impl<R: Read + Seek> Walker<'_, R> {
 
     fn security_row(
         &self,
-        row: &NodeRowObservation,
+        row: &NodeRow<'_>,
         before: &[u8],
         after: &mut [u8],
         counts: &mut Counts,
@@ -1079,9 +1078,9 @@ fn plan_profile<R: Read + Seek>(
 mod index_row_tests {
     use super::*;
 
-    fn row(index: usize, flags: u16, key_length: u16, marker: u16) -> NodeRowObservation {
+    fn row(index: usize, flags: u16, key_length: u16, marker: u16) -> NodeRow<'static> {
         let value_offset = 16 + key_length;
-        NodeRowObservation {
+        NodeRow {
             index,
             index_entry_offset: 0,
             relative_offset: 0,
@@ -1095,10 +1094,9 @@ mod index_row_tests {
             value_length: 48,
             reserved_at_14: 0,
             key_value_overlap: false,
-            row_bytes_hex: String::new(),
-            row_sha256: String::new(),
-            key_sha256: String::new(),
-            value_sha256: String::new(),
+            bytes: &[],
+            key: &[],
+            value: &[],
         }
     }
 

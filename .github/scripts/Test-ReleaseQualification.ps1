@@ -77,7 +77,7 @@ try {
         if ($case -eq 'cancel') { $round.hold_at = ''; $round.reached_hold = $false; $round.end_after_seconds = 24.8 }
         Save-Json $round (Join-Path $evidence "soak-records-$case/rounds.jsonl")
     }
-    $cases = @(foreach ($name in 'fixture10', 'admin-fixture40', 'full-system', 'apply-mid-resume', 'apply-mid-rollback', 'seal-recorded-resume', 'handoff-sealed-resume', 'torn-handoff-resume', 'vm-verify-passed-rollback', 'vm-thorough-handoff-resume', 'lived-in', 'lived-in-64k', 'std-4k', 'std-64k', 'devdrive', 'restart-convert', 'restart-cancel', 'restart-refs-refusal', 'integrity-native-idle', 'integrity-converted-idle', 'integrity-native-loaded', 'integrity-converted-loaded', 'integrity-lived-in', 'integrity-event-131') {
+    $cases = @(foreach ($name in 'fixture10', 'admin-fixture40', 'full-system', 'apply-mid-resume', 'apply-mid-rollback', 'seal-recorded-resume', 'handoff-sealed-resume', 'verify-readonly-rollback', 'torn-handoff-resume', 'vm-verify-passed-rollback', 'vm-thorough-handoff-resume', 'lived-in', 'lived-in-64k', 'std-4k', 'std-64k', 'devdrive', 'restart-convert', 'restart-cancel', 'restart-refs-refusal', 'integrity-native-idle', 'integrity-converted-idle', 'integrity-native-loaded', 'integrity-converted-loaded', 'integrity-lived-in', 'integrity-event-131') {
         $outcome = switch -Wildcard ($name) {
             '*fixture*' { 'converted-not-booted' }
             '*-resume' { 'RESUMED-NOT-BOOTED' }
@@ -92,11 +92,18 @@ try {
             reboot_use = $true; cleanup_ok = $true; integrity_events = @() }
     })
     $holds = @{'apply-mid-resume'='apply-mid-ranges'; 'apply-mid-rollback'='apply-mid-ranges'; 'seal-recorded-resume'='apply-seal-recorded';
-        'handoff-sealed-resume'='handoff-sealed'; 'torn-handoff-resume'='verify-passed'; 'vm-verify-passed-rollback'='verify-passed';
+        'handoff-sealed-resume'='handoff-sealed'; 'verify-readonly-rollback'='verify-source-readonly'; 'torn-handoff-resume'='verify-passed'; 'vm-verify-passed-rollback'='verify-passed';
         'vm-thorough-handoff-resume'='apply-handoff-durable'; 'restart-cancel'='restart-after-arm' }
     foreach ($row in $cases) {
         $row.hold = $holds[$row.case_id]
         if ($row.case_id -like 'vm-*') { $row.interruption = 'vm-turned-off' }
+        if ($row.case_id -like 'restart-*') {
+            $row.route = 'restart'
+            $null = $row.Remove('cleanup_ok')
+            $row.cleanup_outcome = 'working storage retained by harness'
+        } elseif ($row.outcome -like '*-not-booted') {
+            $row.route = 'boot'
+        }
         if ($row.case_id -like '*-rollback' -or $row.case_id -eq 'restart-cancel') { $row.recovery = 'rollback' }
         if ($row.case_id -eq 'restart-cancel') { $row.interruption = 'injected failure'; $row.working_filesystem = 'NTFS' }
         if ($row.case_id -eq 'restart-convert') { $row.working_filesystem = 'NTFS' }
@@ -166,10 +173,37 @@ try {
         $server.observed_target_format = if ($server.case_id -eq 'devdrive') { 'dev-drive' } else { 'standard' }
         $server.observed_target_clusters = if ($server.case_id -eq 'std-64k') { 65536 } else { 4096 }
     }
+    foreach ($row in $cases) {
+        $row.converter_sha256 = $hashes['ntfs2refs.exe']
+        if ($row.route -ne 'running') { $row.listing_tool_sha256 = $hashes['lab-volume-manifest.exe'] }
+        if ($row.route -eq 'restart') { $row.recovery_sha256 = $hashes['ntfs2refs-recovery.exe'] }
+    }
     $labPath = Join-Path $evidence 'release-lab/lab.json'
     $lab = @{ identity = $identity.Clone(); cases = $cases }
     Save-Json $lab $labPath
     Invoke-Gate 'all-valid'
+    foreach ($test in @(
+        @('fixture10', 'converter_sha256', 'ntfs2refs.exe'),
+        @('lived-in', 'listing_tool_sha256', 'lab-volume-manifest.exe'),
+        @('restart-postflush-resume', 'recovery_sha256', 'ntfs2refs-recovery.exe'),
+        @('c-cut-apply-mid', 'converter_sha256', 'ntfs2refs.exe')
+    )) {
+        $case, $key, $file = $test
+        $row = $cases | Where-Object case_id -CEQ $case
+        $row[$key] = '0' * 64
+        Save-Json $lab $labPath
+        Invoke-Gate "wrong-$case-$key" "Hyper-V case $case hash differs for $([regex]::Escape($file))"
+        $row[$key] = $hashes[$file]
+    }
+    $restartBinaryCase = $cases | Where-Object case_id -CEQ 'restart-refs-refusal'
+    $restartBinaryCase.Remove('recovery_sha256')
+    Save-Json $lab $labPath
+    Invoke-Gate 'missing-restart-recovery-hash' 'Hyper-V case restart-refs-refusal hash differs for ntfs2refs-recovery\.exe'
+    $restartBinaryCase.route = 'running'
+    Save-Json $lab $labPath
+    Invoke-Gate 'wrong-restart-route' 'Unexpected route for Hyper-V case restart-refs-refusal'
+    $restartBinaryCase.route = 'restart'
+    $restartBinaryCase.recovery_sha256 = $hashes['ntfs2refs-recovery.exe']
     $eventFixture.integrity_fixture.directory_entries = 20000
     Save-Json $lab $labPath
     Invoke-Gate 'wrong-event-131-directory' 'Incomplete ReFS event 131 fixture evidence'
@@ -183,6 +217,14 @@ try {
     if ($bootProfile.boot_files.winload_efi_sha256 -cne $boot.boot.signatures[0].sha256 -or
         $bootProfile.boot_files.refs_sys_sha256 -cne $boot.boot.signatures[1].sha256) {
         throw 'The Windows boot profile lost the observed loader or ReFS driver hash'
+    }
+    $bootBinaries = $record.hyper_v | Where-Object case_id -CEQ 'full-system'
+    $restartBinaries = $record.hyper_v | Where-Object case_id -CEQ 'restart-postflush-resume'
+    $runningBinaries = $record.hyper_v | Where-Object case_id -CEQ 'c-cut-apply-mid'
+    if ($bootBinaries.converter_sha256 -cne $hashes['ntfs2refs.exe'] -or $bootBinaries.listing_tool_sha256 -cne $hashes['lab-volume-manifest.exe'] -or
+        $restartBinaries.recovery_sha256 -cne $hashes['ntfs2refs-recovery.exe'] -or $runningBinaries.converter_sha256 -cne $hashes['ntfs2refs.exe'] -or
+        $null -ne $runningBinaries.listing_tool_sha256 -or $null -ne $runningBinaries.recovery_sha256) {
+        throw 'Hyper-V case binary receipts were lost or changed during publication'
     }
     $report = Get-Content -LiteralPath (Join-Path $root 'all-valid/QUALIFICATION.md') -Raw
     $restart = $record.recovery | Where-Object case_id -EQ 'restart-postflush-resume'
@@ -273,6 +315,40 @@ try {
         Save-Json $nativeRows[$case] $path
     }
     $powerOff = $cases | Where-Object { $_.case_id -eq 'vm-verify-passed-rollback' }
+    $null = $powerOff.Remove('cleanup_ok')
+    Save-Json $lab $labPath
+    Invoke-Gate 'missing-boot-recovery-cleanup' 'Incomplete Hyper-V cleanup evidence for vm-verify-passed-rollback'
+    $powerOff.cleanup_ok = $true
+    $boot.cleanup_ok = $false
+    Save-Json $lab $labPath
+    Invoke-Gate 'failed-full-boot-cleanup' 'Incomplete Hyper-V cleanup evidence for full-system'
+    $boot.cleanup_ok = $true
+    $null = $postflushResume.Remove('cleanup_outcome')
+    Save-Json $lab $labPath
+    Invoke-Gate 'missing-restart-cleanup' 'Incomplete Hyper-V cleanup evidence for restart-postflush-resume'
+    $postflushResume.cleanup_outcome = 'working storage retained by harness'
+    $restartProfile.cleanup_ok = $false
+    Save-Json $lab $labPath
+    Invoke-Gate 'failed-restart-convert-cleanup' 'Incomplete Hyper-V cleanup evidence for restart-convert'
+    $null = $restartProfile.Remove('cleanup_ok')
+    $restartRefusal = $cases | Where-Object { $_.case_id -eq 'restart-refs-refusal' }
+    $restartRefusal.cleanup_outcome = 'working storage cleanup failed'
+    Save-Json $lab $labPath
+    Invoke-Gate 'failed-restart-refusal-cleanup' 'Incomplete Hyper-V cleanup evidence for restart-refs-refusal'
+    $restartRefusal.cleanup_outcome = 'working storage retained by harness'
+    $verifyReadOnly = $cases | Where-Object { $_.case_id -eq 'verify-readonly-rollback' }
+    $verifyReadOnly.cleanup_ok = $false
+    Save-Json $lab $labPath
+    Invoke-Gate 'failed-available-boot-cleanup' 'Incomplete Hyper-V cleanup evidence for verify-readonly-rollback'
+    $verifyReadOnly.route = 'data'
+    Save-Json $lab $labPath
+    Invoke-Gate 'relabeled-boot-route' 'Unexpected route for Hyper-V case verify-readonly-rollback'
+    $verifyReadOnly.route = 'boot'
+    $verifyReadOnly.cleanup_ok = $true
+    $lab.cases = $cases | Where-Object { $_.case_id -ne 'verify-readonly-rollback' }
+    Save-Json $lab $labPath
+    Invoke-Gate 'without-optional-boot-recovery'
+    $lab.cases = $cases
     $powerOff.interruption = 'process-termination'
     Save-Json $lab $labPath
     Invoke-Gate 'wrong-vm-interruption' 'Incomplete recovery evidence'
@@ -319,7 +395,6 @@ try {
     Invoke-Gate 'wrong-restart-working-filesystem' 'Restart working filesystem evidence differs'
     $restartCancel.working_filesystem = 'NTFS'
 
-    $restartRefusal = $cases | Where-Object { $_.case_id -eq 'restart-refs-refusal' }
     $restartRefusal.scratch_refusal = $false
     Save-Json $lab $labPath
     Invoke-Gate 'missing-refs-refusal' 'Incomplete ReFS working storage refusal evidence'

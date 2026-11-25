@@ -53,8 +53,9 @@ function Add-Case([string]$Name, [string]$Route, [string]$Expected, $Verdict, [b
         '^standard ReFS' { 'standard' }
     }
     $restartProfile = if ($Route -eq 'restart') { $Verdict.after.target_profile }
-    $rows.Add([ordered]@{
+    $row = [ordered]@{
         case_id = $Name; route = $Route; expected = $Expected; outcome = $Verdict.outcome; passed = ($Passed -and $binaryMatch -and $Verdict.cleanup_ok -ne $false)
+        converter_sha256 = $Verdict.converter_sha256
         verify = if ($Verdict.verify) { $Verdict.verify } else { 'fast' }; hold = $interruption.hold; reached_hold = $interruption.reached_hold
         interruption = $interruption.kind; simulated_torn_marker = [bool]$Verdict.torn_marker
         torn_marker_settled = $Verdict.torn_marker.settled_by_recovery; recovery = $interruption.recovery
@@ -78,7 +79,10 @@ function Add-Case([string]$Name, [string]$Route, [string]$Expected, $Verdict, [b
         integrity_fixture = if ($Route -eq 'integrity') {
             @{ content = $Verdict.source.content; directory_entries = $Verdict.source.directory_entries; check_agrees = $Verdict.check.agrees }
         }
-    })
+    }
+    if ($Route -ne 'running') { $row.listing_tool_sha256 = $Verdict.listing_tool_sha256 }
+    if ($Route -eq 'restart') { $row.recovery_sha256 = $Verdict.recovery_sha256 }
+    $rows.Add($row)
 }
 
 try {

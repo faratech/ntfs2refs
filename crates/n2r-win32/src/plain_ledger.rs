@@ -94,10 +94,99 @@ pub enum PlainKind {
     /// a list to agree: it is recorded in the ledger, and left out of the
     /// new tree as `cloud_left_out` is. Not in [`PlainKind::ALL`].
     SystemVolumeInformationNotCarried,
+    /// A ProjFS placeholder whose data is not on the volume, left out as
+    /// the user agreed: it stays with its provider.
+    ProjfsLeftOut,
+    /// A file a hierarchical storage manager moved to its store (Remote
+    /// Storage, HSM), recalled before the freeze, becomes the file it was.
+    HsmRecalled,
+    /// Such a file that could not be recalled, left out as the user agreed:
+    /// it stays in its store.
+    HsmLeftOut,
+}
+
+/// The kinds of placeholder whose data a provider (a filter and the
+/// program behind it) keeps, and which a conversion makes plain or, as the
+/// user agrees, leaves out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PlaceholderFamily {
+    /// The Cloud Files API (OneDrive and others): 0x9000x01A.
+    Cloud,
+    /// Projected File System: IO_REPARSE_TAG_PROJFS (0x9000001C).
+    Projfs,
+    /// Hierarchical storage management: IO_REPARSE_TAG_HSM (0xC0000004)
+    /// and IO_REPARSE_TAG_HSM2 (0x80000006).
+    Hsm,
+}
+
+/// IO_REPARSE_TAG_PROJFS.
+pub const PROJFS_TAG: u32 = 0x9000_001c;
+/// IO_REPARSE_TAG_PROJFS_TOMBSTONE: a file deleted from a projection,
+/// which ProjFS hides. Not a placeholder of data, and refused.
+pub const PROJFS_TOMBSTONE_TAG: u32 = 0xa000_0022;
+/// IO_REPARSE_TAG_HSM and IO_REPARSE_TAG_HSM2.
+pub const HSM_TAGS: [u32; 2] = [0xc000_0004, 0x8000_0006];
+
+impl PlaceholderFamily {
+    pub const ALL: [PlaceholderFamily; 3] = [
+        PlaceholderFamily::Cloud,
+        PlaceholderFamily::Projfs,
+        PlaceholderFamily::Hsm,
+    ];
+
+    /// The family a reparse tag belongs to.
+    pub fn of_tag(tag: u32) -> Option<PlaceholderFamily> {
+        if crate::reparse_layout::is_cloud_tag(tag) {
+            Some(PlaceholderFamily::Cloud)
+        } else if tag == PROJFS_TAG {
+            Some(PlaceholderFamily::Projfs)
+        } else if HSM_TAGS.contains(&tag) {
+            Some(PlaceholderFamily::Hsm)
+        } else {
+            None
+        }
+    }
+
+    /// The kind an object of this family made plain takes.
+    pub fn plain_kind(self) -> PlainKind {
+        match self {
+            PlaceholderFamily::Cloud => PlainKind::CloudPlaceholderPlain,
+            PlaceholderFamily::Projfs => PlainKind::ProjfsPlaceholderPlain,
+            PlaceholderFamily::Hsm => PlainKind::HsmRecalled,
+        }
+    }
+
+    /// The kind an object of this family left out takes.
+    pub fn left_out_kind(self) -> PlainKind {
+        match self {
+            PlaceholderFamily::Cloud => PlainKind::CloudLeftOut,
+            PlaceholderFamily::Projfs => PlainKind::ProjfsLeftOut,
+            PlaceholderFamily::Hsm => PlainKind::HsmLeftOut,
+        }
+    }
+
+    /// The words for a placeholder of this family: "cloud", "ProjFS",
+    /// "storage manager's".
+    pub fn name(self) -> &'static str {
+        match self {
+            PlaceholderFamily::Cloud => "cloud",
+            PlaceholderFamily::Projfs => "ProjFS",
+            PlaceholderFamily::Hsm => "storage manager's",
+        }
+    }
+
+    /// Who keeps its data, for the words of a run.
+    pub fn provider(self) -> &'static str {
+        match self {
+            PlaceholderFamily::Cloud => "cloud provider",
+            PlaceholderFamily::Projfs => "ProjFS provider",
+            PlaceholderFamily::Hsm => "storage manager",
+        }
+    }
 }
 
 impl PlainKind {
-    pub const ALL: [PlainKind; 8] = [
+    pub const ALL: [PlainKind; 11] = [
         PlainKind::AttributesCleared,
         PlainKind::EfsDecrypted,
         PlainKind::WofExpanded,
@@ -106,7 +195,25 @@ impl PlainKind {
         PlainKind::ProjfsPlaceholderPlain,
         PlainKind::SisExpanded,
         PlainKind::CloudLeftOut,
+        PlainKind::ProjfsLeftOut,
+        PlainKind::HsmRecalled,
+        PlainKind::HsmLeftOut,
     ];
+
+    /// Whether this kind leaves its object out of the new volume.
+    pub fn is_left_out(self) -> bool {
+        matches!(
+            self,
+            PlainKind::CloudLeftOut | PlainKind::ProjfsLeftOut | PlainKind::HsmLeftOut
+        )
+    }
+
+    /// The placeholder family this kind makes plain or leaves out.
+    pub fn family(self) -> Option<PlaceholderFamily> {
+        PlaceholderFamily::ALL
+            .into_iter()
+            .find(|family| family.plain_kind() == self || family.left_out_kind() == self)
+    }
 
     /// The name the list, the ledger and the reports use.
     pub fn name(self) -> &'static str {
@@ -120,6 +227,9 @@ impl PlainKind {
             PlainKind::SisExpanded => "sis_expanded",
             PlainKind::CloudLeftOut => "cloud_left_out",
             PlainKind::SystemVolumeInformationNotCarried => "system_volume_information_not_carried",
+            PlainKind::ProjfsLeftOut => "projfs_left_out",
+            PlainKind::HsmRecalled => "hsm_recalled",
+            PlainKind::HsmLeftOut => "hsm_left_out",
         }
     }
 
@@ -153,6 +263,15 @@ impl PlainKind {
             PlainKind::SystemVolumeInformationNotCarried => {
                 "Windows' own, below the folders of System Volume Information: not carried over, and kept in the run's records"
             }
+            PlainKind::ProjfsLeftOut => {
+                "not on the volume and could not be brought there: it is left out and stays with its ProjFS provider"
+            }
+            PlainKind::HsmRecalled => {
+                "recalled from its storage manager before the freeze: the file holds its whole contents, and the manager no longer manages it"
+            }
+            PlainKind::HsmLeftOut => {
+                "not on the volume and could not be recalled: it is left out and stays in its storage manager's store"
+            }
         }
     }
 
@@ -168,6 +287,11 @@ impl PlainKind {
                 | PlainKind::DedupRehydrated
                 | PlainKind::CloudPlaceholderPlain
                 | PlainKind::CloudLeftOut
+                | PlainKind::ProjfsPlaceholderPlain
+                | PlainKind::ProjfsLeftOut
+                | PlainKind::SisExpanded
+                | PlainKind::HsmRecalled
+                | PlainKind::HsmLeftOut
         )
     }
 }
@@ -314,11 +438,11 @@ impl PlainList {
         let folders: Vec<&str> = agreed
             .entries
             .iter()
-            .filter(|entry| entry.kind == PlainKind::CloudLeftOut)
+            .filter(|entry| entry.kind.is_left_out())
             .map(|entry| entry.path.as_str())
             .collect();
         let below = |entry: &PlainEntry| {
-            entry.kind == PlainKind::CloudLeftOut
+            entry.kind.is_left_out()
                 && folders.iter().any(|folder| {
                     entry.path.len() > folder.len()
                         && entry.path.starts_with(folder)
@@ -383,6 +507,23 @@ pub struct LedgerRow {
     /// as the frozen source held it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recorded_streams: Vec<LedgerRecordedStream>,
+    /// For a Single Instance Storage link expanded (`sis_expanded`): the
+    /// common store file its data was read from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sis: Option<LedgerSis>,
+}
+
+/// The common store file a Single Instance Storage link expanded was read
+/// from, as its reparse point names it and the frozen source holds it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LedgerSis {
+    /// `\SIS Common Store\{CSID}.sis`, as a listing names it.
+    pub common_store_path: String,
+    pub common_store_record: u64,
+    pub common_store_sequence: u16,
+    /// Its unnamed stream's length: the link's.
+    pub bytes: u64,
 }
 
 /// A data stream of an object not carried over, as the frozen source held
@@ -609,10 +750,10 @@ impl DeclaredDrops {
                 ));
             }
             match (row.kind, row.left_out) {
-                (
-                    PlainKind::CloudLeftOut | PlainKind::SystemVolumeInformationNotCarried,
-                    Some(counted),
-                ) => {
+                (kind, Some(counted))
+                    if kind.is_left_out()
+                        || kind == PlainKind::SystemVolumeInformationNotCarried =>
+                {
                     if left_out.insert(key, counted).is_some() {
                         return Err(format!(
                             "MFT record {} is left out in more than one row of the plain-conversions ledger",
@@ -621,7 +762,10 @@ impl DeclaredDrops {
                     }
                     continue;
                 }
-                (PlainKind::CloudLeftOut | PlainKind::SystemVolumeInformationNotCarried, None) => {
+                (kind, None)
+                    if kind.is_left_out()
+                        || kind == PlainKind::SystemVolumeInformationNotCarried =>
+                {
                     return Err(format!(
                         "MFT record {} is left out, and its ledger row does not say what the admission counted of it",
                         row.record_number
@@ -629,7 +773,7 @@ impl DeclaredDrops {
                 }
                 (_, Some(_)) => {
                     return Err(format!(
-                        "MFT record {} is {} and declares what it left out, which only cloud_left_out and system_volume_information_not_carried do",
+                        "MFT record {} is {} and declares what it left out, which only a kind that leaves out and system_volume_information_not_carried do",
                         row.record_number, row.kind
                     ));
                 }
@@ -852,6 +996,7 @@ mod tests {
             efs: None,
             cloud: None,
             left_out: None,
+            sis: None,
             dropped_streams: Vec::new(),
             recorded_streams: Vec::new(),
         }
@@ -986,7 +1131,12 @@ mod tests {
                 &PlainKind::WofExpanded,
                 &PlainKind::DedupRehydrated,
                 &PlainKind::CloudPlaceholderPlain,
-                &PlainKind::CloudLeftOut
+                &PlainKind::ProjfsPlaceholderPlain,
+                &PlainKind::SisExpanded,
+                &PlainKind::CloudLeftOut,
+                &PlainKind::ProjfsLeftOut,
+                &PlainKind::HsmRecalled,
+                &PlainKind::HsmLeftOut
             ]
         );
     }
@@ -1268,6 +1418,44 @@ mod tests {
     }
 
     #[test]
+    fn each_placeholder_family_has_its_tags_and_its_two_kinds() {
+        assert_eq!(
+            PlaceholderFamily::of_tag(0x9000_601a),
+            Some(PlaceholderFamily::Cloud)
+        );
+        assert_eq!(
+            PlaceholderFamily::of_tag(PROJFS_TAG),
+            Some(PlaceholderFamily::Projfs)
+        );
+        for tag in HSM_TAGS {
+            assert_eq!(PlaceholderFamily::of_tag(tag), Some(PlaceholderFamily::Hsm));
+        }
+        // A ProjFS tombstone, a link, WOF: no placeholder of data.
+        for tag in [PROJFS_TOMBSTONE_TAG, 0xa000_000c, 0x8000_0017] {
+            assert_eq!(PlaceholderFamily::of_tag(tag), None, "{tag:#x}");
+        }
+        for family in PlaceholderFamily::ALL {
+            assert!(!family.plain_kind().is_left_out());
+            assert!(family.left_out_kind().is_left_out());
+            assert_eq!(family.plain_kind().family(), Some(family));
+            assert_eq!(family.left_out_kind().family(), Some(family));
+        }
+        assert_eq!(PlainKind::WofExpanded.family(), None);
+        // A ProjFS object left out is declared like a cloud one.
+        let drops = DeclaredDrops::from_ledger(&ledger_of(vec![LedgerRow {
+            left_out: Some(LedgerLeftOut {
+                directory: false,
+                streams: 1,
+                bytes: 7,
+            }),
+            ..wof_row(70, PlainKind::ProjfsLeftOut)
+        }]))
+        .unwrap();
+        assert!(drops.is_left_out(70, 1));
+        assert_eq!(drops.left_out_totals().bytes, 7);
+    }
+
+    #[test]
     fn totals_are_counted_by_kind() {
         let list = PlainList::new(vec![
             entry("\\a", PlainKind::AttributesCleared, TEMPORARY),
@@ -1300,6 +1488,7 @@ mod tests {
             efs: None,
             cloud: None,
             left_out: None,
+            sis: None,
             dropped_streams: Vec::new(),
             recorded_streams: Vec::new(),
         };

@@ -1016,10 +1016,20 @@ mod refusal_tests {
     /// A cloud folder as the lab's `cloud` volume has it: a directory with a
     /// cloud reparse point and the given named streams.
     fn cloud_folder(streams: &[&str]) -> FileInventory {
-        let mut point = 0x9000_701au32.to_le_bytes().to_vec();
+        placeholder_folder(0x9000_701a, streams)
+    }
+
+    /// A folder with a placeholder's reparse point of `tag`.
+    fn placeholder_folder(tag: u32, streams: &[&str]) -> FileInventory {
+        let mut point = tag.to_le_bytes().to_vec();
         point.extend_from_slice(&8u16.to_le_bytes());
         point.extend_from_slice(&0u16.to_le_bytes());
         point.extend_from_slice(b"provider");
+        pointed_folder(point, streams)
+    }
+
+    /// A folder with the reparse point `point` and the given named streams.
+    fn pointed_folder(point: Vec<u8>, streams: &[&str]) -> FileInventory {
         let attribute = |type_code: u32, name: &str, value: &[u8]| ntfs::AttributeInventory {
             type_code,
             instance: 0,
@@ -1115,7 +1125,7 @@ mod refusal_tests {
             admission_issues(&sync_root),
             admission_issues(&folder),
             admission_issues(&other),
-            crate::plain_projection::cloud_placeholder(&sync_root)
+            crate::plain_projection::placeholder_of(&sync_root)
                 .unwrap()
                 .is_some_and(|placeholder| placeholder.directory),
         );
@@ -1145,6 +1155,158 @@ mod refusal_tests {
         );
     }
 
+    /// A ProjFS virtualization root and its placeholders: taken plain, their
+    /// point (the root's marker) is settled as a cloud one's; refused by
+    /// name where nothing is taken plain.
+    #[test]
+    fn a_projfs_placeholder_is_settled_as_a_cloud_one() {
+        let root = placeholder_folder(n2r_win32::plain_ledger::PROJFS_TAG, &[]);
+        let mut file = placeholder_folder(n2r_win32::plain_ledger::PROJFS_TAG, &[]);
+        file.record_number = 39;
+        file.is_directory = false;
+        file.streams = directory_with_stream("", 0).streams;
+        // A ProjFS folder has no stream of the Cloud Files API's.
+        let with_stream = placeholder_folder(
+            n2r_win32::plain_ledger::PROJFS_TAG,
+            &["${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity"],
+        );
+        crate::plain_consent::take_plain_on_this_thread(true);
+        let taken = (
+            admission_issues(&root),
+            admission_issues(&file),
+            admission_issues(&with_stream),
+            crate::plain_projection::placeholder_of(&root)
+                .unwrap()
+                .map(|p| p.family),
+        );
+        crate::plain_consent::take_plain_on_this_thread(false);
+        assert!(taken.0.is_empty(), "{:?}", taken.0);
+        assert!(taken.1.is_empty(), "{:?}", taken.1);
+        assert!(!taken.2.is_empty());
+        assert_eq!(
+            taken.3,
+            Some(n2r_win32::plain_ledger::PlaceholderFamily::Projfs)
+        );
+        let refused = admission_issues(&root);
+        assert!(
+            refused
+                .iter()
+                .any(|issue| issue.contains("ProjFS placeholder")),
+            "{refused:?}"
+        );
+    }
+
+    /// A Single Instance Storage link (SI_REPARSE_BUFFER version 5, its
+    /// unnamed stream all holes): admitted where it is taken plain, refused
+    /// by name where it is not, and of another layout refused either way.
+    #[test]
+    fn a_sis_link_is_admitted_only_where_it_is_expanded() {
+        let link = |version: u32| {
+            let mut point = n2r_win32::reparse_layout::IO_REPARSE_TAG_SIS
+                .to_le_bytes()
+                .to_vec();
+            point.extend_from_slice(&64u16.to_le_bytes());
+            point.extend_from_slice(&0u16.to_le_bytes());
+            point.extend_from_slice(&version.to_le_bytes());
+            point.extend_from_slice(&0u32.to_le_bytes());
+            point.extend_from_slice(&[0x5a; 16]);
+            point.extend_from_slice(&1u64.to_le_bytes());
+            point.extend_from_slice(&(39u64 | 1 << 48).to_le_bytes());
+            point.extend_from_slice(&(70u64 | 1 << 48).to_le_bytes());
+            point.extend_from_slice(&[0; 16]);
+            let mut file = pointed_folder(point, &[]);
+            file.record_number = 39;
+            file.is_directory = false;
+            file.streams = vec![
+                serde_json::from_value(serde_json::json!({
+                    "name": "", "name_utf16": [], "resident": false, "flags": 0x8000,
+                    "logical_size": 8192, "initialized_size": 8192, "allocated_size": 8192,
+                    "extents": [{"logical_offset": 0, "physical_offset": null, "length": 8192}],
+                    "resident_sha256": null,
+                }))
+                .unwrap(),
+            ];
+            if let Some(information) = file.standard_information.as_mut() {
+                information.file_attributes = 0x620;
+            }
+            file
+        };
+        let clean = link(5);
+        crate::plain_consent::take_plain_on_this_thread(true);
+        let taken = (
+            admission_issues(&clean),
+            crate::plain_projection::sis_taken(&clean),
+            crate::plain_projection::of_file(&clean)
+                .unwrap()
+                .map(|t| t.kind),
+        );
+        crate::plain_consent::take_plain_on_this_thread(false);
+        assert!(taken.0.is_empty(), "{:?}", taken.0);
+        assert!(taken.1);
+        assert_eq!(
+            taken.2,
+            Some(n2r_win32::plain_ledger::PlainKind::SisExpanded)
+        );
+        let refused = admission_issues(&clean);
+        assert!(
+            refused
+                .iter()
+                .any(|issue| issue.contains("Single Instance Storage link")),
+            "{refused:?}"
+        );
+        // Version 4: its point is not one this build reads.
+        assert!(crate::ntfs_reparse::file_point(&link(4)).is_err());
+    }
+
+    /// A file a hierarchical storage manager moved to its store (both HSM
+    /// tags), OFFLINE: admitted where it is taken plain (`hsm_recalled`),
+    /// refused by name where it is not. A folder with the tag is refused
+    /// either way: a manager moves files.
+    #[test]
+    fn a_storage_managers_file_is_admitted_only_where_it_is_recalled() {
+        for tag in n2r_win32::plain_ledger::HSM_TAGS {
+            let mut file = placeholder_folder(tag, &[]);
+            file.record_number = 39;
+            file.is_directory = false;
+            file.streams = directory_with_stream("", 0).streams;
+            if let Some(information) = file.standard_information.as_mut() {
+                // ARCHIVE | REPARSE_POINT | OFFLINE.
+                information.file_attributes = 0x1420;
+            }
+            let folder = placeholder_folder(tag, &[]);
+            crate::plain_consent::take_plain_on_this_thread(true);
+            let taken = (
+                admission_issues(&file),
+                admission_issues(&folder),
+                crate::plain_projection::of_file(&file)
+                    .unwrap()
+                    .map(|t| t.kind),
+            );
+            crate::plain_consent::take_plain_on_this_thread(false);
+            assert!(taken.0.is_empty(), "{tag:#x}: {:?}", taken.0);
+            assert!(
+                taken
+                    .1
+                    .iter()
+                    .any(|issue| issue.contains("storage manager's placeholder")),
+                "{tag:#x}: {:?}",
+                taken.1
+            );
+            assert_eq!(
+                taken.2,
+                Some(n2r_win32::plain_ledger::PlainKind::HsmRecalled)
+            );
+            let refused = admission_issues(&file);
+            assert!(
+                refused
+                    .iter()
+                    .any(|issue| issue.contains("storage manager's placeholder")
+                        && issue.contains("recall the file through it")),
+                "{tag:#x}: {refused:?}"
+            );
+        }
+    }
+
     /// The lab (cl3-down-leave-out, MFT record 42): a placeholder file left
     /// out has no copy, and Windows' view of it at the freeze is not asked
     /// for one; one made plain is.
@@ -1155,7 +1317,7 @@ mod refusal_tests {
         file.is_directory = false;
         file.streams = directory_with_stream("", 0).streams;
         crate::plain_consent::take_plain_on_this_thread(true);
-        let copied = crate::plain_projection::cloud_copied(&file);
+        let copied = crate::plain_projection::placeholder_copied(&file);
         n2r_win32::plain_ledger::declare(
             n2r_win32::plain_ledger::DeclaredDrops::from_ledger(
                 &n2r_win32::plain_ledger::PlainLedger {
@@ -1179,6 +1341,7 @@ mod refusal_tests {
                             streams: 1,
                             bytes: 5,
                         }),
+                        sis: None,
                         dropped_streams: Vec::new(),
                         recorded_streams: Vec::new(),
                     }],
@@ -1186,7 +1349,7 @@ mod refusal_tests {
             )
             .unwrap(),
         );
-        let left_out = crate::plain_projection::cloud_copied(&file);
+        let left_out = crate::plain_projection::placeholder_copied(&file);
         let view = crate::plain_projection::observed_view(&file);
         n2r_win32::plain_ledger::declare(Default::default());
         crate::plain_consent::take_plain_on_this_thread(false);
@@ -2607,17 +2770,19 @@ pub(crate) fn user_issues_with_context_alias_scope(
                 n2r_win32::reparse_layout::unsupported_tag_meaning(point.tag())
             ));
         }
-    } else if let Some(point) = reparse
-        .as_ref()
-        .filter(|point| n2r_win32::reparse_layout::is_cloud_tag(point.tag()))
-    {
-        // A cloud provider's placeholder is never recreated as such. A data
-        // volume's is made a plain file once its list is agreed
-        // (`cloud_placeholder_plain`); anywhere else, or of another shape,
-        // it is refused by name, with the remedy.
-        if !(ordinary && crate::plain_projection::cloud_taken(f)) {
+    } else if let Some((point, family)) = reparse.as_ref().and_then(|point| {
+        n2r_win32::plain_ledger::PlaceholderFamily::of_tag(point.tag())
+            .map(|family| (point, family))
+    }) {
+        // A provider's placeholder (cloud files, ProjFS) is never recreated
+        // as such. A data volume's is made a plain file once its list is
+        // agreed (`cloud_placeholder_plain`, `projfs_placeholder_plain`);
+        // anywhere else, or of another shape, it is refused by name, with
+        // the remedy.
+        if !(ordinary && crate::plain_projection::placeholder_taken(f)) {
             issues.push(format!(
-                "it is a cloud placeholder{}",
+                "it is a {} placeholder{}",
+                family.name(),
                 n2r_win32::reparse_layout::unsupported_tag_meaning(point.tag())
             ));
         }
@@ -2647,6 +2812,20 @@ pub(crate) fn user_issues_with_context_alias_scope(
                     )
                 },
             );
+        }
+    } else if let Some(point) = reparse
+        .as_ref()
+        .filter(|point| point.tag() == n2r_win32::reparse_layout::IO_REPARSE_TAG_SIS)
+    {
+        // A Single Instance Storage link is never recreated as such. A data
+        // volume's, of the one shape read exactly, is made a plain file from
+        // its common store file once its list is agreed (`sis_expanded`);
+        // anywhere else, or of another shape, it is refused by name.
+        if !(ordinary && crate::plain_projection::sis_taken(f)) {
+            issues.push(format!(
+                "it is a Single Instance Storage link{}",
+                n2r_win32::reparse_layout::unsupported_tag_meaning(point.tag())
+            ));
         }
     } else if let Some(point) = &reparse {
         if (point.tag() == 0xa0000003 && !f.is_directory)
@@ -2684,7 +2863,7 @@ pub(crate) fn user_issues_with_context_alias_scope(
     let efs_plain = ordinary && crate::plain_projection::efs_taken(f);
     // A sync root's folder made plain: the Cloud Files API's own stream on
     // it is left off, and declared so in the ledger.
-    let cloud_folder = ordinary && f.is_directory && crate::plain_projection::cloud_taken(f);
+    let cloud_folder = ordinary && f.is_directory && crate::plain_projection::placeholder_taken(f);
     let unsupported_attribute = f.attributes.iter().find(|a| {
         if efs_plain && crate::plain_projection::efs_attribute(a) {
             return false;
@@ -2826,8 +3005,8 @@ pub(crate) fn user_issues_with_context_alias_scope(
         | if efs_plain { n2r_win32::plain_ledger::ENCRYPTED } else { 0 }
         // A cloud placeholder made plain: the provider's pin and recall
         // marks and OFFLINE, which the new object is made without.
-        | if ordinary && crate::plain_projection::cloud_taken(f) {
-            crate::plain_projection::CLOUD_CLEARED
+        | if ordinary && crate::plain_projection::placeholder_taken(f) {
+            crate::plain_projection::PLACEHOLDER_CLEARED
         } else {
             0
         };

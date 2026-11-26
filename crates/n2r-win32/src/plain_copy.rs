@@ -325,6 +325,14 @@ pub enum PlainRead {
     /// semantics, with this process's token: EFS decrypts it only where that
     /// token holds its key, and refuses the open otherwise.
     Decrypted,
+    /// A Single Instance Storage link's: the unnamed stream of the common
+    /// store file its reparse point names (an ordinary file, opened by its
+    /// file reference as [`PlainRead::Filter`] opens one). The link itself
+    /// is not opened: no filter of this Windows reads it.
+    CommonStore {
+        record_number: u64,
+        sequence_number: u16,
+    },
 }
 
 /// FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_OPEN_NO_RECALL: [`PlainRead::Decrypted`].
@@ -437,6 +445,10 @@ pub fn take_armed(volume: &str) -> io::Result<()> {
                     error
                 }
             }),
+            Some(PlainRead::CommonStore {
+                record_number,
+                sequence_number,
+            }) => open_plain_by_id(&volume, *record_number, *sequence_number),
             _ => open_plain_by_id(&volume, key.record_number, key.sequence_number),
         }
     })

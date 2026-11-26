@@ -1257,15 +1257,25 @@ impl ResourceSourceContext {
                 let agreed = crate::plain_consent::bind_frozen(&census.list)?;
                 // WOF files made plain grow the volume: refused here, with
                 // the numbers, where that does not fit its free space.
+                let free = raw
+                    .header()
+                    .free_clusters
+                    .unwrap_or(0)
+                    .saturating_mul(u64::from(raw.header().geometry.cluster_size))
+                    // What System Volume Information does not carry is room
+                    // the new volume does not have to give it.
+                    .saturating_add(census.not_carried_allocated);
+                let cluster = n2r_win32::target_cluster::bytes();
                 if !census.wof.is_empty() {
-                    crate::plain_projection::require_wof_room(
-                        &census.wof,
-                        n2r_win32::target_cluster::bytes(),
-                        raw.header()
-                            .free_clusters
-                            .unwrap_or(0)
-                            .saturating_mul(u64::from(raw.header().geometry.cluster_size))
-                            .saturating_add(census.not_carried_allocated),
+                    crate::plain_projection::require_wof_room(&census.wof, cluster, free)?;
+                }
+                // SIS links expanded likewise, in what WOF's leave free.
+                if !census.sis.is_empty() {
+                    let (grows, frees) = crate::plain_projection::wof_growth(&census.wof, cluster);
+                    crate::plain_projection::require_sis_room(
+                        &census.sis,
+                        cluster,
+                        free.saturating_sub(grows.saturating_sub(frees)),
                     )?;
                 }
                 // Their plain bytes are copied through WOF at the read-only

@@ -265,6 +265,14 @@ $dataCases = @(
     # System Volume Information below its own folders (written as SYSTEM):
     # not carried over, each object recorded in the ledger.
     'svi-deep|-Content minimal -Features svi-deep -Check'
+    # ProjFS placeholders of the lab's own provider (lab-projfs-provider.exe
+    # beside lab-volume-manifest.exe; the feature step enables Client-ProjFS):
+    # with it running, the one not on the volume is read through it before
+    # the freeze and all are made plain; with it stopped, refused by name, or
+    # converted without it once leaving it out is agreed.
+    'projfs-plain|-Content minimal -Features projfs -Check -AcceptPlain -Unattended'
+    'projfs-down|-Content minimal -Features projfs-down -Check -AcceptPlain -Unattended -ExpectRefusal leave-out-cloud'
+    'projfs-down-leave-out|-Content minimal -Features projfs-down -Check -AcceptPlain -Unattended -LeaveOutCloud'
     'names|-Content minimal -Features names -Check'
     # MBR disks: the volume alone on one, the working directory on one, both
     # with a run interrupted half way through the writes and resumed; and a

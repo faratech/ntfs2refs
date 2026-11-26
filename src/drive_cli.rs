@@ -2160,9 +2160,16 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             let left = crate::drive_plain_prefreeze::leave_out_list(&report.cloud)?;
             if !left.is_empty() {
                 let file = crate::drive_plain_prefreeze::write_leave_out_list(&parent, &left)?;
+                let families: Vec<_> = left
+                    .entries()
+                    .iter()
+                    .filter_map(|entry| entry.kind.family())
+                    .collect();
                 println!(
-                    "{} cloud placeholder(s) cannot be brought onto the volume now (their provider is not running, or has not listed a folder in full). A conversion asks whether to leave them out (they stay in the cloud, and are not on the new volume), or is refused; unattended, it takes --leave-out-cloud {} as well. The list: {}.",
+                    "{} {} cannot be brought onto the volume now (their provider is not running, or has not listed a folder in full). A conversion asks whether to leave them out (they stay {}, and are not on the new volume), or is refused; unattended, it takes --leave-out-cloud {} as well. The list: {}.",
                     left.len(),
+                    crate::plain_projection::placeholders_noun(families.iter().copied()),
+                    crate::plain_projection::left_out_stay(families),
                     left.sha256(),
                     file.display()
                 );

@@ -348,7 +348,7 @@ Refused before anything is written, each with what was found and what to do:
 | Shadow copies of the volume, or snapshot storage kept on it | `vssadmin delete shadows /for=E:` |
 | A shadow-copy provider of backup software (any but Windows' own, Hyper-V's and Windows Server's for remote file shares) that holds a shadow copy on the machine, or does not answer when Windows asks it | The provider is named, and the shadow copy. Delete its shadow copies or let the backup that made them finish; a provider that does not answer has to be repaired or removed |
 | EFS-encrypted files this account cannot decrypt (each named), or encrypted with named streams, or compressed or sparse | Run as the user who encrypted them, import that user's EFS key, or run as the data recovery agent; or `cipher /d` |
-| An OFFLINE file with a reparse point (a storage manager's) | Recall it through its storage manager, or move it |
+| An OFFLINE file with a reparse point (a storage manager's) that could not be recalled before the freeze, unless you agreed to leave it out; a folder with a storage manager's tag; any on a Windows boot volume | Start the storage manager, or recall the file by opening it; or agree to leave it out (`--leave-out-cloud`) |
 | Data Deduplication, and a `compact /exe` file on a Windows boot volume or backed by a WIM image | The kind is named, with the record number to find the file by; a `compact /exe` file with `compact /u /exe <file>` |
 | Cloud placeholders (OneDrive and other Cloud Files API providers) not wholly on this device that could not be downloaded before the freeze (each is named; a provider serves only the account that runs it), or a folder its provider has not listed in full, that you did not agree to leave out; one the Cloud Files API cannot report on; any on a Windows boot volume | Each is named. Start the provider, or make the files always available on this device; or agree to leave them out (`--leave-out-cloud`) |
 | A named data stream on the root directory or on a reparse-point directory, or one on a directory that is encrypted, compressed or sparse | Remove the stream. A plain named stream on any other directory is carried over as the same directory's named stream on ReFS (shown in the lab by `ds3-dirstream-minimal` and `ds3-dirstream-lived-in`: identical listings, acceptance passed) |
@@ -441,6 +441,40 @@ plain silently. This version converts:
   store, under `System Volume Information\Dedup`, is then not carried over
   (below): no file on the new volume needs it. Where a deduplicated file is
   not made plain, the chunk store is refused by name with the same remedies.
+- a ProjFS placeholder (`projfs_placeholder_plain`), as a cloud one: the
+  raw reading says what of each is on the volume; what is not is brought
+  onto it before the freeze by reading it through its provider (which has
+  to be running), each within a minute and a second per MiB, every failure
+  named; the new file is made from a copy read through the ProjFS filter,
+  without its reparse point and marks, and a folder (the virtualization
+  root among them, whose marker is its reparse point) loses its point and
+  marks. Not wholly here, it may be left out (`projfs_left_out`) with the
+  same question and `--leave-out-cloud`. A ProjFS tombstone (a file deleted
+  from a projection) is refused by name.
+- a Single Instance Storage link (`sis_expanded`), left by Windows Storage
+  Server's SIS: its reparse point names the file of `\SIS Common Store`
+  that holds its data, and the new file is made from a copy of that file,
+  without the link's reparse point and sparse mark. The common store file
+  has to be the one the point names (its name, MFT record and sequence
+  number) and of the link's length, and the link must hold no data of its
+  own (one written to since it was linked is refused by name, as is a point
+  of another layout). Each link takes its whole length on the new volume:
+  `--check` says how much, and the conversion is refused where that does
+  not fit in the free space. The common store folder itself is carried over
+  as it is.
+- a file a hierarchical storage manager (Remote Storage, an HSM product;
+  reparse tags 0xC0000004 and 0x80000006) moved to its store
+  (`hsm_recalled`), as a ProjFS placeholder: what of it is on the volume is
+  taken from the raw reading; what is not is recalled before the freeze by
+  reading it as any program does, with its manager running, each within a
+  minute and a second per MiB, every failure named. The new file is made
+  from a copy read recalling nothing, without the reparse point and the
+  OFFLINE and sparse marks: the manager no longer manages it. One that
+  cannot be recalled may be left out (`hsm_left_out`) with the same
+  question and `--leave-out-cloud`, and stays in the manager's store. A
+  folder with a manager's tag is refused by name. The program that served
+  the reads may hold the volume open: the run asks for it to be closed and
+  waits up to 5 minutes for the lock, naming what holds it.
 
 What a data volume keeps in `System Volume Information` below that folder's
 own folders (a chkdsk log, Data Deduplication's chunk store) is Windows' own,
@@ -456,9 +490,6 @@ check. An object with a name there and another elsewhere is refused by name.
 Nothing outside `System Volume Information` is affected. A volume that shares
 its disk with another is converted without this, and such objects are refused
 by name.
-
-The other kinds a list can name (`projfs_placeholder_plain`,
-`sis_expanded`) are still refused as listed above.
 
 `--check` prints a "Converted to plain" section: how many objects of each
 kind, their bytes, the extra space on the new volume and in the working

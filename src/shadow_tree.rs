@@ -1005,9 +1005,10 @@ fn derive_profile(
         ensure!(
             !crate::plain_projection::wof_taken(f)
                 && !crate::plain_projection::efs_taken(f)
-                && !crate::plain_projection::cloud_taken(f)
-                && !crate::plain_projection::dedup_taken(f),
-            "MFT record {}: an object made plain from its copy (a WOF, EFS, cloud-placeholder or deduplicated file) is made only on the paged data-volume route",
+                && !crate::plain_projection::placeholder_taken(f)
+                && !crate::plain_projection::dedup_taken(f)
+                && !crate::plain_projection::sis_taken(f),
+            "MFT record {}: an object made plain from its copy (a WOF, EFS, placeholder, deduplicated or SIS file) is made only on the paged data-volume route",
             f.record_number
         );
         let (source_offset, source_extents, length, sha256, source_evidence, sparse) =

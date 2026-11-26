@@ -23,7 +23,9 @@ param(
     # A directory of the control OS to copy onto the volume with its security.
     [string]$CopyFrom = 'C:\Program Files',
     # lab-cloud-provider.exe, for the 'cloud' and 'cloud-down' features.
-    [string]$CloudProvider
+    [string]$CloudProvider,
+    # lab-projfs-provider.exe, for the 'projfs' and 'projfs-down' features.
+    [string]$ProjfsProvider
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 $drive = $Root.TrimEnd('\')
@@ -522,6 +524,60 @@ try {
             if ($missing.Count) { throw "the SYSTEM task ($($lines[1])) wrote below $svi, and its own listing lacks $($missing -join ', ')" }
             $made[$feature] = [ordered]@{ what = "a folder of System Volume Information holding a file, and a folder with a file, written as $($lines[1])"
                 system_volume_information = $lines[2]; not_carried = $expected }
+        }
+        { $_ -in 'projfs', 'projfs-down' } {
+            # A ProjFS virtualization root of the lab's own provider
+            # (lab-projfs-provider.exe, -ProjfsProvider), projecting a folder
+            # on the control OS's volume: the root (its marker a reparse
+            # point), a folder, two placeholders hydrated (their data on the
+            # volume) and one not. 'projfs' leaves the provider running (the
+            # run reads absent.bin through it before the freeze); 'projfs-down'
+            # stops it (the run is refused naming absent.bin, or, once leaving
+            # it out is agreed, converts without it).
+            if (-not $ProjfsProvider) { throw "the '$feature' feature needs -ProjfsProvider" }
+            $state = (Get-WindowsOptionalFeature -Online -FeatureName Client-ProjFS).State
+            if ("$state" -ne 'Enabled') {
+                $enabled = Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart
+                if ($enabled.RestartNeeded) { throw "Client-ProjFS was enabled and needs the VM restarted; restart it and run the attempt again" }
+            }
+            $backing = "C:\n2r-projfs-backing\$feature"
+            if (Test-Path -LiteralPath $backing) { Remove-Item -LiteralPath $backing -Recurse -Force }
+            $null = New-Item -ItemType Directory -Path "$backing\folder" -Force
+            foreach ($file in 'present.bin', 'absent.bin', 'folder\inner.bin') {
+                [IO.File]::WriteAllBytes("$backing\$file", (Bytes 300000))
+            }
+            $projected = "$dir\projected"
+            $null = New-Item -ItemType Directory -Path $dir -Force
+            $text = Run $ProjfsProvider @('create', '--root', $projected, '--backing', $backing,
+                '--hydrate', 'present.bin', '--hydrate', 'folder\inner.bin')
+            $plain = New-Object System.Collections.Generic.List[object]
+            # The virtualization root is itself a placeholder folder: its
+            # marker is its reparse point.
+            $plain.Add([ordered]@{ kind = 'projfs_placeholder_plain'; path = "\feature-$feature\projected" })
+            foreach ($path in 'folder', 'folder\inner.bin', 'present.bin', 'absent.bin') {
+                # With the provider stopped, absent.bin can only be left out
+                # (the run is refused unless that is agreed: -LeaveOutCloud),
+                # and is absent afterwards.
+                $kind = if ($feature -eq 'projfs-down' -and $path -eq 'absent.bin') { 'projfs_left_out' } else { 'projfs_placeholder_plain' }
+                $plain.Add([ordered]@{ kind = $kind; path = "\feature-$feature\projected\$path" })
+            }
+            $stop = "C:\n2r-projfs-backing\$feature.stop"
+            Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
+            $served = $null
+            if ($feature -eq 'projfs') {
+                # A ProjFS provider serves every process, whatever its session.
+                $served = Start-Process -FilePath $ProjfsProvider -PassThru -WindowStyle Hidden -ArgumentList @(
+                    'serve', '--root', "`"$projected`"", '--backing', "`"$backing`"", '--stop-file', "`"$stop`"")
+                Start-Sleep -Seconds 2
+                if ($served.HasExited) { throw "lab-projfs-provider serve ended at once (exit $($served.ExitCode))" }
+            }
+            $made[$feature] = [ordered]@{
+                what = "a ProjFS virtualization root of the lab provider ($(($text -replace '\s+', ' ').Trim())); its provider is $(if ($served) { "running (process $($served.Id))" } else { 'stopped' })"
+                plain = $plain.ToArray()
+                root = $projected; backing = $backing; stop_file = $stop
+                provider_process = $(if ($served) { $served.Id } else { $null })
+                not_present = @("\feature-$feature\projected\absent.bin")
+            }
         }
         'quota' {
             $null = Run 'fsutil.exe' @('quota', 'enforce', $drive)

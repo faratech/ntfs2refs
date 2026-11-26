@@ -88,11 +88,18 @@ pub fn record(attrs: &[Vec<u8>], flags: u16, links: u16) -> Vec<u8> {
 /// A FILE record of `size` bytes, its update sequence array applied: one
 /// word for every 512 bytes, whatever the sector size.
 pub fn record_sized(attrs: &[Vec<u8>], flags: u16, links: u16, size: usize) -> Vec<u8> {
+    record_form(attrs, flags, links, size, 48)
+}
+
+/// A FILE record with its update sequence array at `usa`: 0x30 (48) in the
+/// NTFS 3.1 header (Windows XP and later), 0x2A (42) in the NTFS 3.0 one
+/// (Windows 2000), which has no record-number field.
+pub fn record_form(attrs: &[Vec<u8>], flags: u16, links: u16, size: usize, usa: usize) -> Vec<u8> {
     let entries = size / 512 + 1;
-    let first = align8(48 + entries * 2);
+    let first = align8(usa + entries * 2);
     let mut b = vec![0; size];
     b[..4].copy_from_slice(b"FILE");
-    put16(&mut b, 4, 48);
+    put16(&mut b, 4, usa as u16);
     put16(&mut b, 6, entries as u16);
     put16(&mut b, 16, 1);
     put16(&mut b, 18, links);
@@ -106,11 +113,11 @@ pub fn record_sized(attrs: &[Vec<u8>], flags: u16, links: u16, size: usize) -> V
     }
     put32(&mut b, at, u32::MAX);
     put32(&mut b, 24, (at + 8) as u32);
-    put16(&mut b, 48, 0xabcd);
+    put16(&mut b, usa, 0xabcd);
     for i in 1..entries {
         let tail = i * 512 - 2;
         let old = [b[tail], b[tail + 1]];
-        b[48 + i * 2..50 + i * 2].copy_from_slice(&old);
+        b[usa + i * 2..usa + 2 + i * 2].copy_from_slice(&old);
         put16(&mut b, tail, 0xabcd);
     }
     b
@@ -128,6 +135,21 @@ pub fn mft_clusters(record: usize) -> usize {
 /// The synthetic volume for a sector and FILE record size: the same files,
 /// with the MFT at cluster 4 holding twenty records of that size.
 pub fn image_geometry(sector: u16, record: usize) -> Vec<u8> {
+    image_version(sector, record, (3, 1), |_| 48)
+}
+
+/// The synthetic volume, its `$Volume` stating `version`, and the FILE
+/// record of each MFT record number in the header form `usa` gives for it
+/// (see [`record_form`]).
+pub fn image_version(
+    sector: u16,
+    record: usize,
+    version: (u8, u8),
+    usa: impl Fn(usize) -> usize,
+) -> Vec<u8> {
+    let record_sized = |attrs: &[Vec<u8>], flags, links, size, number| {
+        record_form(attrs, flags, links, size, usa(number))
+    };
     let mut image = vec![0u8; 2 * 1024 * 1024];
     image[..512].copy_from_slice(&boot_geometry(sector, record as u32));
     let clusters = mft_clusters(record);
@@ -144,17 +166,18 @@ pub fn image_geometry(sector: u16, record: usize) -> Vec<u8> {
         1,
         1,
         record,
+        0,
     );
     let mut vi = [0u8; 12];
-    vi[8] = 3;
-    vi[9] = 1;
-    let volume = record_sized(&[resident(0x70, "", &vi, 0)], 1, 1, record);
-    let root = record_sized(&[filename(".", 0)], 3, 1, record);
+    vi[8] = version.0;
+    vi[9] = version.1;
+    let volume = record_sized(&[resident(0x70, "", &vi, 0)], 1, 1, record, 3);
+    let root = record_sized(&[filename(".", 0)], 3, 1, record, 5);
     let mut bitmap = [0u8; 64];
     for cluster in [0, 30, 100].into_iter().chain(4..4 + clusters) {
         bitmap[cluster / 8] |= 1 << (cluster % 8);
     }
-    let bitmap_record = record_sized(&[resident(0x80, "", &bitmap, 0)], 1, 1, record);
+    let bitmap_record = record_sized(&[resident(0x80, "", &bitmap, 0)], 1, 1, record, 6);
     let mut si = [0u8; 72];
     put64(&mut si, 0, 1234);
     put32(&mut si, 32, 0x20);
@@ -170,6 +193,7 @@ pub fn image_geometry(sector: u16, record: usize) -> Vec<u8> {
         1,
         2,
         record,
+        16,
     );
     for (number, bytes) in [
         (0usize, mft),

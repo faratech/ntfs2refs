@@ -92,8 +92,8 @@ const RECOVERY_RECORDS: [&str; 3] = [
 
 /// Whether the run in `run` recorded nothing to recover from: none of its
 /// recovery records exists. Until the preparation intent is written the
-/// source is as the run found it (apart from a shrink and an upgrade of an
-/// NTFS 1.2 or 3.0 volume to 3.1 by Windows, which are not undone),
+/// source is as the run found it (apart from a shrink and Windows' read-write
+/// mount of an NTFS 1.2 volume, with any upgrade it made, not undone),
 /// and the run's working volume serves nothing. A record whose presence
 /// cannot be established counts as recorded.
 pub(crate) fn recorded_nothing(run: &std::path::Path) -> bool {

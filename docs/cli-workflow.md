@@ -82,13 +82,18 @@ seconds on one of 23,000 files. It prints:
   the NTFS log closes cleanly, the backup boot sector and the MFT mirror, an
   open transaction, and that Windows shows every file as the raw volume holds
   it.
+- **NTFS versions:** NTFS 3.1 and 3.0 (Windows 2000) are read as they are,
+  including a 3.0 volume whose FILE records Windows XP or later has
+  rewritten in the 3.1 form.
 - **What a conversion changes before the freeze and does not undo:** a
-  volume of NTFS 1.2 or 3.0 is not refused. The check says "Windows will
-  upgrade this volume to NTFS 3.1 before conversion; this is not undone",
-  and so does a conversion before its question. After the question Windows
-  mounts the volume read-write, which upgrades it; the converter reads
-  `$Volume` again and stops, with nothing else changed, if it does not read
-  3.1. `--diagnose` does not run on such a volume.
+  volume of NTFS 1.2 (Windows NT 4.0), which the converter does not read, is
+  not refused. The check says Windows mounts it read-write before
+  conversion so that it may upgrade it, that an upgrade is not undone, and
+  that Windows 11 has been seen not to upgrade an older volume this way; so
+  does a conversion before its question. After the question Windows mounts
+  the volume read-write; the converter reads `$Volume` again and stops, with
+  nothing else changed, if it does not then read 3.0 or 3.1. `--diagnose`
+  does not run on such a volume.
 - **What a conversion would take:** the number of files, directories and
   streams; how much data stays where it is and how much is copied, for the
   cluster size asked for (`--target-cluster-bytes`); the working storage and
@@ -353,7 +358,7 @@ Refused before anything is written, each with what was found and what to do:
 | EFS-encrypted files this account cannot decrypt (each named), or encrypted with named streams, or compressed or sparse | Run as the user who encrypted them, import that user's EFS key, or run as the data recovery agent; or `cipher /d` |
 | An OFFLINE file with a reparse point (a storage manager's) | Recall it through its storage manager, or move it |
 | Cloud placeholders, Data Deduplication, and a `compact /exe` file on a Windows boot volume or backed by a WIM image | The kind is named, with the record number to find the file by; a `compact /exe` file with `compact /u /exe <file>` |
-| A named data stream on a directory | Remove the stream. (Carrying it over as the same directory's named stream on ReFS is built and waits for the lab to show it) |
+| A named data stream on the root directory or on a reparse-point directory, or one on a directory that is encrypted, compressed or sparse | Remove the stream. A plain named stream on any other directory is carried over as the same directory's named stream on ReFS (shown in the lab by `ds3-dirstream-minimal` and `ds3-dirstream-lived-in`: identical listings, acceptance passed) |
 | Two names in one directory that differ only by case (both are given) | Rename one of them, then `fsutil file setCaseSensitiveInfo <directory> disable` |
 | A dirty volume, an NTFS log that was not closed, an open transaction | `chkdsk E: /f`, or dismount cleanly |
 | A program holding a file on the volume open | Close it; the converter waits 20 seconds first |

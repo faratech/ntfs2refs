@@ -320,10 +320,12 @@ impl ResourceProfile {
                 dirs += 1;
             } else {
                 files += 1;
-                streams = streams
-                    .checked_add(f.streams.len())
-                    .ok_or_else(|| anyhow::anyhow!("stream count overflow"))?;
             }
+            // A directory's streams are its named ones, counted as
+            // `TreeCounts` counts them.
+            streams = streams
+                .checked_add(f.streams.len())
+                .ok_or_else(|| anyhow::anyhow!("stream count overflow"))?;
         }
         let bytes: [u8; 32] = hex::decode(pin)?
             .try_into()
@@ -550,7 +552,7 @@ pub(crate) fn bind_short_name_policy(
     let policy = &policy.observation;
     if raw.volume_flags != Some(0x80)
         || raw.dirty != Some(false)
-        || raw.volume_version.as_deref() != Some("3.1")
+        || !crate::ntfs_version::reads_text(raw.volume_version.as_deref())
         || native.request.source_inspection_sha256 != assessment.source_inspection_sha256
         || !assessment
             .source_view
@@ -630,7 +632,7 @@ pub struct Gate {
 }
 
 /// What the `clean_volume` gate requires, as a refusal says it.
-pub(crate) const CLEAN_VOLUME_REQUIREMENT: &str = "the volume is marked dirty, or is not NTFS version 3.1: run `chkdsk <drive>: /f`, let it finish, and convert then";
+pub(crate) const CLEAN_VOLUME_REQUIREMENT: &str = "the volume is marked dirty, or is not NTFS version 3.0 or 3.1: run `chkdsk <drive>: /f`, let it finish, and convert then";
 
 /// What the `volume_policy_flags` gate requires, as a refusal says it.
 pub(crate) const VOLUME_FLAGS_REQUIREMENT: &str = "the volume carries state flags the converter does not take over (a pending chkdsk or upgrade), or 8.3 short-name creation is enabled on it: run `chkdsk <drive>: /f`, and turn short-name creation off with `fsutil 8dot3name set <drive>: 1`";
@@ -804,6 +806,113 @@ fn only_a_consequence(code: &str, failed: &[&str]) -> bool {
     DEPENDENT.contains(&code) && failed.iter().any(|other| !DEPENDENT.contains(other))
 }
 
+/// What a run counts of the tree it converts: its files, directories, data
+/// streams and their logical bytes. Every place that counts them (the
+/// check, the admission the native observation pins, the frozen source's
+/// gates, the memory estimate) counts them here, so that they agree: the
+/// frozen admission holds its counts to the pinned ones exactly. A
+/// directory's streams are its named ones, and they are counted with it
+/// (`DIRECTORY_STREAMS_CARRIED`); the frozen gates once counted only a
+/// file's, and a volume with a directory stream was refused with
+/// `resource_limits` although the check had admitted it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TreeCounts {
+    pub(crate) files: u64,
+    pub(crate) directories: u64,
+    pub(crate) streams: u64,
+    pub(crate) logical_bytes: u64,
+}
+
+impl TreeCounts {
+    /// Count one user file or directory (not an internal one).
+    pub(crate) fn add(&mut self, file: &FileInventory) -> anyhow::Result<()> {
+        use anyhow::Context as _;
+        if file.is_directory {
+            self.directories = self
+                .directories
+                .checked_add(1)
+                .context("directory count overflow")?;
+        } else {
+            self.files = self.files.checked_add(1).context("file count overflow")?;
+        }
+        self.streams = self
+            .streams
+            .checked_add(u64::try_from(file.streams.len())?)
+            .context("stream count overflow")?;
+        for stream in &file.streams {
+            self.logical_bytes = self
+                .logical_bytes
+                .checked_add(stream.logical_size)
+                .context("logical total overflow")?;
+        }
+        Ok(())
+    }
+
+    /// The `resource_limits` gate: the counts are exactly those the run's
+    /// admission was made for, there is a file to convert, and the bytes
+    /// fit a signed size.
+    pub(crate) fn fit(self, admission: n2r_win32::tree_resources::SourceResourceAdmission) -> bool {
+        admission
+            .validate_tree(self.files, self.directories, self.streams)
+            .is_ok()
+            && self.files > 0
+            && self.logical_bytes <= i64::MAX as u64
+    }
+
+    /// What the `resource_limits` gate requires, and what it found.
+    pub(crate) fn limits_detail(
+        self,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    ) -> String {
+        format!(
+            "the volume holds no file at all (an empty volume is formatted, not converted), or its counts of files, directories and streams do not fit what was reserved for this run: counted {} file(s), {} directories and {} data stream(s); reserved for {}, {} and {}",
+            self.files,
+            self.directories,
+            self.streams,
+            admission.files,
+            admission.directories,
+            admission.data_streams
+        )
+    }
+}
+
+/// The two source gates that close only with the others: the replacement
+/// of NTFS's internal files (`internal_replacement_state`), when every
+/// independent obligation has closed, and the directories' case flags
+/// (`native_directory_case_sensitivity`), which need it where the volume
+/// has internal directories. Returned in that order.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DependentGateInputs {
+    /// Internal indexes, transactions, backups and log bind the source.
+    pub(crate) internal_bound: bool,
+    pub(crate) clean: bool,
+    pub(crate) policy_flags: bool,
+    pub(crate) source_objects: bool,
+    pub(crate) resource_counts: bool,
+    pub(crate) unresolved: u64,
+    /// User directories, as counted by [`TreeCounts`].
+    pub(crate) directories: u64,
+    /// Every directory record, internal ones included.
+    pub(crate) raw_directories: u64,
+    pub(crate) internal_directories: u64,
+    /// User directories whose case flags Windows answered as the raw volume.
+    pub(crate) user_case_matched: u64,
+}
+
+pub(crate) fn dependent_gates(inputs: DependentGateInputs) -> (bool, bool) {
+    let replacement_ready = inputs.internal_bound
+        && inputs.clean
+        && inputs.policy_flags
+        && inputs.source_objects
+        && inputs.resource_counts
+        && inputs.unresolved == 0;
+    let case = inputs.directories > 0
+        && inputs.user_case_matched == inputs.directories
+        && (inputs.internal_directories == 0 || replacement_ready)
+        && inputs.raw_directories == inputs.directories + inputs.internal_directories;
+    (replacement_ready, case)
+}
+
 #[cfg(test)]
 mod refusal_tests {
     use super::*;
@@ -839,22 +948,181 @@ mod refusal_tests {
         }
     }
 
+    /// The lab's `dirstream` volume, as the gates see it: the root, a
+    /// directory with a named stream, one with a stream of about 1 MiB,
+    /// and a file.
+    fn dirstream_tree() -> Vec<FileInventory> {
+        let mut root = directory_with_stream("note", 0);
+        root.streams.clear();
+        let small = directory_with_stream("note", 0);
+        let mut large = directory_with_stream("large", 0);
+        large.streams[0].logical_size = 1_115_200;
+        let mut file = directory_with_stream("", 0);
+        file.is_directory = false;
+        file.streams[0].logical_size = 100_000;
+        vec![root, small, large, file]
+    }
+
+    fn count(tree: &[FileInventory]) -> TreeCounts {
+        let mut counts = TreeCounts::default();
+        for file in tree {
+            counts.add(file).unwrap();
+        }
+        counts
+    }
+
+    fn admission_for(counts: TreeCounts) -> n2r_win32::tree_resources::SourceResourceAdmission {
+        n2r_win32::tree_resources::SourceResourceAdmission::new(
+            [7; 32],
+            64,
+            64,
+            counts.files,
+            counts.directories,
+            counts.streams,
+            n2r_win32::tree_resources::ResourceBudget {
+                schema_version: 1,
+                ram_bytes: 64 << 20,
+                scratch_bytes: 256 << 20,
+                page_bytes: 65536,
+                max_row_bytes: 65536,
+                retained_index_bytes: 4 << 20,
+                handle_slots: 1024,
+            },
+        )
+        .unwrap()
+    }
+
+    /// The frozen gates of that volume where everything else closed and it
+    /// has internal directories (`$Extend` and the like), as every NTFS
+    /// volume does: resource_limits, internal_replacement_state and
+    /// native_directory_case_sensitivity.
+    fn frozen_gates(counts: TreeCounts, pinned: TreeCounts) -> (bool, bool, bool) {
+        let resource_counts = counts.fit(admission_for(pinned));
+        let (replacement, case) = dependent_gates(DependentGateInputs {
+            internal_bound: true,
+            clean: true,
+            policy_flags: true,
+            source_objects: true,
+            resource_counts,
+            unresolved: 0,
+            directories: counts.directories,
+            raw_directories: counts.directories + 2,
+            internal_directories: 2,
+            user_case_matched: counts.directories,
+        });
+        (resource_counts, replacement, case)
+    }
+
+    /// The checked source readers take a directory's named stream: the lab's
+    /// dirstream run was refused in payload supply planning with "plain
+    /// standalone file required".
     #[test]
-    fn a_directory_stream_is_refused_by_name_until_it_is_carried() {
+    fn the_source_supplies_a_directorys_named_stream() {
+        let note: Vec<u16> = "note".encode_utf16().collect();
         let directory = directory_with_stream("note", 0);
-        // As shipped: refused, with what to do. One place turns it on.
-        assert!(!DIRECTORY_STREAMS_CARRIED);
+        assert!(ntfs::supplies_data_stream(&directory, &note));
+        // A directory has no unnamed stream to supply.
+        assert!(!ntfs::supplies_data_stream(&directory, &[]));
+        let mut file = directory_with_stream("", 0);
+        file.is_directory = false;
+        assert!(ntfs::supplies_data_stream(&file, &[]));
+        assert!(ntfs::supplies_data_stream(&file, &note));
+        // An extension record supplies nothing itself, file or directory.
+        let mut extension = directory_with_stream("note", 0);
+        extension.base_file_reference = 40;
+        assert!(!ntfs::supplies_data_stream(&extension, &note));
+        file.base_file_reference = 40;
+        assert!(!ntfs::supplies_data_stream(&file, &[]));
+    }
+
+    #[test]
+    fn a_directorys_named_streams_are_counted_with_the_tree() {
+        let counts = count(&dirstream_tree());
+        assert_eq!(
+            counts,
+            TreeCounts {
+                files: 1,
+                directories: 3,
+                streams: 3,
+                logical_bytes: 1_115_200 + 5 + 100_000,
+            }
+        );
+    }
+
+    #[test]
+    fn a_volume_with_directory_streams_passes_the_frozen_gates_it_was_refused_by() {
+        let tree = dirstream_tree();
+        // What the native observation pinned: every stream, a directory's
+        // named ones included.
+        let pinned = count(&tree);
+        // What the frozen gates counted before: a file's streams only. The
+        // lab's run was refused with all three gates.
+        let mut files_only = pinned;
+        files_only.streams = 1;
+        files_only.logical_bytes = 100_000;
+        assert_eq!(frozen_gates(files_only, pinned), (false, false, false));
+        assert!(files_only.limits_detail(admission_for(pinned)).contains(
+            "counted 1 file(s), 3 directories and 1 data stream(s); reserved for 1, 3 and 3"
+        ),);
+        // Counted alike, as every place now counts them: all three hold.
+        assert_eq!(frozen_gates(count(&tree), pinned), (true, true, true));
+        // The two dependent gates still fail with any other gate, and the
+        // case gate with a directory whose case Windows did not answer.
+        let (_, case) = dependent_gates(DependentGateInputs {
+            resource_counts: true,
+            user_case_matched: pinned.directories - 1,
+            directories: pinned.directories,
+            raw_directories: pinned.directories,
+            ..DependentGateInputs::default()
+        });
+        assert!(!case);
+        assert_eq!(
+            dependent_gates(DependentGateInputs {
+                internal_bound: true,
+                clean: true,
+                policy_flags: true,
+                source_objects: false,
+                resource_counts: true,
+                directories: pinned.directories,
+                raw_directories: pinned.directories + 2,
+                internal_directories: 2,
+                user_case_matched: pinned.directories,
+                unresolved: 0,
+            }),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn a_directorys_named_stream_is_admitted_and_the_root_and_reparse_ones_refused() {
+        let directory = directory_with_stream("note", 0);
+        // As shipped: a plain named stream on an ordinary directory passes.
+        assert!(directory_streams_carried());
+        assert_eq!(
+            directory_stream_issue(
+                &directory,
+                true,
+                false,
+                16,
+                directory_streams_carried(),
+                |_| true
+            ),
+            None
+        );
+        // Turned off, it is refused by name, with what to do.
         assert_eq!(
             directory_stream_issue(&directory, true, false, 16, false, |_| true).as_deref(),
             Some(DIRECTORY_STREAM_REFUSAL)
         );
-        // Carried: a plain named stream on an ordinary directory passes.
+        // The root directory's stream stays refused, by name.
+        let mut root = directory_with_stream("note", 0);
+        root.record_number = 5;
         assert_eq!(
-            directory_stream_issue(&directory, true, false, 16, true, |_| true),
-            None
+            directory_stream_issue(&root, true, false, 16, true, |_| true).as_deref(),
+            Some(ROOT_STREAM_REFUSAL)
         );
-        // Not carried even then: compressed, unnamed, on a reparse point,
-        // on a system object, beyond the stream bound, or one whose source
+        // Not carried either: compressed, unnamed, on a reparse point, on a
+        // system object, beyond the stream bound, or one whose source
         // evidence does not hold.
         for (file, ordinary, reparse, maximum, evidence) in [
             (directory_with_stream("note", 1), true, false, 16, true),
@@ -865,8 +1133,15 @@ mod refusal_tests {
             (directory_with_stream("note", 0), true, false, 16, false),
         ] {
             assert!(
-                directory_stream_issue(&file, ordinary, reparse, maximum, true, |_| evidence)
-                    .is_some_and(|issue| issue.contains("named data stream")),
+                directory_stream_issue(
+                    &file,
+                    ordinary,
+                    reparse,
+                    maximum,
+                    directory_streams_carried(),
+                    |_| evidence
+                )
+                .is_some_and(|issue| issue.contains("named data stream")),
                 "{:?} ordinary={ordinary} reparse={reparse}",
                 file.streams[0]
             );
@@ -1742,11 +2017,15 @@ pub fn file_attribute_names(bits: u32) -> String {
 /// with its data, so the listing stays identical. ReFS 3.14 takes a named
 /// stream on a directory (`dir:stream`; seen on the host's ReFS volume, a
 /// 1 MiB one included), and the planner, the constructor, the supply and
-/// the read-back carry them as they carry a file's. Until the lab's
-/// `dirstream` case has converted with an identical listing this stays
-/// off, and such a directory is refused by name. This is the one place to
-/// turn it on.
-pub const DIRECTORY_STREAMS_CARRIED: bool = false;
+/// the read-back carry them as they carry a file's. On since the lab's
+/// `dirstream` cases converted with identical listings and passed their
+/// acceptance (`ds3-dirstream-minimal`, `ds3-dirstream-lived-in`: a
+/// directory with a 31-byte stream, and one with a stream of 1,115,200
+/// bytes that ends inside a cluster). The root directory's streams, a
+/// reparse directory's, and those that are not plain stay refused
+/// ([`directory_stream_issue`]). Turned off, every directory with a named
+/// stream is refused by name again ([`DIRECTORY_STREAM_REFUSAL`]).
+pub const DIRECTORY_STREAMS_CARRIED: bool = true;
 
 /// See [`DIRECTORY_STREAMS_CARRIED`]; a function, so that the paths it
 /// guards are compiled and tested either way.
@@ -1757,6 +2036,10 @@ pub(crate) fn directory_streams_carried() -> bool {
 /// The refusal of a directory with a named data stream while they are not
 /// carried over.
 pub const DIRECTORY_STREAM_REFUSAL: &str = "it is a directory with a named data stream, which the converter does not carry over: remove the stream before converting";
+
+/// The refusal of a named data stream on the volume's root directory, which
+/// is not carried over even where other directories' streams are.
+pub const ROOT_STREAM_REFUSAL: &str = "it is the root directory, and it has a named data stream, which the converter does not carry over on the root: remove the stream before converting";
 
 /// Why a directory's named data streams cannot be carried over, if they
 /// cannot: every one has to be named, plain (not encrypted, compressed or
@@ -1775,6 +2058,11 @@ pub(crate) fn directory_stream_issue(
     }
     if !carried {
         return Some(DIRECTORY_STREAM_REFUSAL.into());
+    }
+    // The new root is made by Windows when it formats the volume, and is
+    // never made beside its streams; the lab has not shown one carried.
+    if f.record_number == 5 {
+        return Some(ROOT_STREAM_REFUSAL.into());
     }
     let mut exact_names = BTreeSet::new();
     let mut folded_names = BTreeSet::new();
@@ -2382,8 +2670,8 @@ fn assess_source_view_profile(
         "clean_volume",
         raw.dirty == Some(false)
             && raw.volume_flags.is_some_and(|flags| flags & 1 == 0)
-            && raw.volume_version.as_deref() == Some("3.1"),
-        "require NTFS 3.1 and a clear on-disk $Volume dirty bit; independent native dirty-state observations are bound by the separate live transaction_freeze gate",
+            && crate::ntfs_version::reads_text(raw.volume_version.as_deref()),
+        "require NTFS 3.0 or 3.1 and a clear on-disk $Volume dirty bit; independent native dirty-state observations are bound by the separate live transaction_freeze gate",
     );
     gate(
         "volume_policy_flags",

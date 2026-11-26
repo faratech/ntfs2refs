@@ -1680,6 +1680,13 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                         );
                         return Ok(0);
                     }
+                    // The cloud placeholders of the agreed list that are not
+                    // wholly on this device are downloaded before the freeze.
+                    crate::drive_plain_prefreeze::set_plan(crate::drive_plain_prefreeze::plan_for(
+                        &report.cloud,
+                        &report.plain,
+                        &Default::default(),
+                    ));
                 }
                 super::precheck::Outcome::Changing { last } => println!(
                     "The volume changed while it was read, so this check says nothing of it (the last reading stopped at: {last}). The run examines the volume again once it is frozen{}.",
@@ -2230,6 +2237,15 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             selection[super::REVIEW_SELECTION_KEY] = true.into();
         }
         save_new(&run.join("drive-selection.json"), &selection)?;
+        // Before anything else of the run, and before the listing it is
+        // compared with: the cloud placeholders the user agreed to have
+        // made plain that are not wholly on the volume are downloaded onto
+        // it, which is a change before the freeze and is not undone.
+        crate::drive_plain_prefreeze::run(
+            &run,
+            &format!("{}\\", before.binding.volume_path()?),
+            mode,
+        )?;
         if let Some(root) = &compare_listing {
             // Before anything of this run touches the volume.
             super::listing::before(root, &run)?;
@@ -2588,10 +2604,15 @@ The machine restarts, possibly more than once. Do not switch it off while the co
     /// [`remove_plain_copies`] of the run whose conversion directory a
     /// recovery was given, once the recovery succeeded.
     fn after_recovery(directory: &std::path::Path, result: Result<u8>) -> Result<u8> {
-        if result.is_ok()
-            && let Some(run) = directory.parent()
-        {
-            remove_plain_copies(run);
+        if let Some(run) = directory.parent() {
+            if result.is_ok() {
+                remove_plain_copies(run);
+            }
+            // Recovered, cancelled or rolled back: what was downloaded
+            // before the freeze stays, and is said.
+            if let Some(note) = crate::drive_plain_prefreeze::note(run) {
+                println!("{note}");
+            }
         }
         result
     }
@@ -2604,6 +2625,9 @@ The machine restarts, possibly more than once. Do not switch it off while the co
         let shadow = run.join("shadow.vhdx");
         let retirement = staged.retire_unpublished();
         remove_plain_copies(run);
+        if let Some(note) = crate::drive_plain_prefreeze::note(run) {
+            eprintln!("{note}");
+        }
         if let Err(save) = save_new(&run.join("shadow-retirement.json"), &retirement) {
             eprintln!("The record of the working volume's removal could not be saved: {save:#}");
         }

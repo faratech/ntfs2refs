@@ -14,9 +14,13 @@
 //! agreed, under a `SourceChangeAuthority`.
 //!
 //! A directory placeholder whose contents the provider has not listed yet
-//! (CF_PLACEHOLDER_STATE_PARTIAL) holds only the entries listed so far:
-//! listing it while the provider runs has the provider fill it in
-//! ([`populate`]).
+//! (CF_PLACEHOLDER_STATE_PARTIAL) holds only the entries listed so far,
+//! and what it lacks cannot be named before it is listed: such a directory
+//! is reported ([`PlaceholderReport::unpopulated`]) and refused by name.
+//!
+//! [`sync_root`] says which provider a placeholder belongs to and whether
+//! it is connected: a hydration needs it running, and a run that would
+//! need one that is not is refused before it changes anything.
 use serde::{Deserialize, Serialize};
 
 /// One range of a file, as CF_FILE_RANGE gives it.
@@ -172,6 +176,24 @@ pub fn directory_report(state: u32, pin_state: Option<i32>) -> PlaceholderReport
     }
 }
 
+/// The sync root a placeholder is under, as the Cloud Files API reports it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncRoot {
+    /// The provider's name, as it registered it (OneDrive, say).
+    pub provider: String,
+    /// CF_SYNC_PROVIDER_STATUS.
+    pub status: u32,
+}
+
+impl SyncRoot {
+    /// Whether the provider is connected and answers: not disconnected,
+    /// terminated or in error (CF_PROVIDER_STATUS_DISCONNECTED,
+    /// _TERMINATED, _ERROR).
+    pub fn running(&self) -> bool {
+        !matches!(self.status, 0 | 0xc000_0001 | 0xc000_0002)
+    }
+}
+
 /// What the Cloud Files API said of a placeholder it could not report on.
 pub fn describe_error(code: i32) -> String {
     let text = std::io::Error::from_raw_os_error(code & 0xffff).to_string();
@@ -194,8 +216,9 @@ mod native {
     };
     use windows_sys::Win32::Storage::CloudFilters::{
         CF_FILE_RANGE, CF_HYDRATE_FLAG_NONE, CF_PLACEHOLDER_INFO_BASIC,
-        CF_PLACEHOLDER_RANGE_INFO_ONDISK, CfGetPlaceholderInfo, CfGetPlaceholderRangeInfo,
-        CfGetPlaceholderStateFromAttributeTag, CfHydratePlaceholder,
+        CF_PLACEHOLDER_RANGE_INFO_ONDISK, CF_SYNC_ROOT_INFO_STANDARD, CF_SYNC_ROOT_STANDARD_INFO,
+        CfGetPlaceholderInfo, CfGetPlaceholderRangeInfo, CfGetPlaceholderStateFromAttributeTag,
+        CfGetSyncRootInfoByHandle, CfHydratePlaceholder,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_TAG_INFO, FileAttributeTagInfo, GetFileInformationByHandleEx,
@@ -370,20 +393,42 @@ mod native {
         Ok(())
     }
 
-    /// Lists the directory placeholder at `path`, which has its provider,
-    /// where it is running, list what it holds. How many entries it has.
-    pub fn populate(path: &Path) -> io::Result<usize> {
-        let mut count = 0;
-        for entry in std::fs::read_dir(path)? {
-            entry?;
-            count += 1;
+    /// The sync root `path` is under: its provider and whether it runs.
+    pub fn sync_root(path: &Path) -> io::Result<SyncRoot> {
+        let file = open_query(path)?;
+        // CF_SYNC_ROOT_STANDARD_INFO, with up to 4 KiB of sync root identity.
+        let mut buffer = vec![0u64; std::mem::size_of::<CF_SYNC_ROOT_STANDARD_INFO>() / 8 + 520];
+        let mut returned = 0u32;
+        // SAFETY: a live handle and aligned storage of the stated size.
+        let result = unsafe {
+            CfGetSyncRootInfoByHandle(
+                file.as_raw_handle(),
+                CF_SYNC_ROOT_INFO_STANDARD,
+                buffer.as_mut_ptr().cast(),
+                (buffer.len() * 8) as u32,
+                &mut returned,
+            )
+        };
+        if result < 0 {
+            return Err(hresult(result));
         }
-        Ok(count)
+        // SAFETY: Windows filled at least the fixed part of the structure,
+        // which the buffer holds aligned.
+        let info = unsafe { &*(buffer.as_ptr() as *const CF_SYNC_ROOT_STANDARD_INFO) };
+        let name = &info.ProviderName;
+        let length = name
+            .iter()
+            .position(|unit| *unit == 0)
+            .unwrap_or(name.len());
+        Ok(SyncRoot {
+            provider: String::from_utf16_lossy(&name[..length]),
+            status: info.ProviderStatus,
+        })
     }
 }
 
 #[cfg(windows)]
-pub use native::{hydrate, on_disk_ranges, populate, report};
+pub use native::{hydrate, on_disk_ranges, report, sync_root};
 
 #[cfg(test)]
 mod tests {
@@ -442,6 +487,18 @@ mod tests {
         );
         assert!(unlisted.unpopulated && unlisted.needs_download());
         assert_eq!(unlisted.presence, Presence::Partial);
+    }
+
+    #[test]
+    fn a_provider_runs_unless_it_is_disconnected_terminated_or_in_error() {
+        let root = |status| SyncRoot {
+            provider: "OneDrive".into(),
+            status,
+        };
+        assert!(root(1).running() && root(0x20).running());
+        for status in [0, 0xc000_0001, 0xc000_0002] {
+            assert!(!root(status).running(), "{status:#x}");
+        }
     }
 
     #[test]

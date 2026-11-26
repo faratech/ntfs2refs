@@ -751,6 +751,9 @@ try {
     }
     if ($listed.exit -ne 0) { throw "listing before the run failed (exit $($listed.exit)): $($listed.text)" }
     Copy-Item -FromSession $session -LiteralPath "$guestRoot\manifest-before.jsonl" -Destination $records
+    # What Windows reports of each planted WOF file before the run (attributes, streams, wof_algorithm), apart.
+    $wofListed = @(Get-Content -LiteralPath (Join-Path $records 'manifest-before.jsonl') -Encoding UTF8 | Where-Object { $_ -match '"path":"\\\\feature-wof\\\\' })
+    if ($wofListed.Count) { [IO.File]::WriteAllLines((Join-Path $records 'wof-listed-before.jsonl'), [string[]]$wofListed, [Text.UTF8Encoding]::new($false)); Say "WOF files as listed before: $($wofListed.Count), in wof-listed-before.jsonl" }
     # The volumes beside the source, as they are before the run and after.
     # (Their listings are kept in the attempt's first folder: a recovery works in one of its own.)
     $siblingRoot = $guestRoot

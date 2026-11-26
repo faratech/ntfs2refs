@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const SYMLINK_TAG: u32 = 0xa000_000c;
 const SYSTEM_VOLUME_INFORMATION: &str = "\\System Volume Information";
+const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Stream {
@@ -127,6 +128,30 @@ pub fn is_placeholder_tag(tag: u32) -> bool {
         || matches!(tag, PROJFS_TAG | DEDUP_TAG | SIS_TAG)
         || crate::plain_ledger::HSM_TAGS.contains(&tag)
 }
+/// Identify omitted placeholders even when PrjFlt hides their reparse point.
+fn shown_as(record: &Record, family: Option<crate::plain_ledger::PlaceholderFamily>) -> bool {
+    let tagged = record
+        .reparse_tag
+        .and_then(crate::plain_ledger::PlaceholderFamily::of_tag);
+    tagged.is_some() && tagged == family
+        || (family == Some(crate::plain_ledger::PlaceholderFamily::Projfs)
+            && record.reparse_tag.is_none()
+            && !record.directory
+            && record.attributes & RECALL_ON_DATA_ACCESS != 0
+            && record.content_read_error.is_some())
+}
+
+/// Whether a read was refused by a file system virtualization filter for a
+/// placeholder whose data is not on the volume:
+/// PrjFlt can hide the tag and report RECALL_ON_DATA_ACCESS. When the read
+/// also returns ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE (369) or
+/// ERROR_FILE_SYSTEM_VIRTUALIZATION_PROVIDER_UNKNOWN (372), record the
+/// refusal as part of the placeholder's state.
+#[cfg(any(windows, test))]
+fn virtualization_refused(attributes: u32, error: &std::io::Error) -> bool {
+    attributes & RECALL_ON_DATA_ACCESS != 0 && matches!(error.raw_os_error(), Some(369 | 372))
+}
+
 /// Whether the listing lists what a directory entry holds: a directory,
 /// and of the directories with a reparse point only a placeholder folder
 /// (cloud files, ProjFS), never a link or a junction.
@@ -894,7 +919,28 @@ fn declared_after(row: &LedgerRow, before: &Record) -> Result<Record, String> {
             }
         }
         PlainKind::ProjfsPlaceholderPlain => {
-            placeholder(&mut after, tag == PROJFS_TAG, "ProjFS placeholder")?
+            if tag == PROJFS_TAG {
+                placeholder(&mut after, true, "ProjFS placeholder")?;
+            } else if tag == 0
+                && before.attributes & REPARSE_POINT == 0
+                && row.before.reparse_tag == Some(PROJFS_TAG)
+            {
+                // PrjFlt already presents the plain object. Keep all of its
+                // content and metadata, except for the recall-on-access flag
+                // the filter can show on a directory.
+                if !before.directory && before.sha256.is_none() {
+                    return Err(format!(
+                        "the listing before could not read the ProjFS placeholder: {}",
+                        before.content_read_error.as_deref().unwrap_or("not read")
+                    ));
+                }
+                after.attributes &= !RECALL_ON_DATA_ACCESS;
+            } else {
+                return Err(format!(
+                    "the listing before shows no ProjFS placeholder (reparse tag {:?}, attributes {:#x})",
+                    before.reparse_tag, before.attributes
+                ));
+            }
         }
         PlainKind::HsmRecalled => placeholder(
             &mut after,
@@ -1042,13 +1088,9 @@ pub fn compare_with_plain(
                 .map(move |path| (path.as_str(), row.kind.family()))
         })
         .filter(|(path, family)| {
-            before_by_path.get(path).is_some_and(|record| {
-                record.directory
-                    && record
-                        .reparse_tag
-                        .and_then(crate::plain_ledger::PlaceholderFamily::of_tag)
-                        == *family
-            })
+            before_by_path
+                .get(path)
+                .is_some_and(|record| record.directory && shown_as(record, *family))
         })
         .map(|(path, _)| path)
         .collect();
@@ -1089,10 +1131,7 @@ pub fn compare_with_plain(
                         && path.as_bytes()[folder.len()] == b'\\'
                 });
                 // A placeholder of the family the row's kind leaves out.
-                let of_its_family = was
-                    .reparse_tag
-                    .and_then(crate::plain_ledger::PlaceholderFamily::of_tag)
-                    == row.kind.family();
+                let of_its_family = shown_as(was, row.kind.family());
                 if !of_its_family && !below_a_left_out_folder {
                     fail(
                         path,
@@ -1882,7 +1921,10 @@ mod capture {
                 Ok((_, sha256)) => record.sha256 = Some(sha256),
                 // A placeholder whose data is not on the volume: its filter
                 // refuses the read, the same way on every reading.
-                Err(error) if record.reparse_tag.is_some_and(super::is_placeholder_tag) => {
+                Err(error)
+                    if record.reparse_tag.is_some_and(super::is_placeholder_tag)
+                        || super::virtualization_refused(record.attributes, &error) =>
+                {
                     record.content_read_error = Some(error.to_string())
                 }
                 Err(error) => note(&mut record, "content", &error),
@@ -2052,6 +2094,58 @@ mod tests {
             source_inspection_sha256: "c".repeat(64),
             rows,
         }
+    }
+
+    #[test]
+    fn untagged_projfs_omission_requires_an_unavailable_provider() {
+        let kind = PlainKind::ProjfsLeftOut;
+        let path = "\\placeholder";
+        let row = LedgerRow {
+            kind,
+            before: crate::plain_ledger::LedgerState {
+                attributes: 0x20 | RECALL_ON_DATA_ACCESS | REPARSE_POINT,
+                reparse_tag: Some(PROJFS_TAG),
+            },
+            left_out: Some(crate::plain_ledger::LedgerLeftOut {
+                directory: false,
+                streams: 1,
+                bytes: 5,
+            }),
+            ..cleared_row(&[path], 0x20, 0)
+        };
+        let ledger = ledger(vec![row]);
+        let ordinary = file(path, "bytes");
+        let root = directory("\\");
+        assert!(
+            !compare_with_plain(
+                &[root.clone(), ordinary.clone()],
+                std::slice::from_ref(&root),
+                Declared::default(),
+                &ledger,
+            )
+            .identical()
+        );
+
+        let mut absent = ordinary;
+        absent.attributes |= RECALL_ON_DATA_ACCESS;
+        assert!(virtualization_refused(
+            absent.attributes,
+            &std::io::Error::from_raw_os_error(372)
+        ));
+        assert!(!virtualization_refused(
+            absent.attributes,
+            &std::io::Error::from_raw_os_error(370)
+        ));
+        absent.sha256 = None;
+        absent.content_read_error = Some("provider unavailable".into());
+        assert!(compare_exact(&[absent.clone()], &[absent.clone()]).identical());
+        let verdict = compare_with_plain(
+            &[root.clone(), absent],
+            &[root],
+            Declared::default(),
+            &ledger,
+        );
+        assert!(verdict.identical(), "{verdict:?}");
     }
     fn cleared_row(paths: &[&str], before: u32, after: u32) -> LedgerRow {
         LedgerRow {

@@ -91,7 +91,7 @@ param(
     # compared), and 'cloud-down' is refused naming the two it cannot
     # download (its provider is stopped), with the source unchanged.
     # projfs and projfs-down: the same with a virtualization root of
-    # lab-projfs-provider.exe (the feature step enables Client-ProjFS): two
+    # lab-projfs-provider.exe (the harness enables Client-ProjFS first): two
     # placeholders hydrated and one not, which 'projfs' reads through its
     # running provider before the freeze, and 'projfs-down' (its provider
     # stopped) is refused for, or leaves out with -LeaveOutCloud.
@@ -454,6 +454,7 @@ if ($IntegrityRecords) {
 }
 # Set only by the cloud feature; read on every run under strict mode.
 $script:cloudServe = $null
+$script:projfsServe = $null
 $script:cloudStopOnDownloads = $null
 $session = New-PSSession -VMId $VmId -Credential $credential
 # The control OS's scheduled drive optimisation holds up writes to its ReFS
@@ -557,6 +558,60 @@ try {
             # (The disks the guest has, by which a new 4Kn disk is found, as they are numbered now.)
             $ready = Invoke-Command -Session $session -ScriptBlock { (Get-Disk).Number }
         }
+    }
+
+    if ($projfsFeatures) {
+        # ProjFS: the Client-ProjFS optional feature and its filter, PrjFlt.
+        # Asked of dism.exe, not of the DISM cmdlets, which over this remoting
+        # session failed with "The implementation is not capable of
+        # performing the request" (ERROR_NOT_CAPABLE; p320-projfs*). Enabled
+        # where it is not, and the control OS restarted once where Windows
+        # asks for it, before the volume is made. If it still cannot run, the
+        # outcome is projfs-not-available, never a feature quietly skipped.
+        $projfsState = {
+            $text = (& dism.exe /English /Online /Get-FeatureInfo /FeatureName:Client-ProjFS 2>&1) -join "`n"
+            $state = if ($text -match '(?m)^State : (.+)$') { $Matches[1].Trim() } else { "unknown (dism exit $LASTEXITCODE): $(($text -replace '\s+', ' ').Trim())" }
+            $filter = [bool]((& fltmc.exe filters 2>&1) -match '^\s*PrjFlt\s')
+            [pscustomobject]@{ state = $state; filter_loaded = $filter }
+        }
+        $before = Invoke-Command -Session $session -ScriptBlock $projfsState
+        $verdict.projfs = [ordered]@{ state_before = $before.state; filter_loaded_before = $before.filter_loaded; enabled_now = $false; restarted_for_it = $false }
+        Say "projfs: Client-ProjFS is $($before.state); PrjFlt $(if ($before.filter_loaded) { 'loaded' } else { 'not loaded' })"
+        $state = $before.state
+        if ($state -ne 'Enabled') {
+            if ($state -ne 'Enable Pending') {
+                $enabled = Invoke-Command -Session $session -ScriptBlock {
+                    $text = (& dism.exe /English /Online /Enable-Feature /FeatureName:Client-ProjFS /All /NoRestart 2>&1) -join ' '
+                    [pscustomobject]@{ exit = $LASTEXITCODE; text = ($text -replace '\s+', ' ').Trim() } }
+                $verdict.projfs.enabled_now = $true
+                Say "projfs: dism /Enable-Feature exit $($enabled.exit)"
+                # 3010: enabled, and Windows asks for a restart.
+                if ($enabled.exit -notin 0, 3010) {
+                    $verdict.outcome = 'projfs-not-available'
+                    throw "ProjFS cannot run in the control OS: enabling Client-ProjFS failed (dism exit $($enabled.exit)): $($enabled.text)"
+                }
+                $state = (Invoke-Command -Session $session -ScriptBlock $projfsState).state
+            }
+            if ($state -ne 'Enabled') {
+                $verdict.projfs.restarted_for_it = $true
+                Restart-ControlOs "for Client-ProjFS ($state) to take effect"
+                $ready = Invoke-Command -Session $session -ScriptBlock { (Get-Disk).Number }
+                $state = (Invoke-Command -Session $session -ScriptBlock $projfsState).state
+            }
+        }
+        $after = Invoke-Command -Session $session -ScriptBlock $projfsState
+        if (-not $after.filter_loaded) {
+            # Loaded once by hand where Windows has not loaded it yet.
+            $loaded = Invoke-Command -Session $session -ScriptBlock { ((& fltmc.exe load PrjFlt 2>&1) -join ' ').Trim() }
+            Say "projfs: fltmc load PrjFlt: $loaded"
+            $after = Invoke-Command -Session $session -ScriptBlock $projfsState
+        }
+        $verdict.projfs.state = $after.state; $verdict.projfs.filter_loaded = $after.filter_loaded
+        if ($after.state -ne 'Enabled' -or -not $after.filter_loaded) {
+            $verdict.outcome = 'projfs-not-available'
+            throw "ProjFS cannot run in the control OS: Client-ProjFS is $($after.state) and PrjFlt is $(if ($after.filter_loaded) { 'loaded' } else { 'not loaded' })$(if ($verdict.projfs.restarted_for_it) { ', after a restart for it' })"
+        }
+        Say "projfs: Client-ProjFS enabled, PrjFlt loaded"
     }
 
     # The source disk: a VHDX in the guest, or for 4Kn one the host attaches.
@@ -766,7 +821,11 @@ try {
                 $block = [scriptblock]::Create((Get-Content -LiteralPath "$root\features.ps1" -Raw))
                 & $block -Root 'V:\' -Features $features -DirectoryEntries $entries -BigFileGB $bigGB -FileCount $files -CloudProvider "$root\lab-cloud-provider.exe" -ProjfsProvider "$root\lab-projfs-provider.exe"
             }
-        } catch { $verdict.outcome = 'feature-not-made'; throw "a feature could not be put on the volume: $($_.Exception.Message)" }
+        } catch {
+            # ProjFS's own outcome: the feature step names it so (Add-VolumeFeatures).
+            $verdict.outcome = if ("$($_.Exception.Message)" -match 'ProjFS cannot run') { 'projfs-not-available' } else { 'feature-not-made' }
+            throw "a feature could not be put on the volume: $($_.Exception.Message)"
+        }
         $verdict.source.features = ($featureJson | Select-Object -Last 1) | ConvertFrom-Json
         if ($wanted -contains 'bigdir') { $verdict.source.directory_entries = $DirectoryEntries }
         Set-Content -LiteralPath (Join-Path $records 'features.json') -Value ($featureJson | Select-Object -Last 1) -Encoding UTF8
@@ -1041,6 +1100,34 @@ public static class SiblingRaw {
                 # done: a connected provider holds its sync root open, and the
                 # volume cannot be locked until it is closed (Wait-Worker).
                 $script:cloudStopOnDownloads = $c.stop
+            }
+            if ($script:projfsServe) {
+                # The lab ProjFS provider likewise: a provider the feature
+                # step started did not serve the converter's session (the
+                # lab, s321-projfs: "The provider that supports file system
+                # virtualization is unknown", os error 372). Started here,
+                # then proven by reading probe.bin (not on the volume until
+                # now) through it from this session.
+                $p = $script:projfsServe
+                $script:projfsServe = $null
+                $probe = Invoke-Command -Session $script:worker -ArgumentList $p.exe, $p.root, $p.backing, $p.stop, $p.probe -ScriptBlock {
+                    param($exe, $projected, $backing, $stop, $probe)
+                    Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
+                    $process = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden -ArgumentList @(
+                        'serve', '--root', "`"$projected`"", '--backing', "`"$backing`"", '--stop-file', "`"$stop`"")
+                    Start-Sleep -Seconds 2
+                    $read = try { "read $([IO.File]::ReadAllBytes($probe).Length) bytes" } catch { "error: $($_.Exception.Message)" }
+                    [pscustomobject]@{ process = $process.Id; alive = -not $process.HasExited; read = $read
+                        report = ((& $exe report --root $projected 2>&1) -join ' | ') }
+                }
+                Say "projfs: the provider in the worker's session (process $($probe.process)): probe $($probe.read); $($probe.report)"
+                if (-not $probe.alive -or $probe.read -notlike 'read *') {
+                    $verdict.outcome = 'projfs-provider-not-serving'
+                    throw "the lab ProjFS provider does not serve the converter's session: $($probe.read)"
+                }
+                # Stopped once the converter's reads before the freeze are
+                # done: it holds its virtualization root open (Wait-Worker).
+                $script:cloudStopOnDownloads = $p.stop
             }
             $null = Invoke-Command -Session $script:worker -ArgumentList $Root -AsJob -ScriptBlock {
                 param($root) $null = & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$root\worker.ps1" -Root $root 2>&1 }
@@ -1753,18 +1840,28 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         Say "cloud: $reported"
     }
     if ($Features -contains 'projfs') {
-        # The lab's ProjFS provider serves every process, whatever its
-        # session: the feature step's runs on. It holds its virtualization
-        # root open, so it is stopped as soon as the converter says its reads
-        # before the freeze are done (Wait-Worker), and the volume can be
-        # taken offline.
-        $served = $verdict.source.features.projfs.provider_process
-        $alive = Invoke-Command -Session $session -ArgumentList $served -ScriptBlock { param($id) [bool](Get-Process -Id $id -ErrorAction SilentlyContinue) }
-        if (-not $alive) { $verdict.outcome = 'projfs-provider-not-running'; throw "the lab ProjFS provider (process $served) is no longer running before the conversion" }
-        $script:cloudStopOnDownloads = $verdict.source.features.projfs.stop_file
-        $reported = Invoke-Command -Session $session -ArgumentList $guestRoot, $verdict.source.features.projfs.root -ScriptBlock {
-            param($root, $projected) (& "$root\lab-projfs-provider.exe" report --root $projected 2>&1) -join ' | ' }
-        Say "projfs: the lab provider (process $served) is serving; $reported"
+        # The lab's ProjFS provider has to serve the converter's own session,
+        # as the cloud one does: the feature step's is stopped here, and
+        # Start-Worker starts one in the worker's session before the
+        # converter, proves it by reading probe.bin through it, and stops it
+        # once the converter's reads before the freeze are done (it holds its
+        # virtualization root open). Only -RunAs administrator runs the
+        # converter in a session the harness can start it in.
+        if ($RunAs -ne 'administrator') { $verdict.outcome = 'projfs-needs-administrator'; throw "-Features projfs needs -RunAs administrator: its provider has to run in the converter's own session" }
+        $p = $verdict.source.features.projfs
+        $served = $p.provider_process
+        $stopped = Invoke-Command -Session $session -ArgumentList $served, $p.stop_file -ScriptBlock {
+            param($id, $stop)
+            Set-Content -LiteralPath $stop -Value 'stop'
+            $process = Get-Process -Id $id -ErrorAction SilentlyContinue
+            if ($process) { $null = $process.WaitForExit(15000) }
+            Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
+            -not (Get-Process -Id $id -ErrorAction SilentlyContinue)
+        }
+        if (-not $stopped) { $verdict.outcome = 'projfs-provider-not-stopped'; throw "the feature step's lab ProjFS provider (process $served) did not stop" }
+        $script:projfsServe = @{ exe = "$guestRoot\lab-projfs-provider.exe"; root = $p.root; backing = $p.backing; stop = $p.stop_file
+            probe = "$($p.root)\probe.bin" }
+        Say "projfs: the feature step's provider (process $served) stopped; the worker's session starts its own"
     }
     Start-Worker $guestRoot $arguments $task $(if ($declinePlain) { @('n') } else { @() })
     Say "converter started: ntfs2refs $($arguments -join ' ')$(if ($declinePlain) { ' (its question about plain conversions answered no)' })"

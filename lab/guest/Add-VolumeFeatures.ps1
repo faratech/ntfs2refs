@@ -535,26 +535,55 @@ try {
             # stops it (the run is refused naming absent.bin, or, once leaving
             # it out is agreed, converts without it).
             if (-not $ProjfsProvider) { throw "the '$feature' feature needs -ProjfsProvider" }
-            $state = (Get-WindowsOptionalFeature -Online -FeatureName Client-ProjFS).State
-            if ("$state" -ne 'Enabled') {
-                $enabled = Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart
-                if ($enabled.RestartNeeded) { throw "Client-ProjFS was enabled and needs the VM restarted; restart it and run the attempt again" }
+            # Client-ProjFS is enabled (and the control OS restarted for it)
+            # by the harness before the volume is made; here PrjFlt is
+            # attached to this volume, which ProjFS needs on the volume of a
+            # virtualization root. Every failure says "ProjFS cannot run",
+            # which the harness reports as projfs-not-available.
+            $state = (& dism.exe /English /Online /Get-FeatureInfo /FeatureName:Client-ProjFS 2>&1) -join "`n"
+            if ($state -notmatch '(?m)^State : Enabled\s*$') { throw "ProjFS cannot run here: Client-ProjFS is not enabled ($(($state -replace '\s+', ' ').Trim()))" }
+            if (-not ((& fltmc.exe filters 2>&1) -match '^\s*PrjFlt\s')) {
+                $loaded = ((& fltmc.exe load PrjFlt 2>&1) -join ' ').Trim()
+                if (-not ((& fltmc.exe filters 2>&1) -match '^\s*PrjFlt\s')) { throw "ProjFS cannot run here: its filter PrjFlt is not loaded (fltmc load PrjFlt: $loaded)" }
             }
+            # fltmc instances names a volume by its drive letter or by its
+            # device path (\Device\HarddiskVolumeN); fltmc volumes maps one to
+            # the other.
+            $device = $null
+            foreach ($line in @(& fltmc.exe volumes 2>&1)) { if ("$line" -match "^\s*$([regex]::Escape($drive))\\?\s+(\\Device\\\S+)") { $device = $Matches[1] } }
+            $names = @($drive) + @($device | Where-Object { $_ })
+            # With -f, fltmc instances lists one instance a line starting with
+            # the volume name ("V:   189800   PrjFlt Instance"), not the filter.
+            $attachedTo = { $lines = @(& fltmc.exe instances -f PrjFlt 2>&1); @($names | Where-Object { $n = $_; $lines | Where-Object { "$_" -match "^\s*$([regex]::Escape($n))\\?\s+\d+\s" } }).Count -gt 0 }
+            $attach = 'already attached'
+            if (-not (& $attachedTo)) {
+                $attach = ((& fltmc.exe attach PrjFlt $drive 2>&1) -join ' ').Trim()
+                if (-not (& $attachedTo)) { throw "ProjFS cannot run here: PrjFlt is not attached to $drive (fltmc attach PrjFlt ${drive}: $attach)" }
+            }
+            $projfsCreate = { param($arguments) $text = & $ProjfsProvider @arguments 2>&1 | Out-String; [pscustomobject]@{ exit = $LASTEXITCODE; text = $text.Trim() } }
             $backing = "C:\n2r-projfs-backing\$feature"
             if (Test-Path -LiteralPath $backing) { Remove-Item -LiteralPath $backing -Recurse -Force }
             $null = New-Item -ItemType Directory -Path "$backing\folder" -Force
             foreach ($file in 'present.bin', 'absent.bin', 'folder\inner.bin') {
                 [IO.File]::WriteAllBytes("$backing\$file", (Bytes 300000))
             }
+            # For 'projfs': a small placeholder, not on the volume, that the
+            # harness reads from the converter's own session to prove the
+            # provider serves it.
+            if ($feature -eq 'projfs') { [IO.File]::WriteAllBytes("$backing\probe.bin", (Bytes 4096)) }
             $projected = "$dir\projected"
             $null = New-Item -ItemType Directory -Path $dir -Force
-            $text = Run $ProjfsProvider @('create', '--root', $projected, '--backing', $backing,
+            $created = & $projfsCreate @('create', '--root', $projected, '--backing', $backing,
                 '--hydrate', 'present.bin', '--hydrate', 'folder\inner.bin')
+            # The provider names the call that failed (marking the root,
+            # starting to project it) and its HRESULT.
+            if ($created.exit -ne 0) { throw "ProjFS cannot run here: lab-projfs-provider create exited $($created.exit) (PrjFlt on ${drive}: $attach): $($created.text)" }
+            $text = $created.text
             $plain = New-Object System.Collections.Generic.List[object]
             # The virtualization root is itself a placeholder folder: its
             # marker is its reparse point.
             $plain.Add([ordered]@{ kind = 'projfs_placeholder_plain'; path = "\feature-$feature\projected" })
-            foreach ($path in 'folder', 'folder\inner.bin', 'present.bin', 'absent.bin') {
+            foreach ($path in @('folder', 'folder\inner.bin', 'present.bin', 'absent.bin') + @(if ($feature -eq 'projfs') { 'probe.bin' })) {
                 # With the provider stopped, absent.bin can only be left out
                 # (the run is refused unless that is agreed: -LeaveOutCloud),
                 # and is absent afterwards.
@@ -565,7 +594,8 @@ try {
             Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
             $served = $null
             if ($feature -eq 'projfs') {
-                # A ProjFS provider serves every process, whatever its session.
+                # Start the feature step's provider. The worker starts a
+                # replacement in its own session before conversion.
                 $served = Start-Process -FilePath $ProjfsProvider -PassThru -WindowStyle Hidden -ArgumentList @(
                     'serve', '--root', "`"$projected`"", '--backing', "`"$backing`"", '--stop-file', "`"$stop`"")
                 Start-Sleep -Seconds 2

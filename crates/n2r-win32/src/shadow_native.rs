@@ -742,6 +742,108 @@ fn observe_read_back_while<T: Sync, U: Send, M>(
     (observed, done)
 }
 
+/// Partition `items` into contiguous same-parent-directory work units so
+/// helper threads observe distinct directories concurrently instead of
+/// contending on one parent directory's lock in `GetSecurityInfo` (#140).
+/// A single directory larger than `max_chunk` is split into `max_chunk`-sized
+/// slices so a flat directory still utilizes all cores. Units are ordered
+/// largest-first (LPT) to minimize tail skew; results are always written back
+/// at each item's exact original index.
+fn directory_work_units<T, K: PartialEq + ?Sized>(
+    items: &[T],
+    threads: usize,
+    min_run: usize,
+    parent_key: impl Fn(&T) -> &K,
+) -> Vec<std::ops::Range<usize>> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let max_chunk = items.len().div_ceil(threads.max(1)).max(min_run.max(1));
+    let mut units = Vec::new();
+    let mut start = 0usize;
+    while start < items.len() {
+        let key = parent_key(&items[start]);
+        let mut end = start + 1;
+        while end < items.len() && parent_key(&items[end]) == key {
+            end += 1;
+        }
+        let mut at = start;
+        while at < end {
+            let next = (at + max_chunk).min(end);
+            units.push(at..next);
+            at = next;
+        }
+        start = end;
+    }
+    units.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.start.cmp(&b.start)));
+    units
+}
+
+/// Like [`observe_read_back_while`], scheduling contiguous same-parent
+/// directory groups onto separate helper threads to avoid `GetSecurityInfo`
+/// parent-directory contention while preserving exact item-order results and
+/// first-error semantics.
+fn observe_read_back_grouped_while<T: Sync, U: Send, M, K: PartialEq + ?Sized>(
+    items: &[T],
+    parent_key: impl Fn(&T) -> &K,
+    observe: &(impl Fn(&T) -> io::Result<U> + Sync),
+    meanwhile: impl FnOnce() -> M,
+) -> (io::Result<Vec<U>>, M) {
+    use crate::ordered_observation::RUN;
+    let helpers = std::thread::available_parallelism().map_or(1, |cores| cores.get());
+    if items.len() < 2 * RUN || helpers < 2 {
+        let done = meanwhile();
+        return (observe_read_back(items, observe), done);
+    }
+    let units = directory_work_units(items, helpers, RUN, parent_key);
+    if units.len() < 2 {
+        return observe_read_back_while(items, observe, meanwhile);
+    }
+    let threads = helpers.min(units.len());
+    let claimed = std::sync::atomic::AtomicUsize::new(0);
+    let mut results: Vec<Option<io::Result<U>>> = items.iter().map(|_| None).collect();
+    let done = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let _sampled = crate::stack_sampler::helper();
+                    let mut seen = Vec::new();
+                    loop {
+                        let unit = claimed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(range) = units.get(unit) else {
+                            break;
+                        };
+                        for index in range.clone() {
+                            let _timed = crate::perf::scope(crate::perf::Point::AtOnce);
+                            seen.push((index, observe(&items[index])));
+                        }
+                    }
+                    seen
+                })
+            })
+            .collect();
+        let done = meanwhile();
+        for handle in handles {
+            match handle.join() {
+                Ok(seen) => {
+                    for (index, result) in seen {
+                        results[index] = Some(result);
+                    }
+                }
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+        done
+    });
+    let observed = results
+        .into_iter()
+        .map(|result| {
+            result.unwrap_or_else(|| Err(io::Error::other("read-back observation stopped early")))
+        })
+        .collect();
+    (observed, done)
+}
+
 /// A batch of a walk, observed and waiting to be taken: each object's row
 /// and inline residual results, the residual expectations it was observed
 /// with, and the query reservation of its row with the peak it was paid for.
@@ -7158,8 +7260,11 @@ fn run_role_content_domain_accounted(
                     && items.len() >= 2 * crate::ordered_observation::RUN
                     && memory_accountant.is_none_or(|payer| payer.has_memory_to_spare());
                 let started = std::time::Instant::now();
-                let (rows, (taken, ahead, meanwhile)) =
-                    observe_read_back_while(&items, &observe_with_residuals, || {
+                let (rows, (taken, ahead, meanwhile)) = observe_read_back_grouped_while(
+                    &items,
+                    |(item, _)| &item.components[..item.components.len().saturating_sub(1)],
+                    &observe_with_residuals,
+                    || {
                         let at = std::time::Instant::now();
                         let taken = waiting.take().map_or(Ok(()), |batch| {
                             take_walked_batch(
@@ -7189,7 +7294,8 @@ fn run_role_content_domain_accounted(
                             })
                             .filter(|(_, owners, _, _)| !owners.is_empty());
                         (taken, ahead, at.elapsed())
-                    });
+                    },
+                );
                 // The calling thread's time in the observation, beside what
                 // it did meanwhile, as one call a batch.
                 crate::perf::add_call(crate::perf::Point::ShadowObject);
@@ -7574,6 +7680,62 @@ mod tests {
                 (observed, alone) => panic!("{count}: {observed:?} against {alone:?}"),
             }
         }
+    }
+
+    #[test]
+    fn directory_work_units_separates_parent_directories_and_splits_flat_ones() {
+        // Multi-directory batch: each parent directory stays intact and is
+        // scheduled largest-first.
+        let dirs: Vec<&str> = vec!["a", "a", "b", "b", "b", "b", "c", "c", "c"];
+        let units = directory_work_units(&dirs, 4, 4, |dir| *dir);
+        assert_eq!(units, vec![2..6, 6..9, 0..2]);
+
+        // Single flat directory of 100 items on 4 threads splits into 25-item
+        // slices so all threads stay busy.
+        let flat = vec!["same"; 100];
+        let split = directory_work_units(&flat, 4, 16, |dir| *dir);
+        assert_eq!(split, vec![0..25, 25..50, 50..75, 75..100]);
+
+        // Grouped observation matches serial order and first-error semantics.
+        let items: Vec<(&str, usize)> = (0..96)
+            .map(|i| {
+                let dir = match i / 12 {
+                    0 => "d0",
+                    1 => "d1",
+                    2 => "d2",
+                    3 => "d3",
+                    4 => "d4",
+                    5 => "d5",
+                    6 => "d6",
+                    _ => "d7",
+                };
+                (dir, i)
+            })
+            .collect();
+        let (ok, done) = observe_read_back_grouped_while(
+            &items,
+            |(dir, _)| *dir,
+            &|(_, i)| Ok(i * 7),
+            || 42usize,
+        );
+        assert_eq!(done, 42);
+        assert_eq!(ok.unwrap(), (0..96).map(|i| i * 7).collect::<Vec<_>>());
+
+        let (err, _) = observe_read_back_grouped_while(
+            &items,
+            |(dir, _)| *dir,
+            &|(_, i)| {
+                if *i == 19 {
+                    Err(io::Error::other("first"))
+                } else if *i == 77 {
+                    Err(io::Error::other("second"))
+                } else {
+                    Ok(*i)
+                }
+            },
+            || (),
+        );
+        assert_eq!(err.unwrap_err().to_string(), "first");
     }
 
     /// The root of a volume on which Windows made "System Volume Information"

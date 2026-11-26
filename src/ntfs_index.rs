@@ -299,6 +299,11 @@ where
 /// The size of index record Windows formats on every volume.
 pub const DEFAULT_INDEX_RECORD_BYTES: u32 = 4096;
 
+/// The largest INDEX_ROOT value a walker reads. The root is resident, so it
+/// is bounded by the FILE record that holds it, and the boot sector can state
+/// a record of at most 64 KiB.
+pub const MAX_INDEX_ROOT_BYTES: usize = 65536;
+
 /// Whether cluster geometry can be represented by this walker.
 pub fn supports_cluster_size(cluster_bytes: u32) -> bool {
     cluster_bytes.is_power_of_two() && (512..=2 * 1024 * 1024).contains(&cluster_bytes)
@@ -369,7 +374,7 @@ where
         bitmap,
     } = input;
     ensure!(
-        root.len() >= 48 && root.len() <= 4096,
+        root.len() >= 48 && root.len() <= MAX_INDEX_ROOT_BYTES,
         "invalid index root bound"
     );
     ensure!(

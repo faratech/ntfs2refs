@@ -107,8 +107,12 @@ fn run() -> Result<u8> {
                     // boot volume is one of the profiles above.
                     "source_geometry": {
                         "sector_bytes": [512, 4096],
+                        "ntfs_reader_sector_bytes": [512, 1024, 2048, 4096],
+                        "sector_note": ntfs2refs::capability_evidence::NTFS_SECTOR_NOTE,
                         "cluster_bytes": {"minimum": 512, "maximum": 2 * 1024 * 1024},
-                        "file_record_bytes": [1024, 4096],
+                        "file_record_bytes": {"minimum": 512, "maximum": 65536,
+                            "native_lab_converted_bytes": [1024, 4096],
+                            "note": ntfs2refs::capability_evidence::NTFS_RECORD_LAB_NOTE},
                         "index_record_bytes": {"minimum": 512, "maximum": 65536,
                             "native_lab_converted_bytes": [2048, 4096],
                             "note": ntfs2refs::capability_evidence::NTFS_INDEX_LAB_NOTE},

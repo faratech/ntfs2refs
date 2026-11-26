@@ -491,10 +491,12 @@ fn verify_domain_with_windows<R: Read + Seek>(
     let geometry = &source.header().geometry;
     ensure!(
         ntfs_index::supports_cluster_size(geometry.cluster_size)
-            && matches!(geometry.bytes_per_sector, 512 | 4096)
-            && matches!(geometry.file_record_size, 1024 | 4096)
-            && ntfs_index::supports_index_record_size(geometry.index_record_size),
-        "the internal index scan requires 512- or 4096-byte sectors, 1 or 4 KiB file records and 4 KiB index records"
+            && ntfs_inspect::supports_record_geometry(geometry),
+        "the internal index scan cannot read this geometry: {}-byte sectors, {}-byte clusters, {}-byte file records, {}-byte index records",
+        geometry.bytes_per_sector,
+        geometry.cluster_size,
+        geometry.file_record_size,
+        geometry.index_record_size
     );
     ensure!(
         !root.exists(),

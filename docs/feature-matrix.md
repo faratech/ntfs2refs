@@ -103,6 +103,15 @@ These take the same paths as rows above, or are checked by tests only.
   converts in 45 minutes; a run wants about 15 KiB of free memory a file as
   things are, and with less takes the rest from the page file and is slower
   (#129).
+- Native conversion of NTFS file-record sizes besides 1 KiB and 4 KiB. The
+  converter admits every size the boot sector can state (512 bytes to
+  64 KiB); 2 KiB records, which NTFS formats on a disk of 2048-byte sectors,
+  and the other sizes are covered by parser tests only. No lab fixture has
+  them yet.
+- An NTFS volume on a disk of 1024- or 2048-byte sectors. The NTFS readers
+  take those sectors and their tests cover them, but the disk checks admit
+  only 512- and 4096-byte sectors: the working shadow is a VHDX, which has
+  no other sizes, and Hyper-V cannot present such a disk to the lab.
 - Native conversion of NTFS index record sizes besides 2 KiB and 4 KiB.
   On Windows Server 2025 build 26100, the filesystem query for the tested
   8 KiB fixture returned Windows error 1392 before preflight could read its

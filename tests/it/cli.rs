@@ -130,10 +130,27 @@ fn capabilities_report_what_the_executable_enforces() {
         source["cluster_bytes"]["maximum"].as_u64().unwrap() as u32,
     );
     assert_eq!((low, high), (512, 2 * 1024 * 1024));
-    for sector in source["sector_bytes"].as_array().unwrap() {
+    let records = &source["file_record_bytes"];
+    assert_eq!(
+        records["native_lab_converted_bytes"],
+        serde_json::json!([1024, 4096])
+    );
+    let (record_low, record_high) = (
+        records["minimum"].as_u64().unwrap() as u32,
+        records["maximum"].as_u64().unwrap() as u32,
+    );
+    assert_eq!((record_low, record_high), (512, 65536));
+    assert_eq!(source["sector_bytes"], serde_json::json!([512, 4096]));
+    // The readers take every sector size NTFS formats on; the disk checks
+    // take the two a VHDX has, which is what `sector_bytes` announces.
+    assert_eq!(
+        source["ntfs_reader_sector_bytes"],
+        serde_json::json!([512, 1024, 2048, 4096])
+    );
+    for sector in source["ntfs_reader_sector_bytes"].as_array().unwrap() {
         let sector = sector.as_u64().unwrap() as u16;
-        for record in source["file_record_bytes"].as_array().unwrap() {
-            let record = record.as_u64().unwrap() as u32;
+        let mut record = record_low;
+        while record <= record_high {
             let mut cluster = low.max(u32::from(sector));
             while cluster <= high {
                 assert!(
@@ -142,13 +159,25 @@ fn capabilities_report_what_the_executable_enforces() {
                 );
                 cluster *= 2;
             }
+            record *= 2;
         }
     }
-    for index_record in [512u32, 2048, 4096, 65536] {
+    for index_record in [512u32, 1024, 2048, 4096, 8192, 65536] {
         assert!(profile.supports_source_geometry(&geometry(512, 4096, 1024, index_record)));
     }
-    assert!(!profile.supports_source_geometry(&geometry(512, 4096, 2048, 4096)));
-    assert!(!profile.supports_source_geometry(&geometry(512, 4096, 1024, 256)));
+    for (sector, record, index_record) in [
+        (256u16, 1024u32, 4096u32),
+        (8192, 8192, 4096),
+        (512, 256, 4096),
+        (512, 131072, 4096),
+        (512, 1536, 4096),
+        (512, 1024, 256),
+    ] {
+        assert!(
+            !profile.supports_source_geometry(&geometry(sector, 8192, record, index_record)),
+            "{sector}/{record}/{index_record}"
+        );
+    }
     assert!(!profile.supports_source_geometry(&geometry(512, 4 * 1024 * 1024, 1024, 4096)));
     assert_eq!(
         capabilities["target"]["refs_cluster_bytes"],

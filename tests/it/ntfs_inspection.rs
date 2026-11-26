@@ -20,6 +20,114 @@ fn validates_standard_geometry() {
     assert_eq!(g.serial_number, 0x1122_3344_5566_7788);
 }
 
+/// Every sector size NTFS formats on and every FILE record size the boot
+/// sector can state, with the index-record sizes it can state beside them.
+#[test]
+fn every_sector_and_record_size_the_boot_sector_can_state_is_read() {
+    let size = 2 * 1024 * 1024;
+    for sector in [512u16, 1024, 2048, 4096] {
+        for record in [512u32, 1024, 2048, 4096, 8192, 65536] {
+            let g = inspect_boot_sector(&support::boot_geometry(sector, record), size)
+                .unwrap_or_else(|error| panic!("{sector}/{record}: {error:#}"));
+            assert_eq!(g.bytes_per_sector, sector);
+            assert_eq!(g.sectors_per_cluster, 4096 / u32::from(sector));
+            assert_eq!(g.cluster_size, 4096);
+            assert_eq!(g.volume_size, size);
+            assert_eq!(g.file_record_size, record);
+            assert!(ntfs2refs::ntfs_inspect::supports_record_geometry(&g));
+            // A whole sector of that size may follow the volume: its backup.
+            assert!(
+                inspect_boot_sector(
+                    &support::boot_geometry(sector, record),
+                    size + u64::from(sector)
+                )
+                .is_ok()
+            );
+        }
+    }
+    // Index records: the sizes in clusters and as negated exponents.
+    for (code, bytes) in [
+        ((-9i8) as u8, 512u32),
+        ((-10i8) as u8, 1024),
+        (1, 4096),
+        (2, 8192),
+        ((-16i8) as u8, 65536),
+    ] {
+        let mut boot = support::boot_geometry(512, 1024);
+        boot[68] = code;
+        let g = inspect_boot_sector(&boot, size).unwrap();
+        assert_eq!(g.index_record_size, bytes);
+        assert!(ntfs2refs::ntfs_inspect::supports_record_geometry(&g));
+    }
+    // What a boot sector cannot state is refused.
+    for sector in [256u16, 8192] {
+        let mut boot = support::boot();
+        boot[11..13].copy_from_slice(&sector.to_le_bytes());
+        assert!(inspect_boot_sector(&boot, size).is_err(), "{sector}");
+    }
+    for code in [(-8i8) as u8, (-17i8) as u8, 0] {
+        let mut boot = support::boot();
+        boot[64] = code;
+        assert!(inspect_boot_sector(&boot, size).is_err(), "{code}");
+    }
+}
+
+/// The same volume, made with each sector size and with 1, 2 and 4 KiB FILE
+/// records, inventories the same files, names and streams.
+#[test]
+fn every_sector_and_file_record_size_inventories_the_same_volume() {
+    for sector in [512u16, 1024, 2048, 4096] {
+        for record in [1024usize, 2048, 4096] {
+            let bytes = support::image_geometry(sector, record);
+            let length = bytes.len() as u64;
+            let report = inspect(&mut Cursor::new(bytes), length)
+                .unwrap_or_else(|error| panic!("{sector}/{record}: {error:#}"));
+            assert_eq!(report.geometry.bytes_per_sector, sector);
+            assert_eq!(report.geometry.file_record_size as usize, record);
+            assert_eq!(report.volume_version.as_deref(), Some("3.1"));
+            assert_eq!(report.records_scanned, 5, "{sector}/{record}");
+            assert_eq!(
+                report.allocated_clusters,
+                Some(3 + support::mft_clusters(record) as u64),
+                "{sector}/{record}"
+            );
+            let file = report.files.iter().find(|f| f.record_number == 16).unwrap();
+            assert_eq!(file.hard_link_count, 2);
+            assert_eq!(
+                file.names
+                    .iter()
+                    .map(|n| n.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["hello.txt", "alias.txt"]
+            );
+            assert_eq!(file.streams.len(), 2);
+            assert_eq!(file.streams[0].extents[0].physical_offset, Some(409600));
+            assert_eq!(file.streams[0].logical_size, 17);
+            assert_eq!(file.streams[1].name, "note");
+        }
+    }
+}
+
+/// The update sequence array has one word for every 512 bytes of a record,
+/// not one for every sector: a torn 512-byte stride inside one 4096-byte
+/// sector is still found.
+#[test]
+fn a_torn_stride_is_found_whatever_the_sector_size() {
+    for sector in [512u16, 1024, 2048, 4096] {
+        for record in [1024usize, 2048, 4096] {
+            let mut bytes = support::image_geometry(sector, record);
+            let at = 4 * 4096 + 16 * record + record - 512 - 2;
+            bytes[at] ^= 1;
+            let length = bytes.len() as u64;
+            let error = inspect(&mut Cursor::new(bytes), length).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("update sequence"),
+                "{sector}/{record}: {error:#}"
+            );
+        }
+    }
+}
+
 #[test]
 fn permits_only_a_whole_backup_sector_after_declared_volume() {
     let boot = support::boot();

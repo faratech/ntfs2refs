@@ -86,7 +86,8 @@ seconds on one of 23,000 files. It prints:
   cluster size asked for (`--target-cluster-bytes`); the working storage and
   the free memory it needs at least; and a range for the time, from the lab's
   runs on virtual disks.
-- **Geometry and release evidence:** the source's NTFS index-record size and
+- **Geometry and release evidence:** the source's NTFS file-record and
+  index-record sizes (with a note where the lab has not converted that size) and
   the ReFS versions the release exercised with this Windows build, edition and
   target. The release evidence comes from the adjacent `QUALIFICATION.json`
   when its version and converter hash match. `ntfs2refs capabilities` lists
@@ -214,8 +215,13 @@ source again and asks once more after a few seconds; any other failure, or a
 second one, stops the run.
 
 - **Source geometry.** Any that Windows formats NTFS with: clusters from 512
-  bytes to 2 MiB, 512-byte or 4096-byte (4Kn) sectors, 1 KiB or 4 KiB file
-  records.
+  bytes to 2 MiB, 512-byte or 4096-byte (4Kn) sectors, and every file-record
+  and index-record size the boot sector can state (powers of two from 512
+  bytes to 64 KiB). The lab has converted 1 KiB and 4 KiB file records and
+  2 KiB and 4 KiB index records; the other sizes are read by the same
+  parsers and covered by tests only. The NTFS readers also take 1024- and
+  2048-byte sectors, but the disk checks admit only the 512- and 4096-byte
+  sectors a VHDX has, because the working shadow is one.
 - **What stays in place.** Data that lies on boundaries of the target's
   cluster size. Everything else is copied through the working storage: from
   NTFS clusters smaller than the target's that is most of the volume, and the

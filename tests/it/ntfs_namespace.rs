@@ -204,8 +204,10 @@ fn walks_index_records_of_every_size_the_boot_sector_can_state() {
     let m = link("Middle", 17);
     let z = link("Omega", 18);
     for (cluster, record, units) in [
-        (512u32, 1024usize, 2u8), // two 512-byte clusters
-        (4096, 1024, 2),          // smaller than a cluster: two 512-byte units
+        (512u32, 512usize, 1u8), // one 512-byte cluster
+        (4096, 512, 1),          // smaller than a cluster: one 512-byte unit
+        (512, 1024, 2),          // two 512-byte clusters
+        (4096, 1024, 2),         // smaller than a cluster: two 512-byte units
         (512, 2048, 4),
         (4096, 2048, 4),
         (4096, 4096, 1),

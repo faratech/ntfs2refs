@@ -398,7 +398,9 @@ fn reparse_index_storage<R: Read + Seek>(
                 !allocation.resident
                     && allocation.logical_size > 0
                     && allocation.logical_size <= ntfs_index::MAX_INDEX_BYTES as u64
-                    && allocation.logical_size.is_multiple_of(4096)
+                    && allocation
+                        .logical_size
+                        .is_multiple_of(u64::from(raw.geometry.index_record_size))
                     && allocation.initialized_size <= allocation.logical_size
                     && bitmap.logical_size <= 4096
                     && bitmap.initialized_size == bitmap.logical_size,
@@ -443,12 +445,15 @@ fn reparse_index_storage<R: Read + Seek>(
 pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<VerifiedIndexes> {
     crate::ntfs_inspect::revalidate_mft_mapping(reader, raw)?;
     crate::ntfs_inspect::validate_record_coverage(raw)?;
+    let geometry = &raw.geometry;
     ensure!(
-        ntfs_index::supports_cluster_size(raw.geometry.cluster_size)
-            && raw.geometry.bytes_per_sector == 512
-            && raw.geometry.file_record_size == 1024
-            && raw.geometry.index_record_size == 4096,
-        "bounded supported-cluster MFT scan with 512-byte sectors and 4 KiB indexes required"
+        ntfs_index::supports_cluster_size(geometry.cluster_size)
+            && ntfs_inspect::supports_record_geometry(geometry),
+        "the internal index scan cannot read this geometry: {}-byte sectors, {}-byte clusters, {}-byte file records, {}-byte index records",
+        geometry.bytes_per_sector,
+        geometry.cluster_size,
+        geometry.file_record_size,
+        geometry.index_record_size
     );
     let mut indexes = Vec::new();
     let mut quota_owners = Vec::new();
@@ -492,7 +497,7 @@ pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<Ve
             }
         };
         let root = &storage.root;
-        let parsed = ntfs_index::parse_with_cluster_size(
+        let parsed = ntfs_index::parse_with_geometry(
             Input {
                 root,
                 allocation: &storage.allocation,
@@ -500,7 +505,8 @@ pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<Ve
                 bitmap: &storage.bitmap,
             },
             profile,
-            raw.geometry.cluster_size,
+            geometry.cluster_size,
+            geometry.index_record_size,
             |_, key, value| Ok((key.to_vec(), value.to_vec())),
         )
         .with_context(|| format!("internal index {role}/{name}"))?;

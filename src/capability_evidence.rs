@@ -21,6 +21,20 @@ pub const NTFS_INDEX_LAB_NOTE: &str = "Windows formatted 4096-byte index records
     A preformatted source with 2048-byte index records converted to standard ReFS 3.14 with \
     4096-byte clusters on Windows Server 2025 build 26100 (SKU 79). See docs/feature-matrix.md.";
 
+/// What the lab has shown of NTFS file-record and sector sizes.
+pub const NTFS_RECORD_LAB_NOTE: &str = "The lab converted volumes with 1024-byte and \
+    4096-byte file records on 512-byte and 4096-byte (4Kn) sectors. Other file-record sizes \
+    (2048 bytes, and 512 bytes to 64 KiB as the boot sector can state them) are read by the \
+    same parsers and checked by tests, but no such volume has been converted in the lab. See \
+    docs/feature-matrix.md.";
+
+/// Why 1024- and 2048-byte sectors are not admitted although the NTFS readers
+/// take them.
+pub const NTFS_SECTOR_NOTE: &str = "The NTFS readers take 512-, 1024-, 2048- and 4096-byte \
+    sectors. A disk with 1024- or 2048-byte sectors is refused by the disk checks: the \
+    converter's working shadow is a VHDX, which has 512- or 4096-byte sectors, and no lab disk \
+    has other sizes.";
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ReleaseProfile {
     pub case_id: String,

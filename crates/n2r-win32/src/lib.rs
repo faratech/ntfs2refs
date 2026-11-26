@@ -70,6 +70,8 @@ pub mod preparation_shadow;
 pub mod process_io;
 pub mod progress;
 #[cfg(windows)]
+pub mod projfs_lab_provider;
+#[cfg(windows)]
 pub(crate) mod query_scratch;
 pub mod stack_sampler;
 #[cfg(windows)]

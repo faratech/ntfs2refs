@@ -90,6 +90,11 @@ param(
     # itself after that, --compare-listing, and that listing is the one
     # compared), and 'cloud-down' is refused naming the two it cannot
     # download (its provider is stopped), with the source unchanged.
+    # projfs and projfs-down: the same with a virtualization root of
+    # lab-projfs-provider.exe (the feature step enables Client-ProjFS): two
+    # placeholders hydrated and one not, which 'projfs' reads through its
+    # running provider before the freeze, and 'projfs-down' (its provider
+    # stopped) is refused for, or leaves out with -LeaveOutCloud.
     # Two are not made through Windows but on the disk itself,
     # by guest\Use-RawNtfs.ps1, with the disk offline just before the run:
     # lfs2 (the control OS's NtfsDisableLfsDowngrade is 1 from before the
@@ -332,6 +337,10 @@ if (-not $ManifestBinary) { $ManifestBinary = Join-Path $workspace 'target\relea
 $cloudFeatures = @($Features | Where-Object { $_ -in 'cloud', 'cloud-down' })
 $CloudProviderBinary = Join-Path (Split-Path -Parent $ManifestBinary) 'lab-cloud-provider.exe'
 if ($cloudFeatures -and -not (Test-Path -LiteralPath $CloudProviderBinary)) { throw "Not found: $CloudProviderBinary (cargo build --locked --release --bin lab-cloud-provider)" }
+# The lab's ProjFS provider, for -Features projfs and projfs-down.
+$projfsFeatures = @($Features | Where-Object { $_ -in 'projfs', 'projfs-down' })
+$ProjfsProviderBinary = Join-Path (Split-Path -Parent $ManifestBinary) 'lab-projfs-provider.exe'
+if ($projfsFeatures -and -not (Test-Path -LiteralPath $ProjfsProviderBinary)) { throw "Not found: $ProjfsProviderBinary (cargo build --locked --release --bin lab-projfs-provider)" }
 foreach ($file in $Binary, $ManifestBinary) { if (-not (Test-Path -LiteralPath $file)) { throw "Not found: $file (cargo build --locked --release --bin ntfs2refs --bin lab-volume-manifest)" } }
 if ($ClusterBytes -lt 512 -or $ClusterBytes -gt 2097152 -or ($ClusterBytes -band ($ClusterBytes - 1))) { throw "-ClusterBytes $ClusterBytes is not a power of two from 512 to 2097152" }
 if ($ClusterBytes -lt $SectorBytes) { throw "-ClusterBytes $ClusterBytes is smaller than the $SectorBytes-byte sector" }
@@ -518,6 +527,7 @@ try {
     }
     Copy-Item -ToSession $session -LiteralPath $ManifestBinary -Destination "$guestRoot\lab-volume-manifest.exe" -Force
     if ($cloudFeatures) { Copy-Item -ToSession $session -LiteralPath $CloudProviderBinary -Destination "$guestRoot\lab-cloud-provider.exe" -Force }
+    if ($projfsFeatures) { Copy-Item -ToSession $session -LiteralPath $ProjfsProviderBinary -Destination "$guestRoot\lab-projfs-provider.exe" -Force }
     Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Invoke-ConverterRun.ps1') -Destination "$guestRoot\worker.ps1" -Force
     Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Add-VolumeFeatures.ps1') -Destination "$guestRoot\features.ps1" -Force
     Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Use-RawNtfs.ps1') -Destination "$guestRoot\rawntfs.ps1" -Force
@@ -754,7 +764,7 @@ try {
             $featureJson = Invoke-Command -Session $session -ArgumentList $guestRoot, $guestFeatures, $DirectoryEntries, $BigFileGB, $FileCount -ScriptBlock {
                 param($root, $features, $entries, $bigGB, $files)
                 $block = [scriptblock]::Create((Get-Content -LiteralPath "$root\features.ps1" -Raw))
-                & $block -Root 'V:\' -Features $features -DirectoryEntries $entries -BigFileGB $bigGB -FileCount $files -CloudProvider "$root\lab-cloud-provider.exe"
+                & $block -Root 'V:\' -Features $features -DirectoryEntries $entries -BigFileGB $bigGB -FileCount $files -CloudProvider "$root\lab-cloud-provider.exe" -ProjfsProvider "$root\lab-projfs-provider.exe"
             }
         } catch { $verdict.outcome = 'feature-not-made'; throw "a feature could not be put on the volume: $($_.Exception.Message)" }
         $verdict.source.features = ($featureJson | Select-Object -Last 1) | ConvertFrom-Json
@@ -1069,7 +1079,7 @@ public static class SiblingRaw {
                     if ((Test-Path "$root\stdout.log") -and (Select-String -LiteralPath "$root\stdout.log" -SimpleMatch -Pattern '"kind":"cloud-downloads-done-v1"' -Quiet)) {
                         Set-Content -LiteralPath $stop -Value 'stop'; $true
                     } else { $false } }
-                if ($closed) { Say 'cloud: the converter''s downloads are done; the provider is stopped, so that the volume can be taken offline'; $script:cloudStopOnDownloads = $null }
+                if ($closed) { Say 'the converter''s downloads are done; the lab provider is stopped, so that the volume can be taken offline'; $script:cloudStopOnDownloads = $null }
             }
             $state = Invoke-Command -Session $session -ArgumentList $Root, ([bool]$HoldAt -and -not $held), $(if ($stopped) { '' } else { $StopInPhase }), $turnOff, $TakeMemoryMB, $TakeMemoryAt, $measureScaling -ScriptBlock {
                 param($root, $watchHold, $phase, $turnOff, $takeMB, $takeAt, $measureScaling)
@@ -1239,7 +1249,7 @@ public static class SiblingRaw {
     if ($Diagnose) { $arguments += '--diagnose' }
     if ($Review) { $arguments += '--review' }
     if ($Verify) { $arguments += @('--verify', $Verify) }
-    if ($CompareListing -or $Features -contains 'cloud') { $arguments += '--compare-listing' }
+    if ($CompareListing -or $Features -contains 'cloud' -or $Features -contains 'projfs') { $arguments += '--compare-listing' }
     if ($DropShortNames -and $RefuseShortNames) { throw '-DropShortNames and -RefuseShortNames ask for opposite things' }
     # Short names are dropped unless the run is asked to refuse them.
     $shortNamesDropped = -not $RefuseShortNames
@@ -1741,6 +1751,20 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         $reported = Invoke-Command -Session $session -ArgumentList $guestRoot, $verdict.source.features.cloud.sync_root -ScriptBlock {
             param($root, $sync) (& "$root\lab-cloud-provider.exe" report --root $sync 2>&1) -join ' | ' }
         Say "cloud: $reported"
+    }
+    if ($Features -contains 'projfs') {
+        # The lab's ProjFS provider serves every process, whatever its
+        # session: the feature step's runs on. It holds its virtualization
+        # root open, so it is stopped as soon as the converter says its reads
+        # before the freeze are done (Wait-Worker), and the volume can be
+        # taken offline.
+        $served = $verdict.source.features.projfs.provider_process
+        $alive = Invoke-Command -Session $session -ArgumentList $served -ScriptBlock { param($id) [bool](Get-Process -Id $id -ErrorAction SilentlyContinue) }
+        if (-not $alive) { $verdict.outcome = 'projfs-provider-not-running'; throw "the lab ProjFS provider (process $served) is no longer running before the conversion" }
+        $script:cloudStopOnDownloads = $verdict.source.features.projfs.stop_file
+        $reported = Invoke-Command -Session $session -ArgumentList $guestRoot, $verdict.source.features.projfs.root -ScriptBlock {
+            param($root, $projected) (& "$root\lab-projfs-provider.exe" report --root $projected 2>&1) -join ' | ' }
+        Say "projfs: the lab provider (process $served) is serving; $reported"
     }
     Start-Worker $guestRoot $arguments $task $(if ($declinePlain) { @('n') } else { @() })
     Say "converter started: ntfs2refs $($arguments -join ' ')$(if ($declinePlain) { ' (its question about plain conversions answered no)' })"
@@ -2549,6 +2573,18 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                 }
             }
             Say "cloud provider: $($stopped -join '; ')"
+        }
+        if ($projfsFeatures) {
+            # The lab ProjFS provider: stopped. Its virtualization root goes
+            # with the volume.
+            $stopped = Invoke-Command -Session $session -ArgumentList (, $projfsFeatures) -ScriptBlock {
+                param($features)
+                foreach ($feature in $features) {
+                    Set-Content -LiteralPath "C:\n2r-projfs-backing\$feature.stop" -Value 'stop' -ErrorAction SilentlyContinue
+                    "$feature asked to stop"
+                }
+            }
+            Say "projfs provider: $($stopped -join '; ')"
         }
         if (-not $KeepVolume) {
             Invoke-Command -Session $session -ArgumentList $guestRoot, $Name -ErrorAction Stop -ScriptBlock {

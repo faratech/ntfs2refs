@@ -546,6 +546,22 @@ which it may not); the ledger has to record each as
 empty. Rows of that kind that no feature planted (Windows' own) are not
 held against the run; they are counted apart from the plain conversions.
 
+`projfs` and `projfs-down` make a virtualization root of the lab's own ProjFS
+provider (`lab-projfs-provider.exe`, built with `--bin lab-projfs-provider`
+and copied beside the converter; the feature step enables the Client-ProjFS
+optional feature first, and stops if Windows asks for a restart), projecting
+a folder on the control OS's C:: the root (whose marker is its reparse
+point), a folder, two placeholders hydrated and one, `absent.bin`, not.
+`projfs` leaves the provider running: with `-AcceptPlain` the run reads
+`absent.bin` through it before the freeze, and the harness stops the provider
+on the converter's `cloud-downloads-done-v1` line, since it holds the root
+open. A ProjFS provider serves every process, so no session of its own is
+needed. `projfs-down` stops it: the unattended run is refused naming
+`absent.bin`, or with `-LeaveOutCloud` converts without it, declared
+`projfs_left_out` (`projfs-down-leave-out`). All three are still to be run;
+whether the listing can list a virtualization root whose provider is stopped
+is one of the things they will show.
+
 `temporary`, `offline` and `wof` (four `compact /exe` files, one per WOF
 algorithm, listed before the run in `wof-listed-before.jsonl`) convert with
 `-AcceptPlain`; without it a run stops before it changes anything. So does

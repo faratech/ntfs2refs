@@ -552,7 +552,7 @@ pub(crate) fn bind_short_name_policy(
     let policy = &policy.observation;
     if raw.volume_flags != Some(0x80)
         || raw.dirty != Some(false)
-        || raw.volume_version.as_deref() != Some("3.1")
+        || !crate::ntfs_version::reads_text(raw.volume_version.as_deref())
         || native.request.source_inspection_sha256 != assessment.source_inspection_sha256
         || !assessment
             .source_view
@@ -632,7 +632,7 @@ pub struct Gate {
 }
 
 /// What the `clean_volume` gate requires, as a refusal says it.
-pub(crate) const CLEAN_VOLUME_REQUIREMENT: &str = "the volume is marked dirty, or is not NTFS version 3.1: run `chkdsk <drive>: /f`, let it finish, and convert then";
+pub(crate) const CLEAN_VOLUME_REQUIREMENT: &str = "the volume is marked dirty, or is not NTFS version 3.0 or 3.1: run `chkdsk <drive>: /f`, let it finish, and convert then";
 
 /// What the `volume_policy_flags` gate requires, as a refusal says it.
 pub(crate) const VOLUME_FLAGS_REQUIREMENT: &str = "the volume carries state flags the converter does not take over (a pending chkdsk or upgrade), or 8.3 short-name creation is enabled on it: run `chkdsk <drive>: /f`, and turn short-name creation off with `fsutil 8dot3name set <drive>: 1`";
@@ -2656,8 +2656,8 @@ fn assess_source_view_profile(
         "clean_volume",
         raw.dirty == Some(false)
             && raw.volume_flags.is_some_and(|flags| flags & 1 == 0)
-            && raw.volume_version.as_deref() == Some("3.1"),
-        "require NTFS 3.1 and a clear on-disk $Volume dirty bit; independent native dirty-state observations are bound by the separate live transaction_freeze gate",
+            && crate::ntfs_version::reads_text(raw.volume_version.as_deref()),
+        "require NTFS 3.0 or 3.1 and a clear on-disk $Volume dirty bit; independent native dirty-state observations are bound by the separate live transaction_freeze gate",
     );
     gate(
         "volume_policy_flags",

@@ -1307,12 +1307,12 @@ fn inspect_paged_internal<R: Read + Seek>(
                             Some(number),
                         )?;
                     }
-                    if value[8] != 3 || value[9] != 1 {
+                    if !crate::ntfs_version::reads((value[8], value[9])) {
                         blocker(
                             &mut report,
                             &mut row_budget,
                             "unsupported_ntfs_version",
-                            "Only NTFS3.1 is supported",
+                            "Only NTFS 3.0 and 3.1 are read by the converter",
                             Some(number),
                         )?;
                     }

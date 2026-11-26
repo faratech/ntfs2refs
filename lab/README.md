@@ -510,7 +510,7 @@ the only differences of a refused volume, as many before as after, the attempt
 is still `refused-source-unchanged`. Run `bitlocker` last: Windows then writes
 its recovery folders to every volume that arrives afterwards.
 
-Two features are made on the disk itself, by `guest\Use-RawNtfs.ps1`, after
+Three features are made on the disk itself, by `guest\Use-RawNtfs.ps1`, after
 the listing and any `-Check`, just before the run: the disk is taken offline
 (a clean dismount), the bytes are read or written, the disk is brought back
 and the volume is listed again. `lfs2` sets the control OS's
@@ -528,11 +528,44 @@ it is put back (about a minute each). `ntfs30` writes `$Volume`'s version
 `$MFTMirr`, through the update-sequence fixups and with the record's own
 sequence number; `ntfs30.json` holds both copies before and after and what
 the disk reads once Windows has the volume mounted again. If that is already
-3.1, the attempt ends `ntfs30-upgraded-by-windows-before-the-run`. A
-converted run has to have recorded `ntfs-version-intent.json` from 3.0 and
-`ntfs-version-after.json` at 3.1 (both copied to the attempt's records), or
-it ends `...-but-ntfs-upgrade-not-recorded`. Neither feature is for
-`-NativeRefsControl` or `-CheckOnly`.
+3.1, the attempt ends `ntfs30-upgraded-by-windows-before-the-run`. Its
+records keep the NTFS 3.1 header form, so it shows a 3.0 volume that
+Windows XP or later has written to. `ntfs30-headers` first rewrites every
+in-use FILE record of `$MFT` (found through `$MFT`'s own runs, so a
+fragmented `$MFT` is followed; one whose mapping goes on through an
+attribute list is refused by name) from the 3.1 header form (record number
+at 0x2c, update sequence array at 0x30) into the 3.0 form (no number, the
+array at 0x2a): the array moves with the record's own sequence number and,
+with `-Ntfs30HeaderLayout packed` (the default, as Windows 2000 lays a record
+out), the attributes move down to the first 8-byte boundary after it (0x30
+for 1 KiB records, 0x38 in the 3.1 form), the first-attribute offset and
+bytes in use with them; `in-place` leaves them where they were. The bytes
+from 0x2a to the first attribute are the array and zeros, and each record
+is read back and held to differ in nothing else. A record whose first
+attribute starts before 0x38 stops it. `-Ntfs30HeaderFrom 16` rewrites only
+records 16 and up, leaving the system files in the 3.1 form. Each
+`$MFTMirr` slot whose record was rewritten and held the same bytes is
+rewritten the same way and held equal to it; an inactive template slot is
+left. Then `$Volume` is set to 3.0 as for `ntfs30`. `ntfs30.json` adds the
+layout, the counts, `$MFT`'s runs (up to its initialized length) and each
+rewritten record's SHA-256 before and after; it is kept whatever follows.
+If the volume is not back at V: within 60 s, the attempt ends
+`ntfs30-headers-volume-not-mounted`; `raw-feature-diagnostics.json` holds
+the disk's partitions and volume (file system, letter, health),
+`fsutil fsinfo ntfsinfo` and `fsutil dirty query` where it mounted, the
+System and NTFS Operational log entries since the disk went offline (NTFS,
+chkdsk and storage providers, and IDs 55, 98, 130, 137), and the raw headers
+of records 0, 1, 2, 3, 5 and the first rewritten ones (it is written for
+every `ntfs30-headers` attempt). Once Windows has the volume mounted again
+and it is listed, every in-use record is read again; if any rewritten one
+reads the 3.1 form, the attempt ends
+`ntfs30-headers-rewritten-by-windows-before-the-run` (records Windows
+newly allocates on mount may be in the 3.1 form: the verdict counts them,
+and the converter reads both). For both features the converter reads
+NTFS 3.0 itself: a run has to end `converted` (ReFS, listing identical)
+without `ntfs-version-intent.json` or `ntfs-version-after.json` in its
+records, or a converted run ends `...-but-ntfs-upgrade-attempted`. None of
+the three is for `-NativeRefsControl` or `-CheckOnly`.
 
 The volume gets a fixed set of content: files around every size boundary, a
 nested tree with non-ASCII and long names, named streams, hard links, a sparse

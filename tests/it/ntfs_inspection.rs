@@ -938,8 +938,89 @@ fn bad_cluster_exception_never_relaxes_ordinary_holes_or_parser_bounds() {
     assert!(format!("{error:#}").contains("data run outside volume"));
 }
 
+/// An NTFS 3.0 volume is read as it is: with every FILE record in the 3.0
+/// header form (update sequence array at 0x2A, no record number), and with
+/// the mix a 3.0 volume has once Windows XP or later has written to it, at
+/// every sector and record size, it inventories exactly what the 3.1 volume
+/// does, and nothing refuses its version.
+#[test]
+fn an_ntfs_30_volume_in_either_header_form_inventories_as_31_does() {
+    let summary = |report: &ntfs2refs::ntfs_inspect::NtfsInspection| {
+        let mut files: Vec<_> = report
+            .files
+            .iter()
+            .map(|file| {
+                (
+                    file.record_number,
+                    file.hard_link_count,
+                    file.names
+                        .iter()
+                        .map(|n| n.name.clone())
+                        .collect::<Vec<_>>(),
+                    file.streams
+                        .iter()
+                        .map(|s| (s.name.clone(), s.logical_size, s.extents.len()))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        files.sort();
+        (
+            report.records_scanned,
+            report.allocated_clusters,
+            report.free_clusters,
+            files,
+        )
+    };
+    for sector in [512u16, 4096] {
+        for record in [1024usize, 2048, 4096] {
+            let current = support::image_geometry(sector, record);
+            let length = current.len() as u64;
+            let expected = summary(&inspect(&mut Cursor::new(current), length).unwrap());
+            type HeaderForm = fn(usize) -> usize;
+            let forms: [(&str, HeaderForm); 2] = [
+                ("3.0 headers", |_| 0x2a),
+                // Windows XP and later rewrite records they touch in the
+                // 3.1 form: the root and the user file here.
+                ("mixed headers", |number| {
+                    if matches!(number, 5 | 16) { 0x30 } else { 0x2a }
+                }),
+            ];
+            for (form, usa) in forms {
+                let bytes = support::image_version(sector, record, (3, 0), usa);
+                let geometry = inspect_boot_sector(&bytes[..512], length).unwrap();
+                assert_eq!(
+                    ntfs2refs::ntfs_inspect::read_volume_version(
+                        &mut Cursor::new(&bytes),
+                        &geometry
+                    )
+                    .unwrap(),
+                    (3, 0),
+                    "{sector}/{record} {form}"
+                );
+                let report = inspect(&mut Cursor::new(bytes), length)
+                    .unwrap_or_else(|error| panic!("{sector}/{record} {form}: {error:#}"));
+                assert_eq!(report.volume_version.as_deref(), Some("3.0"));
+                assert!(
+                    ntfs2refs::ntfs_version::reads_text(report.volume_version.as_deref()),
+                    "{sector}/{record} {form}"
+                );
+                assert!(
+                    !report
+                        .blockers
+                        .iter()
+                        .any(|blocker| blocker.code == "unsupported_ntfs_version"),
+                    "{sector}/{record} {form}"
+                );
+                assert_eq!(summary(&report), expected, "{sector}/{record} {form}");
+            }
+        }
+    }
+}
+
 /// $Volume's version is read on its own, before a run asks, for every
-/// version a volume can state; the full inspection still blocks all but 3.1.
+/// version a volume can state; the full inspection blocks all but 3.0 and
+/// 3.1, which the converter reads.
 #[test]
 fn the_volume_version_is_read_raw_for_every_record_size() {
     for record in [1024usize, 2048, 4096] {
@@ -968,7 +1049,7 @@ fn the_volume_version_is_read_raw_for_every_record_size() {
                     .blockers
                     .iter()
                     .any(|blocker| blocker.code == "unsupported_ntfs_version"),
-                version != (3, 1),
+                version == (1, 2),
                 "{record}/{version:?}"
             );
         }

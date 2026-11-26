@@ -113,14 +113,23 @@ These take the same paths as rows above, or are checked by tests only.
   take those sectors and their tests cover them, but the disk checks admit
   only 512- and 4096-byte sectors: the working shadow is a VHDX, which has
   no other sizes, and Hyper-V cannot present such a disk to the lab.
-- An NTFS 1.2 or 3.0 volume. A conversion has Windows mount it read-write
-  before the freeze, which upgrades it to 3.1 (announced before the
-  question, not undone), and reads `$Volume` again; it stops if the volume
-  does not then read 3.1. Tests cover reading the version and the words. The
-  lab case `ntfs30` writes 3.0 into `$Volume` of an offline volume and holds
-  the run to recording the upgrade from 3.0 to 3.1; it has not been run, so
-  that the Windows 11 NTFS driver upgrades such a volume on mount is not yet
-  shown. No NTFS 1.2 fixture exists.
+- An NTFS 3.0 volume. It is read as it is: FILE records in both header
+  forms (the 3.0 form, update sequence array at 0x2A and no record number,
+  and the 3.1 form Windows XP and later write to it) are read, and every
+  gate admits 3.0 as it does 3.1. Parser and inspection tests cover both
+  forms. Two lab cases, not yet run: `ntfs30` writes 3.0 into `$Volume` of a
+  volume whose records keep the 3.1 form, and `ntfs30-headers` first
+  rewrites every in-use MFT record (and its `$MFTMirr` copy) into the 3.0
+  form; each has to convert with an identical listing and without the
+  Windows mount. Neither is a volume Windows 2000 formatted (its first
+  attributes stay where the 3.1 form put them, and its `$UpCase` and
+  `$AttrDef` are Windows 11's).
+- An NTFS 1.2 volume. It is not read (no `$Extend`, no `$Secure`). A
+  conversion has Windows mount it read-write before the freeze, in case
+  that upgrades it (announced before the question, not undone), and reads
+  `$Volume` again; it stops if the volume does not then read 3.0 or 3.1.
+  The Windows 11 NTFS driver did not upgrade a 3.0 volume this way in the
+  lab, so the same is expected of 1.2; no lab fixture of 1.2 exists.
 - An NTFS log in the LFS 2.0 format, or with restart or log pages other
   than 4 KiB. The restart-page reader takes both formats Windows writes
   (1.1 and 2.0) and pages of 4 to 64 KiB, under the same clean-dismount

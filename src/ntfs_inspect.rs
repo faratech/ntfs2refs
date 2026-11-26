@@ -964,9 +964,13 @@ fn parse_record(mut bytes: Vec<u8>, geometry: &NtfsGeometry) -> Result<Record> {
     let usa = usize::from(u16le(&bytes, 4)?);
     let usa_count = usize::from(u16le(&bytes, 6)?);
     // The common FILE fixed header ends after next-attribute-instance at
-    // 0x2a. Preserve the older 42-byte form as well as the 48-byte extended
-    // form: this parser does not interpret the optional record-number field.
-    // The USA may never alias the fixed fields that we decode below.
+    // 0x2a. Both forms are read: the 42-byte one of NTFS 3.0 and 1.2 (USA at
+    // 0x2a) and the 48-byte one of NTFS 3.1 (USA at 0x30, record number at
+    // 0x2c), whichever version $Volume states, since Windows XP and later
+    // write the 3.1 form into a 3.0 volume's records. This parser does not
+    // interpret the optional record-number field: a record's number is its
+    // position. The USA may never alias the fixed fields decoded below, and
+    // its offset and count are checked against the record size.
     ensure!(
         usa >= 0x2a && usa.is_multiple_of(2),
         "update sequence array overlaps the fixed FILE header or is unaligned"
@@ -1497,6 +1501,22 @@ fn capture_reparse<R: Read + Seek>(
     Ok(Some(point))
 }
 
+/// The record number a FILE record's header states, where its header has
+/// the field: the NTFS 3.1 form (Windows XP and later) holds it at 0x2C,
+/// before an update sequence array at 0x30 or later; the NTFS 3.0 (Windows
+/// 2000) and 1.2 form has no such field and its array starts at 0x2A
+/// (ntfs-3g `layout.h`: `MFT_RECORD` and `MFT_RECORD_OLD`). `None` for the
+/// older form: a record's number is always its position in $MFT, and is
+/// never taken from here. Call it only on a record `parse_record` accepted.
+pub(crate) fn header_record_number(bytes: &[u8]) -> Result<Option<u32>> {
+    let usa = u16le(bytes, 4)?;
+    Ok(if usa >= 0x30 {
+        Some(u32le(bytes, 0x2c)?)
+    } else {
+        None
+    })
+}
+
 /// Reuse the checked parser for additional read-only source-state checks.
 pub(crate) fn validate_file_record(bytes: &[u8], geometry: &NtfsGeometry) -> Result<()> {
     parse_record(bytes.to_vec(), geometry)?;
@@ -1515,7 +1535,7 @@ pub(crate) fn inactive_mirror_template(
         || record.links != 0
         || record.base != 0
         || u64le(bytes, 8)? != 0
-        || u32le(bytes, 44)? != slot
+        || header_record_number(bytes)?.is_some_and(|number| number != slot)
         || record.attributes.len() != 3
     {
         return Ok(false);
@@ -4317,12 +4337,12 @@ fn inspect_internal<R: Read + Seek>(
                     Some(number),
                 )?;
             }
-            if value[8] != 3 || value[9] != 1 {
+            if !crate::ntfs_version::reads((value[8], value[9])) {
                 blocker(
                     &mut report,
                     &mut budget,
                     "unsupported_ntfs_version",
-                    "Only NTFS 3.1 is a conversion research target",
+                    "Only NTFS 3.0 and 3.1 are read by the converter",
                     Some(number),
                 )?;
             }
@@ -4535,6 +4555,166 @@ mod usa_fixup_tests {
         zero_seq[28..32].copy_from_slice(&1024u32.to_le_bytes());
         zero_seq[56..60].copy_from_slice(&0xffff_ffffu32.to_le_bytes());
         assert!(parse_record(zero_seq, &geometry).is_err());
+    }
+
+    /// A resident attribute holding `value`.
+    fn resident(type_code: u32, value: &[u8], instance: u16) -> Vec<u8> {
+        let size = (24 + value.len()).next_multiple_of(8);
+        let mut a = vec![0u8; size];
+        a[..4].copy_from_slice(&type_code.to_le_bytes());
+        a[4..8].copy_from_slice(&(size as u32).to_le_bytes());
+        a[14..16].copy_from_slice(&instance.to_le_bytes());
+        a[16..20].copy_from_slice(&(value.len() as u32).to_le_bytes());
+        a[20..22].copy_from_slice(&24u16.to_le_bytes());
+        a[24..24 + value.len()].copy_from_slice(value);
+        a
+    }
+
+    /// A FILE record of `size` bytes in one of the two header forms: the
+    /// NTFS 3.0 form, update sequence array at 0x2A and no record number,
+    /// or the NTFS 3.1 form, the array at 0x30 and `number` at 0x2C. Its
+    /// update sequence array is applied as it is on disk.
+    fn file_record(size: usize, usa: usize, number: u32, attributes: &[Vec<u8>]) -> Vec<u8> {
+        let entries = usa_entries(size);
+        let first = (usa + entries * 2).next_multiple_of(8);
+        let mut b = vec![0u8; size];
+        b[..4].copy_from_slice(b"FILE");
+        b[4..6].copy_from_slice(&(usa as u16).to_le_bytes());
+        b[6..8].copy_from_slice(&(entries as u16).to_le_bytes());
+        b[16..18].copy_from_slice(&1u16.to_le_bytes());
+        b[20..22].copy_from_slice(&(first as u16).to_le_bytes());
+        b[28..32].copy_from_slice(&(size as u32).to_le_bytes());
+        if usa >= 0x30 {
+            b[0x2c..0x30].copy_from_slice(&number.to_le_bytes());
+        }
+        let mut at = first;
+        for attribute in attributes {
+            b[at..at + attribute.len()].copy_from_slice(attribute);
+            at += attribute.len();
+        }
+        b[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        b[24..28].copy_from_slice(&((at + 8) as u32).to_le_bytes());
+        // What lies where each 512-byte stride ends (an attribute's bytes,
+        // in the larger records) is carried by the array and put back by
+        // the fixup.
+        b[usa..usa + 2].copy_from_slice(&[0x5a, 0xa5]);
+        for index in 1..entries {
+            let tail = index * USA_STRIDE - 2;
+            let saved = [b[tail], b[tail + 1]];
+            b[usa + index * 2..usa + index * 2 + 2].copy_from_slice(&saved);
+            b[tail..tail + 2].copy_from_slice(&[0x5a, 0xa5]);
+        }
+        b
+    }
+
+    fn geometry(record: u32) -> NtfsGeometry {
+        NtfsGeometry {
+            file_record_size: record,
+            ..sample_geometry()
+        }
+    }
+
+    /// NTFS 3.0's FILE record header (Windows 2000) and NTFS 3.1's (Windows
+    /// XP and later) are both read, at every record size, and decode to the
+    /// same attributes; only the 3.1 form states a record number.
+    #[test]
+    fn both_file_record_header_forms_are_read_at_every_record_size() {
+        let value = vec![0x42u8; 600];
+        for size in [512usize, 1024, 2048, 4096] {
+            let geometry = geometry(size as u32);
+            let attributes = if size > 1024 {
+                // An attribute that spans a 512-byte stride, whose bytes
+                // the update sequence array carries.
+                vec![resident(0x80, &value, 0)]
+            } else {
+                vec![resident(0x80, b"data", 0)]
+            };
+            let mut decoded = Vec::new();
+            for (usa, number) in [(0x2a, 0), (0x30, 77)] {
+                let raw = file_record(size, usa, number, &attributes);
+                let record = parse_record(raw.clone(), &geometry)
+                    .unwrap_or_else(|error| panic!("{size}/{usa:#x}: {error:#}"));
+                assert_eq!(record.attributes.len(), 1, "{size}/{usa:#x}");
+                decoded.push(record.attributes[0].resident_value.clone());
+                assert_eq!(
+                    header_record_number(&raw).unwrap(),
+                    (usa == 0x30).then_some(number),
+                    "{size}/{usa:#x}"
+                );
+                // A torn stride is found in either form.
+                if size > 512 {
+                    let mut torn = raw.clone();
+                    torn[USA_STRIDE - 2] ^= 1;
+                    let Err(error) = parse_record(torn, &geometry) else {
+                        panic!("{size}/{usa:#x}: a torn stride was read");
+                    };
+                    assert!(
+                        format!("{error:#}").contains("update sequence"),
+                        "{error:#}"
+                    );
+                }
+            }
+            assert_eq!(decoded[0], decoded[1], "{size}");
+            if size > 1024 {
+                assert_eq!(decoded[0].as_deref(), Some(&value[..]), "{size}");
+            }
+        }
+    }
+
+    /// The update sequence array's offset and count are checked against the
+    /// record whatever form its header has: never trusted.
+    #[test]
+    fn an_update_sequence_array_out_of_place_is_refused_in_either_form() {
+        let geometry = geometry(1024);
+        let attributes = [resident(0x80, b"data", 0)];
+        let good = file_record(1024, 0x2a, 0, &attributes);
+        assert!(parse_record(good.clone(), &geometry).is_ok());
+        // Over the fixed header, or not word-aligned.
+        for usa in [0u16, 0x08, 0x28, 0x29, 0x2b, 0x2f] {
+            let mut bad = good.clone();
+            bad[4..6].copy_from_slice(&usa.to_le_bytes());
+            assert!(parse_record(bad, &geometry).is_err(), "{usa:#x}");
+        }
+        // A count that is not one word for each 512 bytes and one more.
+        for count in [0u16, 1, 2, 4, 9] {
+            let mut bad = good.clone();
+            bad[6..8].copy_from_slice(&count.to_le_bytes());
+            assert!(parse_record(bad, &geometry).is_err(), "{count}");
+        }
+        // An array that runs into the first stride's last word.
+        let mut bad = good.clone();
+        bad[4..6].copy_from_slice(&506u16.to_le_bytes());
+        assert!(parse_record(bad, &geometry).is_err());
+        // The first attribute inside the array.
+        let mut bad = good;
+        bad[20..22].copy_from_slice(&0x2au16.to_le_bytes());
+        assert!(parse_record(bad, &geometry).is_err());
+    }
+
+    /// The inactive template in a larger-cluster $MFTMirr is recognized in
+    /// the 3.0 form, which states no record number, as in the 3.1 form,
+    /// whose stated number has to be its slot.
+    #[test]
+    fn an_inactive_mirror_template_is_recognized_in_either_header_form() {
+        let geometry = geometry(1024);
+        let mut standard = [0u8; 48];
+        for at in [0, 8, 16, 24] {
+            standard[at..at + 8].copy_from_slice(&0x01d0_0000_0000_0000u64.to_le_bytes());
+        }
+        standard[32..36].copy_from_slice(&6u32.to_le_bytes());
+        let mut descriptor = [0u8; 20];
+        descriptor[0] = 1;
+        descriptor[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
+        let attributes = [
+            resident(0x10, &standard, 0),
+            resident(0x50, &descriptor, 1),
+            resident(0x80, &[], 2),
+        ];
+        // Not in use (flags 0), no links.
+        let template = |usa, number| file_record(1024, usa, number, &attributes);
+        assert!(inactive_mirror_template(&template(0x2a, 0), &geometry, 9).unwrap());
+        assert!(inactive_mirror_template(&template(0x30, 9), &geometry, 9).unwrap());
+        assert!(!inactive_mirror_template(&template(0x30, 8), &geometry, 9).unwrap());
     }
 }
 

@@ -83,6 +83,13 @@ jobs:
           $bin = New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\dist\bin"
           Copy-Item target\release\ntfs2refs.exe, target\release\ntfs2refs-recovery.exe, target\release\lab-volume-manifest.exe -Destination $bin
 
+      - name: Build Hyper-V fixture providers
+        run: |
+          cargo build --locked --release --bin lab-cloud-provider --bin lab-projfs-provider
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $tools = New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\dist\lab-tools"
+          Copy-Item target\release\lab-cloud-provider.exe, target\release\lab-projfs-provider.exe -Destination $tools
+
       - name: Sign with Fara Technologies LLC
         uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:

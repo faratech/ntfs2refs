@@ -277,13 +277,16 @@ public static class ManyFiles {
             $null = New-Item -ItemType Directory -Path $dir -Force
             [IO.File]::WriteAllBytes("$dir\temporary.tmp", (Bytes 3000)); [IO.File]::SetAttributes("$dir\temporary.tmp", 'Temporary')
             if (-not ([IO.File]::GetAttributes("$dir\temporary.tmp") -band [IO.FileAttributes]::Temporary)) { throw 'the TEMPORARY attribute did not stay' }
-            $made[$feature] = 'a file with the TEMPORARY attribute'
+            # Made plain once agreed (attributes_cleared): the ledger has to name it.
+            $made[$feature] = [ordered]@{ what = 'a file with the TEMPORARY attribute'
+                plain = @([ordered]@{ kind = 'attributes_cleared'; path = "\feature-$feature\temporary.tmp" }) }
         }
         'offline' {
             $null = New-Item -ItemType Directory -Path $dir -Force
             [IO.File]::WriteAllBytes("$dir\offline.dat", (Bytes 3000)); [IO.File]::SetAttributes("$dir\offline.dat", 'Offline')
             if (-not ([IO.File]::GetAttributes("$dir\offline.dat") -band [IO.FileAttributes]::Offline)) { throw 'the OFFLINE attribute did not stay' }
-            $made[$feature] = 'a file with the OFFLINE attribute'
+            $made[$feature] = [ordered]@{ what = 'a file with the OFFLINE attribute'
+                plain = @([ordered]@{ kind = 'attributes_cleared'; path = "\feature-$feature\offline.dat" }) }
         }
         'efs' {
             $null = New-Item -ItemType Directory -Path $dir -Force
@@ -293,14 +296,31 @@ public static class ManyFiles {
             $made[$feature] = 'a file encrypted with EFS'
         }
         'wof' {
-            # compact /exe stores the data in a WOF reparse point.
+            # compact /exe stores the data in a WOF reparse point and its
+            # WofCompressedData stream, one file per algorithm. Each spans many
+            # of its algorithm's chunks (4, 8, 16 or 32 KiB), some compressible
+            # and some not (WOF stores those as they are), and ends part way
+            # through a chunk.
             $null = New-Item -ItemType Directory -Path $dir -Force
-            [IO.File]::WriteAllBytes("$dir\wof-compressed.bin", [Text.Encoding]::ASCII.GetBytes(('compressible text for WOF ' * 20000)))
-            # (The WOF filter hides the reparse point from fsutil and from every
-            # other reader on the mounted volume; compact's own answer is the check.)
-            $compacted = (Run 'compact.exe' @('/c', '/exe:xpress4k', "$dir\wof-compressed.bin")) -replace '\s+', ' '
-            if ($compacted -notmatch '1 files within 1 directories were compressed') { throw "compact /exe did not compress the file: $compacted" }
-            $made[$feature] = "a file compressed by compact /exe:xpress4k ($([regex]::Match($compacted, '[\d,]+ total bytes of data are stored in [\d,]+ bytes').Value))"
+            $plain = New-Object System.Collections.Generic.List[object]
+            $stored = New-Object System.Collections.Generic.List[string]
+            foreach ($algorithm in 'xpress4k', 'xpress8k', 'xpress16k', 'lzx') {
+                $file = "$dir\wof-$algorithm.bin"
+                $text = [Text.Encoding]::ASCII.GetBytes(('compressible text for WOF ' * 20000))
+                $noise = Bytes 200000
+                $bytes = New-Object byte[] ($text.Length + $noise.Length + 1234)
+                [Array]::Copy($text, 0, $bytes, 0, $text.Length)
+                [Array]::Copy($noise, 0, $bytes, $text.Length, $noise.Length)
+                [IO.File]::WriteAllBytes($file, $bytes)
+                # (The WOF filter hides the reparse point from fsutil and from every
+                # other reader on the mounted volume; compact's own answer is the check.)
+                $compacted = (Run 'compact.exe' @('/c', "/exe:$algorithm", $file)) -replace '\s+', ' '
+                if ($compacted -notmatch '1 files within 1 directories were compressed') { throw "compact /exe:$algorithm did not compress the file: $compacted" }
+                $stored.Add("$($algorithm): $([regex]::Match($compacted, '[\d,]+ total bytes of data are stored in [\d,]+ bytes').Value)")
+                $plain.Add([ordered]@{ kind = 'wof_expanded'; path = "\feature-$feature\wof-$algorithm.bin" })
+            }
+            # Made plain once agreed (wof_expanded): the ledger has to name each.
+            $made[$feature] = [ordered]@{ what = "four files compressed by compact /exe ($($stored -join '; '))"; plain = $plain.ToArray() }
         }
         'quota' {
             $null = Run 'fsutil.exe' @('quota', 'enforce', $drive)

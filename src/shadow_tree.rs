@@ -969,10 +969,13 @@ fn derive_profile(
                             0x800
                         } else {
                             0
-                        })
+                        }
+                        | crate::plain_projection::admitted_attributes(reparse.is_some()))
                     == 0,
             "unsupported basic metadata"
         );
+        // As `source_pages::object`: what a conversion to plain takes off.
+        let plain_cleared = crate::plain_projection::cleared_on_target(f)?;
         let (source_offset, source_extents, length, sha256, source_evidence, sparse) =
             match f.streams.iter().find(|s| s.name_utf16.is_empty()) {
                 Some(s) => {
@@ -1044,7 +1047,7 @@ fn derive_profile(
                 0x800
             } else {
                 0
-            },
+            } & !plain_cleared,
             ntfs_compression_normalized,
             security: hex::decode(&descriptor.relative_hex)?,
             api_security: None,

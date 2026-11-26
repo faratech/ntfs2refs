@@ -191,6 +191,11 @@ fn pieces(
             range.length,
         ),
         SupplyKind::Hole => emit(Piece::Hole, range.logical_offset, range.length),
+        // No object is supplied from the plain copy store in this build.
+        SupplyKind::PlainCopy => anyhow::bail!(
+            "a plain-copy range of object {} is not supplied by this build",
+            range.object_index
+        ),
         SupplyKind::Materialize => {
             ensure!(
                 range.source_physical_offset.is_none(),

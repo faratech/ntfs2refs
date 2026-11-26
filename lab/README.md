@@ -404,6 +404,21 @@ been counted as were listed before. `-Features shortnames-wide` puts short
 names on nested directories, a hard-linked file, a file with a named stream
 and a name outside ASCII, beside a name that is its own short name.
 
+`-AcceptPlain` agrees to the list of objects the converter makes plain
+files of (`-Features temporary`, `offline`). Unattended it passes
+`--accept-plain` with the checksum `--check` printed, so it needs `-Check`;
+otherwise the worker answers the run's question about the list as well as
+its prompt. Without it, a run whose check printed such a list answers the
+question no and has to stop there, exit 0 with the volume NTFS and listing
+exactly as before (`plain-declined`); unattended, it is refused. The
+check of such a volume exits 7 (`check-plain-to-agree` with `-CheckOnly`).
+After the run the comparison is given the run's ledger
+(`lab-volume-manifest compare --plain-ledger`): the objects it names are
+left out of the listing comparison, which is otherwise unchanged, and each
+is held by the content verdict to its record before with only the declared
+feature taken off. Both have to be clean, and the ledger has to name exactly
+the (kind, path) pairs the features planted (`plain` in the verdict).
+
 `-VssProvider` gives the machine a shadow-copy provider the converter does
 not know, as backup software does. `answering` is one of Windows Server's
 own, the iSCSI target storage provider (the feature `iSCSITarget-VSS-VDS`,
@@ -482,8 +497,9 @@ When `-SampleStacks` is used on an interrupted run, the last profile written
 before the cut is collected as `interrupted-stacks.txt` when available.
 The recovery writes its own `stacks.txt`.
 
-These are refused, each by name: `shortnames` with `-RefuseShortNames`, `temporary`, `offline`, `efs`,
-`wof` (a `compact /exe` file), `casesensitive` (two names in one
+`temporary` and `offline` convert with `-AcceptPlain`; without it a run stops
+before it changes anything. These are refused, each by name: `shortnames` with
+`-RefuseShortNames`, `efs`, `wof` (a `compact /exe` file), `casesensitive` (two names in one
 directory that differ only by case), `snapshot`,
 and `bitlocker`. `dirstream` (named streams on two directories, one of about
 1 MiB) converts since `ds3-dirstream-minimal` and `ds3-dirstream-lived-in`

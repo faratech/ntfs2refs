@@ -2136,7 +2136,18 @@ pub(crate) fn user_issues_with_context_alias_scope(
     } else {
         None
     };
-    if let Some(point) = &reparse {
+    if let Some(point) = reparse
+        .as_ref()
+        .filter(|point| point.tag() == n2r_win32::reparse_layout::IO_REPARSE_TAG_WOF)
+    {
+        // A file WOF keeps compressed is never recreated as such. Converted
+        // to plain it would be (`wof_expanded`), which this build does not do
+        // yet; refused by name, with the remedy.
+        issues.push(format!(
+            "it is a file WOF keeps compressed{}",
+            n2r_win32::reparse_layout::unsupported_tag_meaning(point.tag())
+        ));
+    } else if let Some(point) = &reparse {
         if (point.tag() == 0xa0000003 && !f.is_directory)
             || (!f.is_directory && (f.streams.len() != 1 || f.streams[0].logical_size != 0))
             // Extended attributes beside a reparse point are what the
@@ -2286,7 +2297,15 @@ pub(crate) fn user_issues_with_context_alias_scope(
             0
         }
         | if has_verified_eas { 0x40000 } else { 0 }
-        | if ordinary { 0x800 } else { 0 };
+        | if ordinary { 0x800 } else { 0 }
+        // TEMPORARY and OFFLINE, which a data-volume run takes off the
+        // object once the user agrees to the list that names it
+        // (`plain_projection`, `plain_consent`). Refused everywhere else.
+        | if ordinary {
+            crate::plain_projection::admitted_attributes(reparse.is_some())
+        } else {
+            0
+        };
     match crate::ntfs_file_attributes::project_user(f) {
         Ok(attributes) if attributes.source_attributes & !carried_attributes == 0 => {}
         Ok(attributes) => issues.push(format!(

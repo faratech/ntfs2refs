@@ -1078,10 +1078,14 @@ fn build_object(
                         0
                     }
                     | if eas { 0x40000 } else { 0 }
-                    | if normalized { 0x800 } else { 0 })
+                    | if normalized { 0x800 } else { 0 }
+                    | crate::plain_projection::admitted_attributes(reparse.is_some()))
                 == 0,
         "unsupported basic metadata"
     );
+    // TEMPORARY and OFFLINE of an object the user agreed to have made
+    // plain: the new object is made without them, and held to that.
+    let plain_cleared = crate::plain_projection::cleared_on_target(file)?;
     let classify = |stream: &ntfs::StreamInventory| {
         reads.classify(file, stream, admission, extent_paths_eligible)
     };
@@ -1149,7 +1153,8 @@ fn build_object(
             attributes: crate::ntfs_attestation::default_stream_attributes(
                 file,
                 projected.win32_attributes,
-            )? & !if normalized { 0x800 } else { 0 },
+            )? & !if normalized { 0x800 } else { 0 }
+                & !plain_cleared,
             ntfs_compression_normalized: normalized,
             security: stored,
             api_security: if views.api_matches_stored {

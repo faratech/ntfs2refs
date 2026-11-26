@@ -97,6 +97,9 @@ pub(super) struct Report {
     /// What is not carried over, which a conversion announces and goes on.
     pub notes: Vec<String>,
     pub estimate: Option<Estimate>,
+    /// What a conversion makes plain files of, once the list is agreed
+    /// (`plain_consent`): not refused, and not converted without consent.
+    pub plain: crate::plain_projection::PlainList,
     /// How long each part of the reading took, in order.
     pub laps: Vec<(&'static str, std::time::Duration)>,
 }
@@ -662,6 +665,8 @@ fn read(
         )),
         Ok(admission) => {
             let mut refused = ntfs_admission::RefusedObjects::default();
+            let mut plain = Vec::new();
+            let mut wof = Vec::new();
             let (mut stays, mut copied) = (0u64, 0u64);
             for ordinal in 0..raw.file_count() {
                 let file = raw.file(ordinal)?;
@@ -669,6 +674,9 @@ fn read(
                     || is_deleted_while_open(&file, deleted_directory)
                 {
                     continue;
+                }
+                if let Ok(Some(file)) = crate::plain_projection::wof_file(&file) {
+                    wof.push(file);
                 }
                 let mut issues = ntfs_admission::paged::ordinary_user_issues_before_freeze(
                     &raw,
@@ -681,6 +689,17 @@ fn read(
                 if !issues.is_empty() {
                     let path = ntfs_admission::paged::refused_object_path(&raw, &file);
                     refused.note(file.record_number, path.as_deref(), &issues);
+                } else if crate::plain_consent::takes_plain()
+                    && let Some(transform) = crate::plain_projection::of_file(&file)?
+                {
+                    // Admitted because it is made plain: it goes on the list.
+                    let path = ntfs_admission::paged::refused_object_path(&raw, &file)
+                        .context("an object to be made plain has no path")?;
+                    plain.push(crate::plain_projection::entry(
+                        crate::plain_projection::listing_path(&path),
+                        &file,
+                        transform,
+                    ));
                 }
                 // A directory's named streams are carried as a file's.
                 for stream in &file.streams {
@@ -693,6 +712,18 @@ fn read(
             }
             if let Some(outside) = refused.outside_policy("") {
                 report.refusals.push(outside);
+            }
+            report.plain = crate::plain_projection::PlainList::new(plain)
+                .map_err(anyhow::Error::msg)?;
+            if !wof.is_empty() {
+                report.notes.push(crate::plain_projection::wof_note(
+                    &wof,
+                    n2r_win32::target_cluster::bytes(),
+                    header
+                        .free_clusters
+                        .unwrap_or(0)
+                        .saturating_mul(u64::from(header.geometry.cluster_size)),
+                ));
             }
             estimate.stays_bytes = stays;
             estimate.copied_bytes = copied;
@@ -1144,6 +1175,7 @@ mod tests {
                     std::time::Duration::from_millis(700),
                 ),
             ],
+            plain: Default::default(),
         });
         let text = lines(&refused, 65536).join("\n");
         assert!(

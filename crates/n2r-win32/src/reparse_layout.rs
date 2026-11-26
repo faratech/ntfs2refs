@@ -24,6 +24,37 @@ pub fn is_wsl_tag(tag: u32) -> bool {
     tag == IO_REPARSE_TAG_LX_SYMLINK || LX_SPECIAL_TAGS.contains(&tag)
 }
 const HEADER_BYTES: usize = 8;
+/// A file WOF keeps compressed (`compact /exe`, CompactOS).
+pub const IO_REPARSE_TAG_WOF: u32 = 0x8000_0017;
+/// The named stream in which WOF's file provider keeps the compressed data.
+pub const WOF_COMPRESSED_DATA: &str = "WofCompressedData";
+/// WOF's file-provider algorithms: XPRESS4K, LZX, XPRESS8K, XPRESS16K.
+pub const WOF_ALGORITHMS: [(u32, &str); 4] = [
+    (0, "XPRESS4K"),
+    (1, "LZX"),
+    (2, "XPRESS8K"),
+    (3, "XPRESS16K"),
+];
+
+/// The algorithm of a WOF reparse point of the file provider, read exactly:
+/// the common header (tag, 20 bytes of data), WOF_EXTERNAL_INFO (version 1,
+/// provider 2: a file) and FILE_PROVIDER_EXTERNAL_INFO_V1 (version 1, an
+/// algorithm WOF knows, no flags). `None` for anything else, a WIM-backed
+/// file among them.
+pub fn wof_file_algorithm(buffer: &[u8]) -> Option<u32> {
+    let field = |at: usize| dword(buffer, at).ok();
+    (buffer.len() == HEADER_BYTES + 20
+        && field(0)? == IO_REPARSE_TAG_WOF
+        && word(buffer, 4).ok()? == 20
+        && word(buffer, 6).ok()? == 0
+        && field(8)? == 1
+        && field(12)? == 2
+        && field(16)? == 1
+        && field(24)? == 0)
+        .then(|| field(20))
+        .flatten()
+        .filter(|algorithm| WOF_ALGORITHMS.iter().any(|(known, _)| known == algorithm))
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -218,6 +249,13 @@ impl Point {
             }
             return Ok(());
         }
+        // A file WOF's file provider keeps compressed, read exactly. It is
+        // never recreated: such a file is converted to a plain file once the
+        // user agrees (`wof_expanded`), and refused otherwise by admission,
+        // with the remedy of `unsupported_tag_meaning`.
+        if self.tag() == IO_REPARSE_TAG_WOF && wof_file_algorithm(bytes).is_some() {
+            return Ok(());
+        }
         if LX_SPECIAL_TAGS.contains(&self.tag()) {
             if bytes.len() != HEADER_BYTES {
                 return Err(invalid(
@@ -271,6 +309,36 @@ pub fn parse(buffer: &[u8]) -> io::Result<Point> {
 #[cfg(test)]
 mod refusal_tests {
     use super::*;
+
+    fn wof_point(algorithm: u32) -> Vec<u8> {
+        let mut point = Vec::new();
+        point.extend_from_slice(&IO_REPARSE_TAG_WOF.to_le_bytes());
+        point.extend_from_slice(&20u16.to_le_bytes());
+        point.extend_from_slice(&0u16.to_le_bytes());
+        for value in [1u32, 2, 1, algorithm, 0] {
+            point.extend_from_slice(&value.to_le_bytes());
+        }
+        point
+    }
+
+    #[test]
+    fn a_wof_file_point_is_read_exactly() {
+        for (algorithm, _) in WOF_ALGORITHMS {
+            assert_eq!(wof_file_algorithm(&wof_point(algorithm)), Some(algorithm));
+        }
+        assert_eq!(wof_file_algorithm(&wof_point(4)), None);
+        // A WIM-backed file (provider 1), flags, another version, a short
+        // or a long point, another tag: none is a file-provider point.
+        for (at, value) in [(12usize, 1u32), (24, 1), (8, 2), (16, 2), (0, 0x8000_0013)] {
+            let mut point = wof_point(1);
+            point[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            assert_eq!(wof_file_algorithm(&point), None, "{at}");
+        }
+        let mut long = wof_point(1);
+        long.push(0);
+        assert_eq!(wof_file_algorithm(&long), None);
+        assert_eq!(wof_file_algorithm(&wof_point(1)[..20]), None);
+    }
 
     #[test]
     fn a_reparse_point_that_is_not_carried_over_is_refused_by_what_it_is() {

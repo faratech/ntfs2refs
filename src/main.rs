@@ -186,6 +186,24 @@ fn run() -> Result<u8> {
                             "the_run_says": "before the prompt, and --check: how many directories are marked, whether the mark is set, and where it is not, why",
                             "two_names_that_differ_only_by_case": "refused everywhere, with both names",
                         },
+                        // Objects made plain files, each only once the
+                        // user agreed to a list that names it.
+                        "converted_to_plain": {
+                            "converted": n2r_win32::plain_ledger::PlainKind::ALL
+                                .iter()
+                                .filter(|kind| kind.implemented())
+                                .map(|kind| serde_json::json!({"kind": kind.name(), "does": kind.describe()}))
+                                .collect::<Vec<_>>(),
+                            "modelled_still_refused": n2r_win32::plain_ledger::PlainKind::ALL
+                                .iter()
+                                .filter(|kind| !kind.implemented())
+                                .map(|kind| kind.name())
+                                .collect::<Vec<_>>(),
+                            "consent": "a question of its own before the run starts, naming the SHA-256 of the list file; --yes needs --accept-plain <sha256> as well",
+                            "frozen_source": "every object the frozen source makes plain must be in the agreed list, or the run stops before anything is built",
+                            "record": n2r_win32::plain_ledger::LEDGER_FILE,
+                            "for": "a data volume; a Windows boot volume and the running Windows refuse such objects",
+                        },
                         "refused_by_name": [
                             {"what": "8.3 short names, with --short-names refuse", "remedy": "fsutil 8dot3name strip, then fsutil 8dot3name set <drive>: 1",
                              "or": "without --short-names refuse (the default, or --short-names drop) the volume converts without them: every object under its long name, each short name kept in the run's records"},
@@ -194,7 +212,7 @@ fn run() -> Result<u8> {
                              "remedy": "delete the shadow copies; the provider is named",
                              "passed_over": "a provider of backup software that answers and holds no shadow copy, named in a note: make a full backup afterwards"},
                             {"what": "EFS-encrypted files", "remedy": "cipher /d"},
-                            {"what": "files with the TEMPORARY or OFFLINE attribute"},
+                            {"what": "an OFFLINE file with a reparse point (a hierarchical storage manager's)"},
                             {"what": "reparse points other than symbolic links, junctions, app execution aliases and the files of the Windows Subsystem for Linux (Data Deduplication, compact /exe, cloud placeholders)",
                              "remedy": "named per kind"},
                             {"what": "a named data stream on the root directory, on a reparse-point directory, or one on a directory that is encrypted, compressed or sparse",
@@ -217,6 +235,7 @@ fn run() -> Result<u8> {
                         "option": "--yes",
                         "answers": "every question of the run",
                         "requires": "--volume-serial for a conversion or a diagnose run (the serial number --list prints); a recovery is bound to its run by its checksum",
+                        "plain_conversions": "--accept-plain <sha256>, naming the list of objects made plain files; --yes alone does not agree to it",
                     },
                     "list": {
                         "option": "--list",
@@ -245,6 +264,8 @@ fn run() -> Result<u8> {
                                 "a conversion would refuse the volume; each reason is printed",
                             (ntfs2refs::drive_cli::EXIT_CHECK_INCONCLUSIVE.to_string()):
                                 "the volume changed during every reading: nothing is known and nothing is refused",
+                            (ntfs2refs::drive_cli::EXIT_CHECK_PLAIN.to_string()):
+                                "nothing is refused, and some objects would be converted to plain files: a conversion goes ahead once their list is agreed",
                             "1": "the check could not be made",
                         },
                     },
@@ -314,6 +335,12 @@ fn run() -> Result<u8> {
                         },
                         "accepted_differences": n2r_win32::volume_manifest::ALLOWED_DIFFERENCES,
                         "short_names": "each NTFS 8.3 name must be a same-directory link to its long name",
+                        "plain_conversions": {
+                            "listing": "the objects the run's ledger names are left out of the listing comparison, which is otherwise unchanged",
+                            "content_verdict": "each is held by the same comparison to its record before with only the agreed feature taken off; a row whose object did not show that feature before fails",
+                            "reported": "apart: differences, plain_conversions by kind and plain_failures; both have to be clean",
+                            "option": "lab-volume-manifest compare --plain-ledger <plain-conversions.json>",
+                        },
                     },
                     "experimental_large_tree": {
                         "available": cfg!(windows),

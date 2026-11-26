@@ -425,6 +425,12 @@ pub(crate) fn plain_copy_pin(
 /// - WOF hides its reparse point, the REPARSE_POINT and SPARSE_FILE
 ///   attributes and its WofCompressedData stream (the lab's listing of a
 ///   `compact /exe` file shows attributes 0x20, one stream, the full length).
+/// - A cloud placeholder (`cloud_placeholder_plain`) hides nothing from an
+///   observer that opens it as its reparse point, as Windows' observation
+///   of the source does: its point, its cloud tag and its pinned, recall,
+///   OFFLINE and sparse attributes are what the raw record holds, and the
+///   whole of its data is on the volume (the census holds it to that). Its
+///   unnamed stream's allocation is the raw record's too.
 /// - Either way the unnamed stream's contents are what the filter reads,
 ///   which the plain copy holds: Windows' read of it is held to the copy's
 ///   content digest, and never left unread as a plain stream would be.
@@ -1101,6 +1107,30 @@ mod tests {
         let mut none = wof_file();
         none.streams.retain(|s| !s.name_utf16.is_empty());
         assert!(filter_view(&none, false, &copy).is_err());
+    }
+
+    #[test]
+    fn a_cloud_placeholder_shows_windows_what_its_raw_record_holds() {
+        let copy = "cd".repeat(16);
+        let mut raw = wof_file();
+        raw.streams.retain(|s| s.name_utf16.is_empty());
+        raw.attributes = vec![attribute(0x80, "", 0x8000), attribute(0xc0, "", 0)];
+        raw.standard_information.as_mut().unwrap().file_attributes = 0x8_0620;
+        let view = filter_view(&raw, false, &copy).unwrap();
+        // Its point, its attributes (pinned, sparse, reparse) and its sparse
+        // stream are as the raw record holds them.
+        assert!(view.reparse.is_some());
+        assert_eq!(view.attributes.len(), 2);
+        assert_eq!(
+            view.standard_information.as_ref().unwrap().file_attributes,
+            0x8_0620
+        );
+        assert_eq!(view.streams[0].flags, 0x8000);
+        // Its contents are held to the copy read through the filter.
+        assert_eq!(
+            view.streams[0].logical_sha256.as_deref(),
+            Some(copy.as_str())
+        );
     }
 
     #[test]

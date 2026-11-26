@@ -400,11 +400,17 @@ fn named_on_volume(file: &File, volume_root: &str, name: &[u16]) -> io::Result<F
     }
     Ok(unsafe { File::from_raw_handle(h) })
 }
+/// FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT |
+/// FILE_FLAG_OPEN_NO_RECALL: a stream's contents read as the volume holds
+/// them, and never recalled by a placeholder's provider (a cloud
+/// placeholder's data not on the volume stays where it is).
+const READ_FLAGS: u32 = 0x0230_0000;
+
 fn read_handle(file: &File, id: &FileIdentity, named_stream: bool) -> io::Result<File> {
     // Named streams originated from CreateFileW, so ReOpenFile retains their
     // stream. Default streams reopen by ID using the existing volume hint.
     let h = if named_stream {
-        unsafe { ReOpenFile(file.as_raw_handle(), 0x80000080, 7, 0x02200000) }
+        unsafe { ReOpenFile(file.as_raw_handle(), 0x80000080, 7, READ_FLAGS) }
     } else {
         let descriptor = FILE_ID_DESCRIPTOR {
             dwSize: std::mem::size_of::<FILE_ID_DESCRIPTOR>() as u32,
@@ -420,7 +426,7 @@ fn read_handle(file: &File, id: &FileIdentity, named_stream: bool) -> io::Result
                 0x80000080,
                 7,
                 ptr::null(),
-                0x02200000,
+                READ_FLAGS,
             )
         }
     };

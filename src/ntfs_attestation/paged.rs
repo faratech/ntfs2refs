@@ -990,11 +990,21 @@ fn compare_domain_with_header(
                 // read by Windows and held to the copy's digest.
                 let view = crate::plain_projection::observed_view(&file)?;
                 let file_view: &crate::ntfs_inspect::FileInventory = view.as_ref().unwrap_or(&file);
+                // An object the run's ledger leaves out (`cloud_left_out`)
+                // is not on the new volume: its contents, which are not on
+                // the source either where its provider holds them, are not
+                // compared. Its metadata, streams and names are, as for any
+                // object of the frozen source.
+                let left_out = n2r_win32::plain_ledger::declared()
+                    .is_left_out(file.record_number, file.sequence_number);
                 let mut logical_data = Check::from((|| {
                     ensure!(
                         observation.open_error.is_none(),
                         "native logical file open refused"
                     );
+                    if left_out {
+                        return Ok(());
+                    }
                     let mut plain = |stream: &crate::ntfs_inspect::StreamInventory| {
                         if view.is_some() {
                             return Ok(false);
@@ -1020,7 +1030,10 @@ fn compare_domain_with_header(
                         )?;
                     Ok(())
                 })());
-                if logical_data.matched && !evidence.unread_plain_streams.is_empty() {
+                if logical_data.matched && left_out {
+                    logical_data.detail =
+                        "left out of the conversion (cloud_left_out): its contents are not carried over, and not compared".into();
+                } else if logical_data.matched && !evidence.unread_plain_streams.is_empty() {
                     logical_data.detail = format!(
                         "native observations match the supplied raw model; Windows did not read the contents of {} plain stream(s) ({} bytes), as a run that verifies once does: their run lists are held to Windows' retrieval pointers, Windows confirmed that their valid data runs to their end, and their raw digests stand: {}",
                         evidence.unread_plain_streams.len(),

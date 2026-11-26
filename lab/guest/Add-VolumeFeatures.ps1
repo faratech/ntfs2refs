@@ -401,11 +401,27 @@ public static class ManyFiles {
                 $tag = (& fsutil.exe reparsepoint query "$dir\dedup-$i.bin" 2>&1 | Out-String)
                 if ($tag -notmatch '0x80000013') { throw "dedup-$i.bin was not optimized (no 0x80000013 reparse point): $tag" }
             }
+            # The job optimizes whatever else on the volume qualifies too (the
+            # content's own files, the lab's dd2): every file that holds the
+            # dedup tag afterwards is made plain, and is declared here, as the
+            # volume shows it, not as the converter finds it.
+            $plain.Clear()
+            $optimized = @(Get-ChildItem -LiteralPath "$drive\" -Recurse -Force -File -Attributes ReparsePoint -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -notlike "$drive\System Volume Information\*" } |
+                Where-Object { (& fsutil.exe reparsepoint query $_.FullName 2>&1 | Out-String) -match 'Tag value: 0x80000013' })
+            foreach ($file in $optimized) {
+                $plain.Add([ordered]@{ kind = 'dedup_rehydrated'; path = $file.FullName.Substring($drive.Length) })
+            }
+            foreach ($i in 1..4) {
+                if (-not ($plain | Where-Object { $_.path -eq "\feature-$feature\dedup-$i.bin" })) {
+                    throw "dedup-$i.bin holds the dedup tag and was not found among the volume's optimized files"
+                }
+            }
             # Made plain once agreed (dedup_rehydrated): the ledger has to name each.
             # The chunk store below System Volume Information\Dedup is then not
             # carried over: the ledger has to record objects below it.
-            $made[$feature] = [ordered]@{ what = 'four identical files Data Deduplication has optimized'; plain = $plain.ToArray()
-                not_carried_under = @('\System Volume Information\Dedup') }
+            $made[$feature] = [ordered]@{ what = "four identical files Data Deduplication has optimized, and $($plain.Count - 4) other file(s) of the volume it optimized as well"
+                plain = $plain.ToArray(); not_carried_under = @('\System Volume Information\Dedup') }
         }
         'svi-deep' {
             # What Windows writes below System Volume Information's own folders
@@ -414,34 +430,57 @@ public static class ManyFiles {
             # as SYSTEM, which alone may write there. The folder directly in
             # it is carried over, empty; what is below it is not, and the
             # ledger has to record each (system_volume_information_not_carried).
+            # This session never opens anything in that folder (it may not):
+            # the task writes, lists what it wrote as SYSTEM, and leaves its
+            # result where this session reads it.
             $svi = "$drive\System Volume Information"
+            $result = "$env:SystemRoot\Temp\n2r-lab-svi-deep.txt"
+            Remove-Item -LiteralPath $result -Force -ErrorAction SilentlyContinue
             $script = @"
 `$ErrorActionPreference = 'Stop'
-`$null = New-Item -ItemType Directory -Path '$svi\n2r-lab\deep' -Force
-[IO.File]::WriteAllText('$svi\n2r-lab\top.txt', 'a file below a folder of System Volume Information')
-[IO.File]::WriteAllText('$svi\n2r-lab\deep\note.txt', 'a file one folder further down')
-[IO.File]::WriteAllText('$svi\n2r-lab.done', '')
+try {
+    if (-not [IO.Directory]::Exists('$svi')) { throw 'there is no $svi' }
+    [IO.Directory]::CreateDirectory('$svi\n2r-lab\deep') | Out-Null
+    [IO.File]::WriteAllText('$svi\n2r-lab\top.txt', 'a file below a folder of System Volume Information')
+    [IO.File]::WriteAllText('$svi\n2r-lab\deep\note.txt', 'a file one folder further down')
+    `$listed = @(Get-ChildItem -LiteralPath '$svi\n2r-lab' -Recurse -Force | ForEach-Object { `$_.FullName })
+    [IO.File]::WriteAllLines('$result', [string[]](@('ok', [Security.Principal.WindowsIdentity]::GetCurrent().Name) + `$listed))
+} catch {
+    [IO.File]::WriteAllLines('$result', [string[]]@('error', [Security.Principal.WindowsIdentity]::GetCurrent().Name, "`$_"))
+}
 "@
             $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
             $task = 'n2r-lab-svi-deep'
             Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
-            $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -EncodedCommand $encoded"
-            $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-            $null = Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Force
+            $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded"
+            $principal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+            try {
+                $null = Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Force
+            } catch { throw "registering a scheduled task to run as SYSTEM: $_" }
             try {
                 Start-ScheduledTask -TaskName $task
                 $deadline = (Get-Date).AddMinutes(2)
-                # The marker file is directly in the folder: carried over.
-                while (-not (Test-Path -LiteralPath "$svi\n2r-lab.done")) {
-                    if ((Get-Date) -gt $deadline) { throw "the SYSTEM task did not write below $svi within two minutes" }
+                while (-not (Test-Path -LiteralPath $result) -or (Get-ScheduledTask -TaskName $task).State -eq 'Running') {
+                    if ((Get-Date) -gt $deadline) {
+                        $info = Get-ScheduledTaskInfo -TaskName $task
+                        throw "the SYSTEM task wrote no result within two minutes (state $((Get-ScheduledTask -TaskName $task).State), last result $($info.LastTaskResult))"
+                    }
                     Start-Sleep -Milliseconds 500
                 }
+                $exit = (Get-ScheduledTaskInfo -TaskName $task).LastTaskResult
             } finally {
                 Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
             }
+            $lines = @(Get-Content -LiteralPath $result)
+            Remove-Item -LiteralPath $result -Force -ErrorAction SilentlyContinue
+            if ($lines.Count -lt 2 -or $lines[0] -ne 'ok') { throw "the SYSTEM task could not write below ${svi}: $($lines -join ' | ') (task result $exit)" }
             $below = '\System Volume Information\n2r-lab'
-            $made[$feature] = [ordered]@{ what = 'a folder of System Volume Information holding a file, and a folder with a file, written as SYSTEM'
-                not_carried = @("$below\deep", "$below\deep\note.txt", "$below\top.txt") }
+            $expected = @("$below\deep", "$below\deep\note.txt", "$below\top.txt")
+            $listed = @($lines | Select-Object -Skip 2 | ForEach-Object { $_.Substring($drive.Length) })
+            $missing = @($expected | Where-Object { $_ -notin $listed })
+            if ($missing.Count) { throw "the SYSTEM task ($($lines[1])) wrote below $svi, and its own listing lacks $($missing -join ', ')" }
+            $made[$feature] = [ordered]@{ what = "a folder of System Volume Information holding a file, and a folder with a file, written as $($lines[1])"
+                not_carried = $expected }
         }
         'quota' {
             $null = Run 'fsutil.exe' @('quota', 'enforce', $drive)

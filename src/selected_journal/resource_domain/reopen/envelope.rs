@@ -2382,7 +2382,14 @@ impl<'a> VerifiedProtectedHandoff<'a> {
                     .streams_hashed
                     .checked_add(known.streams_without_content_baseline)
                     == Some(usize::try_from(
-                        self.recovery.publication.resource_admission.data_streams
+                        // The converted volume holds the admitted streams less
+                        // those the run's ledger declares dropped (a recovery
+                        // declares them from <run>\plain-conversions.json).
+                        n2r_win32::plain_ledger::declared()
+                            .expected_streams(
+                                self.recovery.publication.resource_admission.data_streams
+                            )
+                            .map_err(anyhow::Error::msg)?
                     )?)
                 && known.payload_bytes_read == content.admitted_payload_bytes_read,
             "actual protected converted observation or known-content coverage differs"

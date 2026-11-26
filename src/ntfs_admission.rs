@@ -1699,6 +1699,33 @@ fn file_by_reference(raw: &ntfs::NtfsInspection, id: u64) -> Option<&FileInvento
     }
     Some(file)
 }
+/// The one name of a file with one link: its only name, or the Win32 name of
+/// a Win32/DOS pair, the 8.3 short name Windows makes beside a long one in
+/// the same directory where short-name creation is on (as it is on an NTFS
+/// 1.2 volume, which has no flag turning it off: the TxF log containers
+/// Windows makes there get one, lab n12-image-5). Any other set of names is
+/// not one link.
+pub(crate) fn sole_name(f: &FileInventory) -> Option<&ntfs::NameInventory> {
+    match f.names.as_slice() {
+        [only] => Some(only),
+        [a, b] => {
+            let (long, short) = match (a.namespace, b.namespace) {
+                (1, 2) => (a, b),
+                (2, 1) => (b, a),
+                _ => return None,
+            };
+            (long.parent_record_number == short.parent_record_number
+                && long.parent_sequence_number == short.parent_sequence_number)
+                .then_some(long)
+        }
+        _ => None,
+    }
+}
+/// Whether a file has one link: one name, or a Win32/DOS pair ([`sole_name`]),
+/// and the link count its record states for that.
+pub(crate) fn has_one_link(f: &FileInventory) -> bool {
+    sole_name(f).is_some() && usize::from(f.hard_link_count) == f.names.len()
+}
 pub(crate) fn path(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Option<Vec<String>> {
     let mut cursor = f;
     let mut components = vec![];
@@ -1711,10 +1738,7 @@ pub(crate) fn path(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Option<Vec<
             components.reverse();
             return Some(components);
         }
-        if cursor.names.len() != 1 {
-            return None;
-        }
-        let name = &cursor.names[0];
+        let name = sole_name(cursor)?;
         if !matches!(name.namespace, 0 | 1 | 3) {
             return None;
         }

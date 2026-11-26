@@ -206,6 +206,18 @@ fn standard_information(attributes: u32) -> Vec<u8> {
 /// A $FILE_NAME value, in the Win32-and-DOS namespace (every name here is
 /// an upper-case 8.3 name, or one of NTFS's own).
 fn file_name_value(parent: u64, name: &str, allocated: u64, data: u64, flags: u32) -> Vec<u8> {
+    file_name_in(parent, name, allocated, data, flags, 3)
+}
+
+/// A $FILE_NAME value in a namespace: 1 Win32, 2 DOS, 3 both.
+fn file_name_in(
+    parent: u64,
+    name: &str,
+    allocated: u64,
+    data: u64,
+    flags: u32,
+    namespace: u8,
+) -> Vec<u8> {
     let name = utf16(name);
     let mut v = vec![0u8; 66 + name.len() * 2];
     put64(&mut v, 0, parent);
@@ -216,7 +228,7 @@ fn file_name_value(parent: u64, name: &str, allocated: u64, data: u64, flags: u3
     put64(&mut v, 48, data);
     put32(&mut v, 56, flags);
     v[64] = name.len() as u8;
-    v[65] = 3;
+    v[65] = namespace;
     for (i, unit) in name.iter().enumerate() {
         put16(&mut v, 66 + i * 2, *unit);
     }
@@ -469,6 +481,7 @@ pub fn volume(partition_bytes: u64, hidden_sectors: u32, version: (u8, u8)) -> V
         Options {
             attrdef: AttrDef::Nt4,
             windows_extend: false,
+            windows_txf_log: false,
         },
     )
 }
@@ -480,6 +493,12 @@ pub struct Options {
     /// Record 11 as the empty `$Extend` directory Windows makes when it
     /// mounts an NTFS 1.2 volume, in place of the reserved record.
     pub windows_extend: bool,
+    /// With `windows_extend`: `$Extend\$RmMetadata\$TxfLog\
+    /// $TxfLogContainer00000000000000000001` (records 20 to 22), the long
+    /// names each with the DOS short name Windows makes beside them where
+    /// short-name creation is on, as it is on an NTFS 1.2 volume (lab
+    /// n12-image-5).
+    pub windows_txf_log: bool,
 }
 
 /// [`volume`], varied as `options` says.
@@ -553,6 +572,8 @@ pub fn volume_with(
         )
     };
     let mut records: Vec<(u64, Vec<u8>)> = Vec::new();
+    assert!(options.windows_extend || !options.windows_txf_log);
+    let in_use_records: usize = if options.windows_txf_log { 23 } else { 20 };
     for &(name, number, allocated, data) in &system {
         let mut fname = name_of(name, allocated, data, hidden_system);
         let mut descriptor = security(2);
@@ -572,7 +593,7 @@ pub fn volume_with(
                     3,
                 ));
                 let bits_at = cluster_at(MFT_BITMAP_LCN);
-                for record in 0..20 {
+                for record in 0..in_use_records {
                     head[bits_at + record / 8] |= 1 << (record % 8);
                 }
                 attributes.push(nonresident(
@@ -816,6 +837,95 @@ pub fn volume_with(
         ],
     );
     records.push((5, root_record));
+    // Windows' TxF log, as far as its first container: records 20 to 22.
+    let extend = reference(11, sequence(11));
+    let rm = reference(20, 1);
+    let txf_log = reference(21, 1);
+    let dir = hidden_system | directory_flags;
+    let container = "$TxfLogContainer00000000000000000001";
+    // The entries of a directory: one for each name of each child, in order.
+    let directory = |children: &[(u64, Vec<u8>)]| -> Vec<u8> {
+        let key = |value: &Vec<u8>| -> Vec<u16> {
+            let length = usize::from(value[64]);
+            (0..length)
+                .map(|i| u16::from_le_bytes([value[66 + 2 * i], value[67 + 2 * i]]))
+                .map(|u| table[usize::from(u)])
+                .collect()
+        };
+        let mut sorted = children.to_vec();
+        sorted.sort_by_key(|(_, value)| key(value));
+        let mut entries = Vec::new();
+        for (file, value) in &sorted {
+            entries.extend(index_entry(*file, value));
+        }
+        entries.extend(end_entry(None));
+        entries
+    };
+    let rm_names = [
+        file_name_in(extend, "$RmMetadata", 0, 0, dir, 1),
+        file_name_in(extend, "$RMMET~1", 0, 0, dir, 2),
+    ];
+    let log_name = file_name_in(rm, "$TxfLog", 0, 0, dir, 3);
+    let container_names = [
+        file_name_in(txf_log, container, 0, 0, hidden_system, 1),
+        file_name_in(txf_log, "$TXFLO~1", 0, 0, hidden_system, 2),
+    ];
+    let extend_entries = if options.windows_txf_log {
+        directory(&[(rm, rm_names[0].clone()), (rm, rm_names[1].clone())])
+    } else {
+        end_entry(None)
+    };
+    if options.windows_txf_log {
+        let named = |values: &[Vec<u8>]| -> Vec<Vec<u8>> {
+            values
+                .iter()
+                .enumerate()
+                .map(|(i, v)| resident(0x30, "", v, 1 + i as u16, true))
+                .collect()
+        };
+        let mut attributes = vec![standard_information(hidden_system)];
+        attributes.extend(named(&rm_names));
+        attributes.push(security(3));
+        attributes.push(resident(
+            0x90,
+            "$I30",
+            &index_root(&directory(&[(txf_log, log_name.clone())]), false),
+            4,
+            false,
+        ));
+        records.push((20, file_record(1, 2, 3, &attributes)));
+        records.push((
+            21,
+            file_record(
+                1,
+                1,
+                3,
+                &[
+                    standard_information(hidden_system),
+                    resident(0x30, "", &log_name, 1, true),
+                    security(2),
+                    resident(
+                        0x90,
+                        "$I30",
+                        &index_root(
+                            &directory(&[
+                                (reference(22, 1), container_names[0].clone()),
+                                (reference(22, 1), container_names[1].clone()),
+                            ]),
+                            false,
+                        ),
+                        3,
+                        false,
+                    ),
+                ],
+            ),
+        ));
+        let mut attributes = vec![standard_information(hidden_system)];
+        attributes.extend(named(&container_names));
+        attributes.push(security(3));
+        attributes.push(resident(0x80, "", &[], 4, false));
+        records.push((22, file_record(1, 2, 1, &attributes)));
+    }
     // Records 11 to 15: reserved, in use, nameless (or 11 Windows' $Extend).
     for number in 11..16 {
         if number == 11 && options.windows_extend {
@@ -841,7 +951,7 @@ pub fn volume_with(
                             true,
                         ),
                         security(2),
-                        resident(0x90, "$I30", &index_root(&end_entry(None), false), 3, false),
+                        resident(0x90, "$I30", &index_root(&extend_entries, false), 3, false),
                     ],
                 ),
             ));
@@ -866,7 +976,7 @@ pub fn volume_with(
     records.push((18, sub_record));
     records.push((19, inner_record));
     // Every other record: formatted, not in use.
-    for number in 20..MFT_RECORDS as u64 {
+    for number in in_use_records as u64..MFT_RECORDS as u64 {
         records.push((number, file_record(0, 0, 0, &[])));
     }
     let mft_at = cluster_at(MFT_LCN);

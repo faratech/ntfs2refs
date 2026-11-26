@@ -38,6 +38,7 @@ fn an_ntfs_12_volume_is_read_as_nt4_laid_it_out() {
                 ntfs12::Options {
                     attrdef,
                     windows_extend: false,
+                    windows_txf_log: false,
                 },
             )
             .image(),
@@ -176,6 +177,7 @@ fn a_12_volume_with_the_extend_windows_made_is_read() {
         ntfs12::Options {
             attrdef: ntfs12::AttrDef::Windows,
             windows_extend: true,
+            windows_txf_log: false,
         },
     )
     .image();
@@ -211,6 +213,48 @@ fn a_12_volume_with_the_extend_windows_made_is_read() {
     assert!(indexes.indexes.is_empty() && indexes.replacement_supported);
     let scope = ntfs2refs::ntfs_transactions::inspect_scope(&report).unwrap();
     assert!(scope.transactional_records.is_empty());
+}
+
+/// The TxF log containers Windows makes on an NTFS 1.2 volume carry the DOS
+/// short name Windows makes beside a long one there (lab n12-image-5, where
+/// they were refused as unknown internal objects). An internal object's one
+/// link is its long name with that alias: the roles are the same as on 3.x.
+#[test]
+fn windows_txf_log_files_with_short_names_keep_their_roles() {
+    let image = ntfs12::volume_with(
+        PARTITION,
+        2048,
+        (1, 2),
+        ntfs12::Options {
+            attrdef: ntfs12::AttrDef::Windows,
+            windows_extend: true,
+            windows_txf_log: true,
+        },
+    )
+    .image();
+    let report = inspect(&image);
+    let namespace = report.namespace_reconciliation.as_ref().unwrap();
+    assert_eq!(
+        namespace.status,
+        ntfs_namespace::Status::ConsistentRawModel,
+        "{}",
+        namespace.detail
+    );
+    let role = |number: u64| {
+        let file = report
+            .files
+            .iter()
+            .find(|f| f.record_number == number)
+            .unwrap();
+        ntfs_admission::internal_role(&report, file)
+    };
+    assert_eq!(role(20).as_deref(), Some("$Extend\\$RmMetadata"));
+    assert_eq!(
+        role(22).as_deref(),
+        Some("$Extend\\$RmMetadata\\$TxfLog\\$TxfLogContainer00000000000000000001")
+    );
+    let container = report.files.iter().find(|f| f.record_number == 22).unwrap();
+    assert_eq!(container.names.len(), 2);
 }
 
 /// The NT 4.0 layout is read only where $Volume states 1.2: the same volume
@@ -258,6 +302,7 @@ fn write_the_lab_ntfs12_image() {
         ntfs12::Options {
             attrdef,
             windows_extend: false,
+            windows_txf_log: false,
         },
     );
     std::fs::write(&output, &volume.head).unwrap();

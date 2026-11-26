@@ -165,7 +165,7 @@ fn inspect_scope_with<F: std::ops::Deref<Target = ntfs::FileInventory>>(
         let file = scope_role_file(count, &mut get, &mut role, wanted)?;
         ensure!(
             !file.is_directory
-                && file.hard_link_count == 1
+                && ntfs_admission::has_one_link(&file)
                 && file.base_file_reference == 0
                 && file.streams.len() == names.len()
                 && file

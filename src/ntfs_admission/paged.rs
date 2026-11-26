@@ -510,14 +510,23 @@ pub(crate) fn internal_role(
     {
         return Ok(None);
     }
-    // Exact internal roles have a single canonical name. Reserved nameless
-    // slots are recognized before the closure is called by the shared policy.
-    let path = if file.names.len() == 1 {
-        user_paths(files, file)
+    // Exact internal roles have a single canonical name (or that name and
+    // the DOS short name Windows made beside it, which is not a path of its
+    // own: super::sole_name). Reserved nameless slots are recognized before
+    // the closure is called by the shared policy.
+    let path = match super::sole_name(file) {
+        Some(_) if file.names.len() == 1 => user_paths(files, file)
             .with_context(|| format!("NTFS internal-role path at FILE {}", file.record_number))?
-            .pop()
-    } else {
-        None
+            .pop(),
+        Some(long) => {
+            let mut named = file.clone();
+            named.names = vec![long.clone()];
+            named.hard_link_count = 1;
+            user_paths(files, &named)
+                .with_context(|| format!("NTFS internal-role path at FILE {}", file.record_number))?
+                .pop()
+        }
+        None => None,
     };
     Ok(super::internal_role_with_path(file, || path))
 }

@@ -179,10 +179,10 @@ pub(crate) fn copy_key(file: &FileInventory) -> n2r_win32::plain_copy::PlainCopy
     }
 }
 
-/// Whether this run makes `file` a plain file from its WOF copy. Never
-/// while `wof_expanded` is not enabled (`PlainKind::implemented`): the
-/// verification of the converted volume still pairs every source stream,
-/// WofCompressedData among them, with a stream of the new file.
+/// Whether this run makes `file` a plain file from its WOF copy (where
+/// `wof_expanded` is enabled, `PlainKind::implemented`). The stream it
+/// leaves off is declared by the ledger (`DeclaredDrops`), and every count
+/// of the new tree against the source's admission expects it so.
 pub(crate) fn wof_taken(file: &FileInventory) -> bool {
     PlainKind::WofExpanded.implemented()
         && crate::plain_consent::takes_plain()

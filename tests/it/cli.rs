@@ -57,8 +57,9 @@ fn capabilities_report_what_the_executable_enforces() {
     // refused, and never without the list agreed.
     let plain = &data_volume["converted_to_plain"];
     assert_eq!(plain["converted"][0]["kind"], "attributes_cleared");
-    assert_eq!(plain["converted"].as_array().unwrap().len(), 1);
-    assert_eq!(plain["modelled_still_refused"].as_array().unwrap().len(), 7);
+    assert_eq!(plain["converted"][1]["kind"], "wof_expanded");
+    assert_eq!(plain["converted"].as_array().unwrap().len(), 2);
+    assert_eq!(plain["modelled_still_refused"].as_array().unwrap().len(), 6);
     assert_eq!(plain["record"], "plain-conversions.json");
     assert!(
         plain["consent"]

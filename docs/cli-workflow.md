@@ -69,7 +69,7 @@ seconds on one of 23,000 files. It prints:
 
 - **Every reason a conversion would refuse the volume** that those decide,
   each as the conversion would give it, with the file and what to do: 8.3
-  short names (with `--short-names refuse`); encrypted, temporary, offline or `compact /exe` files; reparse
+  short names (with `--short-names refuse`); encrypted files; reparse
   points, streams and names the converter does not carry over;
   two names in a directory that differ only by case; shadow copies, and a
   shadow-copy provider of backup software that holds one or does not
@@ -351,7 +351,7 @@ Refused before anything is written, each with what was found and what to do:
 | A shadow-copy provider of backup software (any but Windows' own, Hyper-V's and Windows Server's for remote file shares) that holds a shadow copy on the machine, or does not answer when Windows asks it | The provider is named, and the shadow copy. Delete its shadow copies or let the backup that made them finish; a provider that does not answer has to be repaired or removed |
 | EFS-encrypted files | `cipher /d` |
 | An OFFLINE file with a reparse point (a storage manager's) | Recall it through its storage manager, or move it |
-| Cloud placeholders, `compact /exe` files, Data Deduplication | The kind is named, with the record number to find the file by |
+| Cloud placeholders, Data Deduplication, and a `compact /exe` file on a Windows boot volume or backed by a WIM image | The kind is named, with the record number to find the file by; a `compact /exe` file with `compact /u /exe <file>` |
 | A named data stream on a directory | Remove the stream. (Carrying it over as the same directory's named stream on ReFS is built and waits for the lab to show it) |
 | Two names in one directory that differ only by case (both are given) | Rename one of them, then `fsutil file setCaseSensitiveInfo <directory> disable` |
 | A dirty volume, an NTFS log that was not closed, an open transaction | `chkdsk E: /f`, or dismount cleanly |
@@ -365,10 +365,22 @@ Refused before anything is written, each with what was found and what to do:
 Some NTFS features have nothing on ReFS to become. A conversion makes such
 an object a plain file, with everything else about it carried over, and only
 after you agree to a list that names every one of them. Nothing is made
-plain silently. This version converts the TEMPORARY and OFFLINE attributes
-of a file or directory that has no reparse point (`attributes_cleared`):
-the attribute is cleared and nothing else changes. The other kinds a list
-can name (`efs_decrypted`, `wof_expanded`, `dedup_rehydrated`,
+plain silently. This version converts:
+
+- the TEMPORARY and OFFLINE attributes of a file or directory that has no
+  reparse point (`attributes_cleared`): the attribute is cleared and
+  nothing else changes;
+- a file `compact /exe` or CompactOS keeps compressed with WOF
+  (`wof_expanded`): its bytes are read through WOF on the frozen volume,
+  mounted read-only, into a copy in the run's directory
+  (`plain-copies`, deleted when the run ends), and the new file is made
+  from that copy, uncompressed. Its WofCompressedData stream and reparse
+  point are not carried over. The run refuses the volume, with the
+  numbers, when the files made plain would not fit its free space: each
+  takes its length rounded up to the new volume's cluster, and frees what
+  its compressed data took. A WIM-backed file is still refused.
+
+The other kinds a list can name (`efs_decrypted`, `dedup_rehydrated`,
 `cloud_placeholder_plain`, `projfs_placeholder_plain`, `sis_expanded`, and
 `cloud_left_out` for a placeholder that cannot be brought onto the volume
 and stays in the cloud) are still refused as listed above.

@@ -466,8 +466,9 @@ fn read(
 
     // The volume as a whole.
     let header = raw.header();
-    // NTFS 1.2 and 3.0 are upgraded to 3.1 by Windows before the freeze,
-    // with the conversion's own question; said here, not refused.
+    // NTFS 3.0 and 3.1 are read as they are. NTFS 1.2 is mounted read-write
+    // by Windows before the freeze, with the conversion's own question, in
+    // case that upgrades it; said here, not refused.
     let version = header
         .volume_version
         .as_deref()
@@ -478,7 +479,7 @@ fn read(
     });
     let not_dirty =
         header.dirty == Some(false) && header.volume_flags.is_some_and(|flags| flags & 1 == 0);
-    let clean = not_dirty && (version == Some(crate::ntfs_version::CURRENT) || upgrade.is_some());
+    let clean = not_dirty && (version.is_some_and(crate::ntfs_version::reads) || upgrade.is_some());
     if !clean {
         report
             .refusals

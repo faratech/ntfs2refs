@@ -384,7 +384,7 @@ impl ResourceSourceContext {
                 .header()
                 .volume_flags
                 .is_some_and(|flags| flags & 1 == 0)
-            && raw.header().volume_version.as_deref() == Some("3.1");
+            && crate::ntfs_version::reads_text(raw.header().volume_version.as_deref());
         let policy_flags = raw.header().volume_flags == Some(0) || short_policy;
         let resource_counts = admission.validate_tree(files, directories, streams).is_ok()
             && files > 0
@@ -1031,7 +1031,7 @@ fn short_names_partition(
     let policy = observed.txf().observation();
     source.header().volume_flags == Some(0x80)
         && source.header().dirty == Some(false)
-        && source.header().volume_version.as_deref() == Some("3.1")
+        && crate::ntfs_version::reads_text(source.header().volume_version.as_deref())
         && no_dos
         && source
             .canonical_sha256()

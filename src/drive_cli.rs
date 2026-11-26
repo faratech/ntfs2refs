@@ -1486,9 +1486,10 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             resources.supports_source_geometry(&geometry),
             "selected NTFS geometry is not supported by this conversion profile"
         );
-        // An NTFS 1.2 or 3.0 volume is upgraded to 3.1 by Windows before the
-        // freeze. A version that cannot be read here is left to the frozen
-        // inspection, which decides it as before.
+        // NTFS 3.0 and 3.1 are read as they are. An NTFS 1.2 volume is
+        // mounted read-write by Windows before the freeze, in case that
+        // upgrades it. A version that cannot be read here is left to the
+        // frozen inspection, which decides it as before.
         let ntfs_upgrade = crate::ntfs_inspect::read_volume_version(&mut reader, &geometry)
             .ok()
             .filter(|&version| {
@@ -2116,8 +2117,9 @@ The machine restarts, possibly more than once. Do not switch it off while the co
         target_format: n2r_win32::managed_shadow::TargetFormatProfile,
         mode: crate::execution_mode::ExecutionMode,
         boot_geometry: Option<super::boot::GeometryDecision>,
-        // The NTFS 1.2 or 3.0 version Windows upgrades to 3.1 before the
-        // freeze, which the user was told of before the question.
+        // The NTFS 1.2 version Windows is asked to upgrade, by mounting the
+        // volume read-write before the freeze, which the user was told of
+        // before the question.
         ntfs_upgrade: Option<(u8, u8)>,
         // The drive root to list before and after, for --compare-listing.
         compare_listing: Option<String>,
@@ -2218,12 +2220,12 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                     n2r_win32::target_refs_version::DEFAULT.1
                 );
             }
-            // With a working volume that Windows did format, an NTFS 1.2 or
-            // 3.0 volume is first upgraded to 3.1 by Windows, which mounts it
-            // read-write; the raw $Volume must read 3.1 afterwards.
+            // With a working volume that Windows did format, an NTFS 1.2
+            // volume is first mounted read-write by Windows, in case that
+            // upgrades it; the raw $Volume must read 3.0 or 3.1 afterwards.
             if let Some(version) = ntfs_upgrade {
                 let authority = mode.source_change_authority(
-                    "the Windows NTFS driver's upgrade of the volume to NTFS 3.1",
+                    "the Windows NTFS driver's read-write mount of an NTFS 1.2 volume, which may upgrade it",
                 )?;
                 super::boot::settle_ntfs_version(&before, version, &run, &authority)?;
             }

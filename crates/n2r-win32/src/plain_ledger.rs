@@ -308,6 +308,20 @@ pub struct LedgerRow {
     pub after: LedgerState,
     /// What the before state was read from.
     pub witness: String,
+    /// For an object made from its plain copy: that copy, as it was taken
+    /// on the frozen source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plain_copy: Option<LedgerCopy>,
+}
+
+/// The plain copy a new file was made from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LedgerCopy {
+    pub bytes: u64,
+    pub sha256: String,
+    /// XXH3-128, as the new file's stream is held to it.
+    pub content_digest: String,
 }
 
 /// What a run converted to plain, as it keeps it in its records.
@@ -391,7 +405,7 @@ mod tests {
             assert!(!kind.describe().is_empty());
         }
         assert_eq!(PlainKind::parse("plain"), None);
-        // Only the first is converted by this build.
+        // What this build converts.
         assert_eq!(
             PlainKind::ALL
                 .iter()
@@ -524,6 +538,7 @@ mod tests {
                 reparse_tag: None,
             },
             witness: "raw".into(),
+            plain_copy: None,
         };
         let mut ledger = PlainLedger {
             kind: LEDGER_KIND.into(),

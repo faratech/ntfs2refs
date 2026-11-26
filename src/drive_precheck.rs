@@ -715,18 +715,34 @@ fn read(
             report.plain = crate::plain_projection::PlainList::new(plain)
                 .map_err(anyhow::Error::msg)?;
             if !wof.is_empty() {
-                report.notes.push(crate::plain_projection::wof_note(
-                    &wof,
-                    n2r_win32::target_cluster::bytes(),
-                    header
-                        .free_clusters
-                        .unwrap_or(0)
-                        .saturating_mul(u64::from(header.geometry.cluster_size)),
-                ));
+                // What making them plain takes; refused where it does not fit,
+                // as the conversion refuses it once the volume is frozen.
+                let free = header
+                    .free_clusters
+                    .unwrap_or(0)
+                    .saturating_mul(u64::from(header.geometry.cluster_size));
+                let cluster = n2r_win32::target_cluster::bytes();
+                match crate::plain_projection::require_wof_room(&wof, cluster, free) {
+                    Err(refusal)
+                        if crate::plain_projection::PlainKind::WofExpanded.implemented() =>
+                    {
+                        report.refusals.push(refusal.to_string())
+                    }
+                    _ => report
+                        .notes
+                        .push(crate::plain_projection::wof_note(&wof, cluster, free)),
+                }
             }
             estimate.stays_bytes = stays;
             estimate.copied_bytes = copied;
-            estimate.working_needed_bytes = working_needed(copied);
+            // Each WOF file's plain copy is kept in the working storage.
+            let copies = if crate::plain_projection::PlainKind::WofExpanded.implemented() {
+                wof.iter()
+                    .fold(0u64, |sum, file| sum.saturating_add(file.plain_bytes))
+            } else {
+                0
+            };
+            estimate.working_needed_bytes = working_needed(copied).saturating_add(copies);
         }
     }
 

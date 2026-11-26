@@ -102,6 +102,14 @@ pub(crate) fn keep_ledger_in(run: &Path) {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(run.to_owned());
 }
 
+/// The run's own directory, where one was named.
+pub(crate) fn run_directory() -> Option<PathBuf> {
+    LEDGER_DIRECTORY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
 /// Writes the ledger to the run's directory, as a file of its own that is
 /// never overwritten, and flushes it. Where it went; `None` for a route
 /// that names no directory.

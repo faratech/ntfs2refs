@@ -1862,6 +1862,7 @@ mod tests {
                 reparse_tag: None,
             },
             witness: "test".into(),
+            plain_copy: None,
         }
     }
     /// A volume with an ordinary file and a TEMPORARY one, before and after

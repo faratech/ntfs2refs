@@ -753,6 +753,10 @@ pub struct PagedSourceByteAdapterWithScope<'a, 'scope> {
     /// Bounded, evictable 1 MiB aligned page cache for small MFT record reads
     /// during `prepare()` under `checks_once()`. Paid from `reserve_cache_ram`.
     mft_cache: Option<n2r_win32::evict::Evictable<MftPageCache>>,
+    /// The stream being read is supplied from its plain copy
+    /// (`n2r_win32::plain_copy`), not from the source's clusters: an object
+    /// converted to a plain file whose bytes only Windows' filters show.
+    plain: Option<n2r_win32::plain_copy::PlainCopyKey>,
     _session_ram: crate::ntfs_inspect::paged_storage::SourceRamLease,
 }
 
@@ -808,6 +812,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
             read_ahead: Vec::new(),
             read_ahead_from_source_lanes: false,
             mft_cache: None,
+            plain: None,
             _session_ram: session_ram,
         })
     }
@@ -865,8 +870,43 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
             read_ahead: Vec::new(),
             read_ahead_from_source_lanes: false,
             mft_cache: None,
+            plain: None,
             _session_ram: session_ram,
         })
+    }
+
+    /// Whether `identity` is supplied from its plain copy, held to it: the
+    /// copy's length and content digest are the expected stream's, which
+    /// the shadow's object took from the copy. Any session of another
+    /// stream is closed first, as for a change of stream.
+    fn prepare_plain(&mut self, identity: &PagedStreamIdentity<'_>) -> Result<bool> {
+        let key = n2r_win32::plain_copy::PlainCopyKey {
+            record_number: identity.record_number,
+            sequence_number: identity.sequence_number,
+            stream_name_utf16: identity.name_utf16.to_vec(),
+        };
+        let Some(pin) = n2r_win32::plain_copy::taken_pin(&key) else {
+            self.plain = None;
+            return Ok(false);
+        };
+        if let Some(session) = self.session.take() {
+            session.finish_domain(&mut self.source, self.raw)?;
+        }
+        self.sequence = None;
+        self.allow_sparse = None;
+        ensure!(
+            !identity.allow_sparse
+                && pin.bytes == identity.length
+                && identity.sha256 == Some(pin.content_digest.as_str()),
+            "the plain copy of MFT record {} ({} bytes, {}) differs from its expected stream ({} bytes, {:?})",
+            identity.record_number,
+            pin.bytes,
+            pin.content_digest,
+            identity.length,
+            identity.sha256
+        );
+        self.plain = Some(key);
+        Ok(true)
     }
 
     fn prepare(&mut self, identity: &PagedStreamIdentity<'_>) -> Result<()> {
@@ -875,6 +915,9 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
             !self.poisoned,
             "failed paged source byte adapter cannot continue"
         );
+        if self.prepare_plain(identity)? {
+            return Ok(());
+        }
         let matches = self.session.as_ref().is_some_and(|session| {
             session.matches_stream(identity.record_number, identity.name_utf16)
                 && self.sequence == Some(identity.sequence_number)
@@ -999,6 +1042,22 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
         }
         prepared?;
         self.poisoned = true;
+        if let Some(key) = &self.plain {
+            // A plain copy is not the source itself: it has no receipt of
+            // a direct read, and routes nothing.
+            ensure!(
+                !direct,
+                "MFT record {} is supplied from its plain copy, not read directly from the source",
+                identity.record_number
+            );
+            n2r_win32::plain_copy::read_taken(key, offset, output)?;
+            self.logical_bytes = self
+                .logical_bytes
+                .checked_add(output.len() as u64)
+                .context("paged source logical-read accounting overflow")?;
+            self.poisoned = false;
+            return Ok(None);
+        }
         let session = self.session.as_mut().context("paged DATA session absent")?;
         // A direct read's receipt says the frozen source itself supplied the
         // bytes: only buffers read from `self.source`'s own read lanes within
@@ -1166,6 +1225,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
         }
         self.sequence = None;
         self.allow_sparse = None;
+        self.plain = None;
         self.poisoned = false;
         self.validate_protection()
     }

@@ -976,6 +976,12 @@ fn derive_profile(
         );
         // As `source_pages::object`: what a conversion to plain takes off.
         let plain_cleared = crate::plain_projection::cleared_on_target(f)?;
+        // A WOF file is made plain from its copy on the paged route only.
+        ensure!(
+            !crate::plain_projection::wof_taken(f),
+            "MFT record {}: a file WOF keeps compressed is made plain only on the paged data-volume route",
+            f.record_number
+        );
         let (source_offset, source_extents, length, sha256, source_evidence, sparse) =
             match f.streams.iter().find(|s| s.name_utf16.is_empty()) {
                 Some(s) => {

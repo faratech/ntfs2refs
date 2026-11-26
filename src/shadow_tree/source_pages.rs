@@ -1086,6 +1086,12 @@ fn build_object(
     // TEMPORARY and OFFLINE of an object the user agreed to have made
     // plain: the new object is made without them, and held to that.
     let plain_cleared = crate::plain_projection::cleared_on_target(file)?;
+    // A file WOF keeps compressed, made plain (`wof_expanded`): its unnamed
+    // stream is the plain copy taken through WOF on the frozen source, with
+    // that copy's length and content digest, supplied from the copy and
+    // never from the source's clusters; its WofCompressedData stream and
+    // its reparse point are not carried over.
+    let wof_copy = crate::plain_projection::wof_copy_pin(file)?;
     let classify = |stream: &ntfs::StreamInventory| {
         reads.classify(file, stream, admission, extent_paths_eligible)
     };
@@ -1093,7 +1099,16 @@ fn build_object(
         reads.stream_evidence(file, stream, decision)
     };
     let (source_offset, source_extents, length, sha256, source_evidence, sparse) =
-        if let Some(stream) = file.streams.iter().find(|s| s.name_utf16.is_empty()) {
+        if let Some(pin) = &wof_copy {
+            (
+                None,
+                Vec::new(),
+                pin.bytes,
+                Some(pin.content_digest.clone()),
+                None,
+                None,
+            )
+        } else if let Some(stream) = file.streams.iter().find(|s| s.name_utf16.is_empty()) {
             let decision = classify(stream)?;
             let (offset, extents) = planned_stream_source(Some(&decision), resources)?;
             (
@@ -1108,7 +1123,12 @@ fn build_object(
             (None, Vec::new(), 0, None, None, None)
         };
     let mut named_streams = Vec::new();
-    for stream in file.streams.iter().filter(|s| !s.name_utf16.is_empty()) {
+    for stream in file
+        .streams
+        .iter()
+        .filter(|s| !s.name_utf16.is_empty())
+        .filter(|s| wof_copy.is_none() || !crate::plain_projection::is_wof_compressed_data(s))
+    {
         // A directory's named streams are planned as a file's are, where
         // admission carries them over (`DIRECTORY_STREAMS_CARRIED`).
         ensure!(
@@ -1163,7 +1183,7 @@ fn build_object(
                 Some(hex::decode(views.api_descriptor_hex)?)
             },
             extended_attributes: Some(extended_attributes),
-            reparse,
+            reparse: if wof_copy.is_some() { None } else { reparse },
             case_sensitive,
             source_offset,
             source_extents,

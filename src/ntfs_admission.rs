@@ -632,7 +632,7 @@ pub struct Gate {
 }
 
 /// What the `clean_volume` gate requires, as a refusal says it.
-pub(crate) const CLEAN_VOLUME_REQUIREMENT: &str = "the volume is marked dirty, or is not NTFS version 3.0 or 3.1: run `chkdsk <drive>: /f`, let it finish, and convert then";
+pub(crate) const CLEAN_VOLUME_REQUIREMENT: &str = "the volume is marked dirty, or is not NTFS version 1.2, 3.0 or 3.1: run `chkdsk <drive>: /f`, let it finish, and convert then";
 
 /// What the `volume_policy_flags` gate requires, as a refusal says it.
 pub(crate) const VOLUME_FLAGS_REQUIREMENT: &str = "the volume carries state flags the converter does not take over (a pending chkdsk or upgrade), or 8.3 short-name creation is enabled on it: run `chkdsk <drive>: /f`, and turn short-name creation off with `fsutil 8dot3name set <drive>: 1`";
@@ -1699,6 +1699,33 @@ fn file_by_reference(raw: &ntfs::NtfsInspection, id: u64) -> Option<&FileInvento
     }
     Some(file)
 }
+/// The one name of a file with one link: its only name, or the Win32 name of
+/// a Win32/DOS pair, the 8.3 short name Windows makes beside a long one in
+/// the same directory where short-name creation is on (as it is on an NTFS
+/// 1.2 volume, which has no flag turning it off: the TxF log containers
+/// Windows makes there get one, lab n12-image-5). Any other set of names is
+/// not one link.
+pub(crate) fn sole_name(f: &FileInventory) -> Option<&ntfs::NameInventory> {
+    match f.names.as_slice() {
+        [only] => Some(only),
+        [a, b] => {
+            let (long, short) = match (a.namespace, b.namespace) {
+                (1, 2) => (a, b),
+                (2, 1) => (b, a),
+                _ => return None,
+            };
+            (long.parent_record_number == short.parent_record_number
+                && long.parent_sequence_number == short.parent_sequence_number)
+                .then_some(long)
+        }
+        _ => None,
+    }
+}
+/// Whether a file has one link: one name, or a Win32/DOS pair ([`sole_name`]),
+/// and the link count its record states for that.
+pub(crate) fn has_one_link(f: &FileInventory) -> bool {
+    sole_name(f).is_some() && usize::from(f.hard_link_count) == f.names.len()
+}
 pub(crate) fn path(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Option<Vec<String>> {
     let mut cursor = f;
     let mut components = vec![];
@@ -1711,10 +1738,7 @@ pub(crate) fn path(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Option<Vec<
             components.reverse();
             return Some(components);
         }
-        if cursor.names.len() != 1 {
-            return None;
-        }
-        let name = &cursor.names[0];
+        let name = sole_name(cursor)?;
         if !matches!(name.namespace, 0 | 1 | 3) {
             return None;
         }
@@ -1828,7 +1852,10 @@ fn internal_role_with_path(
     if f.base_file_reference != 0 || f.metadata_role_issue.is_some() {
         return None;
     }
-    if (12..16).contains(&f.record_number) {
+    // Reserved records 12 to 15, and 11 nameless: NTFS 1.2's, which has no
+    // $Extend (on 3.x, a nameless record 11 has a role issue and is refused
+    // above).
+    if (12..16).contains(&f.record_number) || (f.record_number == 11 && f.names.is_empty()) {
         return (f.metadata_role == MetadataRole::ReservedSystemRecord
             && f.names.is_empty()
             && f.streams.iter().all(|s| {
@@ -1851,6 +1878,19 @@ fn internal_role_with_path(
         .then(|| "reserved_mft_slot".into());
     }
     let p = source_path()?;
+    // NTFS 1.2's record 9: $Quota, which NT 4.0 formats and never fills.
+    // Recognized only empty; anything in it is refused as an unknown object.
+    if f.record_number == 9 && p == ["$Quota"] {
+        return (f.metadata_role == MetadataRole::ReservedSystemRecord
+            && !f.is_directory
+            && f.streams
+                .iter()
+                .all(|s| s.name_utf16.is_empty() && s.logical_size == 0 && s.extents.is_empty())
+            && f.attributes
+                .iter()
+                .all(|a| matches!(a.type_code, 0x10 | 0x30 | 0x50 | 0x80)))
+        .then(|| "$Quota".into());
+    }
     let canonical = match f.record_number {
         0 => "$MFT",
         1 => "$MFTMirr",
@@ -2671,7 +2711,7 @@ fn assess_source_view_profile(
         raw.dirty == Some(false)
             && raw.volume_flags.is_some_and(|flags| flags & 1 == 0)
             && crate::ntfs_version::reads_text(raw.volume_version.as_deref()),
-        "require NTFS 3.0 or 3.1 and a clear on-disk $Volume dirty bit; independent native dirty-state observations are bound by the separate live transaction_freeze gate",
+        "require NTFS 1.2, 3.0 or 3.1 and a clear on-disk $Volume dirty bit; independent native dirty-state observations are bound by the separate live transaction_freeze gate",
     );
     gate(
         "volume_policy_flags",

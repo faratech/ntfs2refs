@@ -1515,23 +1515,8 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             resources.supports_source_geometry(&geometry),
             "selected NTFS geometry is not supported by this conversion profile"
         );
-        // NTFS 3.0 and 3.1 are read as they are. An NTFS 1.2 volume is
-        // mounted read-write by Windows before the freeze, in case that
-        // upgrades it. A version that cannot be read here is left to the
-        // frozen inspection, which decides it as before.
-        let ntfs_upgrade = crate::ntfs_inspect::read_volume_version(&mut reader, &geometry)
-            .ok()
-            .filter(|&version| {
-                crate::ntfs_version::disposition(version)
-                    == crate::ntfs_version::Disposition::WindowsUpgrades
-            });
-        if let Some(version) = ntfs_upgrade {
-            ensure!(
-                mode != crate::execution_mode::ExecutionMode::Diagnose,
-                "{}",
-                crate::ntfs_version::diagnose_refusal(version)
-            );
-        }
+        // NTFS 1.2, 3.0 and 3.1 are read as they are; any other version is
+        // refused by the inspection.
         reader.revalidate_route(&mut events)?;
         drop(reader);
         println!(
@@ -1582,10 +1567,6 @@ The machine restarts, possibly more than once. Do not switch it off while the co
         }
         if let Some(decision) = boot_geometry {
             super::boot::describe_geometry(decision);
-        }
-        let upgrade_note = ntfs_upgrade.map(crate::ntfs_version::upgrade_note);
-        if let Some(note) = &upgrade_note {
-            println!("{note}");
         }
         for line in beside.iter().flatten() {
             println!("{line}");
@@ -1652,12 +1633,7 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                 }
                 super::precheck::Outcome::Read(report) => {
                     // What is not carried over is said before the question.
-                    // The upgrade was said above, with the geometry.
-                    for note in report
-                        .notes
-                        .iter()
-                        .filter(|note| Some(*note) != upgrade_note.as_ref())
-                    {
+                    for note in &report.notes {
                         println!("Note: {note}");
                     }
                     if let Some(estimate) = &report.estimate {
@@ -1720,7 +1696,6 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             target_format,
             mode,
             boot_geometry,
-            ntfs_upgrade,
             listing_root,
         )
     }
@@ -2185,10 +2160,6 @@ The machine restarts, possibly more than once. Do not switch it off while the co
         target_format: n2r_win32::managed_shadow::TargetFormatProfile,
         mode: crate::execution_mode::ExecutionMode,
         boot_geometry: Option<super::boot::GeometryDecision>,
-        // The NTFS 1.2 version Windows is asked to upgrade, by mounting the
-        // volume read-write before the freeze, which the user was told of
-        // before the question.
-        ntfs_upgrade: Option<(u8, u8)>,
         // The drive root to list before and after, for --compare-listing.
         compare_listing: Option<String>,
     ) -> Result<u8> {
@@ -2289,15 +2260,6 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                     n2r_win32::target_refs_version::DEFAULT.0,
                     n2r_win32::target_refs_version::DEFAULT.1
                 );
-            }
-            // With a working volume that Windows did format, an NTFS 1.2
-            // volume is first mounted read-write by Windows, in case that
-            // upgrades it; the raw $Volume must read 3.0 or 3.1 afterwards.
-            if let Some(version) = ntfs_upgrade {
-                let authority = mode.source_change_authority(
-                    "the Windows NTFS driver's read-write mount of an NTFS 1.2 volume, which may upgrade it",
-                )?;
-                super::boot::settle_ntfs_version(&before, version, &run, &authority)?;
             }
             // Only now, with a working volume that Windows did format, is the
             // partition shrunk to the length that volume has.

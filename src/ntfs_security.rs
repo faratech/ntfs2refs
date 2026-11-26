@@ -385,92 +385,126 @@ pub fn reconcile_paged(
     let index_record = files.header().geometry.index_record_size;
     let mut central_writer =
         SortedRecordWriter::new(&base.join("security-central"), *b"N2RSCEN1", scratch)?;
-    let mut previous: Option<Header> = None;
     let mut descriptor_bytes = 0u64;
     let mut aces = 0u64;
-    let sii = ntfs_index::paged::walk_ranges(
-        capture.index(IndexKind::Id)?,
-        Profile::SECURITY_ID,
-        cluster,
-        index_record,
-        scratch,
-        &base.join("security-sii.visited"),
-        |_entry, key, value| {
-            let h = header(value)?;
+    // NTFS 1.2 has no $Secure: no central descriptors, and every file's
+    // descriptor is its own, bound below like any legacy one.
+    let central_present = capture.has_central();
+    let (sii_entries, sdh_entries, index_blocks, sds_sha256, central_pin, central) =
+        if !central_present {
+            let central_pin = central_writer.finish()?;
+            let central = SortedRecordStore::open(&central_pin, scratch)?;
+            (
+                0,
+                0,
+                0,
+                String::from("no-central-security-table"),
+                central_pin,
+                central,
+            )
+        } else {
+            let mut previous: Option<Header> = None;
+            let sii = ntfs_index::paged::walk_ranges(
+                capture.index(IndexKind::Id)?,
+                Profile::SECURITY_ID,
+                cluster,
+                index_record,
+                scratch,
+                &base.join("security-sii.visited"),
+                |_entry, key, value| {
+                    let h = header(value).with_context(|| {
+                        format!("$Secure:$SII entry with key {}", hex::encode(key))
+                    })?;
+                    ensure!(
+                        key.len() == 4
+                            && u32le(key, 0)? == h.id
+                            && previous.as_ref().is_none_or(|prior| prior.id < h.id),
+                        "SII keys duplicate, unordered or differ from their values"
+                    );
+                    let record = descriptor_at(capture.sds()?, &h, budget.record_bytes)?;
+                    descriptor_bytes = descriptor_bytes
+                        .checked_add((record.descriptor.relative_hex.len() / 2) as u64)
+                        .context("security descriptor byte count overflow")?;
+                    aces = aces
+                        .checked_add(
+                            (record.descriptor.dacl.aces.len() + record.descriptor.sacl.aces.len())
+                                as u64,
+                        )
+                        .context("security ACE count overflow")?;
+                    central_writer.push(identity_key(u64::from(h.id)), &record)?;
+                    previous = Some(h);
+                    Ok(())
+                },
+            )?;
+            let central_pin = central_writer.finish()?;
+            let central = SortedRecordStore::open(&central_pin, scratch)?;
             ensure!(
-                key.len() == 4
-                    && u32le(key, 0)? == h.id
-                    && previous.as_ref().is_none_or(|prior| prior.id < h.id),
-                "SII keys duplicate, unordered or differ from their values"
+                sii.entries == central.len(),
+                "complete SII descriptor domain differs"
             );
-            let record = descriptor_at(capture.sds(), &h, budget.record_bytes)?;
-            descriptor_bytes = descriptor_bytes
-                .checked_add((record.descriptor.relative_hex.len() / 2) as u64)
-                .context("security descriptor byte count overflow")?;
-            aces = aces
-                .checked_add(
-                    (record.descriptor.dacl.aces.len() + record.descriptor.sacl.aces.len()) as u64,
-                )
-                .context("security ACE count overflow")?;
-            central_writer.push(identity_key(u64::from(h.id)), &record)?;
-            previous = Some(h);
-            Ok(())
-        },
-    )?;
-    let central_pin = central_writer.finish()?;
-    let central = SortedRecordStore::open(&central_pin, scratch)?;
-    ensure!(
-        sii.entries == central.len(),
-        "complete SII descriptor domain differs"
-    );
-    let mut previous: Option<Header> = None;
-    let sdh = ntfs_index::paged::walk_ranges(
-        capture.index(IndexKind::Hash)?,
-        Profile::SECURITY_HASH,
-        cluster,
-        index_record,
-        scratch,
-        &base.join("security-sdh.visited"),
-        |_entry, key, value| {
-            let h = header(value)?;
+            let mut previous: Option<Header> = None;
+            let sdh = ntfs_index::paged::walk_ranges(
+                capture.index(IndexKind::Hash)?,
+                Profile::SECURITY_HASH,
+                cluster,
+                index_record,
+                scratch,
+                &base.join("security-sdh.visited"),
+                |_entry, key, value| {
+                    let h = header(value).with_context(|| {
+                        format!("$Secure:$SDH entry with key {}", hex::encode(key))
+                    })?;
+                    ensure!(
+                        key.len() == 8
+                            && u32le(key, 0)? == h.hash
+                            && u32le(key, 4)? == h.id
+                            && previous
+                                .as_ref()
+                                .is_none_or(|prior| (prior.hash, prior.id) < (h.hash, h.id)),
+                        "SDH keys duplicate, unordered or differ from their values"
+                    );
+                    let record: DescriptorRecord = central
+                        .find(identity_key(u64::from(h.id)))?
+                        .context("SDH descriptor is absent from SII")?;
+                    ensure!(
+                        descriptor_header(&record)? == h,
+                        "SDH/SII/SDS header differs"
+                    );
+                    previous = Some(h);
+                    Ok(())
+                },
+            )?;
             ensure!(
-                key.len() == 8
-                    && u32le(key, 0)? == h.hash
-                    && u32le(key, 4)? == h.id
-                    && previous
-                        .as_ref()
-                        .is_none_or(|prior| (prior.hash, prior.id) < (h.hash, h.id)),
-                "SDH keys duplicate, unordered or differ from their values"
+                sdh.entries == central.len(),
+                "complete SDH/SII descriptor sets differ"
             );
-            let record: DescriptorRecord = central
-                .find(identity_key(u64::from(h.id)))?
-                .context("SDH descriptor is absent from SII")?;
+            let sds = scan_sds_range(capture.sds()?, budget, |h, _bytes| {
+                let record: DescriptorRecord = central
+                    .find(identity_key(u64::from(h.id)))?
+                    .context("unindexed primary SDS descriptor")?;
+                ensure!(
+                    descriptor_header(&record)? == h,
+                    "SDS primary ID/header is duplicated or differs from SII/SDH"
+                );
+                Ok(())
+            })?;
             ensure!(
-                descriptor_header(&record)? == h,
-                "SDH/SII/SDS header differs"
+                sds.records == central.len() && sds.descriptor_bytes == descriptor_bytes,
+                "complete SDS/SII/SDH record and byte domains differ"
             );
-            previous = Some(h);
-            Ok(())
-        },
-    )?;
-    ensure!(
-        sdh.entries == central.len(),
-        "complete SDH/SII descriptor sets differ"
-    );
-    let sds = scan_sds_range(capture.sds(), budget, |h, _bytes| {
-        let record: DescriptorRecord = central
-            .find(identity_key(u64::from(h.id)))?
-            .context("unindexed primary SDS descriptor")?;
-        ensure!(
-            descriptor_header(&record)? == h,
-            "SDS primary ID/header is duplicated or differs from SII/SDH"
-        );
-        Ok(())
-    })?;
-    ensure!(
-        sds.records == central.len() && sds.descriptor_bytes == descriptor_bytes,
-        "complete SDS/SII/SDH record and byte domains differ"
-    );
+            let index_blocks = sii
+                .index_blocks
+                .checked_add(sdh.index_blocks)
+                .context("security index block count overflow")?;
+            (
+                sii.entries,
+                sdh.entries,
+                index_blocks,
+                sds.sha256,
+                central_pin,
+                central,
+            )
+        };
     let mut legacy_writer =
         SortedRecordWriter::new(&base.join("security-legacy"), *b"N2RSLEG1", scratch)?;
     for ordinal in 0..capture.legacy_count() {
@@ -615,11 +649,16 @@ pub fn reconcile_paged(
     files.revalidate()?;
     let mut evidence = Sha256::new();
     evidence.update(b"ntfs2refs-paged-security-v1\0");
-    evidence.update(sds.sha256.as_bytes());
+    evidence.update(sds_sha256.as_bytes());
     // Commit every captured index byte as well as the independently walked
     // reachable rows. Working memory stays one small fixed read window.
     let mut buffer = [0u8; 65536];
-    for kind in [IndexKind::Id, IndexKind::Hash] {
+    let kinds: &[IndexKind] = if central_present {
+        &[IndexKind::Id, IndexKind::Hash]
+    } else {
+        &[]
+    };
+    for &kind in kinds {
         let index = capture.index(kind)?;
         for range in [Some(index.root), index.allocation, index.bitmap]
             .into_iter()
@@ -645,12 +684,9 @@ pub fn reconcile_paged(
         central_descriptors: central.len(),
         legacy_descriptors: legacy.len(),
         bound_files: bindings.len(),
-        sii_entries: sii.entries,
-        sdh_entries: sdh.entries,
-        index_blocks: sii
-            .index_blocks
-            .checked_add(sdh.index_blocks)
-            .context("security index block count overflow")?,
+        sii_entries,
+        sdh_entries,
+        index_blocks,
         descriptor_bytes,
         aces,
         evidence_sha256: hex::encode(evidence.finalize()),
@@ -676,6 +712,8 @@ pub struct SecurityIndex {
     pub entries: Vec<Header>,
     pub index_blocks: usize,
 }
+/// The central table ($Secure). Empty on NTFS 1.2, which has none.
+#[derive(Default)]
 pub struct Table {
     pub records: Vec<DescriptorRecord>,
     pub index_blocks: usize,
@@ -685,6 +723,8 @@ pub struct Table {
 #[derive(Clone, Debug, Serialize)]
 pub struct SdsRangeSummary {
     pub records: u64,
+    /// Freed slots chkdsk left (see `freed_slot`), passed over.
+    pub freed_slots: u64,
     pub descriptor_bytes: u64,
     pub logical_bytes: u64,
     pub sha256: String,
@@ -709,6 +749,7 @@ pub fn scan_sds_range(
     let length = source.byte_len();
     let mut base = 0u64;
     let mut records = 0u64;
+    let mut freed = 0u64;
     let mut descriptor_bytes = 0u64;
     let mut digest = Sha256::new();
     while base < length {
@@ -728,7 +769,25 @@ pub fn scan_sds_range(
             if primary[at..at + 20].iter().all(|byte| *byte == 0) {
                 break;
             }
-            let h = header(&primary[at..at + 20])?;
+            if let Some(n) = freed_slot(&primary[at..first]) {
+                ensure!(
+                    at.checked_add(n).is_some_and(|end| end <= second)
+                        && primary[at..at + n] == mirror[at..at + n],
+                    "$Secure:$SDS freed slot at byte {} differs from its mirror",
+                    base + at as u64
+                );
+                freed = freed
+                    .checked_add(1)
+                    .context("SDS freed slot count overflow")?;
+                at = at
+                    .checked_add(n)
+                    .and_then(|n| n.checked_add(15))
+                    .context("SDS record alignment overflow")?
+                    & !15;
+                continue;
+            }
+            let h = header(&primary[at..at + 20])
+                .with_context(|| format!("$Secure:$SDS record at byte {}", base + at as u64))?;
             let n = usize::try_from(h.length)?;
             ensure!(
                 h.offset == base + at as u64 && n <= first - at,
@@ -776,6 +835,7 @@ pub fn scan_sds_range(
     source.revalidate()?;
     Ok(SdsRangeSummary {
         records,
+        freed_slots: freed,
         descriptor_bytes,
         logical_bytes: length,
         sha256: hex::encode(digest.finalize()),
@@ -815,6 +875,27 @@ pub fn ntfs_hash(bytes: &[u8]) -> Result<u32> {
         h.rotate_left(3).wrapping_add(u32::from_le_bytes(*w))
     }))
 }
+/// The length of a freed `$SDS` slot at the start of `bytes`, or `None`
+/// where there is none. chkdsk leaves one where it dropped a descriptor
+/// (lab n12-chkdsk-6, at byte 496 between IDs 259 and 261): a header of
+/// hash 0, security ID 0 and offset 0 that keeps only its length, and
+/// zeros where the descriptor was. No $SII or $SDH entry can name it (their
+/// IDs are 256 and up), so NTFS never reads it; it is passed over, its
+/// length kept so the records after it stay where they are. Anything else
+/// with ID 0, or a nonzero byte in it, is not one.
+fn freed_slot(bytes: &[u8]) -> Option<usize> {
+    let header = bytes.get(..20)?;
+    if header[..16].iter().any(|byte| *byte != 0) {
+        return None;
+    }
+    let length = usize::try_from(u32::from_le_bytes(header[16..20].try_into().ok()?)).ok()?;
+    ((40..=HALF).contains(&length)
+        && bytes
+            .get(20..length)
+            .is_some_and(|rest| rest.iter().all(|byte| *byte == 0)))
+    .then_some(length)
+}
+
 fn header(bytes: &[u8]) -> Result<Header> {
     ensure!(bytes.len() == 20, "exact 20-byte security header required");
     let h = Header {
@@ -825,7 +906,11 @@ fn header(bytes: &[u8]) -> Result<Header> {
     };
     ensure!(
         h.id >= 256 && h.offset.is_multiple_of(16) && h.length >= 40 && h.length <= HALF as u32,
-        "invalid security header identity/offset/length"
+        "invalid security header identity/offset/length: security ID {} (at least 256), offset {} (a multiple of 16), length {} (40 to {HALF}); header bytes {}",
+        h.id,
+        h.offset,
+        h.length,
+        hex::encode(bytes)
     );
     Ok(h)
 }
@@ -865,7 +950,8 @@ pub fn parse_index_with_geometry(
         cluster_bytes,
         index_record_bytes,
         |_entry, key, value| {
-            let h = header(value)?;
+            let h = header(value)
+                .with_context(|| format!("$Secure index entry with key {}", hex::encode(key)))?;
             match kind {
                 IndexKind::Id => ensure!(
                     key.len() == 4 && u32le(key, 0)? == h.id,
@@ -1112,7 +1198,18 @@ fn sds_records(bytes: &[u8]) -> Result<BTreeMap<u32, (Header, &[u8])>> {
             if bytes[at..at + 20].iter().all(|v| *v == 0) {
                 break;
             }
-            let h = header(&bytes[at..at + 20])?;
+            if let Some(n) = freed_slot(&bytes[at..end]) {
+                let duplicate = at + HALF;
+                ensure!(
+                    duplicate + n <= bytes.len()
+                        && bytes[at..at + n] == bytes[duplicate..duplicate + n],
+                    "$Secure:$SDS freed slot at byte {at} differs from its mirror"
+                );
+                at = (at + n + 15) & !15;
+                continue;
+            }
+            let h = header(&bytes[at..at + 20])
+                .with_context(|| format!("$Secure:$SDS record at byte {at}"))?;
             let n = h.length as usize;
             ensure!(
                 h.offset == at as u64 && n <= end - at,
@@ -1315,4 +1412,103 @@ pub fn heap_bytes(report: &Reconciliation) -> usize {
         }
     }
     n
+}
+
+#[cfg(test)]
+mod freed_slot_tests {
+    use super::*;
+    use crate::ntfs_inspect::source_domain::{SourceMetadataBudget, SourceMetadataRange};
+
+    struct Bytes(Vec<u8>);
+    impl SourceMetadataRange for Bytes {
+        fn byte_len(&self) -> u64 {
+            self.0.len() as u64
+        }
+        fn read_exact_at(&self, offset: u64, output: &mut [u8]) -> Result<()> {
+            let at = offset as usize;
+            output.copy_from_slice(&self.0[at..at + output.len()]);
+            Ok(())
+        }
+        fn revalidate(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+    fn budget() -> SourceMetadataBudget {
+        SourceMetadataBudget {
+            ram_bytes: 64 << 20,
+            scratch_bytes: 64 << 20,
+            page_bytes: 65536,
+            record_bytes: 65536,
+            merge_fan_in: 8,
+        }
+    }
+    /// A descriptor of `length` bytes: a 20-byte header and no ACLs.
+    fn descriptor(length: usize) -> Vec<u8> {
+        let mut d = vec![0u8; length];
+        d[0] = 1;
+        d[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
+        d
+    }
+    fn put(sds: &mut [u8], at: usize, bytes: &[u8]) {
+        for base in [at, at + HALF] {
+            sds[base..base + bytes.len()].copy_from_slice(bytes);
+        }
+    }
+    fn record(at: usize, id: u32, d: &[u8]) -> Vec<u8> {
+        let mut r = vec![0u8; 20];
+        r[..4].copy_from_slice(&ntfs_hash(d).unwrap().to_le_bytes());
+        r[4..8].copy_from_slice(&id.to_le_bytes());
+        r[8..16].copy_from_slice(&(at as u64).to_le_bytes());
+        r[16..20].copy_from_slice(&((20 + d.len()) as u32).to_le_bytes());
+        r.extend_from_slice(d);
+        r
+    }
+    /// The $SDS chkdsk wrote on n12-chkdsk-6, around byte 496: a record of
+    /// 100 bytes, the freed slot exactly as it was 112 bytes in (header
+    /// 000000000000000000000000000000005c000000 and 72 zero bytes), and the
+    /// record after it, 96 bytes long, at the next 16-byte boundary.
+    fn sds() -> Vec<u8> {
+        let mut sds = vec![0u8; HALF + 4096];
+        put(&mut sds, 0, &record(0, 256, &descriptor(80)));
+        let mut freed = hex::decode("000000000000000000000000000000005c000000").unwrap();
+        freed.resize(92, 0);
+        put(&mut sds, 112, &freed);
+        put(&mut sds, 208, &record(208, 261, &descriptor(76)));
+        sds
+    }
+
+    #[test]
+    fn a_freed_slot_chkdsk_left_is_passed_over() {
+        let summary = scan_sds_range(&Bytes(sds()), budget(), |_, _| Ok(())).unwrap();
+        assert_eq!((summary.records, summary.freed_slots), (2, 1));
+        let bytes = sds();
+        let records = sds_records(&bytes).unwrap();
+        assert_eq!(records.keys().copied().collect::<Vec<_>>(), [256, 261]);
+    }
+
+    #[test]
+    fn only_an_all_zero_slot_with_its_mirror_is_freed() {
+        // A byte where the descriptor was.
+        let mut sds = sds();
+        for base in [112 + 40, HALF + 112 + 40] {
+            sds[base] = 1;
+        }
+        assert!(scan_sds_range(&Bytes(sds.clone()), budget(), |_, _| Ok(())).is_err());
+        assert!(sds_records(&sds).is_err());
+        // A hash, with ID 0 still.
+        let mut sds = self::sds();
+        for base in [112, HALF + 112] {
+            sds[base] = 1;
+        }
+        let error = scan_sds_range(&Bytes(sds), budget(), |_, _| Ok(())).unwrap_err();
+        assert!(format!("{error:#}").contains("security ID 0"), "{error:#}");
+        // Its mirror not freed.
+        let mut sds = self::sds();
+        sds[HALF + 112 + 30] = 9;
+        let error = scan_sds_range(&Bytes(sds), budget(), |_, _| Ok(())).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("freed slot at byte 112"),
+            "{error:#}"
+        );
+    }
 }

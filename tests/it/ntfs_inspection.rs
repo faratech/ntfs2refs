@@ -1019,12 +1019,12 @@ fn an_ntfs_30_volume_in_either_header_form_inventories_as_31_does() {
 }
 
 /// $Volume's version is read on its own, before a run asks, for every
-/// version a volume can state; the full inspection blocks all but 3.0 and
-/// 3.1, which the converter reads.
+/// version a volume can state; the full inspection blocks all but 1.2, 3.0
+/// and 3.1, which the converter reads.
 #[test]
 fn the_volume_version_is_read_raw_for_every_record_size() {
     for record in [1024usize, 2048, 4096] {
-        for version in [(3u8, 1u8), (3, 0), (1, 2)] {
+        for version in [(3u8, 1u8), (3, 0), (1, 2), (1, 1), (3, 2)] {
             let mut bytes = support::image_geometry(512, record);
             let mut vi = [0u8; 12];
             vi[8] = version.0;
@@ -1049,7 +1049,7 @@ fn the_volume_version_is_read_raw_for_every_record_size() {
                     .blockers
                     .iter()
                     .any(|blocker| blocker.code == "unsupported_ntfs_version"),
-                version == (1, 2),
+                !matches!(version, (1, 2) | (3, 0) | (3, 1)),
                 "{record}/{version:?}"
             );
         }

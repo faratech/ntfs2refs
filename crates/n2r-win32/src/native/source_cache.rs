@@ -319,6 +319,11 @@ impl GeneralFrozenPartition {
 }
 
 fn supported_refresh_internal(identity: &crate::attestation::FileIdentity, role: &str) -> bool {
+    // NTFS 1.2 (Windows NT 4.0): record 9 is $Quota and record 11 reserved.
+    match (identity.record_number, role) {
+        (9, "$Quota") | (11, "reserved_mft_slot") => return true,
+        _ => {}
+    }
     let fixed = match identity.record_number {
         0 => Some("$MFT"),
         1 => Some("$MFTMirr"),

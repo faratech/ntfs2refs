@@ -18,6 +18,9 @@ mod feature_matrix;
 mod lab_native;
 mod lab_reconstruct;
 mod lab_retired_scripts;
+mod ntfs12;
+#[path = "../support/ntfs12.rs"]
+mod ntfs12_volume;
 mod ntfs_admission;
 mod ntfs_allocation;
 mod ntfs_allocation_integration;

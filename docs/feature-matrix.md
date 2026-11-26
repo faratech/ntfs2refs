@@ -126,12 +126,19 @@ These take the same paths as rows above, or are checked by tests only.
   Windows mount. Neither is a volume Windows 2000 formatted (its first
   attributes stay where the 3.1 form put them, and its `$UpCase` and
   `$AttrDef` are Windows 11's).
-- An NTFS 1.2 volume. It is not read (no `$Extend`, no `$Secure`). A
-  conversion has Windows mount it read-write before the freeze, in case
-  that upgrades it (announced before the question, not undone), and reads
-  `$Volume` again; it stops if the volume does not then read 3.0 or 3.1.
-  The Windows 11 NTFS driver did not upgrade a 3.0 volume this way in the
-  lab, so the same is expected of 1.2; no lab fixture of 1.2 exists.
+- An NTFS 1.2 (Windows NT 4.0) volume. It is read as it is: no `$Extend`
+  (so no object-ID, quota or reparse-point index, no USN journal, no
+  transaction metadata), record 9 `$Quota` (recognized only empty) and
+  records 11 to 15 reserved, every file's own `$SECURITY_DESCRIPTOR` in
+  place of `$Secure`, and the 48-byte `$STANDARD_INFORMATION`. A file with
+  NT 4.0's attribute 0x40 ($VOLUME_VERSION) or 0xC0 ($SYMBOLIC_LINK) is
+  refused. Inspection tests read a synthetic NT 4.0-layout volume
+  (`tests/support/ntfs12.rs`). Whether Windows 11 mounts such a volume at
+  all, and so whether a conversion's native observations can be made of
+  it, is not yet shown: the lab cases `ntfs12` (that synthetic volume
+  written over the partition) and `ntfs12-version` (`$Volume` of a volume
+  Windows formatted stating 1.2) find out, and no conversion of one has
+  been run.
 - An NTFS log in the LFS 2.0 format, or with restart or log pages other
   than 4 KiB. The restart-page reader takes both formats Windows writes
   (1.1 and 2.0) and pages of 4 to 64 KiB, under the same clean-dismount

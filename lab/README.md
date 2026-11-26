@@ -515,7 +515,7 @@ the only differences of a refused volume, as many before as after, the attempt
 is still `refused-source-unchanged`. Run `bitlocker` last: Windows then writes
 its recovery folders to every volume that arrives afterwards.
 
-Three features are made on the disk itself, by `guest\Use-RawNtfs.ps1`, after
+Five features are made on the disk itself, by `guest\Use-RawNtfs.ps1`, after
 the listing and any `-Check`, just before the run: the disk is taken offline
 (a clean dismount), the bytes are read or written, the disk is brought back
 and the volume is listed again. `lfs2` sets the control OS's
@@ -569,8 +569,61 @@ newly allocates on mount may be in the 3.1 form: the verdict counts them,
 and the converter reads both). For both features the converter reads
 NTFS 3.0 itself: a run has to end `converted` (ReFS, listing identical)
 without `ntfs-version-intent.json` or `ntfs-version-after.json` in its
-records, or a converted run ends `...-but-ntfs-upgrade-attempted`. None of
-the three is for `-NativeRefsControl` or `-CheckOnly`.
+records, or a converted run ends `...-but-ntfs-upgrade-attempted`.
+
+The two NTFS 1.2 (Windows NT 4.0) features find out first whether Windows 11
+mounts such a volume at all. `ntfs12-version` writes 1.2 into `$Volume` of
+the volume Windows formatted, as `ntfs30` writes 3.0. `ntfs12` writes a
+whole NT 4.0-layout volume over the partition (`write-image`): the head of
+the volume `tests/support/ntfs12.rs` lays out for the partition's length
+(no `$Extend` or `$Secure`, record 9 `$Quota`, a descriptor on every file,
+48-byte standard information, 3.0-form record headers, NT 4.0's
+`$AttrDef`, a `$LogFile` of 0xff for NTFS to initialize, and `README.TXT`,
+`BIG.BIN` and `SUB\INNER.TXT`), with its boot sector again in the
+partition's last sector, each read back. Make it first, for the partition
+`-PartitionMB` gives (2048 MiB is 2147483648 bytes):
+
+    $env:N2R_NTFS12_IMAGE = "$PWD\.lab\ntfs12-2048.img"
+    $env:N2R_NTFS12_PARTITION_BYTES = 2147483648
+    cargo test --locked --test it ntfs12::write_the_lab_ntfs12_image -- --ignored
+
+and give it as `-Ntfs12Image`. For both, `ntfs12.json` holds what was
+written, what the disk reads once Windows has the volume back (its
+version, the header form of every in-use record, and records 0, 1, 2, 3
+and 5 whole, so that a synthetic volume's can be set beside those of one
+Windows made), and
+`raw-feature-diagnostics.json` what Windows made of it (the volume's file
+system and letter, `fsutil fsinfo ntfsinfo`, NTFS's event-log entries). If
+V: is not back within 60 s the attempt ends `ntfs12-volume-not-mounted`.
+Windows goes on writing to an NTFS 1.2 volume it has mounted (it makes
+`$Extend`, `$RmMetadata` and the TxF log in it, leaving `$Volume` at 1.2),
+so the listing before the run is taken once two listings five seconds
+apart agree (up to two minutes, else `ntfs12-volume-did-not-settle`), and
+the volume's health and dirty bit are then read: a volume Windows leaves
+dirty or unhealthy ends the attempt `ntfs12-fixture-unhealthy-after-mount`,
+the fixture's failure rather than the converter's. With `-Ntfs12Chkdsk` such
+a volume is first given `chkdsk V: /f /x` (dismounted for it, nothing
+scheduled), as the converter's refusal tells a user to: its whole output is
+kept in `chkdsk.txt`, the version and health before it in the verdict's
+`ntfs12.before_chkdsk`, and the volume is settled, read and judged again;
+if it is then healthy the run goes on, and `ntfs12.chkdsk.version_after`
+says whether chkdsk left it 1.2. Every `ntfs12` and `ntfs12-version`
+attempt also keeps, as the disk holds them once the volume has settled
+(after chkdsk where it ran), record 9 whole in `ntfs12.json` and the
+`$UpCase` table and `$Secure`'s `$SDS` as files, `upcase.bin` and `sds.bin`
+(the latter where there is one), to set beside a volume Windows made;
+and, once the run is over and where the volume is still NTFS, every
+record from 16 on whole in `ntfs12-after-run.json` (Windows makes the TxF
+resource manager's files while the run reads the volume).
+Otherwise the verdict's
+`ntfs12` says in what version and state Windows left it, and the run goes
+on to convert it. The image carries the `$AttrDef` Windows writes (with
+`$OBJECT_ID`, `$REPARSE_POINT` and `$LOGGED_UTILITY_STREAM`, which Windows
+then uses on it); `$env:N2R_NTFS12_ATTRDEF = 'nt4'` makes it NT 4.0's
+fifteen definitions instead, with which Windows 11 left the volume dirty
+(`n12-image-2`). None of the five is for
+`-NativeRefsControl` or `-CheckOnly`, and only one of `ntfs30`,
+`ntfs30-headers`, `ntfs12` and `ntfs12-version` is given at a time.
 
 The volume gets a fixed set of content: files around every size boundary, a
 nested tree with non-ASCII and long names, named streams, hard links, a sparse

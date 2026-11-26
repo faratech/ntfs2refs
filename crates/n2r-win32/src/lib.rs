@@ -108,6 +108,7 @@ pub mod target_refs_version;
 pub mod tree_resources;
 #[cfg(windows)]
 pub mod txf_native;
+pub mod upcase_table;
 #[cfg(windows)]
 pub mod windows_alias_native;
 #[cfg(windows)]

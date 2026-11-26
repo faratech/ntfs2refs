@@ -49,7 +49,7 @@ param(
     [Parameter(Mandatory)][int]$DiskNumber,
     # The partition's byte offset on the disk.
     [Parameter(Mandatory)][long]$PartitionOffset,
-    [Parameter(Mandatory)][ValidateSet('read-version', 'set-version', 'read-log', 'set-headers-30', 'read-headers')][string]$Action,
+    [Parameter(Mandatory)][ValidateSet('read-version', 'set-version', 'read-log', 'set-headers-30', 'read-headers', 'write-image', 'dump-stream')][string]$Action,
     [int]$Major = -1,
     [int]$Minor = -1,
     # read-headers: the records set-headers-30 rewrote, each checked again.
@@ -63,7 +63,19 @@ param(
     # system files too; 16 only ordinary files and directories (records 0
     # to 15, $MFT to the reserved ones, keep the 3.1 form, and $MFTMirr with
     # them).
-    [ValidateRange(0, 16)][int]$FromRecord = 0
+    [ValidateRange(0, 16)][int]$FromRecord = 0,
+    # write-image: a volume's first bytes as a file (tests/support/ntfs12.rs
+    # writes them), and the partition's length, which the image's boot
+    # sector has to state.
+    [string]$Image,
+    [long]$PartitionBytes = 0,
+    # dump-stream: the stream of MFT record -Records[0] (unnamed, or named
+    # -StreamName), at most -MaxBytes of it, written raw to -Output.
+    [string]$StreamName = '',
+    [string]$Output,
+    [long]$MaxBytes = 16MB,
+    # read-headers: keep every one of -Records whole, not the first six.
+    [switch]$SampleAll
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 if (-not ('N2RLabRawNtfs' -as [type])) {
@@ -157,6 +169,21 @@ public static class N2RLabRawNtfs {
         }
     }
     // The offset of the first unnamed attribute of a type in a FILE record, or -1.
+    // The offset of the $DATA-like attribute of a type and name, or -1.
+    public static int FindNamed(byte[] record, long type, string name) {
+        int at = U16(record, 0x14);
+        while (at + 16 <= record.Length) {
+            long found = U32(record, at);
+            if (found == 0xFFFFFFFFL) break;
+            int length = (int)U32(record, at + 4);
+            if (length < 16 || at + length > record.Length) throw new InvalidDataException("attribute at " + at + " has length " + length);
+            int nameLength = record[at + 9], nameAt = U16(record, at + 10);
+            string actual = nameLength == 0 ? "" : System.Text.Encoding.Unicode.GetString(record, at + nameAt, nameLength * 2);
+            if (found == type && actual == name) return at;
+            at += length;
+        }
+        return -1;
+    }
     public static int Find(byte[] record, long type) {
         int at = U16(record, 0x14);
         while (at + 16 <= record.Length) {
@@ -519,7 +546,7 @@ switch ($Action) {
         $state = @{}
         # Raw headers of the records NTFS needs to mount the volume and of the
         # first few rewritten ones, as the disk holds them now.
-        $sampled = @(@(0, 1, 2, 3, 5) + @($Records | Select-Object -First 6) | ForEach-Object { [long]$_ } | Select-Object -Unique)
+        $sampled = @(@(0, 1, 2, 3, 5) + @($Records | Select-Object -First $(if ($SampleAll) { [Math]::Max(1, $Records.Count) } else { 6 })) | ForEach-Object { [long]$_ } | Select-Object -Unique)
         $sample = [Collections.Generic.List[object]]::new()
         foreach ($chunk in (Get-MftChunks $mft)) {
             $bytes = [N2RLabRawNtfs]::ReadStream($device, $PartitionOffset, $cluster, $mft.runs, $chunk.first * [long]$recordBytes, $chunk.count * $recordBytes)
@@ -533,7 +560,8 @@ switch ($Action) {
                 if ([long]$number -in $sampled) {
                     $raw = New-Object byte[] $recordBytes
                     [Array]::Copy($bytes, $at, $raw, 0, $recordBytes)
-                    $sample.Add([ordered]@{ number = $number; sha256 = (Get-Sha256 $raw); header_hex = (Get-Hex $raw 0 0x40); usa = $usa
+                    # The whole record as the disk holds it, to set beside one Windows made.
+                    $sample.Add([ordered]@{ number = $number; sha256 = (Get-Sha256 $raw); header_hex = (Get-Hex $raw 0 0x40); raw_hex = (Get-Hex $raw 0 $recordBytes); usa = $usa
                         first_attribute = [N2RLabRawNtfs]::U16($raw, 0x14); bytes_in_use = [N2RLabRawNtfs]::U32($raw, 0x18); in_use = [bool]$inUse })
                 }
                 if (-not $inUse) { continue }
@@ -558,6 +586,66 @@ switch ($Action) {
             })
         $volume = Read-FileRecord 3 'mft'
         $result.version = (Get-VolumeVersion $volume).version
+    }
+    'dump-stream' {
+        # A stream of a record as the disk holds it, for setting beside one
+        # Windows made (the $UpCase table, $Secure's $SDS).
+        if ($Records.Count -ne 1 -or -not $Output) { throw 'dump-stream takes one -Records and -Output' }
+        $mft = Get-MftLayout
+        $number = $Records[0]
+        $raw = [N2RLabRawNtfs]::ReadStream($device, $PartitionOffset, $cluster, $mft.runs, $number * [long]$recordBytes, $recordBytes)
+        $what = "MFT record $number"
+        $fixed = [byte[]]$raw.Clone()
+        $null = [N2RLabRawNtfs]::Unfix($fixed, $what)
+        $attribute = [N2RLabRawNtfs]::FindNamed($fixed, 0x80, $StreamName)
+        if ($attribute -lt 0) { throw "$what has no `$DATA stream '$StreamName'" }
+        $bytes = if ($fixed[$attribute + 8] -eq 0) {
+            $length = [int][N2RLabRawNtfs]::U32($fixed, $attribute + 0x10)
+            $value = $attribute + [N2RLabRawNtfs]::U16($fixed, $attribute + 0x14)
+            $copy = New-Object byte[] $length; [Array]::Copy($fixed, $value, $copy, 0, $length); $copy
+        } else {
+            $size = [BitConverter]::ToInt64($fixed, $attribute + 0x30)
+            $runs = [N2RLabRawNtfs]::Runs($fixed, $attribute)
+            [N2RLabRawNtfs]::ReadStream($device, $PartitionOffset, $cluster, $runs, 0, [int][Math]::Min($size, $MaxBytes))
+        }
+        [IO.File]::WriteAllBytes($Output, $bytes)
+        $result.record = $number; $result.stream = $StreamName; $result.output = $Output
+        $result.bytes = $bytes.Length; $result.sha256 = Get-Sha256 $bytes
+        $result.record_hex = Get-Hex $raw 0 $recordBytes
+    }
+    'write-image' {
+        # A whole volume's metadata written over the partition: the image
+        # from its first byte, and its boot sector again in the partition's
+        # last sector (where NTFS keeps the backup), each read back.
+        Assert-Offline 'a volume image is written over it'
+        $bytes = [IO.File]::ReadAllBytes($Image)
+        if ($bytes.Length -lt 4096 -or [Text.Encoding]::ASCII.GetString($bytes, 3, 8) -ne 'NTFS    ' -or $bytes[510] -ne 0x55 -or $bytes[511] -ne 0xAA) { throw "$Image does not begin with an NTFS boot sector" }
+        if ($PartitionBytes -le 0 -or $PartitionBytes % 4096) { throw "write-image takes the partition's length in bytes (-PartitionBytes), a multiple of 4096: $PartitionBytes" }
+        $stated = [BitConverter]::ToInt64($bytes, 0x28)
+        if ($stated -ne $PartitionBytes / 512 - 1) { throw "$Image states $stated sectors; a partition of $PartitionBytes bytes holds a volume of $($PartitionBytes / 512 - 1)" }
+        if ($bytes.Length -gt $PartitionBytes - 512) { throw "$Image ($($bytes.Length) bytes) does not fit the partition" }
+        # The sectors before the partition, as the boot sector states them.
+        $hidden = [BitConverter]::GetBytes([uint32]($PartitionOffset / 512))
+        [Array]::Copy($hidden, 0, $bytes, 0x1c, 4)
+        $chunk = 1MB
+        for ($at = 0; $at -lt $bytes.Length; $at += $chunk) {
+            $count = [Math]::Min($chunk, $bytes.Length - $at)
+            $part = New-Object byte[] $count
+            [Array]::Copy($bytes, $at, $part, 0, $count)
+            [N2RLabRawNtfs]::Write($device, $PartitionOffset + $at, $part)
+            $back = [N2RLabRawNtfs]::Read($device, $PartitionOffset + $at, $count)
+            if (-not [N2RLabRawNtfs]::Same($back, $part)) { throw "the image does not read back at byte $at of the partition" }
+        }
+        $bootSector = New-Object byte[] 512
+        [Array]::Copy($bytes, 0, $bootSector, 0, 512)
+        [N2RLabRawNtfs]::Write($device, $PartitionOffset + $PartitionBytes - 512, $bootSector)
+        if (-not [N2RLabRawNtfs]::Same(([N2RLabRawNtfs]::Read($device, $PartitionOffset + $PartitionBytes - 512, 512)), $bootSector)) { throw 'the backup boot sector does not read back' }
+        $result.image = $Image
+        $result.image_bytes = $bytes.Length
+        $result.image_sha256 = Get-Sha256 $bytes
+        $result.partition_bytes = $PartitionBytes
+        $result.hidden_sectors = [uint32]($PartitionOffset / 512)
+        $result.backup_boot_at = $PartitionOffset + $PartitionBytes - 512
     }
     'read-log' {
         $record = Read-FileRecord 2 'mft'

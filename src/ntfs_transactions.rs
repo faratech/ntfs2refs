@@ -27,6 +27,7 @@ pub fn inspect_scope(raw: &NtfsInspection) -> Result<Scope> {
         |i| Ok(std::borrow::Cow::Borrowed(&raw.files[usize::try_from(i)?])),
         |file| Ok(ntfs_admission::internal_role(raw, file)),
         |_| Ok(false),
+        crate::ntfs_version::legacy_layout_text(raw.volume_version.as_deref()),
     )
 }
 
@@ -56,7 +57,35 @@ fn inspect_scope_with<F: std::ops::Deref<Target = ntfs::FileInventory>>(
     mut get: impl FnMut(u64) -> Result<F>,
     mut role: impl FnMut(&ntfs::FileInventory) -> Result<Option<String>>,
     mut windows_user: impl FnMut(&ntfs::FileInventory) -> Result<bool>,
+    // NTFS 1.2: no $Extend of its own, so no transaction metadata and no
+    // default RM's files, and no attribute type 0x100, which NT 4.0 does not
+    // define. Where Windows has made them (as it does on mounting such a
+    // volume), they are held to the same default-RM profile as on 3.x.
+    legacy: bool,
 ) -> Result<Scope> {
+    let mut untouched_legacy = legacy;
+    if legacy {
+        for ordinal in 0..count {
+            let file = get(ordinal)?;
+            if file.attributes.iter().any(|a| a.type_code == 0x100)
+                || role(&file)?.is_some_and(|role| {
+                    role.starts_with("$Extend\\$RmMetadata") || role == "$Extend\\$Deleted"
+                })
+            {
+                untouched_legacy = false;
+                break;
+            }
+        }
+    }
+    if untouched_legacy {
+        return Ok(Scope {
+            transactional_records: Vec::new(),
+            windows_user_marker_records: 0,
+            default_log_records: Vec::new(),
+            deferred_directories: Vec::new(),
+            default_log_stream_sha256: Vec::new(),
+        });
+    }
     let mut transactional_records = Vec::new();
     let mut windows_user_marker_records = 0u64;
     for ordinal in 0..count {
@@ -136,7 +165,7 @@ fn inspect_scope_with<F: std::ops::Deref<Target = ntfs::FileInventory>>(
         let file = scope_role_file(count, &mut get, &mut role, wanted)?;
         ensure!(
             !file.is_directory
-                && file.hard_link_count == 1
+                && ntfs_admission::has_one_link(&file)
                 && file.base_file_reference == 0
                 && file.streams.len() == names.len()
                 && file
@@ -193,6 +222,7 @@ pub fn inspect_scope_domain(source: &ntfs::PagedInspection) -> Result<Scope> {
         |i| source.file_shared(i),
         |file| ntfs_admission::paged::internal_role(source, file),
         |_| Ok(false),
+        crate::ntfs_version::legacy_layout_text(source.header().volume_version.as_deref()),
     )?;
     source.revalidate()?;
     Ok(scope)
@@ -376,6 +406,7 @@ fn inspect_windows_scope_domain(
                 windows_user_marker(source, file, proof)
             }
         },
+        crate::ntfs_version::legacy_layout_text(source.header().volume_version.as_deref()),
     )?;
     ensure!(
         u64::try_from(proof.len())?

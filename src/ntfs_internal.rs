@@ -455,6 +455,34 @@ pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<Ve
         geometry.file_record_size,
         geometry.index_record_size
     );
+    // NTFS 1.2 has no $Extend of its own, so none of these indexes; then its
+    // attribute types 0x40 and 0xC0 are NT 4.0's $VOLUME_VERSION and
+    // $SYMBOLIC_LINK, refused rather than read as an object ID or a reparse
+    // point. Indexes Windows has made on such a volume are verified below.
+    if crate::ntfs_version::legacy_layout_text(raw.volume_version.as_deref())
+        && !raw.files.iter().any(|f| {
+            matches!(
+                ntfs_admission::internal_role(raw, f).as_deref(),
+                Some("$Extend\\$ObjId" | "$Extend\\$Reparse" | "$Extend\\$Quota")
+            )
+        })
+    {
+        ensure!(
+            !raw.files.iter().any(|f| f
+                .attributes
+                .iter()
+                .any(|a| matches!(a.type_code, 0x40 | 0xc0))),
+            "a file on this NTFS 1.2 volume has attribute 0x40 ($VOLUME_VERSION) or 0xC0 ($SYMBOLIC_LINK), which the converter does not read"
+        );
+        return Ok(VerifiedIndexes {
+            inspection_sha256: hex::encode(Sha256::digest(serde_json::to_vec(raw)?)),
+            internal_volume_object_id: None,
+            replacement_supported: true,
+            default_quotas_only: true,
+            native_quota_policy_bound: false,
+            indexes: Vec::new(),
+        });
+    }
     let mut indexes = Vec::new();
     let mut quota_owners = Vec::new();
     let mut quota_ids = Vec::new();

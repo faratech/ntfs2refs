@@ -290,6 +290,8 @@ impl PlainKind {
                 | PlainKind::ProjfsPlaceholderPlain
                 | PlainKind::ProjfsLeftOut
                 | PlainKind::SisExpanded
+                | PlainKind::HsmRecalled
+                | PlainKind::HsmLeftOut
         )
     }
 }
@@ -1132,7 +1134,9 @@ mod tests {
                 &PlainKind::ProjfsPlaceholderPlain,
                 &PlainKind::SisExpanded,
                 &PlainKind::CloudLeftOut,
-                &PlainKind::ProjfsLeftOut
+                &PlainKind::ProjfsLeftOut,
+                &PlainKind::HsmRecalled,
+                &PlainKind::HsmLeftOut
             ]
         );
     }

@@ -397,10 +397,20 @@ pub(crate) fn decide_leave_out(
 /// The question a run asks about leaving placeholders out.
 pub(crate) fn leave_out_question(list: &PlainList) -> String {
     format!(
-        "Leave these {} cloud placeholder(s) out of the conversion? They stay in the cloud and are not on the new volume (list sha256 {}). Answer no to have them downloaded from their provider before the volume is frozen. [y/N]",
+        "Leave these {} {} out of the conversion? They stay {} and are not on the new volume (list sha256 {}). Answer no to have them downloaded from their provider before the volume is frozen. [y/N]",
         list.len(),
+        crate::plain_projection::placeholders_noun(families_of(list)),
+        crate::plain_projection::left_out_stay(families_of(list)),
         list.sha256()
     )
+}
+
+/// Whose placeholders a list names.
+fn families_of(list: &PlainList) -> Vec<crate::plain_projection::PlaceholderFamily> {
+    list.entries()
+        .iter()
+        .filter_map(|entry| entry.kind.family())
+        .collect()
 }
 
 /// Writes the list of placeholders that may be left out under
@@ -438,8 +448,9 @@ pub(crate) fn settle(
     if decision != crate::plain_consent::Decision::Nothing {
         let file = write_leave_out_list(directory, &list)?;
         println!(
-            "{} cloud placeholder(s) are not wholly on this volume (or a folder their provider has not listed in full). The full list: {} (sha256 {}).",
+            "{} {} are not wholly on this volume (or a folder their provider has not listed in full). The full list: {} (sha256 {}).",
             list.len(),
+            crate::plain_projection::placeholders_noun(families_of(&list)),
             file.display(),
             list.sha256()
         );
@@ -505,11 +516,28 @@ static LEAVE_OUT_LIST: Mutex<Option<String>> = Mutex::new(None);
 pub(crate) struct Download {
     pub path: String,
     pub missing_bytes: u64,
+    /// What it is made plain as, which says whose placeholder it is.
+    #[serde(default = "cloud_kind")]
+    pub kind: PlainKind,
+}
+
+fn cloud_kind() -> PlainKind {
+    PlainKind::CloudPlaceholderPlain
+}
+
+impl Download {
     /// Brought onto the volume by reading it through its provider (a
     /// ProjFS placeholder, a storage manager's file), not through the Cloud
     /// Files API.
-    #[serde(default)]
-    pub read_through: bool,
+    pub(crate) fn read_through(&self) -> bool {
+        self.kind != PlainKind::CloudPlaceholderPlain
+    }
+
+    fn family(&self) -> crate::plain_projection::PlaceholderFamily {
+        self.kind
+            .family()
+            .unwrap_or(crate::plain_projection::PlaceholderFamily::Cloud)
+    }
 }
 
 /// Pure: what a run downloads before the freeze, for an agreed list. Every
@@ -536,7 +564,7 @@ pub(crate) fn plan_for(
         .map(|finding| Download {
             path: finding.path.clone(),
             missing_bytes: finding.missing_bytes(),
-            read_through: finding.family != crate::plain_projection::PlaceholderFamily::Cloud,
+            kind: finding.family.plain_kind(),
         })
         .collect()
 }
@@ -610,13 +638,29 @@ pub(crate) fn run(run: &Path, root: &str, mode: ExecutionMode) -> Result<()> {
     let authority = mode.source_change_authority(
         "downloading cloud placeholders onto the volume before it is frozen",
     )?;
+    let read_through = planned.iter().any(Download::read_through);
     download(run, root, planned, &authority, |download| {
         hydrate_within(
             at(&download.path),
-            download.read_through,
+            download.read_through(),
             timeout_for(download.missing_bytes),
         )
     })?;
+    // A ProjFS provider that served its reads holds its virtualization root
+    // open while it runs (a storage manager may hold what it recalled): no
+    // API says so beforehand, so the lock of the volume waits for it a
+    // while, naming what holds it, as for a connected cloud provider.
+    if read_through {
+        println!(
+            "The program that served the reads (a ProjFS provider or a storage manager) may hold the volume open: close it now. The volume is taken offline once nothing holds it, within {} s.",
+            PROVIDER_CLOSE_PATIENCE.as_secs()
+        );
+        n2r_win32::lock_holders::set(n2r_win32::lock_holders::LockHints {
+            paths: placeholders.clone(),
+            placeholders: placeholders.clone(),
+            patience: PROVIDER_CLOSE_PATIENCE,
+        });
+    }
     // A provider that served the downloads is still connected, and holds
     // its sync root open: the volume cannot be locked until it is closed.
     // Asked to close it, interactively until it is; unattended, the lock
@@ -762,16 +806,21 @@ fn download(
             failed: Vec::new(),
         },
     )?;
+    let noun = crate::plain_projection::placeholders_noun(planned.iter().map(Download::family));
     println!(
-        "Downloading {} cloud placeholder(s), {}, onto the volume {root} before it is frozen. This is not undone.",
+        "Downloading {} {noun}, {}, onto the volume {root} before it is frozen. This is not undone.",
         planned.len(),
         mib(bytes)
     );
     let (mut downloaded, mut failed) = (Vec::new(), Vec::new());
+    let mut failed_families = Vec::new();
     for download in &planned {
         match fetch(download) {
             Ok(()) => downloaded.push(download.path.clone()),
-            Err(error) => failed.push((download.path.clone(), error)),
+            Err(error) => {
+                failed_families.push(download.family());
+                failed.push((download.path.clone(), error))
+            }
         }
     }
     write_new(
@@ -789,11 +838,12 @@ fn download(
             .map(|(path, error)| format!("{path} ({error})"))
             .collect();
         bail!(
-            "{} cloud placeholder(s) could not be downloaded before the volume was frozen: {}. The volume was not frozen and nothing was converted; the {} placeholder(s) that were downloaded stay on it. {}{}",
+            "{} {} could not be downloaded before the volume was frozen: {}. The volume was not frozen and nothing was converted; the {} placeholder(s) that were downloaded stay on it. {}{}",
             failed.len(),
+            crate::plain_projection::placeholders_noun(failed_families.iter().copied()),
             named(&named_failures),
             downloaded.len(),
-            crate::plain_projection::CLOUD_REMEDY,
+            crate::plain_projection::remedies(failed_families),
             match LEAVE_OUT_LIST
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -807,7 +857,7 @@ fn download(
         );
     }
     println!(
-        "Downloaded {} cloud placeholder(s) before the freeze; they stay on the volume whatever happens to the conversion.",
+        "Downloaded {} {noun} before the freeze; they stay on the volume whatever happens to the conversion.",
         downloaded.len()
     );
     // A line a watcher can wait for (the lab stops its provider on it).
@@ -831,7 +881,8 @@ pub(crate) fn note(run: &Path) -> Option<String> {
         None => format!("up to {}", intent.planned.len()),
     };
     Some(format!(
-        "Before the volume was frozen this run downloaded {downloaded} cloud placeholder(s) onto it from their provider ({} in its records). That was a change before the freeze and is not undone: those files stay on the volume, downloaded.",
+        "Before the volume was frozen this run downloaded {downloaded} {} onto it from their provider ({} in its records). That was a change before the freeze and is not undone: those files stay on the volume, downloaded.",
+        crate::plain_projection::placeholders_noun(intent.planned.iter().map(Download::family)),
         run.join(INTENT_FILE).display()
     ))
 }
@@ -897,12 +948,12 @@ mod tests {
                 Download {
                     path: "\\c\\half.txt".into(),
                     missing_bytes: 2048,
-                    read_through: false,
+                    kind: PlainKind::CloudPlaceholderPlain,
                 },
                 Download {
                     path: "\\c\\none.txt".into(),
                     missing_bytes: 4096,
-                    read_through: false,
+                    kind: PlainKind::CloudPlaceholderPlain,
                 }
             ]
         );
@@ -1038,7 +1089,7 @@ mod tests {
             &BTreeSet::new(),
         );
         assert_eq!(plan.len(), 1);
-        assert!(plan[0].read_through);
+        assert!(plan[0].read_through());
         let list = leave_out_list(&findings).unwrap();
         assert_eq!(list.entries()[0].kind, PlainKind::ProjfsLeftOut);
         // A placeholder folder is listed in full: nothing to download.
@@ -1049,6 +1100,55 @@ mod tests {
             ..projected
         });
         assert!(!folder.needs_download());
+    }
+
+    #[test]
+    fn a_storage_managers_file_is_recalled_through_it_or_left_out_as_its_own() {
+        let moved = crate::plain_projection::Placeholder {
+            family: crate::plain_projection::PlaceholderFamily::Hsm,
+            tag: n2r_win32::plain_ledger::HSM_TAGS[0],
+            directory: false,
+            plain_bytes: 8192,
+            raw_missing_bytes: 8192,
+        };
+        let findings = find("V:\\", &[("\\h\\moved.dat".to_owned(), moved)]);
+        assert!(findings[0].needs_download() && findings[0].sync_root.is_none());
+        let plan = plan_for(
+            &findings,
+            &agreed_as(&["\\h\\moved.dat"], PlainKind::HsmRecalled),
+            &BTreeSet::new(),
+        );
+        assert_eq!(plan[0].kind, PlainKind::HsmRecalled);
+        assert!(plan[0].read_through());
+        let list = leave_out_list(&findings).unwrap();
+        assert_eq!(list.entries()[0].kind, PlainKind::HsmLeftOut);
+        let asked = leave_out_question(&list);
+        assert!(
+            asked.contains("1 storage manager's file(s)")
+                && asked.contains("in their storage manager's store"),
+            "{asked}"
+        );
+        // A recall that fails is named with the manager's remedy, not the
+        // cloud's.
+        let directory = tempfile::tempdir().unwrap();
+        let authority = ExecutionMode::Convert
+            .source_change_authority("test")
+            .unwrap();
+        let refused = download(directory.path(), "V:\\", plan, &authority, |_| {
+            Err("the storage manager did not answer".into())
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(
+            refused.starts_with("1 storage manager's file(s) could not be downloaded")
+                && refused.contains(crate::plain_projection::HSM_REMEDY)
+                && !refused.contains("OneDrive"),
+            "{refused}"
+        );
+        // A record of an older run, without the kind, reads as a cloud one.
+        let old: Download =
+            serde_json::from_str(r#"{"path":"\\c\\a.txt","missing_bytes":1}"#).unwrap();
+        assert!(!old.read_through());
     }
 
     fn agreed_as(paths: &[&str], kind: PlainKind) -> PlainList {
@@ -1100,7 +1200,7 @@ mod tests {
         set_plan(vec![Download {
             path: "\\c\\half.txt".into(),
             missing_bytes: 3072,
-            read_through: false,
+            kind: PlainKind::CloudPlaceholderPlain,
         }]);
         let directory = tempfile::tempdir().unwrap();
         let refused = run(directory.path(), "V:\\", ExecutionMode::Diagnose)
@@ -1123,12 +1223,12 @@ mod tests {
             Download {
                 path: "\\c\\a.txt".into(),
                 missing_bytes: 10,
-                read_through: false,
+                kind: PlainKind::CloudPlaceholderPlain,
             },
             Download {
                 path: "\\c\\b.txt".into(),
                 missing_bytes: 20,
-                read_through: false,
+                kind: PlainKind::CloudPlaceholderPlain,
             },
         ];
         let refused = download(directory.path(), "V:\\", planned, &authority, |path| {

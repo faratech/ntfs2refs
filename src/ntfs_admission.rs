@@ -1258,6 +1258,55 @@ mod refusal_tests {
         assert!(crate::ntfs_reparse::file_point(&link(4)).is_err());
     }
 
+    /// A file a hierarchical storage manager moved to its store (both HSM
+    /// tags), OFFLINE: admitted where it is taken plain (`hsm_recalled`),
+    /// refused by name where it is not. A folder with the tag is refused
+    /// either way: a manager moves files.
+    #[test]
+    fn a_storage_managers_file_is_admitted_only_where_it_is_recalled() {
+        for tag in n2r_win32::plain_ledger::HSM_TAGS {
+            let mut file = placeholder_folder(tag, &[]);
+            file.record_number = 39;
+            file.is_directory = false;
+            file.streams = directory_with_stream("", 0).streams;
+            if let Some(information) = file.standard_information.as_mut() {
+                // ARCHIVE | REPARSE_POINT | OFFLINE.
+                information.file_attributes = 0x1420;
+            }
+            let folder = placeholder_folder(tag, &[]);
+            crate::plain_consent::take_plain_on_this_thread(true);
+            let taken = (
+                admission_issues(&file),
+                admission_issues(&folder),
+                crate::plain_projection::of_file(&file)
+                    .unwrap()
+                    .map(|t| t.kind),
+            );
+            crate::plain_consent::take_plain_on_this_thread(false);
+            assert!(taken.0.is_empty(), "{tag:#x}: {:?}", taken.0);
+            assert!(
+                taken
+                    .1
+                    .iter()
+                    .any(|issue| issue.contains("storage manager's placeholder")),
+                "{tag:#x}: {:?}",
+                taken.1
+            );
+            assert_eq!(
+                taken.2,
+                Some(n2r_win32::plain_ledger::PlainKind::HsmRecalled)
+            );
+            let refused = admission_issues(&file);
+            assert!(
+                refused
+                    .iter()
+                    .any(|issue| issue.contains("storage manager's placeholder")
+                        && issue.contains("recall the file through it")),
+                "{tag:#x}: {refused:?}"
+            );
+        }
+    }
+
     /// The lab (cl3-down-leave-out, MFT record 42): a placeholder file left
     /// out has no copy, and Windows' view of it at the freeze is not asked
     /// for one; one made plain is.

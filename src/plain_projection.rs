@@ -457,9 +457,69 @@ pub(crate) const CLOUD_WARNING: &str = "OneDrive and other Cloud Files API provi
 
 pub(crate) use n2r_win32::plain_ledger::PlaceholderFamily;
 
+/// Said wherever a ProjFS placeholder is refused because its data is not on
+/// the volume.
+pub(crate) const PROJFS_REMEDY: &str = "start its ProjFS provider (the program that projects its folder) so that the conversion can read it onto the volume before the volume is frozen; or agree to leave it out, which keeps it with its provider and not on the new volume";
+
+/// Said wherever a storage manager's file is refused because its data is
+/// not on the volume.
+pub(crate) const HSM_REMEDY: &str = "start its storage manager (Remote Storage or the HSM product that moved it) so that the conversion can recall it before the volume is frozen, or recall it yourself by opening it; or agree to leave it out, which keeps it in the manager's store and not on the new volume";
+
+/// The remedy for a placeholder of `family` whose data is not on the volume.
+pub(crate) fn remedy(family: PlaceholderFamily) -> &'static str {
+    match family {
+        PlaceholderFamily::Cloud => CLOUD_REMEDY,
+        PlaceholderFamily::Projfs => PROJFS_REMEDY,
+        PlaceholderFamily::Hsm => HSM_REMEDY,
+    }
+}
+
+/// The remedies for placeholders of `families`, each once, in the order of
+/// [`PlaceholderFamily`]: for a cloud one, ...; for a ProjFS one, ...
+pub(crate) fn remedies(families: impl IntoIterator<Item = PlaceholderFamily>) -> String {
+    let families: std::collections::BTreeSet<PlaceholderFamily> = families.into_iter().collect();
+    match families.len() {
+        0 => CLOUD_REMEDY.to_owned(),
+        1 => remedy(*families.first().expect("one")).to_owned(),
+        _ => families
+            .iter()
+            .map(|family| format!("for a {} placeholder, {}", family.name(), remedy(*family)))
+            .collect::<Vec<_>>()
+            .join("; "),
+    }
+}
+
+/// How a run names placeholders of `families`: "cloud placeholder(s)" where
+/// all are the Cloud Files API's, "ProjFS placeholder(s)", "storage
+/// manager's file(s)", or "placeholder(s)" for more than one family.
+pub(crate) fn placeholders_noun(
+    families: impl IntoIterator<Item = PlaceholderFamily>,
+) -> &'static str {
+    let families: std::collections::BTreeSet<PlaceholderFamily> = families.into_iter().collect();
+    match families.iter().next() {
+        _ if families.len() > 1 => "placeholder(s)",
+        Some(PlaceholderFamily::Projfs) => "ProjFS placeholder(s)",
+        Some(PlaceholderFamily::Hsm) => "storage manager's file(s)",
+        _ => "cloud placeholder(s)",
+    }
+}
+
+/// Where placeholders of `families` that are left out stay.
+pub(crate) fn left_out_stay(families: impl IntoIterator<Item = PlaceholderFamily>) -> &'static str {
+    let families: std::collections::BTreeSet<PlaceholderFamily> = families.into_iter().collect();
+    match families.iter().next() {
+        _ if families.len() > 1 => {
+            "with their provider (in the cloud, with their ProjFS provider or in their storage manager's store)"
+        }
+        Some(PlaceholderFamily::Projfs) => "with their ProjFS provider",
+        Some(PlaceholderFamily::Hsm) => "in their storage manager's store",
+        _ => "in the cloud",
+    }
+}
+
 /// A placeholder whose data a provider keeps (the Cloud Files API's,
-/// reparse tags 0x9000x01A; ProjFS's, 0x9000001C), as the raw source shows
-/// it.
+/// reparse tags 0x9000x01A; ProjFS's, 0x9000001C; a hierarchical storage
+/// manager's, 0xC0000004 and 0x80000006), as the raw source shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Placeholder {
     pub family: PlaceholderFamily,
@@ -506,6 +566,11 @@ pub(crate) fn placeholder_of(file: &FileInventory) -> Result<Option<Placeholder>
         return Ok(None);
     };
     if file.is_directory {
+        // A storage manager moves files, never folders: a folder with its
+        // tag is refused by admission, by name.
+        if family == PlaceholderFamily::Hsm {
+            return Ok(None);
+        }
         // A sync root's folder holds the Cloud Files API's own stream
         // (`${3D0CE612-...}.SyncRootIdentity`), which is left off it; any
         // other named stream on a placeholder folder is refused by
@@ -1318,6 +1383,7 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
     let mut system = SystemFolders::new(files);
     let mut not_carried_allocated = 0u64;
     let mut not_present: Vec<String> = Vec::new();
+    let mut not_present_families: Vec<PlaceholderFamily> = Vec::new();
     // What the user agreed to leave out: those paths, and everything below
     // a folder among them. Each object is found and declared by its own
     // row; nothing is left out by inference afterwards.
@@ -1466,6 +1532,7 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
             // its length. A placeholder that is not was neither downloaded
             // before the freeze nor agreed to be left out.
             if placeholder.raw_missing_bytes != 0 {
+                not_present_families.push(placeholder.family);
                 not_present.push(format!(
                     "{first} ({} of its {} bytes)",
                     placeholder.raw_missing_bytes, placeholder.plain_bytes
@@ -1549,8 +1616,9 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
     }
     if let Some(first) = not_present.first() {
         anyhow::bail!(
-            "{} placeholder(s) of the frozen source are not wholly on this device, for example {first}: nothing brought them onto it before the volume was frozen, and leaving them out was not agreed. Nothing was changed: {CLOUD_REMEDY}",
-            not_present.len()
+            "{} placeholder(s) of the frozen source are not wholly on this device, for example {first}: nothing brought them onto it before the volume was frozen, and leaving them out was not agreed. Nothing was changed: {}",
+            not_present.len(),
+            remedies(not_present_families)
         );
     }
     let list = PlainList::new(entries).map_err(anyhow::Error::msg)?;
@@ -1779,7 +1847,7 @@ mod tests {
                 resident: true,
                 logical_size: point.len() as u64,
                 initialized_size: point.len() as u64,
-                allocated_size: point.len().next_multiple_of(8) as u64,
+                allocated_size: point.len() as u64,
                 lowest_vcn: 0,
                 compression_unit: 0,
                 total_allocated_size: None,
@@ -1889,6 +1957,43 @@ mod tests {
         assert!(refused(None, &[]).starts_with(
             "\\a.bin is a Single Instance Storage link whose data is the common store file \\SIS Common Store\\{0D0C0B0A-0F0E-1110-1213-141516171819}.sis (MFT record 70, sequence 3)"
         ));
+    }
+
+    #[test]
+    fn each_family_is_named_with_its_own_remedy() {
+        use PlaceholderFamily::{Cloud, Hsm, Projfs};
+        assert_eq!(remedies([Cloud, Cloud]), CLOUD_REMEDY);
+        assert_eq!(remedies([Hsm]), HSM_REMEDY);
+        let both = remedies([Hsm, Projfs]);
+        assert!(
+            both.starts_with("for a ProjFS placeholder, start its ProjFS provider")
+                && both
+                    .contains("; for a storage manager's placeholder, start its storage manager"),
+            "{both}"
+        );
+        assert_eq!(placeholders_noun([Cloud]), "cloud placeholder(s)");
+        assert_eq!(placeholders_noun([Projfs]), "ProjFS placeholder(s)");
+        assert_eq!(placeholders_noun([Hsm, Hsm]), "storage manager's file(s)");
+        assert_eq!(placeholders_noun([Cloud, Hsm]), "placeholder(s)");
+        assert_eq!(left_out_stay([Cloud]), "in the cloud");
+        assert_eq!(left_out_stay([Projfs]), "with their ProjFS provider");
+        // A storage manager moves files: a folder with its tag is no
+        // placeholder this build makes plain.
+        let mut folder = with_point(wof_file(), {
+            let mut point = n2r_win32::plain_ledger::HSM_TAGS[1].to_le_bytes().to_vec();
+            point.extend_from_slice(&[4, 0, 0, 0, 1, 2, 3, 4]);
+            point
+        });
+        folder.streams.clear();
+        folder.attributes.retain(|a| a.type_code == 0xc0);
+        let file = {
+            let mut file = folder.clone();
+            file.streams = vec![stream("", 0)];
+            file
+        };
+        folder.is_directory = true;
+        assert_eq!(placeholder_of(&folder).unwrap(), None);
+        assert_eq!(placeholder_of(&file).unwrap().unwrap().family, Hsm);
     }
 
     #[test]

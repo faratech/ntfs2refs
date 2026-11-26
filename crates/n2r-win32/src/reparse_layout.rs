@@ -190,7 +190,10 @@ pub fn unsupported_tag_meaning(tag: u32) -> &'static str {
         tag if tag & 0xffff_0fff == 0x9000_001a => {
             " (a cloud placeholder, such as OneDrive Files On-Demand: make the files always available on this device, or move the folder off the volume)"
         }
-        0xc000_0004 | 0x8000_0006 | 0x8000_0007 => " (Remote Storage or Single Instance Storage)",
+        0xc000_0004 | 0x8000_0006 => {
+            " (Remote Storage or another hierarchical storage manager: recall the file through it, or agree to its conversion to plain, which recalls it before the volume is frozen)"
+        }
+        0x8000_0007 => " (Single Instance Storage, of Windows Storage Server)",
         _ => "",
     }
 }
@@ -373,7 +376,12 @@ impl Point {
         // object is made plain once the user agrees
         // (`cloud_placeholder_plain`), and refused otherwise by admission.
         // A ProjFS placeholder's likewise (`projfs_placeholder_plain`).
-        if is_cloud_tag(self.tag()) || self.tag() == crate::plain_ledger::PROJFS_TAG {
+        // A file a hierarchical storage manager moved to its store likewise
+        // (`hsm_recalled`): its point is the manager's own, read as bytes.
+        if is_cloud_tag(self.tag())
+            || self.tag() == crate::plain_ledger::PROJFS_TAG
+            || crate::plain_ledger::HSM_TAGS.contains(&self.tag())
+        {
             return Ok(());
         }
         // A deduplicated file, likewise: made plain once agreed

@@ -2568,6 +2568,42 @@ mod tests {
     }
 
     #[test]
+    fn a_storage_managers_file_is_recalled_or_left_out_as_its_row_says() {
+        let row = |kind, path: &str| LedgerRow {
+            kind,
+            paths: vec![path.into()],
+            ..cleared_row(&["\\x"], 0, 0)
+        };
+        let mut moved = file("\\h\\a.dat", "stub");
+        // ARCHIVE | REPARSE_POINT | OFFLINE.
+        moved.attributes = 0x20 | 0x400 | 0x1000;
+        moved.reparse_tag = Some(crate::plain_ledger::HSM_TAGS[0]);
+        moved.plain_sha256 = Some("bytes".into());
+        let recalled = compare_with_plain(
+            &[moved.clone()],
+            &[file("\\h\\a.dat", "bytes")],
+            Declared::default(),
+            &ledger(vec![row(PlainKind::HsmRecalled, "\\h\\a.dat")]),
+        );
+        assert!(recalled.identical(), "{recalled:?}");
+        let left = compare_with_plain(
+            &[directory("\\"), moved.clone()],
+            &[directory("\\")],
+            Declared::default(),
+            &ledger(vec![row(PlainKind::HsmLeftOut, "\\h\\a.dat")]),
+        );
+        assert!(left.identical(), "{left:?}");
+        // Declared as a ProjFS placeholder: not what the listing shows.
+        let wrong = compare_with_plain(
+            &[moved],
+            &[file("\\h\\a.dat", "bytes")],
+            Declared::default(),
+            &ledger(vec![row(PlainKind::ProjfsPlaceholderPlain, "\\h\\a.dat")]),
+        );
+        assert!(!wrong.identical(), "{wrong:?}");
+    }
+
+    #[test]
     fn a_placeholder_not_present_reads_the_same_way_twice() {
         // The lab (cl6-down): absent.bin, with its provider stopped, could
         // not be read before nor afterwards, in the same way.

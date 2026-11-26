@@ -65,8 +65,11 @@ fn capabilities_report_what_the_executable_enforces() {
     assert_eq!(plain["converted"][6]["kind"], "sis_expanded");
     assert_eq!(plain["converted"][7]["kind"], "cloud_left_out");
     assert_eq!(plain["converted"][8]["kind"], "projfs_left_out");
-    assert_eq!(plain["converted"].as_array().unwrap().len(), 9);
-    assert_eq!(plain["modelled_still_refused"].as_array().unwrap().len(), 2);
+    assert_eq!(plain["converted"][9]["kind"], "hsm_recalled");
+    assert_eq!(plain["converted"][10]["kind"], "hsm_left_out");
+    assert_eq!(plain["converted"].as_array().unwrap().len(), 11);
+    // Every kind PlainKind::ALL names is converted now.
+    assert_eq!(plain["modelled_still_refused"].as_array().unwrap().len(), 0);
     // Downloading cloud placeholders before the freeze is a change to the
     // source that a stopped run does not undo, and is said to be one.
     assert!(

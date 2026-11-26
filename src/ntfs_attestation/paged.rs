@@ -755,6 +755,10 @@ fn compare_domain_with_header(
             evidence,
             namespace,
         } = item;
+        // An object this run makes plain from its copy is compared with the
+        // view of it the owning filter gives Windows (`observed_view`).
+        let view = crate::plain_projection::observed_view(&file)?;
+        let file_view: &crate::ntfs_inspect::FileInventory = view.as_ref().unwrap_or(&file);
         let mut timestamps = None;
         let mut security_view = None;
         let mut metadata = Check::from((|| {
@@ -778,7 +782,7 @@ fn compare_domain_with_header(
                 crate::ntfs_source_view::check_metadata_with_limit
             };
             timestamps = Some(check_metadata(
-                &file,
+                file_view,
                 geometry.serial_number,
                 &descriptor,
                 before,
@@ -818,7 +822,7 @@ fn compare_domain_with_header(
             };
             for capture in captures {
                 crate::ntfs_stream_attestation::check_file_with_resources(
-                    &file,
+                    file_view,
                     capture
                         .as_ref()
                         .context("native complete stream mapping absent")?,
@@ -992,18 +996,26 @@ fn compare_domain_with_header(
                     Ok(std::sync::Arc::from([]))
                 };
                 let mut evidence = crate::ntfs_data_attestation::LogicalEvidence::default();
+                // As in the metadata's comparison: an object made plain from
+                // its copy is held to the filter's view, its unnamed stream
+                // read by Windows and held to the copy's digest.
+                let view = crate::plain_projection::observed_view(&file)?;
+                let file_view: &crate::ntfs_inspect::FileInventory = view.as_ref().unwrap_or(&file);
                 let mut logical_data = Check::from((|| {
                     ensure!(
                         observation.open_error.is_none(),
                         "native logical file open refused"
                     );
                     let mut plain = |stream: &crate::ntfs_inspect::StreamInventory| {
+                        if view.is_some() {
+                            return Ok(false);
+                        }
                         plain_content_stream(source, &file, stream)
                     };
                     evidence =
                         crate::ntfs_data_attestation::check_file_with_extent_evidence_domain_scoped(
                             source,
-                            &file,
+                            file_view,
                             &logical,
                             observation,
                             header,

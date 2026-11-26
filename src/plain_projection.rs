@@ -207,6 +207,66 @@ pub(crate) fn wof_copy_pin(
         })
 }
 
+/// The object a native observation of `file` is compared with, where this
+/// run makes it plain from its copy: the raw source as the filter that owns
+/// it shows it to Windows, and nothing else changed.
+///
+/// - WOF hides its reparse point, the REPARSE_POINT and SPARSE_FILE
+///   attributes and its WofCompressedData stream (the lab's listing of a
+///   `compact /exe` file shows attributes 0x20, one stream, the full length).
+/// - Either way the unnamed stream's contents are what the filter reads,
+///   which the plain copy holds: Windows' read of it is held to the copy's
+///   content digest, and never left unread as a plain stream would be.
+///
+/// `None` for every other object, which is compared as it is.
+pub(crate) fn observed_view(file: &FileInventory) -> Result<Option<FileInventory>> {
+    let Some(pin) = wof_copy_pin(file)? else {
+        return Ok(None);
+    };
+    filter_view(file, wof_taken(file), &pin.content_digest).map(Some)
+}
+
+/// [`observed_view`] of a file whose copy has `content_digest`; `wof`
+/// where WOF owns it.
+fn filter_view(file: &FileInventory, wof: bool, content_digest: &str) -> Result<FileInventory> {
+    let mut view = file.clone();
+    if wof {
+        view.reparse = None;
+        view.attributes.retain(|attribute| {
+            attribute.type_code != 0xc0
+                && !(attribute.type_code == 0x80
+                    && attribute
+                        .name_utf16
+                        .iter()
+                        .copied()
+                        .eq(n2r_win32::reparse_layout::WOF_COMPRESSED_DATA.encode_utf16()))
+        });
+        view.streams
+            .retain(|stream| !is_wof_compressed_data(stream));
+        if let Some(information) = view.standard_information.as_mut() {
+            information.file_attributes &=
+                !(n2r_win32::plain_ledger::REPARSE_POINT | n2r_win32::plain_ledger::SPARSE_FILE);
+        }
+    }
+    let unnamed = view
+        .streams
+        .iter_mut()
+        .find(|stream| stream.name_utf16.is_empty())
+        .with_context(|| format!("MFT record {} has no unnamed stream", file.record_number))?;
+    // EFS: Windows reads the encrypted stream decrypted, as an ordinary one.
+    unnamed.flags &= !0x4000;
+    unnamed.logical_sha256 = Some(content_digest.to_owned());
+    unnamed.logical_hash_status = crate::ntfs_inspect::LogicalHashStatus::Complete;
+    for attribute in view
+        .attributes
+        .iter_mut()
+        .filter(|attribute| attribute.type_code == 0x80 && attribute.name_utf16.is_empty())
+    {
+        attribute.flags &= !0x4000;
+    }
+    Ok(view)
+}
+
 /// The transform of one file or directory, from its raw record.
 pub(crate) fn of_file(file: &FileInventory) -> Result<Option<PlainTransform>> {
     // A WOF point of another shape is refused by admission, by name, and
@@ -444,6 +504,109 @@ mod tests {
         // Freed more than it grows: nothing needed.
         assert!(require_wof_room(&[file(10, 1 << 20)], 4096, 0).is_ok());
         assert!(require_wof_room(&[], 4096, 0).is_ok());
+    }
+
+    fn stream(name: &str, flags: u16) -> crate::ntfs_inspect::StreamInventory {
+        crate::ntfs_inspect::StreamInventory {
+            name: name.to_owned(),
+            name_utf16: name.encode_utf16().collect(),
+            resident: false,
+            flags,
+            logical_size: 721_234,
+            initialized_size: 721_234,
+            allocated_size: 0,
+            extents: vec![],
+            resident_sha256: None,
+            logical_sha256: Some("00".repeat(16)),
+            logical_hash_status: crate::ntfs_inspect::LogicalHashStatus::Complete,
+        }
+    }
+
+    fn attribute(
+        type_code: u32,
+        name: &str,
+        flags: u16,
+    ) -> crate::ntfs_inspect::AttributeInventory {
+        serde_json::from_value(serde_json::json!({
+            "type_code": type_code, "instance": 0,
+            "name_utf16": name.encode_utf16().collect::<Vec<u16>>(),
+            "flags": flags, "resident": false, "logical_size": 0, "initialized_size": 0,
+            "allocated_size": 0, "lowest_vcn": 0, "compression_unit": 0,
+            "extents": [],
+        }))
+        .unwrap()
+    }
+
+    fn wof_file() -> FileInventory {
+        FileInventory {
+            record_number: 41,
+            sequence_number: 1,
+            hard_link_count: 1,
+            is_directory: false,
+            is_metadata: false,
+            metadata_role: crate::ntfs_inspect::MetadataRole::OutsideExtendCandidate,
+            metadata_role_issue: None,
+            base_file_reference: 0,
+            names: vec![],
+            standard_information: Some(crate::ntfs_inspect::StandardInformation {
+                creation_time: 1,
+                modification_time: 2,
+                mft_change_time: 3,
+                access_time: 4,
+                file_attributes: 0x620,
+                security_id: None,
+            }),
+            streams: vec![stream("", 0x8000), stream("WofCompressedData", 0)],
+            attributes: vec![
+                attribute(0x80, "", 0x8000),
+                attribute(0x80, "WofCompressedData", 0),
+                attribute(0xc0, "", 0),
+            ],
+            extended_attributes: None,
+            reparse: Some(n2r_win32::reparse_layout::Point {
+                buffer: vec![0; 24],
+            }),
+        }
+    }
+
+    #[test]
+    fn windows_is_held_to_the_view_the_filter_gives_and_nothing_more() {
+        let copy = "ab".repeat(16);
+        let raw = wof_file();
+        let view = filter_view(&raw, true, &copy).unwrap();
+        // WOF's view: no reparse point, no WofCompressedData, no REPARSE_POINT
+        // or SPARSE_FILE; everything else as the raw source holds it.
+        assert!(view.reparse.is_none());
+        assert_eq!(view.streams.len(), 1);
+        assert!(view.attributes.iter().all(|a| a.type_code != 0xc0));
+        assert_eq!(view.attributes.len(), 1);
+        assert_eq!(
+            view.standard_information.as_ref().unwrap().file_attributes,
+            0x20
+        );
+        assert_eq!(view.streams[0].logical_size, raw.streams[0].logical_size);
+        assert_eq!(view.names.len(), raw.names.len());
+        // Its contents are the copy's, read by Windows and held to them.
+        assert_eq!(
+            view.streams[0].logical_sha256.as_deref(),
+            Some(copy.as_str())
+        );
+        // Not WOF's: nothing hidden; an encrypted stream read decrypted.
+        let mut encrypted = wof_file();
+        encrypted.reparse = None;
+        encrypted.attributes = vec![attribute(0x80, "", 0x4000)];
+        encrypted.streams = vec![stream("", 0x4000)];
+        let view = filter_view(&encrypted, false, &copy).unwrap();
+        assert_eq!(view.streams[0].flags, 0);
+        assert_eq!(view.attributes[0].flags, 0);
+        assert_eq!(
+            view.standard_information.as_ref().unwrap().file_attributes,
+            0x620
+        );
+        // A file with no unnamed stream has no view.
+        let mut none = wof_file();
+        none.streams.retain(|s| !s.name_utf16.is_empty());
+        assert!(filter_view(&none, false, &copy).is_err());
     }
 
     #[test]

@@ -70,7 +70,7 @@ seconds on one of 23,000 files. It prints:
 - **Every reason a conversion would refuse the volume** that those decide,
   each as the conversion would give it, with the file and what to do: 8.3
   short names (with `--short-names refuse`); encrypted, temporary, offline or `compact /exe` files; reparse
-  points, streams and names the converter does not carry over; quotas in use;
+  points, streams and names the converter does not carry over;
   two names in a directory that differ only by case; shadow copies, and a
   shadow-copy provider of backup software that holds one or does not
   answer; a volume marked dirty. On a disk with other
@@ -79,8 +79,8 @@ seconds on one of 23,000 files. It prints:
   volume beside this one.
 - **What is decided only when the volume is frozen** for a conversion: that
   the NTFS log closes cleanly, the backup boot sector and the MFT mirror, an
-  open transaction, whether quota management is switched on, and that Windows
-  shows every file as the raw volume holds it.
+  open transaction, and that Windows shows every file as the raw volume holds
+  it.
 - **What a conversion changes before the freeze and does not undo:** a
   volume of NTFS 1.2 or 3.0 is not refused. The check says "Windows will
   upgrade this volume to NTFS 3.1 before conversion; this is not undone",
@@ -328,6 +328,7 @@ Not carried over, and said so by the run:
 | Object IDs of files and directories | Windows gives one to the target of a shortcut; ReFS has none | Each is matched with the volume's object-ID index and kept in the run's records (`internal-indexes\object-ids-not-carried-over`); the run prints their number. A shortcut still finds its target by path |
 | NTFS compression | ReFS stores the data uncompressed | The data is the same; the volume needs room for it |
 | The change journal | It describes the NTFS volume | The converted volume starts a new one |
+| Disk quotas: quota management, limits and the entries for users | ReFS has no NTFS quotas | Both quota indexes are read in full and every entry, with its limits and usage, is kept in the run's records (`internal-indexes\quotas-not-carried-over.jsonl`); `--check` and the lines before the question say so. The converted volume has no limits. (A volume that holds a Windows still needs quota management off, with no entries) |
 | 8.3 short names (the default; `--short-names drop` says the same) | ReFS has no short names | `--check` and the lines before the conversion's question say how many there are, one of them, and where the run lists them; the conversion goes ahead only once that is agreed (`--yes` with `--volume-serial`). Every file and directory is created under its long name; each short name is kept in the run's records (`source-short-names-not-carried.json` in the run's working directory). A program that stored a path in its short form no longer finds it. With `--short-names refuse` the volume is refused instead, see below |
 | The case-sensitive mark of a directory, except on Windows Server 2025 | WSL and Git set it on the directories they make. The converter sets it on the new volume only for a data volume converted on Windows Server 2025 (build 26100), where Windows was shown to keep such a directory on ReFS. The lab's Windows 11 (build 26300, an Insider build) stopped with a bugcheck both times a ReFS volume with such a directory was taken offline, which a conversion does with the volume it builds; so it is not set there, on any other Windows, in a recovery environment, on a volume that holds a Windows, on a partition converted through a restart, or on a volume whose root directory is itself marked (the new root is never empty when its mark could be set) | Where no two names in the directory differ only by case, every name stays reachable. The directories are listed in the run's records (`case-sensitive-directories`, `source-case-sensitive-directories.json`), and the run and `--check` say before the prompt how many there are, whether the mark is set and, where it is not, why. On Windows Server 2025 every directory of the new volume is made with the mark its source directory has, the mark is read back, and a directory whose mark differs afterwards fails the run. Windows lets a directory on ReFS be marked again with `fsutil file setCaseSensitiveInfo`; because of that bugcheck, try it where a restart costs nothing |
 
@@ -350,7 +351,6 @@ Refused before anything is written, each with what was found and what to do:
 | Files with the TEMPORARY or OFFLINE attribute | Clear the attribute, or move the files |
 | Cloud placeholders, `compact /exe` files, Data Deduplication | The kind is named, with the record number to find the file by |
 | A named data stream on a directory | Remove the stream |
-| Disk quotas in use | `fsutil quota disable E:` and delete the entries |
 | Two names in one directory that differ only by case (both are given) | Rename one of them, then `fsutil file setCaseSensitiveInfo <directory> disable` |
 | A dirty volume, an NTFS log that was not closed, an open transaction | `chkdsk E: /f`, or dismount cleanly |
 | A program holding a file on the volume open | Close it; the converter waits 20 seconds first |

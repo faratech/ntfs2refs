@@ -79,8 +79,8 @@ param(
     # copy, usn, casemark, manyfiles (all of which convert; -Content lived-in
     # adds them except bigfile, full, casemark and manyfiles), shortnames (dropped
     # by default; refused with -RefuseShortNames), and temporary, offline,
-    # efs, wof, quota, casesensitive, snapshot, bitlocker, dirstream (which
-    # are refused).
+    # efs, wof, casesensitive, snapshot, bitlocker, dirstream (which are
+    # refused). quota converts: the quotas are recorded, not carried over.
     [string[]]$Features = @(),
     [int]$DirectoryEntries = 20000,
     [int]$BigFileGB = 6,

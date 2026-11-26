@@ -255,6 +255,9 @@ $dataCases = @(
     # have said how many; refused only when asked.
     'shortnames|-Content minimal -Features shortnames -Check -Acceptance'
     'shortnames-refuse|-Content minimal -Features shortnames -RefuseShortNames -Check -ExpectRefusal short-names.refuse'
+    # Quotas enforced, with an entry for one user: recorded, not carried
+    # over, and said by the check and the run.
+    'quota|-Content minimal -Features quota -Check -Acceptance'
     # --review (#110): the run stops with the volume mounted read-only as
     # ReFS, listing as before; the command it printed then keeps the
     # conversion, or puts NTFS back (compared exactly, and the recovery has

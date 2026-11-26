@@ -48,6 +48,7 @@ converter prints.
 | Object IDs of files and directories (Windows gives one to the target of a shortcut) | Not carried over: ReFS has none. Each is matched with the volume's object-ID index and kept in the run's records | "N file(s) and directories have an object ID ... not carried over" | `objectids`, `manyobjectids` (3,050 of them) |
 | NTFS (LZNT1) compression | The data is stored uncompressed; the listing accepts the missing flag | "NTFS-compressed streams ... are decoded into ordinary ReFS data" | `mixed` on clusters up to 4 KiB |
 | The change journal | The converted volume starts a new one | nothing | `usn` |
+| Disk quotas (quota management, limits, entries for users) | Not carried over: ReFS has no NTFS quotas. Both quota indexes are read in full and every entry is kept in the run's records; the listing has no quotas in it, so it compares as ever. Not yet shown: the case is in the gate round and has not been run | "Disk quotas are set on this volume ... not carried over", before the prompt | `quota` (to be run) |
 | A partition whose length is not a multiple of 64 MiB | The NTFS driver shrinks it to one first, by less than 64 MiB; not undone if the run stops | the sizes, before the prompt | `odd-size` |
 | 8.3 short names on a Windows boot volume | Each becomes a link beside its long name | the boot profile line | the Windows fixtures |
 | The 8.3 short names of a data volume (the default, or `--short-names drop`) | Not carried over: `--check` and the lines before the question say how many and where they are listed, every object is created under its long name, and each short name is kept in the run's records. On nested directories, a hard-linked file, a file with a named stream and names outside ASCII; the listing is compared with the comparison made for such a run, which counts a short name that is gone and lets nothing else through | "N file(s) and directories have an 8.3 short name ... not carried over" | `shortnames` (the default), `shortnames-drop`, `wide-drop` and its variants (`-DropShortNames`) |
@@ -73,7 +74,6 @@ check and the run have to give the same refusal.
 | A file with the TEMPORARY or OFFLINE attribute | the attribute is named | `temporary`, `offline` |
 | A file compressed with `compact /exe` | `compact /u /exe <file>` | `wof` |
 | A named data stream on a directory | remove the stream | `dirstream` |
-| Disk quotas in use | `fsutil quota disable <drive>:` | `quota` |
 | Two names in one directory that differ only by case | rename one of them, then `fsutil file setCaseSensitiveInfo <directory> disable` | `casesensitive` |
 | Beside the volume, on its disk: a volume with shadow copies | `vssadmin delete shadows /for=<drive>:` for that volume | `shared-snapshot`; the shadow copy is still there afterwards |
 | On the volume's disk: the crash-dump file of the running Windows | move the dump file (System Properties, Advanced, Startup and Recovery) | `shared-dump` |

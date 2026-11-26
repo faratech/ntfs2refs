@@ -283,7 +283,7 @@ fn parse_controlled_pause_nonce(value: &str) -> std::result::Result<String, Stri
 pub const EXIT_DIAGNOSE_FAILURES: u8 = 3;
 /// What a check cannot say, because only the frozen source shows it: in the
 /// words of its report.
-pub const CHECK_DECIDED_WHEN_FROZEN: &str = "that the NTFS log closes cleanly, the backup boot sector and the MFT mirror, an open transaction, whether quota management is switched on, and that Windows shows every file as the raw volume holds it";
+pub const CHECK_DECIDED_WHEN_FROZEN: &str = "that the NTFS log closes cleanly, the backup boot sector and the MFT mirror, an open transaction, and that Windows shows every file as the raw volume holds it";
 /// GPT partition types a run names: an EFI system partition, and the
 /// reserved partition that holds no volume.
 #[cfg_attr(not(windows), allow(dead_code))]

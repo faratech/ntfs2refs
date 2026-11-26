@@ -442,7 +442,9 @@ which used to be fixed: one with 200 named streams, and a sparse file with
 needs many file records.
 
 `-Features <name,...>` adds what a volume that has been in use has, made by
-`guest\Add-VolumeFeatures.ps1` after the content. These convert: `objectids`
+`guest\Add-VolumeFeatures.ps1` after the content. These convert: `quota`
+(quotas enforced, with an entry for one user: recorded, not carried over),
+`objectids`
 (a file with an object ID, and a shortcut to a file and to a directory, which
 give their targets one), `manyobjectids` (`-DirectoryEntries` files with object
 IDs, so that the volume's object-ID index outgrows its root), `security`
@@ -481,7 +483,7 @@ before the cut is collected as `interrupted-stacks.txt` when available.
 The recovery writes its own `stacks.txt`.
 
 These are refused, each by name: `shortnames` with `-RefuseShortNames`, `temporary`, `offline`, `efs`,
-`wof` (a `compact /exe` file), `quota`, `casesensitive` (two names in one
+`wof` (a `compact /exe` file), `casesensitive` (two names in one
 directory that differ only by case), `snapshot`,
 `bitlocker` and `dirstream`. A feature that cannot be made ends the attempt as
 `feature-not-made`: it is never skipped silently. A volume with shadow copies

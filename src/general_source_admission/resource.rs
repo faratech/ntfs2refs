@@ -1699,6 +1699,9 @@ impl ResourceSourceContext {
                 ntfs_internal::verify_domain(&mut source, &raw, &output.join("internal-indexes"))?
             };
             indexes.bind_native_quota(&native);
+            if let Some(quotas) = indexes.quotas_not_carried() {
+                println!("{}", crate::quota_disposition::note(quotas));
+            }
             let data_object_ids = indexes.data_object_ids_owned();
             if let Some(object_ids) = &data_object_ids {
                 println!(

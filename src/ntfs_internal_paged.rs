@@ -54,6 +54,9 @@ pub struct PagedVerifiedIndexes {
     /// A data volume's object IDs, matched against the index and archived.
     #[serde(skip)]
     data_object_ids: Option<std::sync::Arc<crate::object_id_disposition::DataObjectIds>>,
+    /// A data volume's quota state, archived in the run's records and not
+    /// carried over: ReFS has no NTFS quotas.
+    quotas_not_carried: Option<crate::quota_disposition::QuotasNotCarried>,
 }
 impl PagedVerifiedIndexes {
     pub fn binds_domain(&self, source: &PagedInspection) -> bool {
@@ -75,6 +78,11 @@ impl PagedVerifiedIndexes {
         &self,
     ) -> Option<std::sync::Arc<crate::object_id_disposition::DataObjectIds>> {
         self.data_object_ids.clone()
+    }
+    /// The quota state of a data volume that is not carried over, where
+    /// there is any besides NTFS's unlimited defaults.
+    pub(crate) fn quotas_not_carried(&self) -> Option<&crate::quota_disposition::QuotasNotCarried> {
+        self.quotas_not_carried.as_ref()
     }
     pub fn covers_volume_object_id_domain(&self, source: &PagedInspection, record: u64) -> bool {
         record == 3
@@ -305,13 +313,28 @@ fn storage<R: Read + Seek>(
     let named: Vec<_> = attrs.by_ref().collect();
     // The reparse index holds an entry per reparse point, and the object-ID
     // index one per file that a shortcut was ever made to: both may have
-    // outgrown their root. The quota indexes are their root.
-    let may_have_grown = role == "$Extend\\$Reparse" || role == "$Extend\\$ObjId";
+    // outgrown their root. So may the quota indexes of a volume with many
+    // users, which share their file: each walks its own and leaves the
+    // other's attributes alone.
+    let may_have_grown = matches!(
+        role,
+        "$Extend\\$Reparse" | "$Extend\\$ObjId" | "$Extend\\$Quota"
+    );
+    let sibling = |a: &ntfs_inspect::AttributeInventory| {
+        role == "$Extend\\$Quota"
+            && a.name_utf16 != units
+            && crate::quota_disposition::INDEX_NAMES
+                .iter()
+                .any(|other| a.name_utf16.iter().copied().eq(other.encode_utf16()))
+    };
     let (index_root, allocation, bitmap) = if may_have_grown {
         let mut index_root = None;
         let mut allocation = None;
         let mut bitmap = None;
         for a in &file.attributes {
+            if matches!(a.type_code, 0x90 | 0xa0 | 0xb0) && sibling(a) {
+                continue;
+            }
             if matches!(a.type_code, 0x90 | 0xa0 | 0xb0) {
                 ensure!(
                     a.name_utf16 == units
@@ -566,6 +589,11 @@ fn verify_domain_with_windows<R: Read + Seek>(
     let mut ranges = Vec::new();
     let mut quota_owners = Vec::new();
     let mut quota_ids = Vec::new();
+    let mut quota_owner_store = None;
+    let mut quota_id_store = None;
+    // Where the volume's quotas are recorded rather than required to be
+    // the defaults: a data volume, not a Windows boot volume.
+    let quotas_recorded = windows.is_none() && !source.is_windows_conversion();
     let mut internal_volume_object_id = None;
     let mut windows_object_ids = None;
     let mut data_object_ids = None;
@@ -655,12 +683,12 @@ fn verify_domain_with_windows<R: Read + Seek>(
                         record_key(reference & 0x0000_ffff_ffff_ffff),
                         &ReparseBinding { reference, tag },
                     )?;
-                } else if slot != 0 || entries.len() < 2 {
-                    // The quota profiles are resident-root-only, so this is
-                    // one <=4KiB node, not an N table. The object-ID index
-                    // can be of any size: its entries are read back from
-                    // the entry store, and only enough are kept here to
-                    // tell one entry from several.
+                } else if entries.len() < if slot == 0 { 2 } else { QUOTA_DEFAULTS_BOUND } {
+                    // The object-ID and quota indexes can be of any size:
+                    // their entries are read back from the entry store.
+                    // Only enough are kept here to tell one object ID from
+                    // several, and quota defaults (at most 128 entries)
+                    // from anything more.
                     entries.push((key.to_vec(), value.to_vec()));
                 }
                 Ok(())
@@ -869,10 +897,15 @@ fn verify_domain_with_windows<R: Read + Seek>(
         } else {
             if name == "$Q" {
                 quota_ids = entries;
+                quota_id_store = Some(ordinal);
             } else {
                 quota_owners = entries;
+                quota_owner_store = Some(ordinal);
             }
-            false
+            // A data volume's quotas are recorded and not carried over: ReFS
+            // has none. (A Windows boot volume's still need the unlimited
+            // defaults with quota management off.)
+            quotas_recorded
         };
         indexes.push(PagedIndexState {
             role: role.into(),
@@ -890,6 +923,8 @@ fn verify_domain_with_windows<R: Read + Seek>(
             replacement_supported: supported,
             detail: if slot == 0 && data_object_ids.is_some() {
                 "every object ID matched with its attribute and archived; not carried over"
+            } else if slot == 2 && quotas_recorded {
+                "quota entries walked completely and archived in the run's records; ReFS has no NTFS quotas, so they are not carried over"
             } else if supported {
                 "complete supported index state cross-matched"
             } else {
@@ -910,20 +945,41 @@ fn verify_domain_with_windows<R: Read + Seek>(
     drop(expected);
     scratch.retire_created(&expected_pin.data)?;
     scratch.retire_created(&expected_pin.directory)?;
+    let default_quotas_only = quota_indexes_match(&quota_owners, &quota_ids);
+    let quotas_not_carried = if quotas_recorded && !default_quotas_only {
+        let (owners, ids) = (
+            quota_owner_store.context("the quota owner index was not walked")?,
+            quota_id_store.context("the quota index was not walked")?,
+        );
+        Some(crate::quota_disposition::archive(
+            &root.join(crate::quota_disposition::RECORDS_FILE),
+            &source.canonical_sha256()?,
+            &stores[owners],
+            &stores[ids],
+        )?)
+    } else {
+        None
+    };
     source.revalidate()?;
     Ok(PagedVerifiedIndexes {
         inspection_sha256: source.canonical_sha256()?,
         internal_volume_object_id,
         replacement_supported: indexes.iter().all(|i| i.replacement_supported),
-        default_quotas_only: quota_indexes_match(&quota_owners, &quota_ids),
+        default_quotas_only,
         native_quota_policy_bound: false,
         indexes,
         stores,
         ranges,
         windows_object_ids,
         data_object_ids,
+        quotas_not_carried,
     })
 }
+
+/// The quota indexes are kept in the volume's own record of NTFS's
+/// indexes; once at most this many of a quota index's entries are kept in
+/// memory, the rest only in its entry store.
+const QUOTA_DEFAULTS_BOUND: usize = 129;
 
 /// Matches every entry of a data volume's `$Extend\$ObjId` index with the
 /// `$OBJECT_ID` attribute of the file it names, and the other way round by

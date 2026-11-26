@@ -676,7 +676,7 @@ pub(crate) fn case_answer_requirement(unanswered: u64, directories: u64) -> Stri
 /// cannot be replaced by what ReFS keeps, as a refusal says it.
 pub(crate) fn index_refusal_cause(role: &str) -> &'static str {
     if role.ends_with("$Quota") {
-        "disk quotas are in use on the volume (enabled, or with entries for users): turn quota management off (`fsutil quota disable <drive>:`) and delete the quota entries, then convert"
+        "disk quotas are in use on a volume that holds a Windows (enabled, or with entries for users), where only quota management off with unlimited defaults is taken over: turn quota management off (`fsutil quota disable <drive>:`) and delete the quota entries, then convert (a data volume's quotas are recorded and not carried over)"
     } else if role.ends_with("$ObjId") {
         "the volume's object-ID index is not in a form the converter takes over"
     } else {

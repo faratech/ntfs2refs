@@ -117,6 +117,20 @@ pub const WOF_WIM_BACKED: u32 = 0x100;
 pub fn is_placeholder_tag(tag: u32) -> bool {
     is_cloud_tag(tag) || matches!(tag, PROJFS_TAG | DEDUP_TAG | SIS_TAG)
 }
+/// Whether the listing lists what a directory entry holds: a directory,
+/// and of the directories with a reparse point only a placeholder folder
+/// (cloud files, ProjFS), never a link or a junction.
+pub fn descends(attributes: u32, reparse_tag: Option<u32>) -> bool {
+    const DIRECTORY: u32 = 0x10;
+    if attributes & DIRECTORY == 0 {
+        return false;
+    }
+    if attributes & REPARSE_POINT == 0 {
+        return true;
+    }
+    reparse_tag.is_some_and(|tag| is_cloud_tag(tag) || tag == PROJFS_TAG)
+}
+
 /// IO_REPARSE_TAG_CLOUD and its sixteen variants.
 pub fn is_cloud_tag(tag: u32) -> bool {
     tag & 0xffff_0fff == 0x9000_001a
@@ -851,19 +865,18 @@ fn declared_after(row: &LedgerRow, before: &Record) -> Result<Record, String> {
             placeholder(&mut after, is_cloud_tag(tag), "cloud placeholder")?;
             // A sync root's folder: the Cloud Files API's own streams on it
             // are gone, each as the row declares it, and only those.
+            // The Cloud Files filter hides these streams from Windows
+            // (the lab: the folder's stream enumeration ends at once), so the
+            // listing before may not show them; where it does, they go.
             for dropped in &row.dropped_streams {
-                let listed = format!(":{}:$DATA", dropped.name);
-                let Some(at) = after
-                    .streams
-                    .iter()
-                    .position(|stream| stream.name == listed)
-                else {
+                if !crate::plain_ledger::is_cloud_private_stream(&dropped.name) {
                     return Err(format!(
-                        "the ledger declares the stream {} dropped, and the listing before does not show it",
+                        "the ledger declares the stream {} dropped, which is not the Cloud Files API's own",
                         dropped.name
                     ));
-                };
-                after.streams.remove(at);
+                }
+                let listed = format!(":{}:$DATA", dropped.name);
+                after.streams.retain(|stream| stream.name != listed);
             }
         }
         PlainKind::ProjfsPlaceholderPlain => {
@@ -1353,6 +1366,9 @@ mod capture {
     struct Pending {
         path: String,
         attributes: u32,
+        /// The reparse tag the directory listing gives, for an entry with
+        /// a reparse point.
+        reparse_tag: Option<u32>,
         created: i64,
         written: i64,
         changed: i64,
@@ -1455,6 +1471,9 @@ mod capture {
                             format!("{path}\\{name}")
                         },
                         attributes: u32_at(entry, 56),
+                        // FILE_ID_BOTH_DIR_INFO's EaSize holds the reparse
+                        // tag of an entry with a reparse point.
+                        reparse_tag: (u32_at(entry, 56) & REPARSE != 0).then(|| u32_at(entry, 64)),
                         created: i64_at(entry, 8),
                         written: i64_at(entry, 24),
                         changed: i64_at(entry, 32),
@@ -1835,6 +1854,7 @@ mod capture {
         let mut pending = vec![Pending {
             path: "\\".to_owned(),
             attributes: u32_at(basic, 32),
+            reparse_tag: None,
             created: i64_at(basic, 0),
             written: i64_at(basic, 16),
             changed: i64_at(basic, 24),
@@ -1847,8 +1867,12 @@ mod capture {
         while next < pending.len() {
             let entry = &pending[next];
             next += 1;
-            // Links and junctions are recorded, never followed.
-            if entry.attributes & DIRECTORY == 0 || entry.attributes & REPARSE != 0 {
+            // Links and junctions are recorded, never followed. A
+            // placeholder folder (cloud files, ProjFS) is a directory of
+            // its own, whose contents are on the volume: it is listed, so
+            // that what it holds is listed with or without its provider
+            // (and as a plain directory after a conversion lists it).
+            if !super::descends(entry.attributes, entry.reparse_tag) {
                 continue;
             }
             let path = entry.path.clone();
@@ -2391,6 +2415,20 @@ mod tests {
             name: name.into(),
             bytes: 120,
         }
+    }
+
+    #[test]
+    fn a_placeholder_folder_is_listed_and_a_link_is_not_followed() {
+        // A directory, a cloud folder and a ProjFS one are listed.
+        assert!(descends(0x10, None));
+        assert!(descends(0x10 | 0x400, Some(0x9000_701a)));
+        assert!(descends(0x10 | 0x400, Some(0x9000_001a)));
+        assert!(descends(0x10 | 0x400, Some(PROJFS_TAG)));
+        // A junction, a directory symbolic link, a file: not followed.
+        assert!(!descends(0x10 | 0x400, Some(0xa000_0003)));
+        assert!(!descends(0x10 | 0x400, Some(SYMLINK_TAG)));
+        assert!(!descends(0x10 | 0x400, None));
+        assert!(!descends(0x20 | 0x400, Some(0x9000_001a)));
     }
 
     #[test]

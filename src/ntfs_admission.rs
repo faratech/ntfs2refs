@@ -2181,7 +2181,13 @@ pub(crate) fn user_issues_with_context_alias_scope(
                 .into(),
         );
     }
+    // An EFS object this run makes plain: its encrypted DATA and its $EFS
+    // attribute are what the plain copy stands for.
+    let efs_plain = ordinary && crate::plain_projection::efs_taken(f);
     let unsupported_attribute = f.attributes.iter().find(|a| {
+        if efs_plain && crate::plain_projection::efs_attribute(a) {
+            return false;
+        }
         let plain =
             matches!(a.type_code, 0x10 | 0x30 | 0x50) && a.name_utf16.is_empty() && a.resident;
         let data = a.type_code == 0x80
@@ -2308,7 +2314,8 @@ pub(crate) fn user_issues_with_context_alias_scope(
             crate::plain_projection::admitted_attributes(reparse.is_some())
         } else {
             0
-        };
+        }
+        | if efs_plain { n2r_win32::plain_ledger::ENCRYPTED } else { 0 };
     match crate::ntfs_file_attributes::project_user(f) {
         Ok(attributes) if attributes.source_attributes & !carried_attributes == 0 => {}
         Ok(attributes) => issues.push(format!(
@@ -2374,25 +2381,29 @@ pub(crate) fn user_issues_with_context_alias_scope(
                     && String::from_utf16(&s.name_utf16)
                         .is_ok_and(|name| folded_names.insert(name.to_uppercase()))
             });
+        // An EFS file made plain is supplied from its decrypted copy.
+        let efs_plain = ordinary && crate::plain_projection::efs_taken(f);
         if !stream_names_valid
             || (!ordinary && f.streams.len() != 1)
             || f.streams.iter().any(|s| {
-                (!ordinary && !s.name_utf16.is_empty())
-                    || (s.flags != 0
-                        && !(ordinary && !s.resident && s.flags == 0x8000)
-                        && !(ordinary && compressed_stream_supported_with_geometry(geometry, f, s)))
-                    || s.initialized_size > s.logical_size
-                    || (!ordinary
-                        && (s.resident
-                            || s.logical_size == 0
-                            || !s.logical_size.is_multiple_of(65536)
-                            || s.logical_size != s.initialized_size
-                            || s.logical_size != s.allocated_size
-                            || s.extents.len() != 1
-                            || s.extents[0].logical_offset != 0
-                            || s.extents[0].physical_offset.is_none()
-                            || s.extents[0].length != s.logical_size))
-                    || !source_evidence_valid(s)
+                !efs_plain
+                    && ((!ordinary && !s.name_utf16.is_empty())
+                        || (s.flags != 0
+                            && !(ordinary && !s.resident && s.flags == 0x8000)
+                            && !(ordinary
+                                && compressed_stream_supported_with_geometry(geometry, f, s)))
+                        || s.initialized_size > s.logical_size
+                        || (!ordinary
+                            && (s.resident
+                                || s.logical_size == 0
+                                || !s.logical_size.is_multiple_of(65536)
+                                || s.logical_size != s.initialized_size
+                                || s.logical_size != s.allocated_size
+                                || s.extents.len() != 1
+                                || s.extents[0].logical_offset != 0
+                                || s.extents[0].physical_offset.is_none()
+                                || s.extents[0].length != s.logical_size))
+                        || !source_evidence_valid(s))
             })
         {
             issues.push(

@@ -74,6 +74,12 @@ pub struct Record {
     /// its ciphertext and EFS metadata, which no key is needed to read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_efs_sha256: Option<String>,
+    /// Why the raw EFS export could not be read (the lab's account was
+    /// refused it). Recorded, as the same on every reading of an unchanged
+    /// volume, not an error of the listing: the plain text is what a
+    /// conversion holds the file to, and the export only describes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_efs_error: Option<String>,
     /// For a file WOF keeps compressed (compact /exe, CompactOS), WOF's
     /// algorithm as FSCTL_GET_EXTERNAL_BACKING reports it (WOF hides its
     /// reparse point from every other query); [`WOF_WIM_BACKED`] for a file
@@ -511,7 +517,10 @@ pub fn compare_declared(before: &[Record], after: &[Record], declared: Declared)
 /// ([`compare_with_plain`]) expects one to change, and only for an object
 /// the run's ledger names.
 fn feature_view_differs(was: &Record, is: &Record) -> Option<String> {
-    if was.efs != is.efs || was.raw_efs_sha256 != is.raw_efs_sha256 {
+    if was.efs != is.efs
+        || was.raw_efs_sha256 != is.raw_efs_sha256
+        || was.raw_efs_error != is.raw_efs_error
+    {
         return Some(format!("EFS encryption {} became {}", was.efs, is.efs));
     }
     if was.wof_algorithm != is.wof_algorithm {
@@ -799,15 +808,29 @@ fn declared_after(row: &LedgerRow, before: &Record) -> Result<Record, String> {
             after.attributes &= !cleared;
         }
         PlainKind::EfsDecrypted => {
-            if !before.efs || before.attributes & ENCRYPTED == 0 || before.raw_efs_sha256.is_none()
-            {
-                return Err(
-                    "the listing before does not show it EFS-encrypted, with its raw export read"
-                        .into(),
-                );
+            if !before.efs || before.attributes & ENCRYPTED == 0 {
+                return Err("the listing before does not show it EFS-encrypted".into());
+            }
+            // A file: its raw export read, and its plain text read through
+            // Windows, which is what it has to hold afterwards. A directory
+            // has only its mark taken off.
+            // A file: its plain text read through Windows, which is what it
+            // has to hold afterwards. (Its raw export, read or refused, only
+            // describes it.) A directory has only its mark taken off.
+            if !before.directory {
+                let Some(plain) = &before.plain_sha256 else {
+                    return Err(format!(
+                        "the listing before did not read its plain text: {}",
+                        before.plain_read_error.as_deref().unwrap_or("not read")
+                    ));
+                };
+                after.sha256 = Some(plain.clone());
             }
             after.efs = false;
             after.raw_efs_sha256 = None;
+            after.raw_efs_error = None;
+            after.plain_sha256 = None;
+            after.plain_read_error = None;
             after.attributes &= !ENCRYPTED;
         }
         PlainKind::WofExpanded => {
@@ -1711,7 +1734,13 @@ mod capture {
             if !directory {
                 match raw_efs_sha256(prefix, &record.path) {
                     Ok(sha256) => record.raw_efs_sha256 = Some(sha256),
-                    Err(error) => note(&mut record, "raw EFS export", &error),
+                    Err(error) => record.raw_efs_error = Some(error.to_string()),
+                }
+                // The plain text as the listing's account reads it, which a
+                // file made plain has to hold afterwards.
+                match plain_sha256(prefix, &record.path, buffer) {
+                    Ok(sha256) => record.plain_sha256 = Some(sha256),
+                    Err(error) => record.plain_read_error = Some(error.to_string()),
                 }
             }
         }
@@ -1863,6 +1892,7 @@ mod tests {
             },
             witness: "test".into(),
             plain_copy: None,
+            efs: None,
         }
     }
     /// A volume with an ordinary file and a TEMPORARY one, before and after
@@ -2071,6 +2101,7 @@ mod tests {
         efs.attributes = 0x4020;
         efs.efs = true;
         efs.raw_efs_sha256 = Some("cipher".into());
+        efs.plain_sha256 = Some("plain-text".into());
         let mut decrypted = file("\\f", "plain-text");
         decrypted.attributes = 0x20;
         let verdict = compare_with_plain(
@@ -2080,9 +2111,54 @@ mod tests {
             &ledger(vec![row(PlainKind::EfsDecrypted)]),
         );
         assert!(verdict.identical(), "{verdict:?}");
-        // Without its raw export read, it was not shown encrypted.
+        // The content afterwards is the plain text read before.
+        let mut other = decrypted.clone();
+        other.sha256 = Some("other".into());
+        assert!(
+            !compare_with_plain(
+                &[efs.clone()],
+                &[other],
+                Declared::default(),
+                &ledger(vec![row(PlainKind::EfsDecrypted)])
+            )
+            .identical()
+        );
+        // A directory has only its mark taken off.
+        let mut marked = directory("\\d");
+        marked.attributes |= 0x4000;
+        marked.efs = true;
+        let verdict = compare_with_plain(
+            &[marked],
+            &[directory("\\d")],
+            Declared::default(),
+            &ledger(vec![LedgerRow {
+                paths: vec!["\\d".into()],
+                ..row(PlainKind::EfsDecrypted)
+            }]),
+        );
+        assert!(verdict.identical(), "{verdict:?}");
+        // Its raw export refused, as the lab's account was: the plain text
+        // still holds it, and the refusal is no difference of the listing.
+        let mut refused = efs.clone();
+        refused.raw_efs_sha256 = None;
+        refused.raw_efs_error = Some("Access is denied. (os error 5)".into());
+        assert!(refused.errors.is_empty());
+        assert!(compare(&[refused.clone()], &[refused.clone()]).identical());
+        assert!(compare_exact(&[refused.clone()], &[refused.clone()]).identical());
+        let mut decrypted_too = file("\\f", "plain-text");
+        decrypted_too.attributes = 0x20;
+        assert!(
+            compare_with_plain(
+                &[refused],
+                &[decrypted_too],
+                Declared::default(),
+                &ledger(vec![row(PlainKind::EfsDecrypted)])
+            )
+            .identical()
+        );
+        // Without its plain text read, it cannot be held to it.
         let mut unread = efs;
-        unread.raw_efs_sha256 = None;
+        unread.plain_sha256 = None;
         assert!(
             !compare_with_plain(
                 &[unread],

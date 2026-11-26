@@ -1458,6 +1458,19 @@ fn capture_extended_attributes<R: Read + Seek>(
     Inventory::capture(information, data, &information_bytes, &data_bytes)
 }
 
+/// Whether a condition this reading reports of a file is one EFS raises:
+/// an encrypted attribute, the encrypted mark of the file's standard
+/// information, its `$EFS` attribute (a type 0x100 it has no policy for)
+/// and its stream without a raw logical hash. A run that makes the object
+/// plain (`efs_decrypted`) settles exactly these, for that object alone.
+pub fn efs_blocker(code: &str, message: &str) -> bool {
+    matches!(code, "ntfs_encryption" | "encrypted_file_attribute")
+        || (code == "unsupported_attribute"
+            && message == "Attribute type 0x100 needs a preservation policy")
+        || (code == "logical_stream_hash_unavailable"
+            && message.ends_with(": UnsupportedEncryption"))
+}
+
 fn capture_reparse<R: Read + Seek>(
     reader: &mut R,
     record: &Record,

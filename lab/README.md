@@ -499,8 +499,12 @@ The recovery writes its own `stacks.txt`.
 
 `temporary`, `offline` and `wof` (four `compact /exe` files, one per WOF
 algorithm, listed before the run in `wof-listed-before.jsonl`) convert with
-`-AcceptPlain`; without it a run stops before it changes anything. These are
-refused, each by name: `shortnames` with `-RefuseShortNames`, `efs`, `casesensitive` (two names in one
+`-AcceptPlain`; without it a run stops before it changes anything. So does
+`efs`, with `-RunAs administrator` as well: the file is encrypted by the
+guest account the harness works as, and only that account holds its key. The
+converter runs as SYSTEM otherwise, which holds none, and is then refused by
+name with the source unchanged (`efs-nokey`). These are refused, each by
+name: `shortnames` with `-RefuseShortNames`, `casesensitive` (two names in one
 directory that differ only by case), `snapshot`,
 and `bitlocker`. `dirstream` (named streams on two directories, one of about
 1 MiB) converts since `ds3-dirstream-minimal` and `ds3-dirstream-lived-in`

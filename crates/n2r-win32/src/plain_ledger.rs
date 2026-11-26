@@ -134,7 +134,10 @@ impl PlainKind {
     /// modelled, so that a list, a ledger and the verdict can name them,
     /// and are still refused where they are found.
     pub fn implemented(self) -> bool {
-        matches!(self, PlainKind::AttributesCleared | PlainKind::WofExpanded)
+        matches!(
+            self,
+            PlainKind::AttributesCleared | PlainKind::WofExpanded | PlainKind::EfsDecrypted
+        )
     }
 }
 
@@ -312,6 +315,21 @@ pub struct LedgerRow {
     /// on the frozen source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plain_copy: Option<LedgerCopy>,
+    /// For an EFS file decrypted: what the raw source held of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub efs: Option<LedgerEfs>,
+}
+
+/// What the raw source held of an EFS file made plain, to tie its plain
+/// copy to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LedgerEfs {
+    /// The raw `$EFS` attribute's digest (resident), or a SHA-256 of where
+    /// it lies.
+    pub efs_attribute_digest: String,
+    /// A SHA-256 of where the ciphertext lies and its sizes.
+    pub ciphertext_extents_sha256: String,
 }
 
 /// The plain copy a new file was made from.
@@ -533,6 +551,7 @@ mod tests {
             after: LedgerState::default(),
             witness: "raw".into(),
             plain_copy: None,
+            efs: None,
         }
     }
 
@@ -659,7 +678,11 @@ mod tests {
                 .iter()
                 .filter(|kind| kind.implemented())
                 .collect::<Vec<_>>(),
-            [&PlainKind::AttributesCleared, &PlainKind::WofExpanded]
+            [
+                &PlainKind::AttributesCleared,
+                &PlainKind::EfsDecrypted,
+                &PlainKind::WofExpanded
+            ]
         );
     }
 
@@ -787,6 +810,7 @@ mod tests {
             },
             witness: "raw".into(),
             plain_copy: None,
+            efs: None,
         };
         let mut ledger = PlainLedger {
             kind: LEDGER_KIND.into(),

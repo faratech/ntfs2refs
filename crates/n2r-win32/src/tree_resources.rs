@@ -715,6 +715,7 @@ mod tests {
                     after: LedgerState::default(),
                     witness: "raw".into(),
                     plain_copy: None,
+                    efs: None,
                 }],
             })
             .unwrap(),

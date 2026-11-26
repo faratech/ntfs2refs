@@ -224,6 +224,17 @@ pub(crate) fn section(list: &PlainList, list_file: Option<&Path>) -> Vec<String>
         mib(working),
         mib(download)
     ));
+    if list
+        .entries()
+        .iter()
+        .any(|entry| entry.kind == n2r_win32::plain_ledger::PlainKind::EfsDecrypted)
+    {
+        lines.extend(
+            EFS_WARNINGS
+                .iter()
+                .map(|warning| format!("  Warning: {warning}")),
+        );
+    }
     for entry in list.entries().iter().take(5) {
         lines.push(format!("  {} ({})", entry.path, entry.kind));
     }
@@ -240,6 +251,13 @@ pub(crate) fn section(list: &PlainList, list_file: Option<&Path>) -> Vec<String>
     }
     lines
 }
+
+/// What a user agrees to with EFS files made plain.
+pub(crate) const EFS_WARNINGS: [&str; 3] = [
+    "EFS-encrypted files are decrypted: on the new volume anyone their permissions allow can read them, with no key",
+    "their plain text is also kept in the run's working storage (plain-copies in the run's folder) until the run ends and deletes it",
+    "to keep them protected at rest, turn BitLocker on for the new volume and for the working storage's",
+];
 
 /// The question a run asks, apart from the one that starts it.
 pub(crate) fn question(list: &PlainList) -> String {

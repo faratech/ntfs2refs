@@ -313,7 +313,22 @@ pub const DIRECTORY: &str = "plain-copies";
 pub struct PlainCopyRequest {
     pub key: PlainCopyKey,
     pub bytes: u64,
+    pub through: PlainRead,
 }
+
+/// How a copy is read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlainRead {
+    /// Through the filter that owns the object (WOF), as [`PLAIN_READ_FLAGS`].
+    Filter,
+    /// An EFS file, opened as any program opens it, without backup
+    /// semantics, with this process's token: EFS decrypts it only where that
+    /// token holds its key, and refuses the open otherwise.
+    Decrypted,
+}
+
+/// FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_OPEN_NO_RECALL: [`PlainRead::Decrypted`].
+pub const DECRYPTED_READ_FLAGS: u32 = 0x0810_0000;
 
 enum Lifecycle {
     Idle,
@@ -394,11 +409,36 @@ pub fn take_armed(volume: &str) -> io::Result<()> {
         return Ok(());
     }
     let volume = open_volume(volume.trim_end_matches('\\'))?;
+    let throughs: std::collections::BTreeMap<(u64, u16), PlainRead> = match &*lifecycle() {
+        Lifecycle::Armed { requests, .. } => requests
+            .iter()
+            .map(|r| ((r.key.record_number, r.key.sequence_number), r.through))
+            .collect(),
+        _ => Default::default(),
+    };
     take_armed_with(|key| {
         if !key.stream_name_utf16.is_empty() {
             return Err(invalid("a named stream is not copied plain".into()));
         }
-        open_plain_by_id(&volume, key.record_number, key.sequence_number)
+        match throughs.get(&(key.record_number, key.sequence_number)) {
+            Some(PlainRead::Decrypted) => open_by_id_with(
+                &volume,
+                key.record_number,
+                key.sequence_number,
+                DECRYPTED_READ_FLAGS,
+            )
+            .map_err(|error| {
+                if error.raw_os_error() == Some(5) {
+                    io::Error::new(
+                        error.kind(),
+                        format!("MFT record {} is EFS-encrypted, and {error}: this account holds no key for it", key.record_number),
+                    )
+                } else {
+                    error
+                }
+            }),
+            _ => open_plain_by_id(&volume, key.record_number, key.sequence_number),
+        }
     })
 }
 
@@ -486,9 +526,35 @@ fn open_volume(volume: &str) -> io::Result<File> {
         .open(format!("{volume}\\"))
 }
 
+/// Whether this process's account can read an EFS-encrypted file: it is
+/// opened for its data as any program opens it, without backup semantics,
+/// and closed without a byte read. EFS refuses the open (access denied)
+/// where the account holds no key for it.
+#[cfg(windows)]
+pub fn probe_decryption(path: &Path) -> io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    OpenOptions::new()
+        // FILE_READ_DATA | SYNCHRONIZE
+        .access_mode(0x0010_0001)
+        .share_mode(7)
+        .custom_flags(DECRYPTED_READ_FLAGS)
+        .open(path)
+        .map(drop)
+}
+
 /// Opens one object of the volume by its file reference for a plain read.
 #[cfg(windows)]
 pub fn open_plain_by_id(volume: &File, record: u64, sequence: u16) -> io::Result<File> {
+    open_by_id_with(volume, record, sequence, PLAIN_READ_FLAGS)
+}
+
+/// Opens one object of the volume by its file reference for reading its
+/// data, with `flags`, which never hold FILE_FLAG_OPEN_REPARSE_POINT.
+#[cfg(windows)]
+pub fn open_by_id_with(volume: &File, record: u64, sequence: u16, flags: u32) -> io::Result<File> {
+    if flags & OPEN_REPARSE_POINT != 0 {
+        return Err(invalid("a plain read never opens the reparse point".into()));
+    }
     use std::os::windows::io::{AsRawHandle, FromRawHandle};
     use windows_sys::Win32::{
         Foundation::INVALID_HANDLE_VALUE,
@@ -511,7 +577,7 @@ pub fn open_plain_by_id(volume: &File, record: u64, sequence: u16) -> io::Result
             0x0010_0081,
             7,
             std::ptr::null(),
-            PLAIN_READ_FLAGS,
+            flags,
         )
     };
     if handle == INVALID_HANDLE_VALUE || handle.is_null() {
@@ -566,6 +632,10 @@ mod tests {
     #[test]
     fn a_plain_read_never_opens_the_reparse_point() {
         assert_eq!(PLAIN_READ_FLAGS & OPEN_REPARSE_POINT, 0);
+        // A decrypting read is a program's: no reparse point, no backup
+        // semantics (which would not be the account's own access).
+        assert_eq!(DECRYPTED_READ_FLAGS & OPEN_REPARSE_POINT, 0);
+        assert_eq!(DECRYPTED_READ_FLAGS & 0x0200_0000, 0);
         // Backup semantics and no recall are both asked for.
         assert_eq!(PLAIN_READ_FLAGS & 0x0200_0000, 0x0200_0000);
         assert_eq!(PLAIN_READ_FLAGS & 0x0010_0000, 0x0010_0000);
@@ -673,6 +743,7 @@ mod tests {
             vec![PlainCopyRequest {
                 key: key(41, ""),
                 bytes: data.len() as u64,
+                through: PlainRead::Filter,
             }],
         )
         .unwrap();

@@ -187,6 +187,13 @@ fn condition(
         None => None,
     };
     Ok(match (blocker.code.as_str(), &file) {
+        // An EFS object made plain, once its list is agreed.
+        (code, Some(file))
+            if crate::plain_projection::efs_blocker(code, &blocker.message)
+                && crate::plain_projection::efs_taken(file) =>
+        {
+            Condition::Settled
+        }
         ("object_id", _) if blocker.file_record_number == Some(3) => {
             if indexes.covers_volume_object_id_domain(raw, 3) {
                 Condition::Settled
@@ -668,6 +675,8 @@ fn read(
             let mut refused = ntfs_admission::RefusedObjects::default();
             let mut plain = Vec::new();
             let mut wof = Vec::new();
+            // EFS files this run would decrypt, whose key is asked for below.
+            let mut efs_files = Vec::new();
             let (mut stays, mut copied) = (0u64, 0u64);
             for ordinal in 0..raw.file_count() {
                 let file = raw.file(ordinal)?;
@@ -696,6 +705,11 @@ fn read(
                     // Admitted because it is made plain: it goes on the list.
                     let path = ntfs_admission::paged::refused_object_path(&raw, &file)
                         .context("an object to be made plain has no path")?;
+                    if let Some(crate::plain_projection::EfsObject::File(_)) =
+                        crate::plain_projection::efs_object(&file)?
+                    {
+                        efs_files.push(crate::plain_projection::listing_path(&path));
+                    }
                     plain.push(crate::plain_projection::entry(
                         crate::plain_projection::listing_path(&path),
                         &file,
@@ -716,6 +730,26 @@ fn read(
             }
             report.plain = crate::plain_projection::PlainList::new(plain)
                 .map_err(anyhow::Error::msg)?;
+            // Each EFS file is opened for its data as this account, which
+            // proves it holds the key, without reading a byte. One it cannot
+            // open is refused by name; its ciphertext is never read as plain.
+            let mut keyless = Vec::new();
+            for path in &efs_files {
+                let opened = n2r_win32::plain_copy::probe_decryption(std::path::Path::new(
+                    &format!("{}{}", root, path.trim_start_matches('\\')),
+                ));
+                if let Err(error) = opened {
+                    keyless.push(format!("{path} ({error})"));
+                }
+            }
+            if !keyless.is_empty() {
+                report.refusals.push(format!(
+                    "{} EFS-encrypted file(s) cannot be decrypted by this account, for example {}: {}",
+                    keyless.len(),
+                    keyless[..keyless.len().min(3)].join(", "),
+                    crate::plain_projection::EFS_KEY_REMEDY
+                ));
+            }
             if !wof.is_empty() {
                 // What making them plain takes; refused where it does not fit,
                 // as the conversion refuses it once the volume is frozen.

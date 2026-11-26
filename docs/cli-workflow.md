@@ -69,7 +69,8 @@ seconds on one of 23,000 files. It prints:
 
 - **Every reason a conversion would refuse the volume** that those decide,
   each as the conversion would give it, with the file and what to do: 8.3
-  short names (with `--short-names refuse`); encrypted files; reparse
+  short names (with `--short-names refuse`); encrypted files this account
+  cannot decrypt; reparse
   points, streams and names the converter does not carry over;
   two names in a directory that differ only by case; shadow copies, and a
   shadow-copy provider of backup software that holds one or does not
@@ -354,7 +355,7 @@ Refused before anything is written, each with what was found and what to do:
 | BitLocker | Decrypt the volume: `manage-bde -off E:`; suspending is not enough |
 | Shadow copies of the volume, or snapshot storage kept on it | `vssadmin delete shadows /for=E:` |
 | A shadow-copy provider of backup software (any but Windows' own, Hyper-V's and Windows Server's for remote file shares) that holds a shadow copy on the machine, or does not answer when Windows asks it | The provider is named, and the shadow copy. Delete its shadow copies or let the backup that made them finish; a provider that does not answer has to be repaired or removed |
-| EFS-encrypted files | `cipher /d` |
+| EFS-encrypted files this account cannot decrypt (each named), or encrypted with named streams, or compressed or sparse | Run as the user who encrypted them, import that user's EFS key, or run as the data recovery agent; or `cipher /d` |
 | An OFFLINE file with a reparse point (a storage manager's) | Recall it through its storage manager, or move it |
 | Cloud placeholders, Data Deduplication, and a `compact /exe` file on a Windows boot volume or backed by a WIM image | The kind is named, with the record number to find the file by; a `compact /exe` file with `compact /u /exe <file>` |
 | A named data stream on the root directory or on a reparse-point directory, or one on a directory that is encrypted, compressed or sparse | Remove the stream. A plain named stream on any other directory is carried over as the same directory's named stream on ReFS (shown in the lab by `ds3-dirstream-minimal` and `ds3-dirstream-lived-in`: identical listings, acceptance passed) |
@@ -383,9 +384,21 @@ plain silently. This version converts:
   point are not carried over. The run refuses the volume, with the
   numbers, when the files made plain would not fit its free space: each
   takes its length rounded up to the new volume's cluster, and frees what
-  its compressed data took. A WIM-backed file is still refused.
+  its compressed data took. A WIM-backed file is still refused;
+- a file or directory EFS encrypts (`efs_decrypted`): the run's own account
+  has to hold the key. `--check`, and the check before a conversion's
+  question, open each encrypted file for its data as that account, read
+  nothing, and refuse by name a file it cannot open, with what to do (run
+  as the user who encrypted it, import that user's EFS key, or run as the
+  data recovery agent; or `cipher /d`). The file is then read decrypted on
+  the frozen volume into a copy in the run's directory and the new file is
+  made from it, plain; a directory has only its encrypted mark taken off.
+  Anyone the file's permissions allow can then read it, and its plain text
+  sits in the working storage until the run ends: the section says so, and
+  recommends BitLocker. A file with named streams, or compressed or sparse
+  and encrypted, is still refused.
 
-The other kinds a list can name (`efs_decrypted`, `dedup_rehydrated`,
+The other kinds a list can name (`dedup_rehydrated`,
 `cloud_placeholder_plain`, `projfs_placeholder_plain`, `sis_expanded`, and
 `cloud_left_out` for a placeholder that cannot be brought onto the volume
 and stays in the cloud) are still refused as listed above.

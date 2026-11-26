@@ -589,7 +589,9 @@ partition's last sector, each read back. Make it first, for the partition
 
 and give it as `-Ntfs12Image`. For both, `ntfs12.json` holds what was
 written, what the disk reads once Windows has the volume back (its
-version, and for `ntfs12` the header form of every in-use record), and
+version, the header form of every in-use record, and records 0, 1, 2, 3
+and 5 whole, so that a synthetic volume's can be set beside those of one
+Windows made), and
 `raw-feature-diagnostics.json` what Windows made of it (the volume's file
 system and letter, `fsutil fsinfo ntfsinfo`, NTFS's event-log entries). If
 V: is not back within 60 s the attempt ends `ntfs12-volume-not-mounted`;

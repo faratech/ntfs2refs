@@ -26,6 +26,10 @@ const INDEX: usize = 4096;
 pub const MFT_RECORDS: usize = 64;
 const MFT_LCN: u64 = 4;
 const MIRROR_LCN: u64 = 2;
+/// $MFT's $BITMAP: nonresident, as Windows requires of it (a resident one
+/// makes Windows refuse record 0 as corrupt, NTFS event 55), in its own
+/// cluster as ntfs-3g's mkntfs places it.
+const MFT_BITMAP_LCN: u64 = 3;
 const LOG_LCN: u64 = 20;
 const LOG_CLUSTERS: u64 = 1024;
 const ATTRDEF_LCN: u64 = LOG_LCN + LOG_CLUSTERS;
@@ -174,7 +178,8 @@ fn nonresident(
     put32(&mut a, 4, size);
     a[8] = 1;
     a[9] = name.len() as u8;
-    put16(&mut a, 10, if name.is_empty() { 0 } else { name_at as u16 });
+    // As Windows writes it, even with no name.
+    put16(&mut a, 10, name_at as u16);
     put16(&mut a, 14, instance);
     put64(&mut a, 24, clusters.saturating_sub(1));
     put16(&mut a, 32, runs_at as u16);
@@ -488,11 +493,17 @@ pub fn volume(partition_bytes: u64, hidden_sectors: u32, version: (u8, u8)) -> V
                     mft_bytes,
                     3,
                 ));
-                let mut bits = [0u8; 8];
+                let bits_at = cluster_at(MFT_BITMAP_LCN);
                 for record in 0..20 {
-                    bits[record / 8] |= 1 << (record % 8);
+                    head[bits_at + record / 8] |= 1 << (record % 8);
                 }
-                attributes.push(resident(0xb0, "", &bits, 4, false));
+                attributes.push(nonresident(
+                    0xb0,
+                    "",
+                    &[(Some(MFT_BITMAP_LCN), 1)],
+                    (MFT_RECORDS / 8) as u64,
+                    4,
+                ));
             }
             1 => attributes.push(nonresident(0x80, "", &[(Some(MIRROR_LCN), 1)], CLUSTER, 3)),
             2 => attributes.push(nonresident(
@@ -763,7 +774,8 @@ pub fn volume(partition_bytes: u64, hidden_sectors: u32, version: (u8, u8)) -> V
         put16(&mut head, cluster_at(UPCASE_LCN) + i * 2, *unit);
     }
     // $Bitmap: every cluster in use, and none past the volume's last.
-    let mut used = vec![(0u64, 3u64), (MFT_LCN, used_end - MFT_LCN)];
+    // $Boot (0-1), $MFTMirr (2), $MFT's bitmap (3), then everything else.
+    let mut used = vec![(0u64, 4u64), (MFT_LCN, used_end - MFT_LCN)];
     used.sort();
     let bitmap_at = cluster_at(BITMAP_LCN);
     for (start, count) in used {

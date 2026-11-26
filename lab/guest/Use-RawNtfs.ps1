@@ -538,7 +538,8 @@ switch ($Action) {
                 if ([long]$number -in $sampled) {
                     $raw = New-Object byte[] $recordBytes
                     [Array]::Copy($bytes, $at, $raw, 0, $recordBytes)
-                    $sample.Add([ordered]@{ number = $number; sha256 = (Get-Sha256 $raw); header_hex = (Get-Hex $raw 0 0x40); usa = $usa
+                    # The whole record as the disk holds it, to set beside one Windows made.
+                    $sample.Add([ordered]@{ number = $number; sha256 = (Get-Sha256 $raw); header_hex = (Get-Hex $raw 0 0x40); raw_hex = (Get-Hex $raw 0 $recordBytes); usa = $usa
                         first_attribute = [N2RLabRawNtfs]::U16($raw, 0x14); bytes_in_use = [N2RLabRawNtfs]::U32($raw, 0x18); in_use = [bool]$inUse })
                 }
                 if (-not $inUse) { continue }

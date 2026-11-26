@@ -66,6 +66,18 @@ fn an_ntfs_12_volume_is_read_as_nt4_laid_it_out() {
     assert_eq!(security.central_descriptors, 0);
     assert_eq!(security.legacy_descriptors, report.files.len());
     assert_eq!(security.bound_files, report.files.len());
+    // As Windows requires of $MFT (lab n12-image: a resident $BITMAP there
+    // made Windows 11 refuse record 0, NTFS event 55): its bitmap and data
+    // are nonresident.
+    let mft = report.files.iter().find(|f| f.record_number == 0).unwrap();
+    for kind in [0x80, 0xb0] {
+        let attribute = mft
+            .attributes
+            .iter()
+            .find(|a| a.type_code == kind && a.name_utf16.is_empty())
+            .unwrap();
+        assert!(!attribute.resident, "{kind:#x}");
+    }
     // The 48-byte $STANDARD_INFORMATION: no security ID.
     assert!(report.files.iter().all(|f| {
         f.standard_information

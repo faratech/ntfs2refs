@@ -1400,8 +1400,10 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                     if ($ntfs30Headers) {
                         try { $result.headers_when_the_run_starts = & $last (& $tool -DiskNumber $number -PartitionOffset $offset -Action read-headers -Records ([long[]]@($result.ntfs30.rewritten_records))) } catch { $result.headers_read_error = "$($_.Exception.Message)" }
                     }
-                    # Whether Windows rewrote the 1.2 volume's records when it mounted it.
-                    if ($ntfs12) {
+                    # Whether Windows rewrote the 1.2 volume's records when it mounted it,
+                    # and (ntfs12-version) the records of a volume Windows made, whole,
+                    # to set beside the synthetic volume's.
+                    if ($ntfs12 -or $ntfs12Version) {
                         try { $result.headers_when_the_run_starts = & $last (& $tool -DiskNumber $number -PartitionOffset $offset -Action read-headers) } catch { $result.headers_read_error = "$($_.Exception.Message)" }
                     }
                 }

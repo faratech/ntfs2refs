@@ -723,6 +723,8 @@ pub struct Table {
 #[derive(Clone, Debug, Serialize)]
 pub struct SdsRangeSummary {
     pub records: u64,
+    /// Freed slots chkdsk left (see `freed_slot`), passed over.
+    pub freed_slots: u64,
     pub descriptor_bytes: u64,
     pub logical_bytes: u64,
     pub sha256: String,
@@ -747,6 +749,7 @@ pub fn scan_sds_range(
     let length = source.byte_len();
     let mut base = 0u64;
     let mut records = 0u64;
+    let mut freed = 0u64;
     let mut descriptor_bytes = 0u64;
     let mut digest = Sha256::new();
     while base < length {
@@ -765,6 +768,23 @@ pub fn scan_sds_range(
         while at.checked_add(20).is_some_and(|end| end <= first) {
             if primary[at..at + 20].iter().all(|byte| *byte == 0) {
                 break;
+            }
+            if let Some(n) = freed_slot(&primary[at..first]) {
+                ensure!(
+                    at.checked_add(n).is_some_and(|end| end <= second)
+                        && primary[at..at + n] == mirror[at..at + n],
+                    "$Secure:$SDS freed slot at byte {} differs from its mirror",
+                    base + at as u64
+                );
+                freed = freed
+                    .checked_add(1)
+                    .context("SDS freed slot count overflow")?;
+                at = at
+                    .checked_add(n)
+                    .and_then(|n| n.checked_add(15))
+                    .context("SDS record alignment overflow")?
+                    & !15;
+                continue;
             }
             let h = header(&primary[at..at + 20])
                 .with_context(|| format!("$Secure:$SDS record at byte {}", base + at as u64))?;
@@ -815,6 +835,7 @@ pub fn scan_sds_range(
     source.revalidate()?;
     Ok(SdsRangeSummary {
         records,
+        freed_slots: freed,
         descriptor_bytes,
         logical_bytes: length,
         sha256: hex::encode(digest.finalize()),
@@ -854,6 +875,27 @@ pub fn ntfs_hash(bytes: &[u8]) -> Result<u32> {
         h.rotate_left(3).wrapping_add(u32::from_le_bytes(*w))
     }))
 }
+/// The length of a freed `$SDS` slot at the start of `bytes`, or `None`
+/// where there is none. chkdsk leaves one where it dropped a descriptor
+/// (lab n12-chkdsk-6, at byte 496 between IDs 259 and 261): a header of
+/// hash 0, security ID 0 and offset 0 that keeps only its length, and
+/// zeros where the descriptor was. No $SII or $SDH entry can name it (their
+/// IDs are 256 and up), so NTFS never reads it; it is passed over, its
+/// length kept so the records after it stay where they are. Anything else
+/// with ID 0, or a nonzero byte in it, is not one.
+fn freed_slot(bytes: &[u8]) -> Option<usize> {
+    let header = bytes.get(..20)?;
+    if header[..16].iter().any(|byte| *byte != 0) {
+        return None;
+    }
+    let length = usize::try_from(u32::from_le_bytes(header[16..20].try_into().ok()?)).ok()?;
+    ((40..=HALF).contains(&length)
+        && bytes
+            .get(20..length)
+            .is_some_and(|rest| rest.iter().all(|byte| *byte == 0)))
+    .then_some(length)
+}
+
 fn header(bytes: &[u8]) -> Result<Header> {
     ensure!(bytes.len() == 20, "exact 20-byte security header required");
     let h = Header {
@@ -1156,6 +1198,16 @@ fn sds_records(bytes: &[u8]) -> Result<BTreeMap<u32, (Header, &[u8])>> {
             if bytes[at..at + 20].iter().all(|v| *v == 0) {
                 break;
             }
+            if let Some(n) = freed_slot(&bytes[at..end]) {
+                let duplicate = at + HALF;
+                ensure!(
+                    duplicate + n <= bytes.len()
+                        && bytes[at..at + n] == bytes[duplicate..duplicate + n],
+                    "$Secure:$SDS freed slot at byte {at} differs from its mirror"
+                );
+                at = (at + n + 15) & !15;
+                continue;
+            }
             let h = header(&bytes[at..at + 20])
                 .with_context(|| format!("$Secure:$SDS record at byte {at}"))?;
             let n = h.length as usize;
@@ -1360,4 +1412,103 @@ pub fn heap_bytes(report: &Reconciliation) -> usize {
         }
     }
     n
+}
+
+#[cfg(test)]
+mod freed_slot_tests {
+    use super::*;
+    use crate::ntfs_inspect::source_domain::{SourceMetadataBudget, SourceMetadataRange};
+
+    struct Bytes(Vec<u8>);
+    impl SourceMetadataRange for Bytes {
+        fn byte_len(&self) -> u64 {
+            self.0.len() as u64
+        }
+        fn read_exact_at(&self, offset: u64, output: &mut [u8]) -> Result<()> {
+            let at = offset as usize;
+            output.copy_from_slice(&self.0[at..at + output.len()]);
+            Ok(())
+        }
+        fn revalidate(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+    fn budget() -> SourceMetadataBudget {
+        SourceMetadataBudget {
+            ram_bytes: 64 << 20,
+            scratch_bytes: 64 << 20,
+            page_bytes: 65536,
+            record_bytes: 65536,
+            merge_fan_in: 8,
+        }
+    }
+    /// A descriptor of `length` bytes: a 20-byte header and no ACLs.
+    fn descriptor(length: usize) -> Vec<u8> {
+        let mut d = vec![0u8; length];
+        d[0] = 1;
+        d[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
+        d
+    }
+    fn put(sds: &mut [u8], at: usize, bytes: &[u8]) {
+        for base in [at, at + HALF] {
+            sds[base..base + bytes.len()].copy_from_slice(bytes);
+        }
+    }
+    fn record(at: usize, id: u32, d: &[u8]) -> Vec<u8> {
+        let mut r = vec![0u8; 20];
+        r[..4].copy_from_slice(&ntfs_hash(d).unwrap().to_le_bytes());
+        r[4..8].copy_from_slice(&id.to_le_bytes());
+        r[8..16].copy_from_slice(&(at as u64).to_le_bytes());
+        r[16..20].copy_from_slice(&((20 + d.len()) as u32).to_le_bytes());
+        r.extend_from_slice(d);
+        r
+    }
+    /// The $SDS chkdsk wrote on n12-chkdsk-6, around byte 496: a record of
+    /// 100 bytes, the freed slot exactly as it was 112 bytes in (header
+    /// 000000000000000000000000000000005c000000 and 72 zero bytes), and the
+    /// record after it, 96 bytes long, at the next 16-byte boundary.
+    fn sds() -> Vec<u8> {
+        let mut sds = vec![0u8; HALF + 4096];
+        put(&mut sds, 0, &record(0, 256, &descriptor(80)));
+        let mut freed = hex::decode("000000000000000000000000000000005c000000").unwrap();
+        freed.resize(92, 0);
+        put(&mut sds, 112, &freed);
+        put(&mut sds, 208, &record(208, 261, &descriptor(76)));
+        sds
+    }
+
+    #[test]
+    fn a_freed_slot_chkdsk_left_is_passed_over() {
+        let summary = scan_sds_range(&Bytes(sds()), budget(), |_, _| Ok(())).unwrap();
+        assert_eq!((summary.records, summary.freed_slots), (2, 1));
+        let bytes = sds();
+        let records = sds_records(&bytes).unwrap();
+        assert_eq!(records.keys().copied().collect::<Vec<_>>(), [256, 261]);
+    }
+
+    #[test]
+    fn only_an_all_zero_slot_with_its_mirror_is_freed() {
+        // A byte where the descriptor was.
+        let mut sds = sds();
+        for base in [112 + 40, HALF + 112 + 40] {
+            sds[base] = 1;
+        }
+        assert!(scan_sds_range(&Bytes(sds.clone()), budget(), |_, _| Ok(())).is_err());
+        assert!(sds_records(&sds).is_err());
+        // A hash, with ID 0 still.
+        let mut sds = self::sds();
+        for base in [112, HALF + 112] {
+            sds[base] = 1;
+        }
+        let error = scan_sds_range(&Bytes(sds), budget(), |_, _| Ok(())).unwrap_err();
+        assert!(format!("{error:#}").contains("security ID 0"), "{error:#}");
+        // Its mirror not freed.
+        let mut sds = self::sds();
+        sds[HALF + 112 + 30] = 9;
+        let error = scan_sds_range(&Bytes(sds), budget(), |_, _| Ok(())).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("freed slot at byte 112"),
+            "{error:#}"
+        );
+    }
 }

@@ -497,9 +497,10 @@ When `-SampleStacks` is used on an interrupted run, the last profile written
 before the cut is collected as `interrupted-stacks.txt` when available.
 The recovery writes its own `stacks.txt`.
 
-`temporary` and `offline` convert with `-AcceptPlain`; without it a run stops
-before it changes anything. These are refused, each by name: `shortnames` with
-`-RefuseShortNames`, `efs`, `wof` (a `compact /exe` file), `casesensitive` (two names in one
+`temporary`, `offline` and `wof` (four `compact /exe` files, one per WOF
+algorithm, listed before the run in `wof-listed-before.jsonl`) convert with
+`-AcceptPlain`; without it a run stops before it changes anything. These are
+refused, each by name: `shortnames` with `-RefuseShortNames`, `efs`, `casesensitive` (two names in one
 directory that differ only by case), `snapshot`,
 and `bitlocker`. `dirstream` (named streams on two directories, one of about
 1 MiB) converts since `ds3-dirstream-minimal` and `ds3-dirstream-lived-in`

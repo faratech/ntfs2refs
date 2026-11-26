@@ -358,6 +358,8 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
     let mut bytes = 0u64;
     let mut name_count = 0usize;
     let mut stream_count = 0usize;
+    let drops = n2r_win32::plain_ledger::declared();
+    let mut drops_met = BTreeSet::new();
     let mut source_ranges = Vec::new();
     if let Some(ranges) = resource_ranges {
         source_ranges.try_reserve_exact(ranges)?;
@@ -578,6 +580,22 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
         stream_count = stream_count
             .checked_add(object.named_streams.len())
             .context("expected DATA stream count overflow")?;
+        // A source stream the run's plain-conversions ledger declares left
+        // off this object (WofCompressedData of a file made plain from its
+        // WOF copy) is counted as the admission counted it: for this object
+        // alone, and only if the object no longer holds it.
+        let dropped = drops
+            .for_object(
+                object.record_number,
+                object.sequence_number,
+                object.named_streams.iter().map(|s| s.name_utf16.as_slice()),
+            )
+            .map_err(anyhow::Error::msg)?;
+        // (The admission is compared with the tree's counts and these
+        // drops added back: `validate_new_tree`.)
+        if dropped != 0 {
+            drops_met.insert((object.record_number, object.sequence_number));
+        }
         ensure!(
             resource_admission.is_some() || stream_count <= ntfs_admission::MAX_DATA_STREAMS,
             "expected total DATA stream count exceeds 16,384"
@@ -647,6 +665,8 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
         case_stated == 0 || case_stated == directories,
         "{case_stated} of the expected tree's {directories} directories state a case-sensitive mark, where all of them or none do"
     );
+    // Every object a drop is declared for is one of this tree's.
+    drops.require_met(&drops_met).map_err(anyhow::Error::msg)?;
     validate_source_overlap(&mut source_ranges)?;
     if let Some(ranges) = resource_ranges {
         ensure!(
@@ -665,11 +685,11 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
             "expected file/directory counts exceed selected resource profile"
         );
         if let Some(admission) = resources.count_admission()? {
-            admission.validate_tree(count - directories, directories, stream_count)?;
+            admission.validate_new_tree(count - directories, directories, stream_count)?;
             admission.validate_expected_bytes(domain)?;
         }
         if let Some(admission) = resource_admission {
-            admission.validate_tree(
+            admission.validate_new_tree(
                 u64::try_from(count - directories)?,
                 u64::try_from(directories)?,
                 u64::try_from(stream_count)?,
@@ -976,6 +996,12 @@ fn derive_profile(
         );
         // As `source_pages::object`: what a conversion to plain takes off.
         let plain_cleared = crate::plain_projection::cleared_on_target(f)?;
+        // A WOF file is made plain from its copy on the paged route only.
+        ensure!(
+            !crate::plain_projection::wof_taken(f),
+            "MFT record {}: a file WOF keeps compressed is made plain only on the paged data-volume route",
+            f.record_number
+        );
         let (source_offset, source_extents, length, sha256, source_evidence, sparse) =
             match f.streams.iter().find(|s| s.name_utf16.is_empty()) {
                 Some(s) => {

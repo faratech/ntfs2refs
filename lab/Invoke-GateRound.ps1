@@ -242,6 +242,8 @@ $dataCases = @(
     # with the checksum the check printed.
     'temporary|-Content minimal -Features temporary -Check -AcceptPlain -Unattended'
     'offline|-Content minimal -Features offline -Check -AcceptPlain'
+    # WOF files of every algorithm, made plain from their copies.
+    'wof-plain|-Content minimal -Features wof -Check -AcceptPlain -Unattended'
     'names|-Content minimal -Features names -Check'
     # MBR disks: the volume alone on one, the working directory on one, both
     # with a run interrupted half way through the writes and resumed; and a

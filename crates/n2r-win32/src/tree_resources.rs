@@ -258,6 +258,21 @@ impl SourceResourceAdmission {
         }
         Ok(())
     }
+    /// [`Self::validate_tree`] of the new tree, which holds the admitted
+    /// source less exactly what this process's plain-conversions ledger
+    /// declares (`plain_ledger::declared`): the streams it drops.
+    pub fn validate_new_tree(self, files: u64, directories: u64, streams: u64) -> io::Result<()> {
+        let (files, directories, streams) = crate::plain_ledger::declared()
+            .admitted_from_new(files, directories, streams)
+            .map_err(io::Error::other)?;
+        self.validate_tree(files, directories, streams)
+    }
+    /// The admitted objects that are the new tree's.
+    pub fn new_tree_objects(self) -> io::Result<u64> {
+        crate::plain_ledger::declared()
+            .expected_objects(self.objects()?)
+            .map_err(io::Error::other)
+    }
     pub fn semantic_byte_budget(self) -> u64 {
         self.budget.scratch_bytes / 16
     }
@@ -606,6 +621,19 @@ impl CountAdmission {
         Ok(())
     }
 
+    /// [`Self::validate_tree`] of the new tree, as
+    /// [`SourceResourceAdmission::validate_new_tree`].
+    pub fn validate_new_tree(&self, files: usize, dirs: usize, streams: usize) -> io::Result<()> {
+        let (files, dirs, streams) = crate::plain_ledger::declared()
+            .admitted_from_new(files as u64, dirs as u64, streams as u64)
+            .map_err(io::Error::other)?;
+        self.validate_tree(
+            usize::try_from(files).map_err(io::Error::other)?,
+            usize::try_from(dirs).map_err(io::Error::other)?,
+            usize::try_from(streams).map_err(io::Error::other)?,
+        )
+    }
+
     pub fn validate_tree(&self, files: usize, dirs: usize, streams: usize) -> io::Result<()> {
         self.validate()?;
         if files != self.files as usize
@@ -656,5 +684,48 @@ impl CountAdmission {
         let mut count = Count { used: 0, limit };
         serde_json::to_writer_pretty(&mut count, value).map_err(io::Error::other)?;
         Ok(count.used)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plain_ledger::{
+        DeclaredDrops, LEDGER_KIND, LedgerRow, LedgerState, PlainKind, PlainLedger, declare,
+    };
+
+    #[test]
+    fn the_new_tree_is_counted_with_exactly_its_declared_drops() {
+        // A source of 3 files and 2 directories with 4 data streams, one of
+        // them a WOF file's WofCompressedData, which the new tree drops.
+        let admission = CountAdmission::new([7; 32], 10, 3, 2, 4).unwrap();
+        assert!(admission.validate_new_tree(3, 2, 3).is_err());
+        declare(
+            DeclaredDrops::from_ledger(&PlainLedger {
+                kind: LEDGER_KIND.into(),
+                agreed_list_sha256: String::new(),
+                frozen_list_sha256: String::new(),
+                source_inspection_sha256: String::new(),
+                rows: vec![LedgerRow {
+                    kind: PlainKind::WofExpanded,
+                    paths: vec!["\\wof.bin".into()],
+                    record_number: 40,
+                    sequence_number: 1,
+                    before: LedgerState::default(),
+                    after: LedgerState::default(),
+                    witness: "raw".into(),
+                    plain_copy: None,
+                }],
+            })
+            .unwrap(),
+        );
+        let held = admission.validate_new_tree(3, 2, 3);
+        // The raw volume's own count is not the new tree's.
+        let raw = admission.validate_tree(3, 2, 3);
+        // A tree that kept the stream, or lost another, is not this one.
+        let kept = admission.validate_new_tree(3, 2, 4);
+        let lost = admission.validate_new_tree(3, 2, 2);
+        declare(DeclaredDrops::default());
+        assert!(held.is_ok() && raw.is_err() && kept.is_err() && lost.is_err());
     }
 }

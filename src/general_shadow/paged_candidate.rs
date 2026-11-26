@@ -712,7 +712,11 @@ impl<'source, 'observation, 'scope>
             if reused_in_place {
                 None
             } else {
-                let receipt = if direct {
+                // A stream supplied from its plain copy has no receipt of a
+                // direct read of the source: its bytes come from the copy,
+                // held to the copy's length and digest, and the capture
+                // compares them as for any range without one (lab, pe4-efs).
+                let receipt = if direct && !self.bytes.supplied_from_copy(&identity) {
                     Some(self.bytes.read_with_direct_receipts(
                         &identity,
                         logical,

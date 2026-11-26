@@ -658,6 +658,13 @@ impl PartitionRetainedVerification {
             .known_content
             .as_ref()
             .context("actual terminal known-content checks absent")?;
+        // The converted volume holds the admitted streams less those the
+        // run's plain-conversions ledger declares dropped.
+        let streams = usize::try_from(
+            n2r_win32::plain_ledger::declared()
+                .expected_streams(self.admission.data_streams)
+                .map_err(anyhow::Error::msg)?,
+        )?;
         ensure!(
             observed.filesystem() == "ReFS"
                 && !report.conversion_qualified
@@ -675,7 +682,7 @@ impl PartitionRetainedVerification {
                 && known
                     .streams_hashed
                     .checked_add(known.streams_without_content_baseline)
-                    == Some(usize::try_from(self.admission.data_streams)?)
+                    == Some(streams)
                 && known.payload_bytes_read == content.admitted_payload_bytes_read,
             "actual terminal metadata/namespace/known-content/storage evidence differs"
         );
@@ -684,8 +691,7 @@ impl PartitionRetainedVerification {
                 maps.compare_terminal_report(expected, &self.ticket, report)?;
             }
             None => ensure!(
-                known.streams_without_content_baseline == 0
-                    && known.streams_hashed == usize::try_from(self.admission.data_streams)?,
+                known.streams_without_content_baseline == 0 && known.streams_hashed == streams,
                 "terminal streams without content baselines require retained actual maps"
             ),
         }

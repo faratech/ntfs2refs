@@ -1247,19 +1247,50 @@ impl ResourceSourceContext {
             // list the user agreed to before it was frozen: the subset rule
             // (`plain_consent::bind`). The ledger is kept with the run's
             // records below. A Windows boot volume is never offered them.
-            let plain = if binding.layout_profile
+            let mut plain = if binding.layout_profile
                 != n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
                 && crate::plain_consent::takes_plain()
             {
-                let (frozen, rows) = crate::plain_projection::census(&raw)?;
-                let agreed = crate::plain_consent::bind_frozen(&frozen)?;
-                Some(n2r_win32::plain_ledger::PlainLedger {
+                let census = crate::plain_projection::census(&raw)?;
+                let agreed = crate::plain_consent::bind_frozen(&census.list)?;
+                // WOF files made plain grow the volume: refused here, with
+                // the numbers, where that does not fit its free space.
+                if !census.wof.is_empty() {
+                    crate::plain_projection::require_wof_room(
+                        &census.wof,
+                        n2r_win32::target_cluster::bytes(),
+                        raw.header()
+                            .free_clusters
+                            .unwrap_or(0)
+                            .saturating_mul(u64::from(raw.header().geometry.cluster_size)),
+                    )?;
+                }
+                // Their plain bytes are copied through WOF at the read-only
+                // observation of the frozen source below, into the run's
+                // own directory.
+                if !census.copies.is_empty() {
+                    let run = crate::plain_consent::run_directory().context(
+                        "files WOF keeps compressed are made plain only by a run that keeps a directory of its own",
+                    )?;
+                    n2r_win32::plain_copy::arm(
+                        &run.join(n2r_win32::plain_copy::DIRECTORY),
+                        census.copies,
+                    )?;
+                }
+                let ledger = n2r_win32::plain_ledger::PlainLedger {
                     kind: n2r_win32::plain_ledger::LEDGER_KIND.to_owned(),
                     agreed_list_sha256: agreed,
-                    frozen_list_sha256: frozen.sha256(),
+                    frozen_list_sha256: census.list.sha256(),
                     source_inspection_sha256: inspection_sha.clone(),
-                    rows,
-                })
+                    rows: census.rows,
+                };
+                // The streams the new tree leaves off, object by object, as
+                // every count of it against this admission expects them.
+                n2r_win32::plain_ledger::declare(
+                    n2r_win32::plain_ledger::DeclaredDrops::from_ledger(&ledger)
+                        .map_err(anyhow::Error::msg)?,
+                );
+                Some(ledger)
             } else {
                 None
             };
@@ -1606,6 +1637,12 @@ impl ResourceSourceContext {
                 "actual native source owner lost its shared memory leases"
             );
             native.domain().revalidate()?;
+            // The plain copies were taken in the same read-only window; each
+            // is tied in the ledger to what it holds.
+            n2r_win32::plain_copy::require_taken()?;
+            if let Some(ledger) = plain.as_mut() {
+                crate::plain_projection::attach_copies(&mut ledger.rows)?;
+            }
             let native_artifact = if let Some(artifact) = cached_native_artifact {
                 Some(artifact)
             } else {

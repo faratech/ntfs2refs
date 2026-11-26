@@ -2140,13 +2140,16 @@ pub(crate) fn user_issues_with_context_alias_scope(
         .as_ref()
         .filter(|point| point.tag() == n2r_win32::reparse_layout::IO_REPARSE_TAG_WOF)
     {
-        // A file WOF keeps compressed is never recreated as such. Converted
-        // to plain it would be (`wof_expanded`), which this build does not do
-        // yet; refused by name, with the remedy.
-        issues.push(format!(
-            "it is a file WOF keeps compressed{}",
-            n2r_win32::reparse_layout::unsupported_tag_meaning(point.tag())
-        ));
+        // A file WOF keeps compressed is never recreated as such. A data
+        // volume's is made a plain file once its list is agreed
+        // (`wof_expanded`); anywhere else, or of another shape, it is
+        // refused by name, with the remedy.
+        if !(ordinary && crate::plain_projection::wof_taken(f)) {
+            issues.push(format!(
+                "it is a file WOF keeps compressed{}",
+                n2r_win32::reparse_layout::unsupported_tag_meaning(point.tag())
+            ));
+        }
     } else if let Some(point) = &reparse {
         if (point.tag() == 0xa0000003 && !f.is_directory)
             || (!f.is_directory && (f.streams.len() != 1 || f.streams[0].logical_size != 0))

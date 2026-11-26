@@ -1275,7 +1275,8 @@ impl ReopenedPartitionResourceRecovery {
         ensure!(
             publication.source_inspection_sha256
                 == hex::encode(publication.resource_admission.source_inspection_sha256)
-                && publication.expected.objects == publication.resource_admission.objects()?
+                && publication.expected.objects
+                    == publication.resource_admission.new_tree_objects()?
                 && publication.source_fingerprint_kind
                     == if publication.verification_policy.is_full_content() {
                         crate::source_fingerprint::resource::FULL_KIND
@@ -1607,7 +1608,8 @@ impl ReopenedPartitionResourceRecovery {
         ensure!(
             publication.source_inspection_sha256
                 == hex::encode(publication.resource_admission.source_inspection_sha256)
-                && publication.expected.objects == publication.resource_admission.objects()?
+                && publication.expected.objects
+                    == publication.resource_admission.new_tree_objects()?
                 && publication.source_fingerprint_kind
                     == if publication.verification_policy.is_full_content() {
                         crate::source_fingerprint::resource::FULL_KIND
@@ -2380,7 +2382,14 @@ impl<'a> VerifiedProtectedHandoff<'a> {
                     .streams_hashed
                     .checked_add(known.streams_without_content_baseline)
                     == Some(usize::try_from(
-                        self.recovery.publication.resource_admission.data_streams
+                        // The converted volume holds the admitted streams less
+                        // those the run's ledger declares dropped (a recovery
+                        // declares them from <run>\plain-conversions.json).
+                        n2r_win32::plain_ledger::declared()
+                            .expected_streams(
+                                self.recovery.publication.resource_admission.data_streams
+                            )
+                            .map_err(anyhow::Error::msg)?
                     )?)
                 && known.payload_bytes_read == content.admitted_payload_bytes_read,
             "actual protected converted observation or known-content coverage differs"
@@ -2633,7 +2642,8 @@ impl ReopenedResourceRecovery {
                 && !publication.serialized_publication_grants_authority
                 && publication.source_inspection_sha256
                     == hex::encode(publication.resource_admission.source_inspection_sha256)
-                && publication.expected.objects == publication.resource_admission.objects()?
+                && publication.expected.objects
+                    == publication.resource_admission.new_tree_objects()?
                 && publication.source_fingerprint_kind
                     == if publication.verification_policy.is_full_content() {
                         crate::source_fingerprint::resource::FULL_KIND

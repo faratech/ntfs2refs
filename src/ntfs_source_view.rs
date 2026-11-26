@@ -287,7 +287,12 @@ fn check_metadata_with_link_counter_hint(
                 };
                 ensure!(
                     u64::from_le_bytes(query(s, 1)?[..8].try_into().unwrap())
-                        == expected_allocation,
+                        == expected_allocation
+                        || crate::plain_projection::allocation_held_by_copy(
+                            f.record_number,
+                            f.sequence_number,
+                            &stream.name_utf16
+                        ),
                     "native allocation size differs"
                 );
             }

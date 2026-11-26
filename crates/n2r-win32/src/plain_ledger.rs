@@ -134,7 +134,7 @@ impl PlainKind {
     /// modelled, so that a list, a ledger and the verdict can name them,
     /// and are still refused where they are found.
     pub fn implemented(self) -> bool {
-        matches!(self, PlainKind::AttributesCleared)
+        matches!(self, PlainKind::AttributesCleared | PlainKind::WofExpanded)
     }
 }
 
@@ -308,6 +308,20 @@ pub struct LedgerRow {
     pub after: LedgerState,
     /// What the before state was read from.
     pub witness: String,
+    /// For an object made from its plain copy: that copy, as it was taken
+    /// on the frozen source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plain_copy: Option<LedgerCopy>,
+}
+
+/// The plain copy a new file was made from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LedgerCopy {
+    pub bytes: u64,
+    pub sha256: String,
+    /// XXH3-128, as the new file's stream is held to it.
+    pub content_digest: String,
 }
 
 /// What a run converted to plain, as it keeps it in its records.
@@ -362,9 +376,257 @@ impl PlainLedger {
     }
 }
 
+/// The source streams a ledger row's kind leaves off the new object, by
+/// name: WofCompressedData for a file WOF kept compressed, none for any
+/// other kind.
+pub fn dropped_stream_names(kind: PlainKind) -> &'static [&'static str] {
+    match kind {
+        PlainKind::WofExpanded => &[crate::reparse_layout::WOF_COMPRESSED_DATA],
+        _ => &[],
+    }
+}
+
+/// The source streams a run's ledger declares left off its new objects,
+/// object by object. The source's admission counts every stream the raw
+/// volume holds; the new volume holds those less exactly these, and only
+/// where they are declared.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeclaredDrops {
+    by_object: BTreeMap<(u64, u16), Vec<Vec<u16>>>,
+}
+
+impl DeclaredDrops {
+    /// The drops `ledger` declares: those of each row's kind, for that
+    /// row's object alone.
+    pub fn from_ledger(ledger: &PlainLedger) -> Result<Self, String> {
+        ledger.validate()?;
+        let mut by_object: BTreeMap<(u64, u16), Vec<Vec<u16>>> = BTreeMap::new();
+        for row in &ledger.rows {
+            let names = dropped_stream_names(row.kind);
+            if names.is_empty() {
+                continue;
+            }
+            let key = (row.record_number, row.sequence_number);
+            if by_object.contains_key(&key) {
+                return Err(format!(
+                    "MFT record {} has more than one row in the plain-conversions ledger",
+                    row.record_number
+                ));
+            }
+            by_object.insert(
+                key,
+                names
+                    .iter()
+                    .map(|name| name.encode_utf16().collect())
+                    .collect(),
+            );
+        }
+        Ok(Self { by_object })
+    }
+
+    /// How many streams are declared dropped in all.
+    pub fn total(&self) -> u64 {
+        self.by_object
+            .values()
+            .map(|names| names.len() as u64)
+            .sum()
+    }
+
+    /// The streams declared dropped from one object of the new tree, given
+    /// the names of its named streams: 0 for an object no row declares
+    /// anything of. An object that still has a stream declared dropped is
+    /// an error.
+    pub fn for_object<'a>(
+        &self,
+        record_number: u64,
+        sequence_number: u16,
+        mut named_streams: impl Iterator<Item = &'a [u16]>,
+    ) -> Result<u64, String> {
+        let Some(names) = self.by_object.get(&(record_number, sequence_number)) else {
+            return Ok(0);
+        };
+        if named_streams.any(|name| names.iter().any(|dropped| dropped.as_slice() == name)) {
+            return Err(format!(
+                "MFT record {record_number} keeps a stream its plain-conversions ledger row declares dropped"
+            ));
+        }
+        Ok(names.len() as u64)
+    }
+
+    /// Every object a drop was declared for has to have been met in the new
+    /// tree: a declaration of an object the tree does not hold is an error.
+    pub fn require_met(&self, met: &std::collections::BTreeSet<(u64, u16)>) -> Result<(), String> {
+        match self.by_object.keys().find(|key| !met.contains(key)) {
+            Some((record, _)) => Err(format!(
+                "the plain-conversions ledger declares streams dropped from MFT record {record}, which the new tree does not hold"
+            )),
+            None => Ok(()),
+        }
+    }
+
+    /// The admission's counts (files, directories, streams) of the source
+    /// a new tree with these counts was made from: the new tree's, with
+    /// the streams declared dropped added back.
+    pub fn admitted_from_new(
+        &self,
+        files: u64,
+        directories: u64,
+        streams: u64,
+    ) -> Result<(u64, u64, u64), String> {
+        Ok((
+            files,
+            directories,
+            streams.checked_add(self.total()).ok_or_else(|| {
+                "the new tree's stream count with the declared drops overflows".to_owned()
+            })?,
+        ))
+    }
+
+    /// The admission's objects that are the new tree's. Every one is: a
+    /// stream dropped leaves its object.
+    pub fn expected_objects(&self, admitted: u64) -> Result<u64, String> {
+        Ok(admitted)
+    }
+
+    /// The admission's raw stream count less the declared drops: what the
+    /// new volume holds.
+    pub fn expected_streams(&self, admitted: u64) -> Result<u64, String> {
+        admitted.checked_sub(self.total()).ok_or_else(|| {
+            format!(
+                "{} streams are declared dropped and the source holds {admitted}",
+                self.total()
+            )
+        })
+    }
+}
+
+static DECLARED: std::sync::Mutex<Option<DeclaredDrops>> = std::sync::Mutex::new(None);
+
+/// This process's declared drops: those of the run it converts or
+/// recovers, from its ledger.
+pub fn declare(drops: DeclaredDrops) {
+    *DECLARED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(drops);
+}
+
+/// What this process declared; none where nothing was.
+pub fn declared() -> DeclaredDrops {
+    DECLARED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn wof_row(record: u64, kind: PlainKind) -> LedgerRow {
+        LedgerRow {
+            kind,
+            paths: vec![format!("\\wof-{record}.bin")],
+            record_number: record,
+            sequence_number: 1,
+            before: LedgerState::default(),
+            after: LedgerState::default(),
+            witness: "raw".into(),
+            plain_copy: None,
+        }
+    }
+
+    fn ledger_of(rows: Vec<LedgerRow>) -> PlainLedger {
+        PlainLedger {
+            kind: LEDGER_KIND.into(),
+            agreed_list_sha256: String::new(),
+            frozen_list_sha256: String::new(),
+            source_inspection_sha256: String::new(),
+            rows,
+        }
+    }
+
+    #[test]
+    fn a_wof_object_verifies_with_its_compressed_data_dropped() {
+        let drops = DeclaredDrops::from_ledger(&ledger_of(vec![
+            wof_row(40, PlainKind::WofExpanded),
+            wof_row(41, PlainKind::AttributesCleared),
+        ]))
+        .unwrap();
+        // One stream, for the WOF row alone.
+        assert_eq!(drops.total(), 1);
+        assert_eq!(drops.for_object(40, 1, std::iter::empty()), Ok(1));
+        assert_eq!(drops.expected_streams(10), Ok(9));
+        let met: std::collections::BTreeSet<_> = [(40, 1), (41, 1)].into();
+        assert!(drops.require_met(&met).is_ok());
+    }
+
+    #[test]
+    fn the_new_tree_is_held_to_the_admission_with_its_drops_added_back() {
+        let drops =
+            DeclaredDrops::from_ledger(&ledger_of(vec![wof_row(40, PlainKind::WofExpanded)]))
+                .unwrap();
+        // The new tree holds one stream fewer than the admission counted:
+        // the paged projection, the paged expected tree and the cached body
+        // compare (files, directories, streams) with it added back.
+        assert_eq!(drops.admitted_from_new(3, 2, 4), Ok((3, 2, 5)));
+        // A stream dropped leaves its object.
+        assert_eq!(drops.expected_objects(5), Ok(5));
+        // Nothing declared: the counts stand as they are.
+        assert_eq!(
+            DeclaredDrops::default().admitted_from_new(3, 2, 4),
+            Ok((3, 2, 4))
+        );
+        assert!(drops.admitted_from_new(0, 0, u64::MAX).is_err());
+    }
+
+    #[test]
+    fn a_stream_missing_where_nothing_declares_it_is_not_excused() {
+        let drops =
+            DeclaredDrops::from_ledger(&ledger_of(vec![wof_row(40, PlainKind::WofExpanded)]))
+                .unwrap();
+        // Another object, or the same record of another sequence, or a row
+        // of a kind that drops nothing: no drop.
+        assert_eq!(drops.for_object(42, 1, std::iter::empty()), Ok(0));
+        assert_eq!(drops.for_object(40, 2, std::iter::empty()), Ok(0));
+        let cleared =
+            DeclaredDrops::from_ledger(&ledger_of(vec![wof_row(40, PlainKind::AttributesCleared)]))
+                .unwrap();
+        assert_eq!(cleared.total(), 0);
+        assert_eq!(cleared.for_object(40, 1, std::iter::empty()), Ok(0));
+        // Nothing declared: the admission's count stands as it is.
+        assert_eq!(DeclaredDrops::default().expected_streams(10), Ok(10));
+    }
+
+    #[test]
+    fn a_declared_drop_holds_only_for_its_own_object_as_it_is() {
+        let drops =
+            DeclaredDrops::from_ledger(&ledger_of(vec![wof_row(40, PlainKind::WofExpanded)]))
+                .unwrap();
+        // Declared for an object the new tree does not hold.
+        let met: std::collections::BTreeSet<_> = [(41, 1)].into();
+        assert!(drops.require_met(&met).is_err());
+        // The object still holds the stream declared dropped.
+        let compressed: Vec<u16> = "WofCompressedData".encode_utf16().collect();
+        assert!(
+            drops
+                .for_object(40, 1, [compressed.as_slice()].into_iter())
+                .is_err()
+        );
+        // More dropped than there are streams.
+        assert!(drops.expected_streams(0).is_err());
+        // One object in two rows.
+        assert!(
+            DeclaredDrops::from_ledger(&ledger_of(vec![
+                wof_row(40, PlainKind::WofExpanded),
+                LedgerRow {
+                    paths: vec!["\\other".into()],
+                    ..wof_row(40, PlainKind::WofExpanded)
+                },
+            ]))
+            .is_err()
+        );
+    }
 
     fn entry(path: &str, kind: PlainKind, cleared: u32) -> PlainEntry {
         PlainEntry {
@@ -391,13 +653,13 @@ mod tests {
             assert!(!kind.describe().is_empty());
         }
         assert_eq!(PlainKind::parse("plain"), None);
-        // Only the first is converted by this build.
+        // What this build converts.
         assert_eq!(
             PlainKind::ALL
                 .iter()
                 .filter(|kind| kind.implemented())
                 .collect::<Vec<_>>(),
-            [&PlainKind::AttributesCleared]
+            [&PlainKind::AttributesCleared, &PlainKind::WofExpanded]
         );
     }
 
@@ -524,6 +786,7 @@ mod tests {
                 reparse_tag: None,
             },
             witness: "raw".into(),
+            plain_copy: None,
         };
         let mut ledger = PlainLedger {
             kind: LEDGER_KIND.into(),

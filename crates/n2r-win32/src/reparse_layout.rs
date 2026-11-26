@@ -37,20 +37,23 @@ pub const WOF_ALGORITHMS: [(u32, &str); 4] = [
 ];
 
 /// The algorithm of a WOF reparse point of the file provider, read exactly:
-/// the common header (tag, 20 bytes of data), WOF_EXTERNAL_INFO (version 1,
-/// provider 2: a file) and FILE_PROVIDER_EXTERNAL_INFO_V1 (version 1, an
-/// algorithm WOF knows, no flags). `None` for anything else, a WIM-backed
-/// file among them.
+/// the common header (the tag and the length of its data), WOF_EXTERNAL_INFO
+/// (version 1, provider 2: a file) and the file provider's version 1 and
+/// algorithm. That is the 16 bytes WOF writes on the disk
+/// (FILE_PROVIDER_EXTERNAL_INFO_V0, as `compact /exe` leaves it in the lab);
+/// the 20 of FILE_PROVIDER_EXTERNAL_INFO_V1 are read too, with no flags.
+/// `None` for anything else, a WIM-backed file among them.
 pub fn wof_file_algorithm(buffer: &[u8]) -> Option<u32> {
     let field = |at: usize| dword(buffer, at).ok();
-    (buffer.len() == HEADER_BYTES + 20
+    let data = usize::from(word(buffer, 4).ok()?);
+    (matches!(data, 16 | 20)
+        && buffer.len() == HEADER_BYTES + data
         && field(0)? == IO_REPARSE_TAG_WOF
-        && word(buffer, 4).ok()? == 20
         && word(buffer, 6).ok()? == 0
         && field(8)? == 1
         && field(12)? == 2
         && field(16)? == 1
-        && field(24)? == 0)
+        && (data == 16 || field(24)? == 0))
         .then(|| field(20))
         .flatten()
         .filter(|algorithm| WOF_ALGORITHMS.iter().any(|(known, _)| known == algorithm))
@@ -319,6 +322,42 @@ mod refusal_tests {
             point.extend_from_slice(&value.to_le_bytes());
         }
         point
+    }
+
+    /// The point as WOF writes it on the disk: 16 bytes of data.
+    fn wof_point_on_disk(algorithm: u32) -> Vec<u8> {
+        let mut point = Vec::new();
+        point.extend_from_slice(&IO_REPARSE_TAG_WOF.to_le_bytes());
+        point.extend_from_slice(&16u16.to_le_bytes());
+        point.extend_from_slice(&0u16.to_le_bytes());
+        for value in [1u32, 2, 1, algorithm] {
+            point.extend_from_slice(&value.to_le_bytes());
+        }
+        point
+    }
+
+    #[test]
+    fn a_wof_point_as_written_on_the_disk_is_validated_not_refused() {
+        for (algorithm, _) in WOF_ALGORITHMS {
+            let point = wof_point_on_disk(algorithm);
+            assert_eq!(wof_file_algorithm(&point), Some(algorithm));
+            // The raw inspection validates every point it reads, and a
+            // refusal there stops the reading before anything classifies
+            // the file (lab, wof-plain: "is not one the converter
+            // recreates").
+            parse(&point).unwrap();
+        }
+        // A WIM-backed one is still refused by its tag, with its remedy.
+        let mut wim = wof_point_on_disk(1);
+        wim[12..16].copy_from_slice(&1u32.to_le_bytes());
+        let refusal = parse(&wim).unwrap_err().to_string();
+        assert!(refusal.contains("compact /u /exe"), "{refusal}");
+        // A length that is neither form.
+        let mut odd = wof_point_on_disk(1);
+        odd.extend_from_slice(&[0; 4]);
+        odd[4..6].copy_from_slice(&20u16.to_le_bytes());
+        odd[24..28].copy_from_slice(&1u32.to_le_bytes());
+        assert!(parse(&odd).is_err());
     }
 
     #[test]

@@ -7,13 +7,20 @@
 //! taken off the object; everything else is carried over as for any other
 //! object, and the run's own verification holds the new volume to it.
 //!
-//! What this build converts: [`PlainKind::AttributesCleared`], the
-//! TEMPORARY and OFFLINE attributes of a file or directory that has no
-//! reparse point. ReFS keeps neither as NTFS does (OFFLINE without a
-//! reparse point means nothing to any program but a hierarchical storage
-//! manager, and TEMPORARY is a caching hint), so the object is carried over
-//! with both cleared and its contents unchanged. An OFFLINE file with a
-//! reparse point belongs to such a manager and is still refused.
+//! What this build converts:
+//!
+//! - [`PlainKind::AttributesCleared`], the TEMPORARY and OFFLINE attributes
+//!   of a file or directory that has no reparse point. ReFS keeps neither as
+//!   NTFS does (OFFLINE without a reparse point means nothing to any program
+//!   but a hierarchical storage manager, and TEMPORARY is a caching hint),
+//!   so the object is carried over with both cleared and its contents
+//!   unchanged. An OFFLINE file with a reparse point belongs to such a
+//!   manager and is still refused.
+//! - [`PlainKind::WofExpanded`], a file WOF's file provider keeps
+//!   compressed. Its plain bytes are copied through WOF on the frozen source
+//!   (`n2r_win32::plain_copy`) and the new file is made from that copy,
+//!   without the reparse point, the WofCompressedData stream and the sparse
+//!   and reparse attributes; everything else is carried over.
 use crate::{
     ntfs_admission,
     ntfs_inspect::{FileInventory, RootFileDomain},
@@ -35,7 +42,19 @@ pub(crate) struct PlainTransform {
 impl PlainTransform {
     /// The attributes the new object is made with.
     pub(crate) fn target_attributes(self, source_attributes: u32) -> u32 {
-        source_attributes & !self.cleared_attributes
+        source_attributes & !self.target_cleared()
+    }
+
+    /// Every attribute the new object is made without: the cleared ones,
+    /// and for a WOF file its reparse point and the sparse unnamed stream
+    /// WOF leaves on the source.
+    pub(crate) fn target_cleared(self) -> u32 {
+        match self.kind {
+            PlainKind::WofExpanded => {
+                n2r_win32::plain_ledger::REPARSE_POINT | n2r_win32::plain_ledger::SPARSE_FILE
+            }
+            _ => self.cleared_attributes,
+        }
     }
 }
 
@@ -122,8 +141,8 @@ pub(crate) fn require_wof_room(files: &[WofFile], target_cluster: u64, free: u64
     Ok(())
 }
 
-/// What a check says of the files WOF keeps compressed, which this build
-/// refuses: what making them plain would take, and whether it fits.
+/// What a check says of the files WOF keeps compressed: what making them
+/// plain takes, and whether it fits.
 pub(crate) fn wof_note(files: &[WofFile], target_cluster: u64, free: u64) -> String {
     let (grows, frees) = wof_growth(files, target_cluster);
     format!(
@@ -142,8 +161,149 @@ pub(crate) fn wof_note(files: &[WofFile], target_cluster: u64, free: u64) -> Str
     )
 }
 
+/// Whether `stream` is WOF's WofCompressedData.
+pub(crate) fn is_wof_compressed_data(stream: &crate::ntfs_inspect::StreamInventory) -> bool {
+    stream
+        .name_utf16
+        .iter()
+        .copied()
+        .eq(n2r_win32::reparse_layout::WOF_COMPRESSED_DATA.encode_utf16())
+}
+
+/// The plain copy key of a WOF file's unnamed stream.
+pub(crate) fn copy_key(file: &FileInventory) -> n2r_win32::plain_copy::PlainCopyKey {
+    n2r_win32::plain_copy::PlainCopyKey {
+        record_number: file.record_number,
+        sequence_number: file.sequence_number,
+        stream_name_utf16: Vec::new(),
+    }
+}
+
+/// Whether this run makes `file` a plain file from its WOF copy (where
+/// `wof_expanded` is enabled, `PlainKind::implemented`). The stream it
+/// leaves off is declared by the ledger (`DeclaredDrops`), and every count
+/// of the new tree against the source's admission expects it so.
+pub(crate) fn wof_taken(file: &FileInventory) -> bool {
+    PlainKind::WofExpanded.implemented()
+        && crate::plain_consent::takes_plain()
+        && wof_file(file).ok().flatten().is_some()
+}
+
+/// The plain copy `file`'s new unnamed stream is made from, where this run
+/// makes a WOF file plain. Its copy has to have been taken.
+pub(crate) fn wof_copy_pin(
+    file: &FileInventory,
+) -> Result<Option<n2r_win32::plain_copy::PlainCopyPin>> {
+    if !wof_taken(file) {
+        return Ok(None);
+    }
+    n2r_win32::plain_copy::taken_pin(&copy_key(file))
+        .map(Some)
+        .with_context(|| {
+            format!(
+                "MFT record {} is made plain from its WOF copy, which was not taken",
+                file.record_number
+            )
+        })
+}
+
+/// The object a native observation of `file` is compared with, where this
+/// run makes it plain from its copy: the raw source as the filter that owns
+/// it shows it to Windows, and nothing else changed.
+///
+/// - WOF hides its reparse point, the REPARSE_POINT and SPARSE_FILE
+///   attributes and its WofCompressedData stream (the lab's listing of a
+///   `compact /exe` file shows attributes 0x20, one stream, the full length).
+/// - Either way the unnamed stream's contents are what the filter reads,
+///   which the plain copy holds: Windows' read of it is held to the copy's
+///   content digest, and never left unread as a plain stream would be.
+///
+/// `None` for every other object, which is compared as it is.
+pub(crate) fn observed_view(file: &FileInventory) -> Result<Option<FileInventory>> {
+    let Some(pin) = wof_copy_pin(file)? else {
+        return Ok(None);
+    };
+    filter_view(file, wof_taken(file), &pin.content_digest).map(Some)
+}
+
+/// [`observed_view`] of a file whose copy has `content_digest`; `wof`
+/// where WOF owns it.
+fn filter_view(file: &FileInventory, wof: bool, content_digest: &str) -> Result<FileInventory> {
+    let mut view = file.clone();
+    if wof {
+        view.reparse = None;
+        view.attributes.retain(|attribute| {
+            attribute.type_code != 0xc0
+                && !(attribute.type_code == 0x80
+                    && attribute
+                        .name_utf16
+                        .iter()
+                        .copied()
+                        .eq(n2r_win32::reparse_layout::WOF_COMPRESSED_DATA.encode_utf16()))
+        });
+        view.streams
+            .retain(|stream| !is_wof_compressed_data(stream));
+        if let Some(information) = view.standard_information.as_mut() {
+            information.file_attributes &=
+                !(n2r_win32::plain_ledger::REPARSE_POINT | n2r_win32::plain_ledger::SPARSE_FILE);
+        }
+    }
+    let unnamed = view
+        .streams
+        .iter_mut()
+        .find(|stream| stream.name_utf16.is_empty())
+        .with_context(|| format!("MFT record {} has no unnamed stream", file.record_number))?;
+    // EFS: Windows reads the encrypted stream decrypted, as an ordinary one.
+    unnamed.flags &= !0x4000;
+    // WOF: Windows shows the stream as an ordinary one, not sparse (the lab:
+    // attributes 0x20 where the raw record gives 0x220).
+    if wof {
+        unnamed.flags &= !0x8000;
+    }
+    unnamed.logical_sha256 = Some(content_digest.to_owned());
+    unnamed.logical_hash_status = crate::ntfs_inspect::LogicalHashStatus::Complete;
+    for attribute in view
+        .attributes
+        .iter_mut()
+        .filter(|attribute| attribute.type_code == 0x80 && attribute.name_utf16.is_empty())
+    {
+        attribute.flags &= !0x4000;
+        if wof {
+            attribute.flags &= !0x8000;
+        }
+    }
+    Ok(view)
+}
+
+/// Whether a stream's allocation, as Windows reports it, is held by its
+/// plain copy rather than by the raw record: the unnamed stream of an object
+/// this run makes plain from a copy. WOF reports the allocation of its
+/// compressed data for it, which no raw extent of the stream accounts for;
+/// the stream's contents are held to the copy's digest instead.
+pub(crate) fn allocation_held_by_copy(
+    record_number: u64,
+    sequence_number: u16,
+    stream_name_utf16: &[u16],
+) -> bool {
+    stream_name_utf16.is_empty()
+        && n2r_win32::plain_copy::taken_pin(&n2r_win32::plain_copy::PlainCopyKey {
+            record_number,
+            sequence_number,
+            stream_name_utf16: Vec::new(),
+        })
+        .is_some()
+}
+
 /// The transform of one file or directory, from its raw record.
 pub(crate) fn of_file(file: &FileInventory) -> Result<Option<PlainTransform>> {
+    // A WOF point of another shape is refused by admission, by name, and
+    // every WOF file while `wof_expanded` is not enabled.
+    if PlainKind::WofExpanded.implemented() && wof_file(file).ok().flatten().is_some() {
+        return Ok(Some(PlainTransform {
+            kind: PlainKind::WofExpanded,
+            cleared_attributes: 0,
+        }));
+    }
     let projected = crate::ntfs_file_attributes::project_user(file)?;
     let reparse = crate::ntfs_reparse::file_point(file)?.is_some();
     Ok(transform_for(projected.source_attributes, reparse))
@@ -164,7 +324,7 @@ pub(crate) fn cleared_on_target(file: &FileInventory) -> Result<u32> {
     if !crate::plain_consent::takes_plain() {
         return Ok(0);
     }
-    Ok(of_file(file)?.map_or(0, |transform| transform.cleared_attributes))
+    Ok(of_file(file)?.map_or(0, PlainTransform::target_cleared))
 }
 
 /// A path as a listing names it: `\` and the components.
@@ -174,26 +334,75 @@ pub(crate) fn listing_path(components: &[String]) -> String {
 
 /// The list entry for one object.
 pub(crate) fn entry(path: String, file: &FileInventory, transform: PlainTransform) -> PlainEntry {
+    let wof = wof_file(file).ok().flatten();
+    let cluster = n2r_win32::target_cluster::bytes();
     PlainEntry {
         kind: transform.kind,
         path,
         cleared_attributes: transform.cleared_attributes,
-        bytes: file
-            .streams
-            .iter()
-            .fold(0u64, |sum, stream| sum.saturating_add(stream.logical_size)),
-        // Clearing an attribute takes no room anywhere.
-        volume_extra_bytes: 0,
-        working_extra_bytes: 0,
+        bytes: match wof {
+            // As a program reads it; the compressed data is not carried.
+            Some(wof) => wof.plain_bytes,
+            None => file
+                .streams
+                .iter()
+                .fold(0u64, |sum, stream| sum.saturating_add(stream.logical_size)),
+        },
+        // Clearing an attribute takes no room anywhere. A WOF file takes its
+        // plain length on the new volume, less what its compressed data took
+        // on the source, and its copy in the working storage.
+        volume_extra_bytes: wof.map_or(0, |wof| {
+            wof_growth(&[wof], cluster)
+                .0
+                .saturating_sub(wof.compressed_allocated)
+        }),
+        working_extra_bytes: wof.map_or(0, |wof| wof.plain_bytes),
         download_bytes: 0,
     }
+}
+
+/// What the frozen source makes plain: the agreed list's subset, the
+/// ledger's rows, the copies to take and the WOF files among them.
+pub(crate) struct Census {
+    pub list: PlainList,
+    pub rows: Vec<LedgerRow>,
+    pub copies: Vec<n2r_win32::plain_copy::PlainCopyRequest>,
+    pub wof: Vec<WofFile>,
+}
+
+/// Fills each row of a file made plain from a copy with that copy's
+/// digests: the ledger ties what the new file holds to what was read.
+pub(crate) fn attach_copies(rows: &mut [LedgerRow]) -> Result<()> {
+    for row in rows
+        .iter_mut()
+        .filter(|row| row.kind == PlainKind::WofExpanded)
+    {
+        let pin = n2r_win32::plain_copy::taken_pin(&n2r_win32::plain_copy::PlainCopyKey {
+            record_number: row.record_number,
+            sequence_number: row.sequence_number,
+            stream_name_utf16: Vec::new(),
+        })
+        .with_context(|| {
+            format!(
+                "MFT record {} is made plain from its WOF copy, which was not taken",
+                row.record_number
+            )
+        })?;
+        row.plain_copy = Some(n2r_win32::plain_ledger::LedgerCopy {
+            bytes: pin.bytes,
+            sha256: pin.sha256,
+            content_digest: pin.content_digest,
+        });
+    }
+    Ok(())
 }
 
 /// The objects of a frozen source that are converted to plain: the list,
 /// and the ledger's rows with every name of each object. NTFS-internal
 /// objects are never converted.
-pub(crate) fn census(files: &impl RootFileDomain) -> Result<(PlainList, Vec<LedgerRow>)> {
-    let (mut entries, mut rows) = (Vec::new(), Vec::new());
+pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
+    let (mut entries, mut rows, mut copies, mut wofs) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for ordinal in 0..files.file_count() {
         let file = files.file(ordinal)?;
         if ntfs_admission::paged::internal_role(files, &file)?.is_some() {
@@ -217,6 +426,17 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<(PlainList, Vec<Ledg
             .cloned()
             .with_context(|| format!("MFT record {} has no name", file.record_number))?;
         let before = crate::ntfs_file_attributes::project_user(&file)?.win32_attributes;
+        let wof = (transform.kind == PlainKind::WofExpanded)
+            .then(|| wof_file(&file))
+            .transpose()?
+            .flatten();
+        if let Some(wof) = wof {
+            copies.push(n2r_win32::plain_copy::PlainCopyRequest {
+                key: copy_key(&file),
+                bytes: wof.plain_bytes,
+            });
+            wofs.push(wof);
+        }
         entries.push(entry(first, &file, transform));
         rows.push(LedgerRow {
             kind: transform.kind,
@@ -225,21 +445,32 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<(PlainList, Vec<Ledg
             sequence_number: file.sequence_number,
             before: LedgerState {
                 attributes: before,
-                reparse_tag: None,
+                reparse_tag: wof.map(|_| n2r_win32::reparse_layout::IO_REPARSE_TAG_WOF),
             },
             after: LedgerState {
                 attributes: transform.target_attributes(before),
                 reparse_tag: None,
             },
             witness: format!(
-                "$STANDARD_INFORMATION of MFT record {} on the frozen source",
-                file.record_number
+                "$STANDARD_INFORMATION of MFT record {} on the frozen source{}",
+                file.record_number,
+                if wof.is_some() {
+                    ", its WOF reparse point and streams, and its plain copy read through WOF"
+                } else {
+                    ""
+                }
             ),
+            plain_copy: None,
         });
     }
     let list = PlainList::new(entries).map_err(anyhow::Error::msg)?;
     rows.sort_by(|a, b| a.paths.cmp(&b.paths));
-    Ok((list, rows))
+    Ok(Census {
+        list,
+        rows,
+        copies,
+        wof: wofs,
+    })
 }
 
 #[cfg(test)]
@@ -300,6 +531,140 @@ mod tests {
         // Freed more than it grows: nothing needed.
         assert!(require_wof_room(&[file(10, 1 << 20)], 4096, 0).is_ok());
         assert!(require_wof_room(&[], 4096, 0).is_ok());
+    }
+
+    fn stream(name: &str, flags: u16) -> crate::ntfs_inspect::StreamInventory {
+        crate::ntfs_inspect::StreamInventory {
+            name: name.to_owned(),
+            name_utf16: name.encode_utf16().collect(),
+            resident: false,
+            flags,
+            logical_size: 721_234,
+            initialized_size: 721_234,
+            allocated_size: 0,
+            extents: vec![],
+            resident_sha256: None,
+            logical_sha256: Some("00".repeat(16)),
+            logical_hash_status: crate::ntfs_inspect::LogicalHashStatus::Complete,
+        }
+    }
+
+    fn attribute(
+        type_code: u32,
+        name: &str,
+        flags: u16,
+    ) -> crate::ntfs_inspect::AttributeInventory {
+        serde_json::from_value(serde_json::json!({
+            "type_code": type_code, "instance": 0,
+            "name_utf16": name.encode_utf16().collect::<Vec<u16>>(),
+            "flags": flags, "resident": false, "logical_size": 0, "initialized_size": 0,
+            "allocated_size": 0, "lowest_vcn": 0, "compression_unit": 0,
+            "extents": [],
+        }))
+        .unwrap()
+    }
+
+    fn wof_file() -> FileInventory {
+        FileInventory {
+            record_number: 41,
+            sequence_number: 1,
+            hard_link_count: 1,
+            is_directory: false,
+            is_metadata: false,
+            metadata_role: crate::ntfs_inspect::MetadataRole::OutsideExtendCandidate,
+            metadata_role_issue: None,
+            base_file_reference: 0,
+            names: vec![],
+            standard_information: Some(crate::ntfs_inspect::StandardInformation {
+                creation_time: 1,
+                modification_time: 2,
+                mft_change_time: 3,
+                access_time: 4,
+                file_attributes: 0x620,
+                security_id: None,
+            }),
+            streams: vec![stream("", 0x8000), stream("WofCompressedData", 0)],
+            attributes: vec![
+                attribute(0x80, "", 0x8000),
+                attribute(0x80, "WofCompressedData", 0),
+                attribute(0xc0, "", 0),
+            ],
+            extended_attributes: None,
+            reparse: Some(n2r_win32::reparse_layout::Point {
+                buffer: vec![0; 24],
+            }),
+        }
+    }
+
+    #[test]
+    fn windows_is_held_to_the_view_the_filter_gives_and_nothing_more() {
+        let copy = "ab".repeat(16);
+        let raw = wof_file();
+        let view = filter_view(&raw, true, &copy).unwrap();
+        // WOF's view: no reparse point, no WofCompressedData, no REPARSE_POINT
+        // or SPARSE_FILE; everything else as the raw source holds it.
+        assert!(view.reparse.is_none());
+        assert_eq!(view.streams.len(), 1);
+        assert!(view.attributes.iter().all(|a| a.type_code != 0xc0));
+        assert_eq!(view.attributes.len(), 1);
+        assert_eq!(
+            view.standard_information.as_ref().unwrap().file_attributes,
+            0x20
+        );
+        assert_eq!(view.streams[0].logical_size, raw.streams[0].logical_size);
+        // Not sparse, as Windows shows it (0x20, not 0x220).
+        assert_eq!(view.streams[0].flags, 0);
+        assert_eq!(view.attributes[0].flags, 0);
+        assert_eq!(view.names.len(), raw.names.len());
+        // Its contents are the copy's, read by Windows and held to them.
+        assert_eq!(
+            view.streams[0].logical_sha256.as_deref(),
+            Some(copy.as_str())
+        );
+        // Not WOF's: nothing hidden; an encrypted stream read decrypted.
+        let mut encrypted = wof_file();
+        encrypted.reparse = None;
+        encrypted.attributes = vec![attribute(0x80, "", 0x4000)];
+        encrypted.streams = vec![stream("", 0x4000)];
+        let view = filter_view(&encrypted, false, &copy).unwrap();
+        assert_eq!(view.streams[0].flags, 0);
+        assert_eq!(view.attributes[0].flags, 0);
+        assert_eq!(
+            view.standard_information.as_ref().unwrap().file_attributes,
+            0x620
+        );
+        // A file with no unnamed stream has no view.
+        let mut none = wof_file();
+        none.streams.retain(|s| !s.name_utf16.is_empty());
+        assert!(filter_view(&none, false, &copy).is_err());
+    }
+
+    #[test]
+    fn only_a_copied_streams_allocation_is_held_by_its_copy() {
+        // An identity no other test of this process takes a copy of.
+        let (record, sequence) = (0xfeed_0000_0041u64, 9u16);
+        assert!(!allocation_held_by_copy(record, sequence, &[]));
+        let run = tempfile::tempdir().unwrap();
+        n2r_win32::plain_copy::arm(
+            &run.path().join(n2r_win32::plain_copy::DIRECTORY),
+            vec![n2r_win32::plain_copy::PlainCopyRequest {
+                key: n2r_win32::plain_copy::PlainCopyKey {
+                    record_number: record,
+                    sequence_number: sequence,
+                    stream_name_utf16: Vec::new(),
+                },
+                bytes: 4,
+            }],
+        )
+        .unwrap();
+        n2r_win32::plain_copy::take_armed_with(|_| Ok(&b"wof!"[..])).unwrap();
+        let held = allocation_held_by_copy(record, sequence, &[]);
+        // Another sequence of the record, a named stream: their own allocation.
+        let other_sequence = allocation_held_by_copy(record, sequence + 1, &[]);
+        let named = allocation_held_by_copy(record, sequence, &[0x61]);
+        n2r_win32::plain_copy::remove(run.path()).unwrap();
+        assert!(held && !other_sequence && !named);
+        assert!(!allocation_held_by_copy(record, sequence, &[]));
     }
 
     #[test]

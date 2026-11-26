@@ -1208,8 +1208,14 @@ mod capture {
 
     // FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES | READ_CONTROL | ACCESS_SYSTEM_SECURITY
     const READ_EVERYTHING: u32 = 0x0102_0089;
-    // FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN
-    const OPEN_FLAGS: u32 = 0x0a20_0000;
+    // FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT |
+    // FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_OPEN_NO_RECALL: the object
+    // itself, and never a recall of a placeholder's data from its provider
+    // (a listing must not change what it lists: a cloud placeholder that is
+    // not on the volume stays so, and its contents are read as stored).
+    const OPEN_FLAGS: u32 = 0x0a30_0000;
+    // FILE_FLAG_OPEN_NO_RECALL in every open of the listing.
+    const _: () = assert!(OPEN_FLAGS & 0x0010_0000 != 0 && PLAIN_FLAGS & 0x0010_0000 != 0);
     const REPARSE: u32 = 0x400;
     const DIRECTORY: u32 = 0x10;
     const ENCRYPTED: u32 = 0x4000;

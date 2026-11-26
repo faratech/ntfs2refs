@@ -333,6 +333,12 @@ fn run() -> Result<u8> {
                         },
                         "accepted_differences": n2r_win32::volume_manifest::ALLOWED_DIFFERENCES,
                         "short_names": "each NTFS 8.3 name must be a same-directory link to its long name",
+                        "plain_conversions": {
+                            "listing": "the objects the run's ledger names are left out of the listing comparison, which is otherwise unchanged",
+                            "content_verdict": "each is held by the same comparison to its record before with only the agreed feature taken off; a row whose object did not show that feature before fails",
+                            "reported": "apart: differences, plain_conversions by kind and plain_failures; both have to be clean",
+                            "option": "lab-volume-manifest compare --plain-ledger <plain-conversions.json>",
+                        },
                     },
                     "experimental_large_tree": {
                         "available": cfg!(windows),

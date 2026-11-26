@@ -277,13 +277,16 @@ public static class ManyFiles {
             $null = New-Item -ItemType Directory -Path $dir -Force
             [IO.File]::WriteAllBytes("$dir\temporary.tmp", (Bytes 3000)); [IO.File]::SetAttributes("$dir\temporary.tmp", 'Temporary')
             if (-not ([IO.File]::GetAttributes("$dir\temporary.tmp") -band [IO.FileAttributes]::Temporary)) { throw 'the TEMPORARY attribute did not stay' }
-            $made[$feature] = 'a file with the TEMPORARY attribute'
+            # Made plain once agreed (attributes_cleared): the ledger has to name it.
+            $made[$feature] = [ordered]@{ what = 'a file with the TEMPORARY attribute'
+                plain = @([ordered]@{ kind = 'attributes_cleared'; path = "\feature-$feature\temporary.tmp" }) }
         }
         'offline' {
             $null = New-Item -ItemType Directory -Path $dir -Force
             [IO.File]::WriteAllBytes("$dir\offline.dat", (Bytes 3000)); [IO.File]::SetAttributes("$dir\offline.dat", 'Offline')
             if (-not ([IO.File]::GetAttributes("$dir\offline.dat") -band [IO.FileAttributes]::Offline)) { throw 'the OFFLINE attribute did not stay' }
-            $made[$feature] = 'a file with the OFFLINE attribute'
+            $made[$feature] = [ordered]@{ what = 'a file with the OFFLINE attribute'
+                plain = @([ordered]@{ kind = 'attributes_cleared'; path = "\feature-$feature\offline.dat" }) }
         }
         'efs' {
             $null = New-Item -ItemType Directory -Path $dir -Force

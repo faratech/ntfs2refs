@@ -16,7 +16,7 @@
 //! - [`PlainLedger`]: what a run converted, written once the source is
 //!   frozen, one row per object with its state before and after and what
 //!   witnessed it.
-//! - The content verdict (`volume_manifest::verify_plain`), which holds
+//! - The content verdict (`volume_manifest::compare_with_plain`), which holds
 //!   every ledger row to the listings taken before and after the run.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

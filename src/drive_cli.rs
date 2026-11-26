@@ -2462,7 +2462,14 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                         before.binding.layout_profile
                             == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows,
                     )?;
-                    match super::listing::after(root, &run, case_marks) {
+                    // The objects this run made plain files, as it kept
+                    // them when the source was frozen: held apart by the
+                    // content verdict, and left out of the listing's.
+                    let plain_ledger = output
+                        .join("source")
+                        .join(n2r_win32::plain_ledger::LEDGER_FILE);
+                    let plain_ledger = plain_ledger.is_file().then_some(plain_ledger);
+                    match super::listing::after(root, &run, case_marks, plain_ledger.as_deref()) {
                         Ok(true) => {}
                         Ok(false) => return Ok(EXIT_LISTING_DIFFERS),
                         Err(error) => {

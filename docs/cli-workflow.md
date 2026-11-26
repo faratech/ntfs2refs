@@ -975,6 +975,15 @@ is accepted and counted (the NTFS compression flag, what Windows keeps in
 A program that writes to the volume between the first listing and the start
 of the conversion shows as a difference, so close what uses the volume first.
 
+Objects the run converted to plain files, as agreed (see "Converted to
+plain"), are not accepted as differences. They are left out of the listing
+comparison, which is otherwise unchanged, and each is verified apart, by a
+content verdict: the same comparison, between what the object was before
+with only the agreed feature taken off and what it is afterwards. A ledger
+row whose object did not show that feature before fails it. The run reports
+the two apart, and exits 6 if either fails. By hand:
+`lab-volume-manifest compare ... --plain-ledger <run>\conversion\source\plain-conversions.json`.
+
 The same by hand, with `lab-volume-manifest.exe` from the release, before and
 after any run:
 

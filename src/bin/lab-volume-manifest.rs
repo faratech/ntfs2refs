@@ -3,6 +3,7 @@
 //!   lab-volume-manifest capture --root D:\ --output before.jsonl
 //!   lab-volume-manifest compare --before before.jsonl --after after.jsonl --report report.json
 //!   lab-volume-manifest compare --exact --before before.jsonl --after after.jsonl --report report.json
+//!   lab-volume-manifest compare --before before.jsonl --after after.jsonl --report report.json --plain-ledger plain-conversions.json
 //!
 //! The lab harness lists the NTFS source before a conversion and the same
 //! volume once it mounts as ReFS, then compares the two. Capturing is read
@@ -59,6 +60,14 @@ enum Command {
         /// this, as for a run that carries the mark over, it is one.
         #[arg(long, conflicts_with = "exact")]
         case_marks_not_carried: bool,
+        /// For a run that converted objects to plain files: its ledger
+        /// (`plain-conversions.json` in the run's records). The objects it
+        /// names are left out of the listing comparison, which is otherwise
+        /// unchanged, and each is held instead by the content verdict to
+        /// its record before with only the declared feature taken off. The
+        /// two are reported apart; both have to be clean.
+        #[arg(long, conflicts_with = "exact", value_name = "LEDGER")]
+        plain_ledger: Option<PathBuf>,
     },
 }
 
@@ -124,29 +133,48 @@ fn main() -> Result<ExitCode> {
             exact,
             short_names_dropped,
             case_marks_not_carried,
+            plain_ledger,
         } => {
             let (before, after) = (read(&before)?, read(&after)?);
-            let comparison = if exact {
-                volume_manifest::compare_exact(&before, &after)
-            } else {
-                volume_manifest::compare_declared(
-                    &before,
-                    &after,
-                    volume_manifest::Declared {
-                        short_names_dropped,
-                        case_marks_not_carried,
-                    },
-                )
+            let declared = volume_manifest::Declared {
+                short_names_dropped,
+                case_marks_not_carried,
             };
+            let verdict = match &plain_ledger {
+                Some(path) => {
+                    let ledger: n2r_win32::plain_ledger::PlainLedger =
+                        serde_json::from_reader(BufReader::new(
+                            File::open(path)
+                                .with_context(|| format!("opening {}", path.display()))?,
+                        ))
+                        .with_context(|| format!("reading {}", path.display()))?;
+                    volume_manifest::compare_with_plain(&before, &after, declared, &ledger)
+                }
+                None => volume_manifest::Verdict {
+                    listing: if exact {
+                        volume_manifest::compare_exact(&before, &after)
+                    } else {
+                        volume_manifest::compare_declared(&before, &after, declared)
+                    },
+                    ..volume_manifest::Verdict::default()
+                },
+            };
+            let comparison = &verdict.listing;
             let mut out = BufWriter::new(
                 File::create(&report).with_context(|| format!("creating {}", report.display()))?,
             );
-            serde_json::to_writer_pretty(&mut out, &comparison)?;
+            // Without a ledger the report is the listing comparison, as
+            // it always was; with one, both parts.
+            if plain_ledger.is_some() {
+                serde_json::to_writer_pretty(&mut out, &verdict)?;
+            } else {
+                serde_json::to_writer_pretty(&mut out, comparison)?;
+            }
             out.flush()?;
             println!(
                 "{}",
                 serde_json::json!({
-                    "identical": comparison.identical(),
+                    "identical": verdict.identical(),
                     "before_objects": comparison.before_objects,
                     "after_objects": comparison.after_objects,
                     "short_names_as_links": comparison.short_names_as_links,
@@ -155,9 +183,12 @@ fn main() -> Result<ExitCode> {
                     "allowed": comparison.allowed,
                     "differences": comparison.difference_count,
                     "kinds": comparison.difference_kinds,
+                    "plain_conversions": verdict.plain.conversions,
+                    "plain_failures": verdict.plain.failure_count,
+                    "plain_failure_kinds": verdict.plain.failure_kinds,
                 })
             );
-            Ok(if comparison.identical() {
+            Ok(if verdict.identical() {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::from(2)

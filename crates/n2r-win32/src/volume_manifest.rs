@@ -98,6 +98,14 @@ pub struct Record {
     /// refused, or left out with the user's agreement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plain_read_error: Option<String>,
+    /// Why a placeholder's stored contents (`sha256`, read with its reparse
+    /// point opened and nothing recalled) could not be read: its data is
+    /// not on the volume, and the filter that owns it refuses the read
+    /// (a cloud placeholder not present locally, its provider not
+    /// running). Recorded, as the same on every reading of an unchanged
+    /// volume, not an error of the listing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_read_error: Option<String>,
     pub links: u32,
     /// Identifies the file behind several hard links. Only meaningful within
     /// one listing; never compared across listings.
@@ -543,7 +551,10 @@ fn feature_view_differs(was: &Record, is: &Record) -> Option<String> {
             was.wof_algorithm, is.wof_algorithm
         ));
     }
-    if was.plain_sha256 != is.plain_sha256 || was.plain_read_error != is.plain_read_error {
+    if was.plain_sha256 != is.plain_sha256
+        || was.plain_read_error != is.plain_read_error
+        || was.content_read_error != is.content_read_error
+    {
         return Some("the contents a program reads through the placeholder differ".to_owned());
     }
     None
@@ -793,6 +804,7 @@ fn declared_after(row: &LedgerRow, before: &Record) -> Result<Record, String> {
         }
         after.plain_sha256 = None;
         after.plain_read_error = None;
+        after.content_read_error = None;
         after.reparse_tag = None;
         after.reparse_sha256 = None;
         after.relative_link_target = None;
@@ -1820,6 +1832,11 @@ mod capture {
         if !directory {
             match hash(&mut file, buffer) {
                 Ok((_, sha256)) => record.sha256 = Some(sha256),
+                // A placeholder whose data is not on the volume: its filter
+                // refuses the read, the same way on every reading.
+                Err(error) if record.reparse_tag.is_some_and(super::is_placeholder_tag) => {
+                    record.content_read_error = Some(error.to_string())
+                }
                 Err(error) => note(&mut record, "content", &error),
             }
         }
@@ -2415,6 +2432,28 @@ mod tests {
             name: name.into(),
             bytes: 120,
         }
+    }
+
+    #[test]
+    fn a_placeholder_not_present_reads_the_same_way_twice() {
+        // The lab (cl6-down): absent.bin, with its provider stopped, could
+        // not be read before nor afterwards, in the same way.
+        let mut absent = file("\\c\\absent.bin", "x");
+        absent.sha256 = None;
+        absent.reparse_tag = Some(0x9000_601a);
+        absent.attributes |= 0x400;
+        absent.content_read_error =
+            Some("The cloud file provider is not running. (os error 362)".into());
+        let same = compare_exact(&[absent.clone()], &[absent.clone()]);
+        assert!(same.identical(), "{same:?}");
+        // Read one time and not the other: a difference.
+        let mut read = absent.clone();
+        read.content_read_error = None;
+        read.sha256 = Some("bytes".into());
+        assert!(!compare_exact(&[absent.clone()], &[read]).identical());
+        let mut other = absent.clone();
+        other.content_read_error = Some("another refusal".into());
+        assert!(!compare_exact(&[absent], &[other]).identical());
     }
 
     #[test]

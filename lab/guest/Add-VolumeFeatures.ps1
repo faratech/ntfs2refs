@@ -552,7 +552,9 @@ try {
             $device = $null
             foreach ($line in @(& fltmc.exe volumes 2>&1)) { if ("$line" -match "^\s*$([regex]::Escape($drive))\\?\s+(\\Device\\\S+)") { $device = $Matches[1] } }
             $names = @($drive) + @($device | Where-Object { $_ })
-            $attachedTo = { $lines = @(& fltmc.exe instances -f PrjFlt 2>&1); @($names | Where-Object { $n = $_; $lines | Where-Object { "$_" -match "^\s*PrjFlt\s+$([regex]::Escape($n))\\?\s" } }).Count -gt 0 }
+            # With -f, fltmc instances lists one instance a line starting with
+            # the volume name ("V:   189800   PrjFlt Instance"), not the filter.
+            $attachedTo = { $lines = @(& fltmc.exe instances -f PrjFlt 2>&1); @($names | Where-Object { $n = $_; $lines | Where-Object { "$_" -match "^\s*$([regex]::Escape($n))\\?\s+\d+\s" } }).Count -gt 0 }
             $attach = 'already attached'
             if (-not (& $attachedTo)) {
                 $attach = ((& fltmc.exe attach PrjFlt $drive 2>&1) -join ' ').Trim()

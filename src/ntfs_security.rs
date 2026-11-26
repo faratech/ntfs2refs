@@ -412,7 +412,9 @@ pub fn reconcile_paged(
                 scratch,
                 &base.join("security-sii.visited"),
                 |_entry, key, value| {
-                    let h = header(value)?;
+                    let h = header(value).with_context(|| {
+                        format!("$Secure:$SII entry with key {}", hex::encode(key))
+                    })?;
                     ensure!(
                         key.len() == 4
                             && u32le(key, 0)? == h.id
@@ -449,7 +451,9 @@ pub fn reconcile_paged(
                 scratch,
                 &base.join("security-sdh.visited"),
                 |_entry, key, value| {
-                    let h = header(value)?;
+                    let h = header(value).with_context(|| {
+                        format!("$Secure:$SDH entry with key {}", hex::encode(key))
+                    })?;
                     ensure!(
                         key.len() == 8
                             && u32le(key, 0)? == h.hash
@@ -762,7 +766,8 @@ pub fn scan_sds_range(
             if primary[at..at + 20].iter().all(|byte| *byte == 0) {
                 break;
             }
-            let h = header(&primary[at..at + 20])?;
+            let h = header(&primary[at..at + 20])
+                .with_context(|| format!("$Secure:$SDS record at byte {}", base + at as u64))?;
             let n = usize::try_from(h.length)?;
             ensure!(
                 h.offset == base + at as u64 && n <= first - at,
@@ -859,7 +864,11 @@ fn header(bytes: &[u8]) -> Result<Header> {
     };
     ensure!(
         h.id >= 256 && h.offset.is_multiple_of(16) && h.length >= 40 && h.length <= HALF as u32,
-        "invalid security header identity/offset/length"
+        "invalid security header identity/offset/length: security ID {} (at least 256), offset {} (a multiple of 16), length {} (40 to {HALF}); header bytes {}",
+        h.id,
+        h.offset,
+        h.length,
+        hex::encode(bytes)
     );
     Ok(h)
 }
@@ -899,7 +908,8 @@ pub fn parse_index_with_geometry(
         cluster_bytes,
         index_record_bytes,
         |_entry, key, value| {
-            let h = header(value)?;
+            let h = header(value)
+                .with_context(|| format!("$Secure index entry with key {}", hex::encode(key)))?;
             match kind {
                 IndexKind::Id => ensure!(
                     key.len() == 4 && u32le(key, 0)? == h.id,
@@ -1146,7 +1156,8 @@ fn sds_records(bytes: &[u8]) -> Result<BTreeMap<u32, (Header, &[u8])>> {
             if bytes[at..at + 20].iter().all(|v| *v == 0) {
                 break;
             }
-            let h = header(&bytes[at..at + 20])?;
+            let h = header(&bytes[at..at + 20])
+                .with_context(|| format!("$Secure:$SDS record at byte {at}"))?;
             let n = h.length as usize;
             ensure!(
                 h.offset == at as u64 && n <= end - at,

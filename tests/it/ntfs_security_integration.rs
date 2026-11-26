@@ -222,6 +222,24 @@ fn refuses_matching_but_incorrectly_hashed_sds_copies() {
     assert_eq!(s.status, Status::Rejected);
     assert!(s.detail.contains("hash mismatch"));
 }
+/// A refusal names the $SDS byte and the header's fields, so that a $Secure
+/// Windows' chkdsk wrote can be told from a damaged one (lab n12-image-4).
+#[test]
+fn an_invalid_sds_header_is_named_by_its_place_and_fields() {
+    let mut image = fixture();
+    // Something nonzero where the next record would start, 48 bytes in.
+    for at in [SDS + 48, SDS + 0x40000 + 48] {
+        image[at] = 7;
+    }
+    let s = inspect(&image).security_reconciliation.unwrap();
+    assert_eq!(s.status, Status::Rejected);
+    assert!(
+        s.detail.contains("$Secure:$SDS record at byte 48"),
+        "{}",
+        s.detail
+    );
+    assert!(s.detail.contains("security ID 0"), "{}", s.detail);
+}
 #[test]
 fn detects_sii_key_value_disagreement() {
     let mut image = fixture();

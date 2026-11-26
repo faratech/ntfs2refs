@@ -262,6 +262,9 @@ $dataCases = @(
     'cloud-down-leave-out|-Content minimal -Features cloud-down -Check -AcceptPlain -Unattended -LeaveOutCloud'
     # Data Deduplication: on ntfs2refs-server2025 only, which has the filter
     # (its -VmId and -CredentialPath); a Windows 11 VM cannot plant it.
+    # System Volume Information below its own folders (written as SYSTEM):
+    # not carried over, each object recorded in the ledger.
+    'svi-deep|-Content minimal -Features svi-deep -Check'
     'names|-Content minimal -Features names -Check'
     # MBR disks: the volume alone on one, the working directory on one, both
     # with a run interrupted half way through the writes and resumed; and a

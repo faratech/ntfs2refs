@@ -402,7 +402,46 @@ public static class ManyFiles {
                 if ($tag -notmatch '0x80000013') { throw "dedup-$i.bin was not optimized (no 0x80000013 reparse point): $tag" }
             }
             # Made plain once agreed (dedup_rehydrated): the ledger has to name each.
-            $made[$feature] = [ordered]@{ what = 'four identical files Data Deduplication has optimized'; plain = $plain.ToArray() }
+            # The chunk store below System Volume Information\Dedup is then not
+            # carried over: the ledger has to record objects below it.
+            $made[$feature] = [ordered]@{ what = 'four identical files Data Deduplication has optimized'; plain = $plain.ToArray()
+                not_carried_under = @('\System Volume Information\Dedup') }
+        }
+        'svi-deep' {
+            # What Windows writes below System Volume Information's own folders
+            # (a chkdsk log, Data Deduplication's chunk store): a folder
+            # directly in it holding a file and a folder with a file, written
+            # as SYSTEM, which alone may write there. The folder directly in
+            # it is carried over, empty; what is below it is not, and the
+            # ledger has to record each (system_volume_information_not_carried).
+            $svi = "$drive\System Volume Information"
+            $script = @"
+`$ErrorActionPreference = 'Stop'
+`$null = New-Item -ItemType Directory -Path '$svi\n2r-lab\deep' -Force
+[IO.File]::WriteAllText('$svi\n2r-lab\top.txt', 'a file below a folder of System Volume Information')
+[IO.File]::WriteAllText('$svi\n2r-lab\deep\note.txt', 'a file one folder further down')
+[IO.File]::WriteAllText('$svi\n2r-lab.done', '')
+"@
+            $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+            $task = 'n2r-lab-svi-deep'
+            Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+            $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -EncodedCommand $encoded"
+            $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+            $null = Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Force
+            try {
+                Start-ScheduledTask -TaskName $task
+                $deadline = (Get-Date).AddMinutes(2)
+                # The marker file is directly in the folder: carried over.
+                while (-not (Test-Path -LiteralPath "$svi\n2r-lab.done")) {
+                    if ((Get-Date) -gt $deadline) { throw "the SYSTEM task did not write below $svi within two minutes" }
+                    Start-Sleep -Milliseconds 500
+                }
+            } finally {
+                Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+            }
+            $below = '\System Volume Information\n2r-lab'
+            $made[$feature] = [ordered]@{ what = 'a folder of System Volume Information holding a file, and a folder with a file, written as SYSTEM'
+                not_carried = @("$below\deep", "$below\deep\note.txt", "$below\top.txt") }
         }
         'quota' {
             $null = Run 'fsutil.exe' @('quota', 'enforce', $drive)

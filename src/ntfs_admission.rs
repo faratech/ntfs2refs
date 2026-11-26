@@ -1094,21 +1094,35 @@ mod refusal_tests {
     }
 
     #[test]
-    fn a_directory_stream_is_refused_by_name_until_it_is_carried() {
+    fn a_directorys_named_stream_is_admitted_and_the_root_and_reparse_ones_refused() {
         let directory = directory_with_stream("note", 0);
-        // As shipped: refused, with what to do. One place turns it on.
-        assert!(!DIRECTORY_STREAMS_CARRIED);
+        // As shipped: a plain named stream on an ordinary directory passes.
+        assert!(directory_streams_carried());
+        assert_eq!(
+            directory_stream_issue(
+                &directory,
+                true,
+                false,
+                16,
+                directory_streams_carried(),
+                |_| true
+            ),
+            None
+        );
+        // Turned off, it is refused by name, with what to do.
         assert_eq!(
             directory_stream_issue(&directory, true, false, 16, false, |_| true).as_deref(),
             Some(DIRECTORY_STREAM_REFUSAL)
         );
-        // Carried: a plain named stream on an ordinary directory passes.
+        // The root directory's stream stays refused, by name.
+        let mut root = directory_with_stream("note", 0);
+        root.record_number = 5;
         assert_eq!(
-            directory_stream_issue(&directory, true, false, 16, true, |_| true),
-            None
+            directory_stream_issue(&root, true, false, 16, true, |_| true).as_deref(),
+            Some(ROOT_STREAM_REFUSAL)
         );
-        // Not carried even then: compressed, unnamed, on a reparse point,
-        // on a system object, beyond the stream bound, or one whose source
+        // Not carried either: compressed, unnamed, on a reparse point, on a
+        // system object, beyond the stream bound, or one whose source
         // evidence does not hold.
         for (file, ordinary, reparse, maximum, evidence) in [
             (directory_with_stream("note", 1), true, false, 16, true),
@@ -1119,8 +1133,15 @@ mod refusal_tests {
             (directory_with_stream("note", 0), true, false, 16, false),
         ] {
             assert!(
-                directory_stream_issue(&file, ordinary, reparse, maximum, true, |_| evidence)
-                    .is_some_and(|issue| issue.contains("named data stream")),
+                directory_stream_issue(
+                    &file,
+                    ordinary,
+                    reparse,
+                    maximum,
+                    directory_streams_carried(),
+                    |_| evidence
+                )
+                .is_some_and(|issue| issue.contains("named data stream")),
                 "{:?} ordinary={ordinary} reparse={reparse}",
                 file.streams[0]
             );
@@ -1996,11 +2017,15 @@ pub fn file_attribute_names(bits: u32) -> String {
 /// with its data, so the listing stays identical. ReFS 3.14 takes a named
 /// stream on a directory (`dir:stream`; seen on the host's ReFS volume, a
 /// 1 MiB one included), and the planner, the constructor, the supply and
-/// the read-back carry them as they carry a file's. Until the lab's
-/// `dirstream` case has converted with an identical listing this stays
-/// off, and such a directory is refused by name. This is the one place to
-/// turn it on.
-pub const DIRECTORY_STREAMS_CARRIED: bool = false;
+/// the read-back carry them as they carry a file's. On since the lab's
+/// `dirstream` cases converted with identical listings and passed their
+/// acceptance (`ds3-dirstream-minimal`, `ds3-dirstream-lived-in`: a
+/// directory with a 31-byte stream, and one with a stream of 1,115,200
+/// bytes that ends inside a cluster). The root directory's streams, a
+/// reparse directory's, and those that are not plain stay refused
+/// ([`directory_stream_issue`]). Turned off, every directory with a named
+/// stream is refused by name again ([`DIRECTORY_STREAM_REFUSAL`]).
+pub const DIRECTORY_STREAMS_CARRIED: bool = true;
 
 /// See [`DIRECTORY_STREAMS_CARRIED`]; a function, so that the paths it
 /// guards are compiled and tested either way.
@@ -2011,6 +2036,10 @@ pub(crate) fn directory_streams_carried() -> bool {
 /// The refusal of a directory with a named data stream while they are not
 /// carried over.
 pub const DIRECTORY_STREAM_REFUSAL: &str = "it is a directory with a named data stream, which the converter does not carry over: remove the stream before converting";
+
+/// The refusal of a named data stream on the volume's root directory, which
+/// is not carried over even where other directories' streams are.
+pub const ROOT_STREAM_REFUSAL: &str = "it is the root directory, and it has a named data stream, which the converter does not carry over on the root: remove the stream before converting";
 
 /// Why a directory's named data streams cannot be carried over, if they
 /// cannot: every one has to be named, plain (not encrypted, compressed or
@@ -2029,6 +2058,11 @@ pub(crate) fn directory_stream_issue(
     }
     if !carried {
         return Some(DIRECTORY_STREAM_REFUSAL.into());
+    }
+    // The new root is made by Windows when it formats the volume, and is
+    // never made beside its streams; the lab has not shown one carried.
+    if f.record_number == 5 {
+        return Some(ROOT_STREAM_REFUSAL.into());
     }
     let mut exact_names = BTreeSet::new();
     let mut folded_names = BTreeSet::new();

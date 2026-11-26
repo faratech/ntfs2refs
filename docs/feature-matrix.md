@@ -18,6 +18,7 @@ converter prints.
 |---|---|
 | Files of every size around the resident, cluster and megabyte boundaries; nested and empty directories; names outside ASCII; a 200-character name | `mixed` (every data-volume case that is not `minimal`) |
 | Named data streams on files, small and larger than the file | `mixed` |
+| Named data streams on directories, as the same directory's named streams on ReFS: one of 31 bytes, and one of 1,115,200 bytes that ends inside a cluster. Converted with identical listings and passed acceptance alone (`ds3-dirstream-minimal`) and with a lived-in volume (`ds3-dirstream-lived-in`), each with `-Check -Acceptance`. One on the root directory, on a reparse-point directory, or one that is encrypted, compressed or sparse is still refused, by name | `dirstream` |
 | Hard links, in one directory and across two | `mixed` |
 | Sparse files, up to 70,000 separately allocated islands | `mixed`, `many` |
 | Fragmented files | `mixed` |
@@ -73,7 +74,6 @@ check and the run have to give the same refusal.
 | EFS-encrypted files | `cipher /d` | `efs` |
 | A file with the TEMPORARY or OFFLINE attribute | the attribute is named | `temporary`, `offline` |
 | A file compressed with `compact /exe` | `compact /u /exe <file>` | `wof` |
-| A named data stream on a directory | remove the stream. The converter can carry such streams as the same directory's named streams on ReFS (Windows' ReFS takes them); that is turned on once `dirstream` has converted with an identical listing | `dirstream` |
 | Two names in one directory that differ only by case | rename one of them, then `fsutil file setCaseSensitiveInfo <directory> disable` | `casesensitive` |
 | Beside the volume, on its disk: a volume with shadow copies | `vssadmin delete shadows /for=<drive>:` for that volume | `shared-snapshot`; the shadow copy is still there afterwards |
 | On the volume's disk: the crash-dump file of the running Windows | move the dump file (System Properties, Advanced, Startup and Recovery) | `shared-dump` |
@@ -87,6 +87,7 @@ These take the same paths as rows above, or are checked by tests only.
 |---|---|
 | Cloud placeholders, Data Deduplication | Refused by their reparse tag, like `compact /exe`; the lab has no sync provider or deduplication. The words for each tag are covered by a test |
 | A shadow-copy provider of backup software that holds a shadow copy on the machine | The lab has no backup product that makes one. The decision and its words are covered by a test |
+| A named data stream on the root directory or on a reparse-point directory, or one on a directory that is encrypted, compressed or sparse | The lab's `dirstream` makes plain streams on ordinary directories, which convert. The refusals and their words are covered by a test |
 | A dirty volume, an NTFS log that was not closed, an open transaction | The lab dismounts its volumes cleanly |
 | A program holding a file on the volume open | Not arranged in the lab; the lock is retried for 20 seconds and then refused by name |
 | A volume with no file on it | An empty volume is formatted, not converted |

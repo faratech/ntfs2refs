@@ -350,7 +350,7 @@ Refused before anything is written, each with what was found and what to do:
 | EFS-encrypted files | `cipher /d` |
 | Files with the TEMPORARY or OFFLINE attribute | Clear the attribute, or move the files |
 | Cloud placeholders, `compact /exe` files, Data Deduplication | The kind is named, with the record number to find the file by |
-| A named data stream on a directory | Remove the stream. (Carrying it over as the same directory's named stream on ReFS is built and waits for the lab to show it) |
+| A named data stream on the root directory or on a reparse-point directory, or one on a directory that is encrypted, compressed or sparse | Remove the stream. A plain named stream on any other directory is carried over as the same directory's named stream on ReFS (shown in the lab by `ds3-dirstream-minimal` and `ds3-dirstream-lived-in`: identical listings, acceptance passed) |
 | Two names in one directory that differ only by case (both are given) | Rename one of them, then `fsutil file setCaseSensitiveInfo <directory> disable` |
 | A dirty volume, an NTFS log that was not closed, an open transaction | `chkdsk E: /f`, or dismount cleanly |
 | A program holding a file on the volume open | Close it; the converter waits 20 seconds first |

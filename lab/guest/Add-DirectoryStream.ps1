@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-  Shapes a lab source volume with one thing the converter does not admit: a
-  directory that carries a named data stream.
+  Shapes a lab source volume with a directory that carries a named data
+  stream.
 
 .DESCRIPTION
-  For checking the refusal, not a conversion: the source must be refused at
-  admission, before anything is written, with a message that names the
-  directory and the reason. Run through the harness's -ShapeSource.
+  The converter carries it over as the same directory's named stream on
+  ReFS (ds3-dirstream-minimal and ds3-dirstream-lived-in showed the
+  data-volume case). Run through the harness's -ShapeSource.
 #>
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$SourceLetter)

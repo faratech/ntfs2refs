@@ -55,6 +55,12 @@ enum Command {
         #[arg(long)]
         stop_file: Option<PathBuf>,
     },
+    /// Downloads one placeholder from its provider (which has to serve this
+    /// process), as a conversion does before the freeze.
+    Hydrate {
+        #[arg(long)]
+        path: PathBuf,
+    },
     /// Says what of each placeholder under the root is on the volume.
     Report {
         #[arg(long)]
@@ -150,6 +156,18 @@ fn main() -> anyhow::Result<()> {
                     Err(error) => println!("{}: {error}", path.display()),
                 }
             }
+        }
+        Command::Hydrate { path } => {
+            n2r_win32::cloud_native::hydrate(&path)
+                .with_context(|| format!("downloading {}", path.display()))?;
+            let report = n2r_win32::cloud_native::report(&path)?;
+            println!(
+                "{}: {}, {} of {} bytes on the volume",
+                path.display(),
+                report.presence.name(),
+                report.present_bytes,
+                report.size
+            );
         }
         Command::Unregister { root } => provider::unregister(&root)?,
     }

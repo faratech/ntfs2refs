@@ -343,6 +343,10 @@ public static class ManyFiles {
             foreach ($file in 'present.bin', 'partial.bin', 'absent.bin', 'pinned.bin', 'folder\inner.bin') {
                 [IO.File]::WriteAllBytes("$backing\$file", (Bytes 300000))
             }
+            # For 'cloud': a small placeholder, not present, that the harness
+            # downloads from the converter's own session to prove the
+            # provider serves it.
+            if ($feature -eq 'cloud') { [IO.File]::WriteAllBytes("$backing\probe.bin", (Bytes 4096)) }
             $sync = "$dir\synced"
             $null = New-Item -ItemType Directory -Path $sync -Force
             $text = Run $CloudProvider @('create', '--root', $sync, '--backing', $backing,
@@ -351,7 +355,7 @@ public static class ManyFiles {
             $plain = New-Object System.Collections.Generic.List[object]
             # The sync root is itself a placeholder (a cloud tag on the folder).
             $plain.Add([ordered]@{ kind = 'cloud_placeholder_plain'; path = "\feature-$feature\synced" })
-            foreach ($path in 'folder', 'folder\inner.bin', 'present.bin', 'partial.bin', 'absent.bin', 'pinned.bin') {
+            foreach ($path in @('folder', 'folder\inner.bin', 'present.bin', 'partial.bin', 'absent.bin', 'pinned.bin') + @(if ($feature -eq 'cloud') { 'probe.bin' })) {
                 # With the provider stopped, the two not wholly present can only
                 # be left out (the run is refused unless that is agreed:
                 # -LeaveOutCloud), and are absent afterwards.

@@ -512,7 +512,11 @@ before the freeze with the source unchanged; with `-LeaveOutCloud` as well (and 
 `cloud_left_out` and absent afterwards (`cloud-down-leave-out`). The harness stops the provider and unregisters the sync root
 when the attempt ends. A Cloud Files provider serves only the account that
 runs it, and the feature step starts it as the account the harness works as:
-run `cloud` with `-RunAs administrator`. The provider's status is shown
+run `cloud` with `-RunAs administrator`. A provider connected in one logon session does not serve
+another, so the harness stops the feature step's provider and starts one in
+the converter's own worker session, which has to download `probe.bin` (a
+small placeholder of `cloud`) before the converter starts
+(`cloud-provider-not-serving` otherwise). The provider's status is shown
 (the check, and `lab-cloud-provider report` before the run), never a gate.
 The listing descends into placeholder folders, so it lists a sync root's
 contents whether its provider runs or not. The harness checks that the

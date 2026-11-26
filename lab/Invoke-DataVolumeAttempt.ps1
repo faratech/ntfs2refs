@@ -979,6 +979,29 @@ public static class SiblingRaw {
         if ($RunAs -eq 'administrator') {
             if ($script:worker) { Remove-PSSession $script:worker -ErrorAction SilentlyContinue }
             $script:worker = New-PSSession -VMId $VmId -Credential $credential
+            if ($script:cloudServe) {
+                # The lab provider, in the converter's own session: started,
+                # then proven to serve that session by downloading probe.bin
+                # (a placeholder of its own, not present until now).
+                $c = $script:cloudServe
+                $script:cloudServe = $null
+                $probe = Invoke-Command -Session $script:worker -ArgumentList $c.exe, $c.sync, $c.backing, $c.stop, $c.probe -ScriptBlock {
+                    param($exe, $sync, $backing, $stop, $probe)
+                    Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
+                    $process = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden -ArgumentList @(
+                        'serve', '--root', "`"$sync`"", '--backing', "`"$backing`"", '--stop-file', "`"$stop`"")
+                    Start-Sleep -Seconds 2
+                    $hydrated = (& $exe hydrate --path $probe 2>&1) -join ' '
+                    $exit = $LASTEXITCODE
+                    [pscustomobject]@{ process = $process.Id; alive = -not $process.HasExited; exit = $exit; hydrated = $hydrated
+                        report = ((& $exe report --root $sync 2>&1) -join ' | ') }
+                }
+                Say "cloud: the provider in the worker's session (process $($probe.process)): probe download exit $($probe.exit) $($probe.hydrated); $($probe.report)"
+                if (-not $probe.alive -or $probe.exit -ne 0) {
+                    $verdict.outcome = 'cloud-provider-not-serving'
+                    throw "the lab cloud provider does not serve the converter's session: $($probe.hydrated)"
+                }
+            }
             $null = Invoke-Command -Session $script:worker -ArgumentList $Root -AsJob -ScriptBlock {
                 param($root) $null = & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$root\worker.ps1" -Root $root 2>&1 }
         } else {
@@ -1521,15 +1544,34 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     # their list) is asked about them and declines: it has to stop there.
     $declinePlain = -not $Unattended -and -not $AcceptPlain -and [bool]$plainSha
     if ($Features -contains 'cloud') {
-        # The lab provider has to be serving when the converter runs, as the
-        # account the converter runs as: a Cloud Files provider serves the
-        # user who runs it (the feature step starts it as the account the
-        # harness works as, which -RunAs administrator runs the converter as).
+        # The lab provider has to serve the converter's own logon session: a
+        # Cloud Files provider connected in one (the feature step's remoting
+        # session) does not serve a process of another (the lab, cl6-plain:
+        # "The cloud file provider is not running", os error 362). With
+        # -RunAs administrator the feature step's provider is stopped here,
+        # and Start-Worker starts one in the worker's own session before the
+        # converter, and proves it serves by downloading probe.bin.
         $served = $verdict.source.features.cloud.provider_process
         $alive = Invoke-Command -Session $session -ArgumentList $served -ScriptBlock { param($id) [bool](Get-Process -Id $id -ErrorAction SilentlyContinue) }
         if (-not $alive) { $verdict.outcome = 'cloud-provider-not-running'; throw "the lab cloud provider (process $served) is no longer running before the conversion" }
-        if ($RunAs -ne 'administrator') { Say 'cloud: the converter runs as SYSTEM, which the provider (the harness account''s) does not serve; with -RunAs administrator it does' }
-        Say "cloud: the lab provider (process $served) is serving"
+        if ($RunAs -eq 'administrator') {
+            $stopped = Invoke-Command -Session $session -ArgumentList $served, $verdict.source.features.cloud.stop_file -ScriptBlock {
+                param($id, $stop)
+                Set-Content -LiteralPath $stop -Value 'stop'
+                $process = Get-Process -Id $id -ErrorAction SilentlyContinue
+                if ($process) { $null = $process.WaitForExit(15000) }
+                Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
+                -not (Get-Process -Id $id -ErrorAction SilentlyContinue)
+            }
+            if (-not $stopped) { $verdict.outcome = 'cloud-provider-not-stopped'; throw "the feature step's lab cloud provider (process $served) did not stop" }
+            $script:cloudServe = @{ exe = "$guestRoot\lab-cloud-provider.exe"; sync = $verdict.source.features.cloud.sync_root
+                backing = $verdict.source.features.cloud.backing; stop = $verdict.source.features.cloud.stop_file
+                probe = "$($verdict.source.features.cloud.sync_root)\probe.bin" }
+            Say "cloud: the feature step's provider (process $served) stopped; the worker's session starts its own"
+        } else {
+            Say 'cloud: the converter runs as SYSTEM, which the provider (the harness account''s, in another session) does not serve; with -RunAs administrator it does'
+            Say "cloud: the lab provider (process $served) is serving"
+        }
         # What the Cloud Files API reports of the sync root to this account:
         # the provider's status (1, idle, once it is connected) and what of
         # each placeholder is on the volume.

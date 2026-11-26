@@ -397,18 +397,47 @@ public static class ManyFiles {
             $null = Enable-DedupVolume -Volume $drive -UsageType Default -ErrorAction Stop
             $null = Set-DedupVolume -Volume $drive -MinimumFileAgeDays 0 -ErrorAction Stop
             $null = Start-DedupJob -Volume $drive -Type Optimization -Wait -ErrorAction Stop
+            # Each file's reparse tag, read with FSCTL_GET_REPARSE_POINT: not
+            # from fsutil's words, whose layout and language vary.
+            if (-not ('N2RLabReparseTag' -as [type])) {
+                Add-Type -TypeDefinition @'
+using System; using System.ComponentModel; using System.Runtime.InteropServices; using Microsoft.Win32.SafeHandles;
+public static class N2RLabReparseTag {
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool DeviceIoControl(SafeFileHandle handle, uint code, IntPtr input, uint inputSize, byte[] output, uint outputSize, out uint returned, IntPtr overlapped);
+    // The reparse tag of `path`, or 0 where it has no reparse point.
+    public static uint Of(string path) {
+        // FILE_READ_ATTRIBUTES, share all, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT.
+        using (SafeFileHandle handle = CreateFileW(path, 0x80, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
+            if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error(), "opening " + path);
+            byte[] output = new byte[16384]; uint returned;
+            // FSCTL_GET_REPARSE_POINT; ERROR_NOT_A_REPARSE_POINT is no tag.
+            if (!DeviceIoControl(handle, 0x000900A8, IntPtr.Zero, 0, output, (uint)output.Length, out returned, IntPtr.Zero)) {
+                int error = Marshal.GetLastWin32Error();
+                if (error == 4390) return 0;
+                throw new Win32Exception(error, "reading the reparse point of " + path);
+            }
+            return BitConverter.ToUInt32(output, 0);
+        }
+    }
+}
+'@
+            }
+            $dedupTag = [uint32]'0x80000013'
             foreach ($i in 1..4) {
-                $tag = (& fsutil.exe reparsepoint query "$dir\dedup-$i.bin" 2>&1 | Out-String)
-                if ($tag -notmatch '0x80000013') { throw "dedup-$i.bin was not optimized (no 0x80000013 reparse point): $tag" }
+                $tag = [N2RLabReparseTag]::Of("$dir\dedup-$i.bin")
+                if ($tag -ne $dedupTag) { throw ("dedup-$i.bin was not optimized: its reparse tag is 0x{0:X8}, not 0x80000013" -f $tag) }
             }
             # The job optimizes whatever else on the volume qualifies too (the
             # content's own files, the lab's dd2): every file that holds the
             # dedup tag afterwards is made plain, and is declared here, as the
             # volume shows it, not as the converter finds it.
             $plain.Clear()
-            $optimized = @(Get-ChildItem -LiteralPath "$drive\" -Recurse -Force -File -Attributes ReparsePoint -ErrorAction SilentlyContinue |
+            $optimized = @(Get-ChildItem -LiteralPath "$drive\" -Recurse -Force -File -ErrorAction SilentlyContinue |
                 Where-Object { $_.FullName -notlike "$drive\System Volume Information\*" } |
-                Where-Object { (& fsutil.exe reparsepoint query $_.FullName 2>&1 | Out-String) -match 'Tag value: 0x80000013' })
+                Where-Object { [N2RLabReparseTag]::Of($_.FullName) -eq $dedupTag })
             foreach ($file in $optimized) {
                 $plain.Add([ordered]@{ kind = 'dedup_rehydrated'; path = $file.FullName.Substring($drive.Length) })
             }
@@ -439,12 +468,24 @@ public static class ManyFiles {
             $script = @"
 `$ErrorActionPreference = 'Stop'
 try {
-    if (-not [IO.Directory]::Exists('$svi')) { throw 'there is no $svi' }
+    if ([IO.Directory]::Exists('$svi')) {
+        `$origin = 'made by Windows'
+    } else {
+        # Windows makes it on first use; a fresh volume may have none yet.
+        # Made as Windows makes it: hidden and system, SYSTEM alone with
+        # full control, nothing inherited.
+        [IO.Directory]::CreateDirectory('$svi') | Out-Null
+        `$security = New-Object Security.AccessControl.DirectorySecurity
+        `$security.SetSecurityDescriptorSddlForm('O:SYG:SYD:PAI(A;OICI;FA;;;SY)')
+        [IO.Directory]::SetAccessControl('$svi', `$security)
+        [IO.File]::SetAttributes('$svi', [IO.FileAttributes]'Directory, Hidden, System')
+        `$origin = 'made by the lab task, as Windows makes it (it was not there yet)'
+    }
     [IO.Directory]::CreateDirectory('$svi\n2r-lab\deep') | Out-Null
     [IO.File]::WriteAllText('$svi\n2r-lab\top.txt', 'a file below a folder of System Volume Information')
     [IO.File]::WriteAllText('$svi\n2r-lab\deep\note.txt', 'a file one folder further down')
     `$listed = @(Get-ChildItem -LiteralPath '$svi\n2r-lab' -Recurse -Force | ForEach-Object { `$_.FullName })
-    [IO.File]::WriteAllLines('$result', [string[]](@('ok', [Security.Principal.WindowsIdentity]::GetCurrent().Name) + `$listed))
+    [IO.File]::WriteAllLines('$result', [string[]](@('ok', [Security.Principal.WindowsIdentity]::GetCurrent().Name, `$origin) + `$listed))
 } catch {
     [IO.File]::WriteAllLines('$result', [string[]]@('error', [Security.Principal.WindowsIdentity]::GetCurrent().Name, "`$_"))
 }
@@ -473,14 +514,14 @@ try {
             }
             $lines = @(Get-Content -LiteralPath $result)
             Remove-Item -LiteralPath $result -Force -ErrorAction SilentlyContinue
-            if ($lines.Count -lt 2 -or $lines[0] -ne 'ok') { throw "the SYSTEM task could not write below ${svi}: $($lines -join ' | ') (task result $exit)" }
+            if ($lines.Count -lt 3 -or $lines[0] -ne 'ok') { throw "the SYSTEM task could not write below ${svi}: $($lines -join ' | ') (task result $exit)" }
             $below = '\System Volume Information\n2r-lab'
             $expected = @("$below\deep", "$below\deep\note.txt", "$below\top.txt")
-            $listed = @($lines | Select-Object -Skip 2 | ForEach-Object { $_.Substring($drive.Length) })
+            $listed = @($lines | Select-Object -Skip 3 | ForEach-Object { $_.Substring($drive.Length) })
             $missing = @($expected | Where-Object { $_ -notin $listed })
             if ($missing.Count) { throw "the SYSTEM task ($($lines[1])) wrote below $svi, and its own listing lacks $($missing -join ', ')" }
             $made[$feature] = [ordered]@{ what = "a folder of System Volume Information holding a file, and a folder with a file, written as $($lines[1])"
-                not_carried = $expected }
+                system_volume_information = $lines[2]; not_carried = $expected }
         }
         'quota' {
             $null = Run 'fsutil.exe' @('quota', 'enforce', $drive)

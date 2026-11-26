@@ -374,6 +374,16 @@ pub(crate) fn convert_owned_with_provider_commitment(
                 // here, immediately before the first write to the source.
                 n2r_win32::perf::phase("source-activation");
                 let gate = n2r_win32::verify_policy::Gate::enter();
+                // The plain copies the shadow was supplied from, read again
+                // against what was written, with every other working file.
+                let copies = n2r_win32::plain_copy::reverify_taken().context(
+                    "re-reading the plain copies at the gate before the first source write",
+                )?;
+                if copies != 0 {
+                    println!(
+                        "The {copies} plain cop(ies) read again before the first write to the volume: unchanged."
+                    );
+                }
                 let fresh = prepared.into_fresh_apply(events, |batch| {
                     observer.native_events("source-activation", batch)
                 })?;

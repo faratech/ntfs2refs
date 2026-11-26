@@ -1122,11 +1122,14 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                      Nothing was changed.",
                     directory.display()
                 );
-                return super::resource::recover_preparation_in_workspace(
+                return after_recovery(
                     &directory,
-                    &checksum,
-                    args.rollback,
-                    args.resume_workspace.as_deref(),
+                    super::resource::recover_preparation_in_workspace(
+                        &directory,
+                        &checksum,
+                        args.rollback,
+                        args.resume_workspace.as_deref(),
+                    ),
                 );
             }
             if directory.join("recovery-envelope.json").exists() {
@@ -1134,7 +1137,10 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                     args.resume_workspace.is_none(),
                     "published conversion recovery uses its original workspace"
                 );
-                return super::resource::recover(&directory, &checksum, args.rollback);
+                return after_recovery(
+                    &directory,
+                    super::resource::recover(&directory, &checksum, args.rollback),
+                );
             }
             if has_preparation {
                 // Preserve a bad/missing pin as a hard refusal in its selected
@@ -2360,6 +2366,7 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                 // The shadow was built only to be examined; nothing was
                 // published from it, so it is detached and removed.
                 let retirement = staged.retire_unpublished();
+                remove_plain_copies(&run);
                 if !retirement.success() {
                     eprintln!(
                         "Diagnose finished, but its temporary shadow could not be removed (stopped at {}: {}). It remains in {}.",
@@ -2393,6 +2400,7 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                 // returned and all construction/raw owners were released.
                 // Its replay is self-contained.
                 let retirement = staged.retire_after_successful_v4();
+                remove_plain_copies(&run);
                 if !retirement.success() {
                     eprintln!(
                         "Conversion completed; temporary shadow cleanup stopped at {}: {}. Preserve any remaining staging files. Raw rollback remains closed.",
@@ -2532,6 +2540,35 @@ The machine restarts, possibly more than once. Do not switch it off while the co
     /// frozen, detached and removed. Where that stops short, a detach by its
     /// path is tried. The run's error is returned; if the volume is still
     /// attached after both, that error says so and how to detach it.
+    /// Deletes the run's plain copies (`n2r_win32::plain_copy`) once nothing
+    /// needs them: the conversion finalized, a diagnosis done, a preparation
+    /// that failed or was cancelled, a recovery that committed or rolled
+    /// back. A copy that cannot be deleted is said, and changes nothing.
+    pub(super) fn remove_plain_copies(run: &std::path::Path) {
+        match n2r_win32::plain_copy::remove(run) {
+            Ok(true) => println!(
+                "The run's plain copies were deleted ({}).",
+                run.join(n2r_win32::plain_copy::DIRECTORY).display()
+            ),
+            Ok(false) => {}
+            Err(error) => eprintln!(
+                "The run's plain copies could not be deleted ({error}); the folder {} can be deleted by hand.",
+                run.join(n2r_win32::plain_copy::DIRECTORY).display()
+            ),
+        }
+    }
+
+    /// [`remove_plain_copies`] of the run whose conversion directory a
+    /// recovery was given, once the recovery succeeded.
+    fn after_recovery(directory: &std::path::Path, result: Result<u8>) -> Result<u8> {
+        if result.is_ok()
+            && let Some(run) = directory.parent()
+        {
+            remove_plain_copies(run);
+        }
+        result
+    }
+
     fn retire_failed_preparation(
         staged: super::staging::StageOwner,
         run: &std::path::Path,
@@ -2539,6 +2576,7 @@ The machine restarts, possibly more than once. Do not switch it off while the co
     ) -> anyhow::Error {
         let shadow = run.join("shadow.vhdx");
         let retirement = staged.retire_unpublished();
+        remove_plain_copies(run);
         if let Err(save) = save_new(&run.join("shadow-retirement.json"), &retirement) {
             eprintln!("The record of the working volume's removal could not be saved: {save:#}");
         }

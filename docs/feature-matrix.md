@@ -115,15 +115,19 @@ These take the same paths as rows above, or are checked by tests only.
 - An NTFS 1.2 or 3.0 volume. A conversion has Windows mount it read-write
   before the freeze, which upgrades it to 3.1 (announced before the
   question, not undone), and reads `$Volume` again; it stops if the volume
-  does not then read 3.1. Tests cover reading the version and the words; no
-  lab fixture of either version exists yet, and that the Windows 11 NTFS
-  driver upgrades such a volume on mount is not yet shown.
+  does not then read 3.1. Tests cover reading the version and the words. The
+  lab case `ntfs30` writes 3.0 into `$Volume` of an offline volume and holds
+  the run to recording the upgrade from 3.0 to 3.1; it has not been run, so
+  that the Windows 11 NTFS driver upgrades such a volume on mount is not yet
+  shown. No NTFS 1.2 fixture exists.
 - An NTFS log in the LFS 2.0 format, or with restart or log pages other
   than 4 KiB. The restart-page reader takes both formats Windows writes
   (1.1 and 2.0) and pages of 4 to 64 KiB, under the same clean-dismount
   requirements; tests with synthetic restart pages cover them. Every lab
-  volume was dismounted by Windows with the default downgrade to LFS 1.1
-  and 4 KiB pages.
+  volume converted so far was dismounted by Windows with the default
+  downgrade to LFS 1.1 and 4 KiB pages. The lab case `lfs2` turns the
+  downgrade off (`NtfsDisableLfsDowngrade`) and requires LFS 2.0 restart
+  pages at a clean dismount before the run; it has not been run.
 - Native conversion of NTFS index record sizes besides 2 KiB and 4 KiB.
   On Windows Server 2025 build 26100, the filesystem query for the tested
   8 KiB fixture returned Windows error 1392 before preflight could read its

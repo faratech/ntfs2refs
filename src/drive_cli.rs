@@ -1972,6 +1972,13 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             clean(&before.label),
             crate::confirmation::format_volume_serial(before.volume_serial_low32)
         );
+        println!("NTFS file records: {} bytes.", geometry.file_record_size);
+        if !matches!(geometry.file_record_size, 1024 | 4096) {
+            println!(
+                "This file-record size is admitted. {}",
+                crate::capability_evidence::NTFS_RECORD_LAB_NOTE
+            );
+        }
         println!("NTFS index records: {} bytes.", geometry.index_record_size);
         if geometry.index_record_size != 4096 {
             println!(

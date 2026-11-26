@@ -100,10 +100,11 @@ impl ResourceProfile {
     /// Source allocation units are independent of the ReFS target's. A run
     /// that does not lie on the target's cluster boundaries cannot stay where
     /// it is: the stream plan copies such a stream instead of retaining it.
+    /// Every sector, file-record and index-record size the boot sector can
+    /// state and the readers can walk is admitted
+    /// ([`ntfs::supports_record_geometry`]).
     pub fn supports_source_geometry(self, geometry: &ntfs::NtfsGeometry) -> bool {
-        matches!(geometry.bytes_per_sector, 512 | 4096)
-            && matches!(geometry.file_record_size, 1024 | 4096)
-            && crate::ntfs_index::supports_index_record_size(geometry.index_record_size)
+        ntfs::supports_record_geometry(geometry)
             && match self {
                 Self::AlphaV1 => geometry.cluster_size == 4096,
                 Self::ExperimentalLargeTreeV1

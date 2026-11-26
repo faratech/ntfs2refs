@@ -2447,6 +2447,51 @@ fn directory_compression_root_policy(record: &Record, attribute: &Attribute) -> 
         })
 }
 
+/// The NTFS version $Volume states (MFT record 3, its $VOLUME_INFORMATION
+/// bytes 8 and 9), read raw without the whole inspection. A run reads it
+/// before it asks, and again after Windows has mounted the volume to
+/// upgrade it. Record 3 is read where the MFT's own first data extent puts
+/// it, and that extent must hold it.
+pub fn read_volume_version<R: Read + Seek>(
+    reader: &mut R,
+    geometry: &NtfsGeometry,
+) -> Result<(u8, u8)> {
+    let record_bytes = u64::from(geometry.file_record_size);
+    let mft_start = geometry
+        .mft_lcn
+        .checked_mul(u64::from(geometry.cluster_size))
+        .context("MFT position overflow")?;
+    let mut read_record = |number: u64| -> Result<Record> {
+        let mut bytes = vec![0; geometry.file_record_size as usize];
+        let offset = number
+            .checked_mul(record_bytes)
+            .and_then(|at| at.checked_add(mft_start))
+            .context("MFT record position overflow")?;
+        read_at(reader, offset, &mut bytes, geometry.volume_size)?;
+        parse_record(bytes, geometry).with_context(|| format!("reading MFT record {number}"))
+    };
+    let mft = read_record(0)?;
+    let first = unnamed(&mft, 0x80)?
+        .report
+        .extents
+        .first()
+        .context("$MFT has no data extent")?
+        .clone();
+    ensure!(
+        first.logical_offset == 0
+            && first.physical_offset == Some(mft_start)
+            && first.length >= 4 * record_bytes,
+        "the MFT's first data extent does not hold its first four records"
+    );
+    let volume = read_record(3)?;
+    let value = unnamed(&volume, 0x70)?
+        .resident_value
+        .as_deref()
+        .context("$Volume's volume information is not resident")?;
+    ensure!(value.len() >= 12, "truncated volume information");
+    Ok((value[8], value[9]))
+}
+
 /// Inspect a raw NTFS partition without issuing writes. The report remains blocked
 /// until every semantic coverage requirement has a validated implementation.
 pub fn inspect<R: Read + Seek>(reader: &mut R, length: u64) -> Result<NtfsInspection> {

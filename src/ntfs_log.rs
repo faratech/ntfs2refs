@@ -524,7 +524,7 @@ mod tests {
             page.system = system;
             page.log = log_page;
             page.log_bytes = 4 * 131072;
-            let bytes = if system.is_power_of_two() && system <= 65536 && system >= 512 {
+            let bytes = if system.is_power_of_two() && (512..=65536).contains(&system) {
                 same(&page)
             } else {
                 // A page whose stated size cannot be laid out: the header
@@ -563,7 +563,7 @@ mod tests {
             // A log that is not a whole number of log pages.
             let mut odd = Page::clean(system, 65536, (2, 0));
             odd.log_bytes = (2 * system + 4096) as u64;
-            if odd.log_bytes % 65536 != 0 {
+            if !odd.log_bytes.is_multiple_of(65536) {
                 assert!(parse_restart_pair(&same(&odd)).is_err(), "{system}");
             }
         }

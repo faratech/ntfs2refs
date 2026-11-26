@@ -63,6 +63,7 @@ mod ntfs_storage_class;
 pub mod ntfs_stream_attestation;
 pub mod ntfs_stream_plan;
 pub mod ntfs_transactions;
+pub mod ntfs_version;
 #[cfg(windows)]
 pub(crate) mod object_id_disposition;
 pub(crate) mod panic_report;

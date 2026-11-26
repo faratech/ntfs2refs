@@ -381,6 +381,93 @@ pub(super) fn normalize_geometry(
     );
     Ok(after)
 }
+
+/// Called only after interactive confirmation, before the freeze, for an
+/// NTFS 1.2 or 3.0 volume (announced before the question, not undone).
+/// Windows mounts the volume read-write and writes out what it holds for
+/// it, which upgrades it to NTFS 3.1; then $Volume is read again from the
+/// raw partition. A volume that still reads an older version stops the run:
+/// nothing was changed but that Windows mounted it. The NTFS driver makes
+/// every write; the converter writes nothing to the source here.
+pub(super) fn settle_ntfs_version(
+    before: &n2r_win32::discovery::VolumeDiscovery,
+    version: (u8, u8),
+    run: &Path,
+    // The NTFS driver upgrades the source here, and it is not undone.
+    _authority: &SourceChangeAuthority,
+) -> Result<()> {
+    use n2r_win32::discovery::{self, Role};
+    let role = if before.binding.layout_profile == GeneralDiskLayoutProfile::OfflineWindows {
+        Role::OfflineWindowsSource
+    } else {
+        Role::Source
+    };
+    let fresh = discovery::discover(&before.volume_guid_path, role)?;
+    ensure!(
+        fresh.binding == before.binding
+            && fresh.filesystem == "NTFS"
+            && fresh.volume_serial_low32 == before.volume_serial_low32,
+        "confirmed source changed before Windows upgraded its NTFS version"
+    );
+    write_new(
+        &run.join("ntfs-version-intent.json"),
+        &serde_json::to_vec_pretty(&serde_json::json!({
+        "kind":"confirmed-NTFS-version-upgrade-by-windows-v1","source_before":before,
+        "ntfs_version_before":crate::ntfs_version::describe(version),
+        "ntfs_version_required":crate::ntfs_version::describe(crate::ntfs_version::CURRENT),
+        "native_ntfs_driver_upgrade_authorized":true,"raw_source_writes_authorized":false,
+        "conversion_recovery_baseline":"after the upgrade",
+        "later_cancellation_leaves_ntfs_3_1":true}))?,
+    )?;
+    println!(
+        "Having Windows upgrade this volume from NTFS {} to NTFS 3.1. Record: {}",
+        crate::ntfs_version::describe(version),
+        run.join("ntfs-version-intent.json").display()
+    );
+    let mut events = Vec::new();
+    let settled =
+        n2r_win32::windows_boot_geometry::settle_ntfs_version(&before.binding, &mut events);
+    let raw_after = (|| -> Result<(u8, u8)> {
+        let mut reader =
+            n2r_win32::GeneralPartitionReader::open(before.binding.clone(), &mut events)?;
+        let mut boot = [0u8; 512];
+        reader.seek(SeekFrom::Start(0))?;
+        reader.read_exact(&mut boot)?;
+        let geometry = crate::ntfs_inspect::inspect_boot_sector(&boot, reader.byte_len())?;
+        let version = crate::ntfs_inspect::read_volume_version(&mut reader, &geometry)?;
+        reader.revalidate_route(&mut events)?;
+        Ok(version)
+    })();
+    write_new(
+        &run.join("ntfs-version-after.json"),
+        &serde_json::to_vec_pretty(&serde_json::json!({
+        "windows":settled.as_ref().ok(),
+        "windows_error":settled.as_ref().err().map(ToString::to_string),
+        "ntfs_version_after":raw_after.as_ref().ok().map(|v| crate::ntfs_version::describe(*v)),
+        "raw_read_error":raw_after.as_ref().err().map(|error| format!("{error:#}")),
+        "native_events":events}))?,
+    )?;
+    let settled = settled.with_context(|| {
+        format!(
+            "Windows could not mount this volume read-write for its upgrade from NTFS {}; nothing was changed but that Windows mounted it. Records: {}",
+            crate::ntfs_version::describe(version),
+            run.display()
+        )
+    })?;
+    let after = raw_after.with_context(|| {
+        format!(
+            "reading $Volume again after Windows mounted the volume for its NTFS upgrade. Records: {}",
+            run.display()
+        )
+    })?;
+    ensure!(
+        after == crate::ntfs_version::CURRENT,
+        "{}",
+        crate::ntfs_version::still_older(version, after, settled.windows_version_after, run)
+    );
+    println!("Windows upgraded the volume to NTFS 3.1; this is not undone.");
+    Ok(())
+}
 /// How long the storage service is left alone before a shrink it answered
 /// with a bare "Failed" is asked for again.
 const RETRY_WAIT: std::time::Duration = std::time::Duration::from_secs(10);

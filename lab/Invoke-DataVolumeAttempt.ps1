@@ -421,6 +421,9 @@ if ($IntegrityRecords) {
     if (Test-Path -LiteralPath $integrityStorage) { throw "Integrity evidence already exists at $integrityStorage" }
     $null = New-Item -ItemType Directory -Path $integrityStorage
 }
+# Set only by the cloud feature; read on every run under strict mode.
+$script:cloudServe = $null
+$script:cloudStopOnDownloads = $null
 $session = New-PSSession -VMId $VmId -Credential $credential
 # The control OS's scheduled drive optimisation holds up writes to its ReFS
 # volumes for minutes when Windows' automatic maintenance starts it (issue

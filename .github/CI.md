@@ -45,13 +45,10 @@ Five profiles, each on a runner of its own:
 - `cancel`: ended at a random moment within 40 seconds, without a hold, then
   whatever the run had printed.
 
-One round of four, by its seed, converts with `--verify thorough`, whose
-apply step writes the handoff marker; the others with `--verify fast`, the
-default, whose handoff follows the verification of the converted volume. The
-two reach different hold points (`crates/n2r-win32/src/lab_hold.rs`): a fast
-run's rollback rounds are held up to `verify-passed`, a thorough run's up to
-`apply-before-handoff`. Each round prints its mode and records it in
-`rounds.jsonl`.
+One round of four, by its seed, converts with `--verify thorough`. The others
+use `--verify fast`, the default. In both modes the handoff follows verification
+of the converted volume, and rollback rounds can be held up to `verify-passed`.
+Each round prints its mode and records it in `rounds.jsonl`.
 
 A failed round stops its runner and keeps its records (the converter's
 output, the listings' comparison) as the run's artifact. It is made again on
@@ -74,7 +71,8 @@ Dispatch a fresh run to retry qualification after a failure.
 1. It checks that the tag is a version, is on main, and equals the version
    in `Cargo.toml`.
 2. It builds `ntfs2refs.exe`, `ntfs2refs-recovery.exe` and
-   `lab-volume-manifest.exe` in release mode.
+   `lab-volume-manifest.exe` in release mode. The candidate artifact also
+   carries the Cloud Files and ProjFS fixture providers for the private lab.
 3. It signs each with Azure Artifact Signing, Fara Technologies LLC first
    and Mike Fara appended, SHA-256 digests and RFC 3161 time stamps, and
    verifies both signatures with `signtool`.

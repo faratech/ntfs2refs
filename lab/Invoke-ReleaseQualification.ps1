@@ -20,6 +20,9 @@ foreach ($name in 'ntfs2refs.exe', 'ntfs2refs-recovery.exe', 'lab-volume-manifes
     if ((Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant() -cne $identity.hashes[$name] -or
         (Get-AuthenticodeSignature -LiteralPath $path).Status -ne 'Valid') { throw "Candidate hash or signature differs for $name" }
 }
+foreach ($name in 'lab-cloud-provider.exe', 'lab-projfs-provider.exe') {
+    Copy-Item -LiteralPath (Join-Path $Candidate "lab-tools/$name") -Destination $binaries -ErrorAction Stop
+}
 $prefix = 'q' + (Get-FileHash -InputStream ([IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes($Request)))).Hash.Substring(0, 7).ToLowerInvariant()
 $null = New-Item -ItemType Directory -Path $Output
 $rows = [Collections.Generic.List[object]]::new()

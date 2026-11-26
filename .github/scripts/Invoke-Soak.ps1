@@ -21,11 +21,9 @@ lists it with lab-volume-manifest, and converts it in one of these ways:
             the run had printed: the recovery command, or the command that
             gives the volume back as NTFS, or nothing if it printed neither
 
-One round of four, by its seed, converts with --verify thorough, whose apply
-step writes the handoff; the others with --verify fast, the default, whose
-handoff follows the verification of the converted volume. A held round draws
-its point from those its mode reaches, and a rollback round from those before
-the handoff.
+One round of four uses --verify thorough. The others use --verify fast.
+Both modes verify the converted volume before handoff, and a rollback round
+draws its hold from the points before handoff.
 
 It lists the volume again and compares the two listings: with a conversion's
 allowances when the volume is ReFS, exactly when it is NTFS again. A round

@@ -293,7 +293,10 @@ public static class ManyFiles {
             [IO.File]::WriteAllBytes("$dir\encrypted.txt", (Bytes 5000))
             $null = Run 'cipher.exe' @('/e', "$dir\encrypted.txt")
             if (-not ([IO.File]::GetAttributes("$dir\encrypted.txt") -band [IO.FileAttributes]::Encrypted)) { throw 'cipher /e left the file unencrypted' }
-            $made[$feature] = 'a file encrypted with EFS'
+            # Made plain once agreed (efs_decrypted), by a run that holds this
+            # account's key (-RunAs administrator runs it as this same account).
+            $made[$feature] = [ordered]@{ what = 'a file encrypted with EFS'
+                plain = @([ordered]@{ kind = 'efs_decrypted'; path = "\feature-$feature\encrypted.txt" }) }
         }
         'wof' {
             # compact /exe stores the data in a WOF reparse point and its

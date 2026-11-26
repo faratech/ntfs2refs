@@ -211,7 +211,7 @@ fn run() -> Result<u8> {
                             {"what": "shadow copies of the volume, snapshot storage kept on it, or a shadow-copy provider of backup software that holds a shadow copy on the machine or does not answer",
                              "remedy": "delete the shadow copies; the provider is named",
                              "passed_over": "a provider of backup software that answers and holds no shadow copy, named in a note: make a full backup afterwards"},
-                            {"what": "EFS-encrypted files", "remedy": "cipher /d"},
+                            {"what": "EFS-encrypted files this account cannot decrypt, or of a shape not made plain (named streams, compressed or sparse and encrypted)", "remedy": "run as the user who encrypted them, import their key or use the recovery agent; or cipher /d"},
                             {"what": "an OFFLINE file with a reparse point (a hierarchical storage manager's)"},
                             {"what": "reparse points other than symbolic links, junctions, app execution aliases and the files of the Windows Subsystem for Linux (Data Deduplication, compact /exe, cloud placeholders)",
                              "remedy": "named per kind"},

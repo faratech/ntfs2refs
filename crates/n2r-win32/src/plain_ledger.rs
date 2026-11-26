@@ -134,7 +134,10 @@ impl PlainKind {
     /// modelled, so that a list, a ledger and the verdict can name them,
     /// and are still refused where they are found.
     pub fn implemented(self) -> bool {
-        matches!(self, PlainKind::AttributesCleared | PlainKind::WofExpanded)
+        matches!(
+            self,
+            PlainKind::AttributesCleared | PlainKind::WofExpanded | PlainKind::EfsDecrypted
+        )
     }
 }
 
@@ -675,7 +678,11 @@ mod tests {
                 .iter()
                 .filter(|kind| kind.implemented())
                 .collect::<Vec<_>>(),
-            [&PlainKind::AttributesCleared, &PlainKind::WofExpanded]
+            [
+                &PlainKind::AttributesCleared,
+                &PlainKind::EfsDecrypted,
+                &PlainKind::WofExpanded
+            ]
         );
     }
 

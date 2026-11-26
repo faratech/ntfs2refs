@@ -244,6 +244,11 @@ $dataCases = @(
     'offline|-Content minimal -Features offline -Check -AcceptPlain'
     # WOF files of every algorithm, made plain from their copies.
     'wof-plain|-Content minimal -Features wof -Check -AcceptPlain -Unattended'
+    # EFS: decrypted by the account that encrypted it (-RunAs administrator,
+    # the account the features are made as); as SYSTEM, which holds no key,
+    # refused by name before anything is changed.
+    'efs-plain|-Content minimal -Features efs -Check -AcceptPlain -Unattended -RunAs administrator'
+    'efs-nokey|-Content minimal -Features efs -AcceptPlain -ExpectRefusal no.EFS.key'
     'names|-Content minimal -Features names -Check'
     # MBR disks: the volume alone on one, the working directory on one, both
     # with a run interrupted half way through the writes and resumed; and a

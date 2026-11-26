@@ -129,7 +129,7 @@ try {
         $soakRows[$case] = $round
         Save-Json $round (Join-Path $evidence "soak-records-$case/rounds.jsonl")
     }
-    $cases = @(foreach ($name in 'fixture10', 'admin-fixture40', 'full-system', 'apply-mid-resume', 'apply-mid-rollback', 'seal-recorded-resume', 'handoff-sealed-resume', 'verify-readonly-rollback', 'torn-handoff-resume', 'vm-verify-passed-rollback', 'vm-thorough-handoff-resume', 'lived-in', 'lived-in-64k', 'std-4k', 'std-64k', 'devdrive', 'restart-convert', 'restart-cancel', 'restart-refs-refusal', 'integrity-native-idle', 'integrity-converted-idle', 'integrity-native-loaded', 'integrity-converted-loaded', 'integrity-lived-in', 'integrity-event-131') {
+    $cases = @(foreach ($name in 'fixture10', 'admin-fixture40', 'full-system', 'apply-mid-resume', 'apply-mid-rollback', 'seal-recorded-resume', 'handoff-sealed-resume', 'verify-readonly-rollback', 'torn-handoff-resume', 'vm-verify-passed-rollback', 'vm-thorough-verify-passed-resume', 'vm-thorough-verify-passed-rollback', 'lived-in', 'lived-in-64k', 'std-4k', 'std-64k', 'devdrive', 'restart-convert', 'restart-cancel', 'restart-refs-refusal', 'integrity-native-idle', 'integrity-converted-idle', 'integrity-native-loaded', 'integrity-converted-loaded', 'integrity-lived-in', 'integrity-event-131') {
         $outcome = switch -Wildcard ($name) {
             '*fixture*' { 'converted-not-booted' }
             '*-resume' { 'RESUMED-NOT-BOOTED' }
@@ -145,7 +145,7 @@ try {
     })
     $holds = @{'apply-mid-resume'='apply-mid-ranges'; 'apply-mid-rollback'='apply-mid-ranges'; 'seal-recorded-resume'='apply-seal-recorded';
         'handoff-sealed-resume'='handoff-sealed'; 'verify-readonly-rollback'='verify-source-readonly'; 'torn-handoff-resume'='verify-passed'; 'vm-verify-passed-rollback'='verify-passed';
-        'vm-thorough-handoff-resume'='apply-handoff-durable'; 'restart-cancel'='restart-after-arm' }
+        'vm-thorough-verify-passed-resume'='verify-passed'; 'vm-thorough-verify-passed-rollback'='verify-passed'; 'restart-cancel'='restart-after-arm' }
     foreach ($row in $cases) {
         $row.hold = $holds[$row.case_id]
         if ($row.case_id -like 'vm-*') { $row.interruption = 'vm-turned-off' }
@@ -160,7 +160,7 @@ try {
         if ($row.case_id -eq 'restart-cancel') { $row.interruption = 'injected failure'; $row.working_filesystem = 'NTFS' }
         if ($row.case_id -eq 'restart-convert') { $row.working_filesystem = 'NTFS' }
         if ($row.case_id -eq 'restart-refs-refusal') { $row.working_filesystem = 'ReFS'; $row.scratch_refusal = $true }
-        if ($row.case_id -eq 'vm-thorough-handoff-resume') { $row.verify = 'thorough' }
+        if ($row.case_id -like 'vm-thorough-*') { $row.verify = 'thorough' }
     }
     foreach ($mode in 'resume', 'rollback') {
         $outcome = if ($mode -eq 'resume') { 'resumed' } else { 'rolled-back' }
@@ -395,6 +395,7 @@ try {
         @('rollback', 'outcome', 'converted', 'Unexpected verdict'),
         @('resume', 'hold_at', '', 'missed its interruption'),
         @('resume', 'recovery_mode', 'none', 'missed its recovery action'),
+        @('thorough-resume', 'hold_at', 'finalize-source-readonly', 'missed its interruption'),
         @('cancel', 'terminated', $false, 'missed its interruption'),
         @('cancel', 'end_after_seconds', 24.8, 'missed its interruption'),
         @('handled-preparation', 'attached_before_cleanup', @('shadow.vhdx'), 'shadow detached before cleanup'),
@@ -412,6 +413,11 @@ try {
     Save-Json $lab $labPath
     Invoke-Gate 'missing-boot-recovery-cleanup' 'Incomplete Hyper-V cleanup evidence for vm-verify-passed-rollback'
     $powerOff.cleanup_ok = $true
+    $thoroughRollback = $cases | Where-Object { $_.case_id -eq 'vm-thorough-verify-passed-rollback' }
+    $thoroughRollback.hold = 'apply-handoff-durable'
+    Save-Json $lab $labPath
+    Invoke-Gate 'wrong-thorough-rollback-hold' 'Incomplete recovery evidence for Hyper-V case vm-thorough-verify-passed-rollback'
+    $thoroughRollback.hold = 'verify-passed'
     $boot.cleanup_ok = $false
     Save-Json $lab $labPath
     Invoke-Gate 'failed-full-boot-cleanup' 'Incomplete Hyper-V cleanup evidence for full-system'

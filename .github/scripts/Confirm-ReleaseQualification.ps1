@@ -116,7 +116,8 @@ $requiredLab = @{
     'fixture10' = 'converted-not-booted'; 'admin-fixture40' = 'converted-not-booted'; 'full-system' = 'BOOTED-ON-REFS'
     'apply-mid-resume' = 'RESUMED-NOT-BOOTED'; 'apply-mid-rollback' = 'ROLLED-BACK-NOT-BOOTED'
     'seal-recorded-resume' = 'RESUMED-NOT-BOOTED'; 'handoff-sealed-resume' = 'RESUMED-NOT-BOOTED'; 'torn-handoff-resume' = 'RESUMED-NOT-BOOTED'
-    'vm-verify-passed-rollback' = 'ROLLED-BACK-NOT-BOOTED'; 'vm-thorough-handoff-resume' = 'RESUMED-NOT-BOOTED'
+    'vm-verify-passed-rollback' = 'ROLLED-BACK-NOT-BOOTED'
+    'vm-thorough-verify-passed-resume' = 'RESUMED-NOT-BOOTED'; 'vm-thorough-verify-passed-rollback' = 'ROLLED-BACK-NOT-BOOTED'
     'lived-in' = 'converted'; 'restart-convert' = 'converted'; 'restart-cancel' = 'cancelled-volume-as-before'
     'restart-refs-refusal' = 'refused-source-unchanged'
     'restart-postflush-resume' = 'resumed'; 'restart-postflush-rollback' = 'rolled-back'
@@ -147,7 +148,8 @@ $requiredRecovery = @{
     'handoff-sealed-resume' = @('fast', 'handoff-sealed', 'process-termination', 'resume')
     'torn-handoff-resume' = @('fast', 'verify-passed', 'process-termination', 'resume')
     'vm-verify-passed-rollback' = @('fast', 'verify-passed', 'vm-turned-off', 'rollback')
-    'vm-thorough-handoff-resume' = @('thorough', 'apply-handoff-durable', 'vm-turned-off', 'resume')
+    'vm-thorough-verify-passed-resume' = @('thorough', 'verify-passed', 'vm-turned-off', 'resume')
+    'vm-thorough-verify-passed-rollback' = @('thorough', 'verify-passed', 'vm-turned-off', 'rollback')
     'restart-cancel' = @('fast', 'restart-after-arm', 'injected failure', 'rollback')
     'restart-postflush-resume' = @('fast', 'winpe-postflush-before-discovery', 'vm-turned-off', 'resume')
     'restart-postflush-rollback' = @('fast', 'winpe-postflush-before-discovery', 'vm-turned-off', 'rollback')

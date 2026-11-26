@@ -7,6 +7,10 @@ $NativeRegressionCases = [ordered]@{
         NtfsClusterBytes = 16384; Verify = 'thorough'; Outcome = 'converted'
     }
     resume = @{ Soak = @{ Profile = 'resume'; Seed = 315783001 }; Outcome = 'converted'; Hold = 'verify-passed'; Recovery = 'resume' }
+    'thorough-resume' = @{
+        Soak = @{ Profile = 'resume'; Seed = 934383016; TargetClusterBytes = 65536 }
+        NtfsClusterBytes = 8192; Verify = 'thorough'; Outcome = 'converted'; Hold = 'verify-passed'; Recovery = 'resume'
+    }
     rollback = @{ Soak = @{ Profile = 'rollback'; Seed = 315784002 }; Outcome = 'ntfs-as-before'; Hold = 'apply-boot-granule-written'; Recovery = 'rollback' }
     cancel = @{ Soak = @{ Profile = 'cancel'; Seed = 315785001; CancelAtPreparation = $true }; Outcome = 'ntfs-as-before'; Hold = 'preparation-shadow-built'; Recovery = 'rollback' }
     'handled-preparation' = @{ Soak = @{ Scenario = 'handled-preparation' }; Outcome = 'ntfs-as-before' }

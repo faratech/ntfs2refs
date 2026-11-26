@@ -13,6 +13,12 @@ entry are in the pull request named beside it and in `docs/performance.md`.
   identifies the object and stream that failed.
 - A handled preparation failure detaches its working shadow after the
   original NTFS volume has been restored and guarded cancellation has closed.
+- Both `--verify fast` and `--verify thorough` verify the converted volume
+  before recording handoff, so rollback remains available during verification.
+- With approval, cloud and ProjFS placeholders can become ordinary files.
+  The converter tries to bring missing data onto the volume before the freeze.
+  Leaving unavailable placeholders out requires separate approval. The
+  ProjFS cases were exercised on Windows Server 2025 (#318, #321).
 - The evaluation release workflow requires native conversion and recovery
   evidence for the exact signed executables before packaging or publication.
 

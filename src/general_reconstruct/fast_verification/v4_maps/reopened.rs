@@ -412,7 +412,11 @@ impl ReopenedVerificationMetadata {
                 && known
                     .streams_hashed
                     .checked_add(known.streams_without_content_baseline)
-                    == Some(usize::try_from(self.admission.data_streams)?)
+                    == Some(usize::try_from(
+                        n2r_win32::plain_ledger::declared()
+                            .expected_streams(self.admission.data_streams)
+                            .map_err(anyhow::Error::msg)?
+                    )?)
                 && known.payload_bytes_read == observation.admitted_payload_bytes_read,
             "accounted native converted metadata observation differs"
         );

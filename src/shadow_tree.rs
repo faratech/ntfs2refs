@@ -358,6 +358,8 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
     let mut bytes = 0u64;
     let mut name_count = 0usize;
     let mut stream_count = 0usize;
+    let drops = n2r_win32::plain_ledger::declared();
+    let mut drops_met = BTreeSet::new();
     let mut source_ranges = Vec::new();
     if let Some(ranges) = resource_ranges {
         source_ranges.try_reserve_exact(ranges)?;
@@ -578,6 +580,23 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
         stream_count = stream_count
             .checked_add(object.named_streams.len())
             .context("expected DATA stream count overflow")?;
+        // A source stream the run's plain-conversions ledger declares left
+        // off this object (WofCompressedData of a file made plain from its
+        // WOF copy) is counted as the admission counted it: for this object
+        // alone, and only if the object no longer holds it.
+        let dropped = drops
+            .for_object(
+                object.record_number,
+                object.sequence_number,
+                object.named_streams.iter().map(|s| s.name_utf16.as_slice()),
+            )
+            .map_err(anyhow::Error::msg)?;
+        if dropped != 0 {
+            drops_met.insert((object.record_number, object.sequence_number));
+            stream_count = stream_count
+                .checked_add(usize::try_from(dropped)?)
+                .context("expected DATA stream count overflow")?;
+        }
         ensure!(
             resource_admission.is_some() || stream_count <= ntfs_admission::MAX_DATA_STREAMS,
             "expected total DATA stream count exceeds 16,384"
@@ -647,6 +666,8 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
         case_stated == 0 || case_stated == directories,
         "{case_stated} of the expected tree's {directories} directories state a case-sensitive mark, where all of them or none do"
     );
+    // Every object a drop is declared for is one of this tree's.
+    drops.require_met(&drops_met).map_err(anyhow::Error::msg)?;
     validate_source_overlap(&mut source_ranges)?;
     if let Some(ranges) = resource_ranges {
         ensure!(

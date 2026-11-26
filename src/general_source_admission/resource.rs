@@ -1277,13 +1277,20 @@ impl ResourceSourceContext {
                         census.copies,
                     )?;
                 }
-                Some(n2r_win32::plain_ledger::PlainLedger {
+                let ledger = n2r_win32::plain_ledger::PlainLedger {
                     kind: n2r_win32::plain_ledger::LEDGER_KIND.to_owned(),
                     agreed_list_sha256: agreed,
                     frozen_list_sha256: census.list.sha256(),
                     source_inspection_sha256: inspection_sha.clone(),
                     rows: census.rows,
-                })
+                };
+                // The streams the new tree leaves off, object by object, as
+                // every count of it against this admission expects them.
+                n2r_win32::plain_ledger::declare(
+                    n2r_win32::plain_ledger::DeclaredDrops::from_ledger(&ledger)
+                        .map_err(anyhow::Error::msg)?,
+                );
+                Some(ledger)
             } else {
                 None
             };

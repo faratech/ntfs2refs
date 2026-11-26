@@ -591,11 +591,10 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
                 object.named_streams.iter().map(|s| s.name_utf16.as_slice()),
             )
             .map_err(anyhow::Error::msg)?;
+        // (The admission is compared with the tree's counts and these
+        // drops added back: `validate_new_tree`.)
         if dropped != 0 {
             drops_met.insert((object.record_number, object.sequence_number));
-            stream_count = stream_count
-                .checked_add(usize::try_from(dropped)?)
-                .context("expected DATA stream count overflow")?;
         }
         ensure!(
             resource_admission.is_some() || stream_count <= ntfs_admission::MAX_DATA_STREAMS,
@@ -686,11 +685,11 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
             "expected file/directory counts exceed selected resource profile"
         );
         if let Some(admission) = resources.count_admission()? {
-            admission.validate_tree(count - directories, directories, stream_count)?;
+            admission.validate_new_tree(count - directories, directories, stream_count)?;
             admission.validate_expected_bytes(domain)?;
         }
         if let Some(admission) = resource_admission {
-            admission.validate_tree(
+            admission.validate_new_tree(
                 u64::try_from(count - directories)?,
                 u64::try_from(directories)?,
                 u64::try_from(stream_count)?,

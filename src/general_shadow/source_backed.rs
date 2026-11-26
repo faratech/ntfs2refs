@@ -1163,6 +1163,17 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
         self.raw.allocation_cursor(partition_bytes)
     }
 
+    /// Whether `identity` is supplied from its plain copy rather than from
+    /// the source (`n2r_win32::plain_copy`).
+    pub(crate) fn supplied_from_copy(&self, identity: &PagedStreamIdentity<'_>) -> bool {
+        n2r_win32::plain_copy::taken_pin(&n2r_win32::plain_copy::PlainCopyKey {
+            record_number: identity.record_number,
+            sequence_number: identity.sequence_number,
+            stream_name_utf16: identity.name_utf16.to_vec(),
+        })
+        .is_some()
+    }
+
     pub(crate) fn source_physical_for(
         &mut self,
         identity: &PagedStreamIdentity<'_>,
@@ -2838,6 +2849,17 @@ impl<'a> SourceBackedShadow<'a> {
                     .stream(&route.stream_name_utf16)
                     .context("source-backed sparse stream absent")?;
                 let logical = route.logical_offset + self.position - route.target_physical_offset;
+                // A plain copy is supplied on the paged route alone.
+                ensure!(
+                    n2r_win32::plain_copy::taken_pin(&n2r_win32::plain_copy::PlainCopyKey {
+                        record_number: object.record_number,
+                        sequence_number: object.sequence_number,
+                        stream_name_utf16: route.stream_name_utf16.clone(),
+                    })
+                    .is_none(),
+                    "MFT record {} is supplied from its plain copy, which this route does not read",
+                    object.record_number
+                );
                 if self.session.as_ref().is_none_or(|s| {
                     !s.matches_stream(object.record_number, &route.stream_name_utf16)
                 }) {

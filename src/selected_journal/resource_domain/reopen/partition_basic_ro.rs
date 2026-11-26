@@ -110,7 +110,8 @@ impl PartitionBasicRoClosedTerminal {
         ensure!(
             publication.source_inspection_sha256
                 == hex::encode(publication.resource_admission.source_inspection_sha256)
-                && publication.expected.objects == publication.resource_admission.objects()?
+                && publication.expected.objects
+                    == publication.resource_admission.new_tree_objects()?
                 && publication.source_fingerprint_kind
                     == if publication.verification_policy.is_full_content() {
                         crate::source_fingerprint::resource::FULL_KIND

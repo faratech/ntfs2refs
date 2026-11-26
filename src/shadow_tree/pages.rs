@@ -65,7 +65,7 @@ impl ExpectedBindingFacts {
                 && canonical_sha(&self.native_file_sha256)
                 && canonical_sha(&self.user_join_sha256)
                 && self.profile == "native-ordinary-tree-shadow-resource-bounded-v4"
-                && self.objects == admission.objects()?
+                && self.objects == admission.new_tree_objects()?
                 && serde_json::to_vec(self)?.len() <= 65536,
             "cached expected body binding differs from its exact data/resource contract"
         );
@@ -1839,7 +1839,7 @@ impl PagedExpectedTree {
     ) -> Result<ExpectedTreePageReceipt> {
         admission.validate()?;
         ensure!(
-            tree.object_count() as u64 == admission.objects()?,
+            tree.object_count() as u64 == admission.new_tree_objects()?,
             "resource expected object count differs"
         );
         ensure!(
@@ -1939,7 +1939,7 @@ impl PagedExpectedTree {
         };
         let CompactObjects { writer, counts, .. } = compact;
         if let Some(admission) = resource_admission {
-            admission.validate_tree(counts.files, counts.directories, counts.data_streams)?;
+            admission.validate_new_tree(counts.files, counts.directories, counts.data_streams)?;
         }
         let summary = writer.finish()?;
         ensure!(
@@ -2560,7 +2560,7 @@ impl PagedExpectedTree {
             .context("expected-tree object domain exceeds addressable ordinals")?;
         if let Some(admission) = resource_admission {
             ensure!(
-                header.total_objects == admission.objects()?
+                header.total_objects == admission.new_tree_objects()?
                     && header
                         .total_objects
                         .checked_mul(24)
@@ -2712,7 +2712,7 @@ impl PagedExpectedTree {
             "typed object count differs from the complete header domain"
         );
         if let Some(admission) = resource_admission {
-            admission.validate_tree(
+            admission.validate_new_tree(
                 view.counts.files,
                 view.counts.directories,
                 view.counts.data_streams,
@@ -3221,7 +3221,7 @@ impl PagedExpectedTree {
                 && self.semantic_byte_budget == admission.semantic_byte_budget(),
             "expected resource page owner differs from admission"
         );
-        admission.validate_tree(
+        admission.validate_new_tree(
             self.counts.files,
             self.counts.directories,
             self.counts.data_streams,

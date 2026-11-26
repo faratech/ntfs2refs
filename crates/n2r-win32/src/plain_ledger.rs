@@ -464,6 +464,30 @@ impl DeclaredDrops {
         }
     }
 
+    /// The admission's counts (files, directories, streams) of the source
+    /// a new tree with these counts was made from: the new tree's, with
+    /// the streams declared dropped added back.
+    pub fn admitted_from_new(
+        &self,
+        files: u64,
+        directories: u64,
+        streams: u64,
+    ) -> Result<(u64, u64, u64), String> {
+        Ok((
+            files,
+            directories,
+            streams.checked_add(self.total()).ok_or_else(|| {
+                "the new tree's stream count with the declared drops overflows".to_owned()
+            })?,
+        ))
+    }
+
+    /// The admission's objects that are the new tree's. Every one is: a
+    /// stream dropped leaves its object.
+    pub fn expected_objects(&self, admitted: u64) -> Result<u64, String> {
+        Ok(admitted)
+    }
+
     /// The admission's raw stream count less the declared drops: what the
     /// new volume holds.
     pub fn expected_streams(&self, admitted: u64) -> Result<u64, String> {
@@ -535,6 +559,25 @@ mod tests {
         assert_eq!(drops.expected_streams(10), Ok(9));
         let met: std::collections::BTreeSet<_> = [(40, 1), (41, 1)].into();
         assert!(drops.require_met(&met).is_ok());
+    }
+
+    #[test]
+    fn the_new_tree_is_held_to_the_admission_with_its_drops_added_back() {
+        let drops =
+            DeclaredDrops::from_ledger(&ledger_of(vec![wof_row(40, PlainKind::WofExpanded)]))
+                .unwrap();
+        // The new tree holds one stream fewer than the admission counted:
+        // the paged projection, the paged expected tree and the cached body
+        // compare (files, directories, streams) with it added back.
+        assert_eq!(drops.admitted_from_new(3, 2, 4), Ok((3, 2, 5)));
+        // A stream dropped leaves its object.
+        assert_eq!(drops.expected_objects(5), Ok(5));
+        // Nothing declared: the counts stand as they are.
+        assert_eq!(
+            DeclaredDrops::default().admitted_from_new(3, 2, 4),
+            Ok((3, 2, 4))
+        );
+        assert!(drops.admitted_from_new(0, 0, u64::MAX).is_err());
     }
 
     #[test]

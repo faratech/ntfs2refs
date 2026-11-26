@@ -1575,7 +1575,7 @@ impl SourceExpectedDomain {
                         Some(admission)
                     ))
                 && native.len() as u64 == source.file_count()
-                && expected.len() as u64 == admission.objects()?
+                && expected.len() as u64 == admission.new_tree_objects()?
                 && expected.profile()
                     == crate::ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission))
                         .ordinary_shadow_profile(),
@@ -2174,7 +2174,7 @@ impl SourceExpectedDomain {
             }
             aliases.require_source(source)?;
         }
-        admission.validate_tree(files, directories, streams)?;
+        admission.validate_new_tree(files, directories, streams)?;
         // Object construction is complete. Return its transient parse/clone
         // allowance before opening merge heads and output verification rows.
         drop(row_ram);
@@ -2252,7 +2252,7 @@ impl SourceExpectedDomain {
         let row_ram = scratch.lease_ram(row_working_bytes)?;
         let objects = SortedRecordStore::open(&object_pin, scratch)?;
         ensure!(
-            objects.len() == admission.objects()? && directories > 0,
+            objects.len() == admission.new_tree_objects()? && directories > 0,
             "complete projected object domain differs"
         );
         let object_count = usize::try_from(objects.len())?;
@@ -2454,7 +2454,7 @@ impl ExpectedObjectDomain for SourceExpectedDomain {
             admission == self.admission && !self.scratch.is_poisoned(),
             "projected source admission differs"
         );
-        admission.validate_tree(self.files, self.directories, self.streams)?;
+        admission.validate_new_tree(self.files, self.directories, self.streams)?;
         self.require_paged_metadata(
             admission.expected_page_budget()?,
             admission.semantic_byte_budget(),

@@ -1383,6 +1383,11 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
             }
         } catch { $verdict.outcome = 'feature-not-made'; throw "lfs2 or ntfs30 could not be made on the disk: $($_.Exception.Message)" }
         $onDisk = ($rawJson | Select-Object -Last 1) | ConvertFrom-Json
+        # The guest sets only what applied; under strict mode a field it left
+        # out would throw when read, so each is present, null when absent.
+        foreach ($field in 'ntfs30', 'lfs2', 'version_when_the_run_starts', 'headers_when_the_run_starts', 'diagnostics', 'made_error', 'v_back', 'listed_exit', 'listed') {
+            if (-not $onDisk.PSObject.Properties[$field]) { $onDisk | Add-Member -NotePropertyName $field -NotePropertyValue $null }
+        }
         # Kept before anything is decided: what was written, what the disk
         # said once Windows had it back, and what Windows made of it.
         $patch = $null

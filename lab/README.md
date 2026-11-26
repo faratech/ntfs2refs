@@ -548,8 +548,7 @@ held against the run; they are counted apart from the plain conversions.
 
 `projfs` and `projfs-down` make a virtualization root of the lab's own ProjFS
 provider (`lab-projfs-provider.exe`, built with `--bin lab-projfs-provider`
-and copied beside the converter; the feature step enables the Client-ProjFS
-optional feature first, and stops if Windows asks for a restart), projecting
+and copied beside the converter), projecting
 a folder on the control OS's C:: the root (whose marker is its reparse
 point), a folder, two placeholders hydrated and one, `absent.bin`, not.
 `projfs` leaves the provider running: with `-AcceptPlain` the run reads
@@ -561,6 +560,15 @@ needed. `projfs-down` stops it: the unattended run is refused naming
 `projfs_left_out` (`projfs-down-leave-out`). All three are still to be run;
 whether the listing can list a virtualization root whose provider is stopped
 is one of the things they will show.
+Before the volume is made the harness asks `dism.exe` (not the DISM
+cmdlets, which over its remoting session failed with "The implementation is
+not capable of performing the request", p320-projfs*) whether Client-ProjFS
+is enabled, enables it where it is not, restarts the control OS once where
+Windows asks for that, and loads the filter PrjFlt where it is not loaded;
+the feature step then attaches PrjFlt to V: (`fltmc attach PrjFlt V:`) and
+creates the root, naming the provider call that fails and its HRESULT. If
+ProjFS still cannot run, the outcome is `projfs-not-available` (what was
+found is in the verdict's `projfs`), never `feature-not-made`.
 
 `temporary`, `offline` and `wof` (four `compact /exe` files, one per WOF
 algorithm, listed before the run in `wof-listed-before.jsonl`) convert with

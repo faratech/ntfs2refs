@@ -91,7 +91,7 @@ param(
     # compared), and 'cloud-down' is refused naming the two it cannot
     # download (its provider is stopped), with the source unchanged.
     # projfs and projfs-down: the same with a virtualization root of
-    # lab-projfs-provider.exe (the feature step enables Client-ProjFS): two
+    # lab-projfs-provider.exe (the harness enables Client-ProjFS first): two
     # placeholders hydrated and one not, which 'projfs' reads through its
     # running provider before the freeze, and 'projfs-down' (its provider
     # stopped) is refused for, or leaves out with -LeaveOutCloud.
@@ -559,6 +559,60 @@ try {
         }
     }
 
+    if ($projfsFeatures) {
+        # ProjFS: the Client-ProjFS optional feature and its filter, PrjFlt.
+        # Asked of dism.exe, not of the DISM cmdlets, which over this remoting
+        # session failed with "The implementation is not capable of
+        # performing the request" (ERROR_NOT_CAPABLE; p320-projfs*). Enabled
+        # where it is not, and the control OS restarted once where Windows
+        # asks for it, before the volume is made. If it still cannot run, the
+        # outcome is projfs-not-available, never a feature quietly skipped.
+        $projfsState = {
+            $text = (& dism.exe /English /Online /Get-FeatureInfo /FeatureName:Client-ProjFS 2>&1) -join "`n"
+            $state = if ($text -match '(?m)^State : (.+)$') { $Matches[1].Trim() } else { "unknown (dism exit $LASTEXITCODE): $(($text -replace '\s+', ' ').Trim())" }
+            $filter = [bool]((& fltmc.exe filters 2>&1) -match '^\s*PrjFlt\s')
+            [pscustomobject]@{ state = $state; filter_loaded = $filter }
+        }
+        $before = Invoke-Command -Session $session -ScriptBlock $projfsState
+        $verdict.projfs = [ordered]@{ state_before = $before.state; filter_loaded_before = $before.filter_loaded; enabled_now = $false; restarted_for_it = $false }
+        Say "projfs: Client-ProjFS is $($before.state); PrjFlt $(if ($before.filter_loaded) { 'loaded' } else { 'not loaded' })"
+        $state = $before.state
+        if ($state -ne 'Enabled') {
+            if ($state -ne 'Enable Pending') {
+                $enabled = Invoke-Command -Session $session -ScriptBlock {
+                    $text = (& dism.exe /English /Online /Enable-Feature /FeatureName:Client-ProjFS /All /NoRestart 2>&1) -join ' '
+                    [pscustomobject]@{ exit = $LASTEXITCODE; text = ($text -replace '\s+', ' ').Trim() } }
+                $verdict.projfs.enabled_now = $true
+                Say "projfs: dism /Enable-Feature exit $($enabled.exit)"
+                # 3010: enabled, and Windows asks for a restart.
+                if ($enabled.exit -notin 0, 3010) {
+                    $verdict.outcome = 'projfs-not-available'
+                    throw "ProjFS cannot run in the control OS: enabling Client-ProjFS failed (dism exit $($enabled.exit)): $($enabled.text)"
+                }
+                $state = (Invoke-Command -Session $session -ScriptBlock $projfsState).state
+            }
+            if ($state -ne 'Enabled') {
+                $verdict.projfs.restarted_for_it = $true
+                Restart-ControlOs "for Client-ProjFS ($state) to take effect"
+                $ready = Invoke-Command -Session $session -ScriptBlock { (Get-Disk).Number }
+                $state = (Invoke-Command -Session $session -ScriptBlock $projfsState).state
+            }
+        }
+        $after = Invoke-Command -Session $session -ScriptBlock $projfsState
+        if (-not $after.filter_loaded) {
+            # Loaded once by hand where Windows has not loaded it yet.
+            $loaded = Invoke-Command -Session $session -ScriptBlock { ((& fltmc.exe load PrjFlt 2>&1) -join ' ').Trim() }
+            Say "projfs: fltmc load PrjFlt: $loaded"
+            $after = Invoke-Command -Session $session -ScriptBlock $projfsState
+        }
+        $verdict.projfs.state = $after.state; $verdict.projfs.filter_loaded = $after.filter_loaded
+        if ($after.state -ne 'Enabled' -or -not $after.filter_loaded) {
+            $verdict.outcome = 'projfs-not-available'
+            throw "ProjFS cannot run in the control OS: Client-ProjFS is $($after.state) and PrjFlt is $(if ($after.filter_loaded) { 'loaded' } else { 'not loaded' })$(if ($verdict.projfs.restarted_for_it) { ', after a restart for it' })"
+        }
+        Say "projfs: Client-ProjFS enabled, PrjFlt loaded"
+    }
+
     # The source disk: a VHDX in the guest, or for 4Kn one the host attaches.
     if ($Siblings -and ($SectorBytes -eq 4096 -or $NativeRefsControl)) { throw '-Siblings is for a converted volume on a 512-byte-sector disk' }
     if ($SourceMbr -and $Siblings) { throw '-Siblings makes a GPT disk; a partition beside an MBR source is -MbrBeside' }
@@ -766,7 +820,11 @@ try {
                 $block = [scriptblock]::Create((Get-Content -LiteralPath "$root\features.ps1" -Raw))
                 & $block -Root 'V:\' -Features $features -DirectoryEntries $entries -BigFileGB $bigGB -FileCount $files -CloudProvider "$root\lab-cloud-provider.exe" -ProjfsProvider "$root\lab-projfs-provider.exe"
             }
-        } catch { $verdict.outcome = 'feature-not-made'; throw "a feature could not be put on the volume: $($_.Exception.Message)" }
+        } catch {
+            # ProjFS's own outcome: the feature step names it so (Add-VolumeFeatures).
+            $verdict.outcome = if ("$($_.Exception.Message)" -match 'ProjFS cannot run') { 'projfs-not-available' } else { 'feature-not-made' }
+            throw "a feature could not be put on the volume: $($_.Exception.Message)"
+        }
         $verdict.source.features = ($featureJson | Select-Object -Last 1) | ConvertFrom-Json
         if ($wanted -contains 'bigdir') { $verdict.source.directory_entries = $DirectoryEntries }
         Set-Content -LiteralPath (Join-Path $records 'features.json') -Value ($featureJson | Select-Object -Last 1) -Encoding UTF8

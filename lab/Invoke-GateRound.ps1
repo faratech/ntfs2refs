@@ -266,7 +266,7 @@ $dataCases = @(
     # not carried over, each object recorded in the ledger.
     'svi-deep|-Content minimal -Features svi-deep -Check'
     # ProjFS placeholders of the lab's own provider (lab-projfs-provider.exe
-    # beside lab-volume-manifest.exe; the feature step enables Client-ProjFS):
+    # beside lab-volume-manifest.exe; the harness enables Client-ProjFS first):
     # with it running, the one not on the volume is read through it before
     # the freeze and all are made plain; with it stopped, refused by name, or
     # converted without it once leaving it out is agreed.

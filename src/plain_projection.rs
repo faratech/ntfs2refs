@@ -359,12 +359,19 @@ pub(crate) fn cloud_placeholder(file: &FileInventory) -> Result<Option<CloudPlac
         return Ok(None);
     }
     if file.is_directory {
-        return Ok(file.streams.is_empty().then_some(CloudPlaceholder {
-            tag: point.tag(),
-            directory: true,
-            plain_bytes: 0,
-            raw_missing_bytes: 0,
-        }));
+        // A sync root's folder holds the Cloud Files API's own stream
+        // (`{3D0CE612-...}.SyncRootIdentity`), which is left off it; any
+        // other named stream on a cloud folder is refused by admission.
+        return Ok(file
+            .streams
+            .iter()
+            .all(sync_root_stream)
+            .then_some(CloudPlaceholder {
+                tag: point.tag(),
+                directory: true,
+                plain_bytes: 0,
+                raw_missing_bytes: 0,
+            }));
     }
     let unnamed: Vec<_> = file
         .streams
@@ -383,6 +390,21 @@ pub(crate) fn cloud_placeholder(file: &FileInventory) -> Result<Option<CloudPlac
         plain_bytes: stream.logical_size,
         raw_missing_bytes: raw_missing_bytes(stream),
     }))
+}
+
+/// Whether `stream` is the Cloud Files API's own on a sync root's folder.
+pub(crate) fn sync_root_stream(stream: &crate::ntfs_inspect::StreamInventory) -> bool {
+    String::from_utf16(&stream.name_utf16)
+        .is_ok_and(|name| n2r_win32::plain_ledger::is_cloud_private_stream(&name))
+}
+
+/// Whether `stream` of `file` is one a cloud folder made plain is made
+/// without (`sync_root_stream`, on a folder this run makes plain).
+pub(crate) fn cloud_dropped_stream(
+    file: &FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+) -> bool {
+    file.is_directory && sync_root_stream(stream) && cloud_taken(file)
 }
 
 /// Whether this run makes `file`, a cloud placeholder, plain (where
@@ -764,6 +786,7 @@ fn left_out_row(file: &FileInventory, paths: Vec<String>) -> Result<(PlainEntry,
                 },
                 bytes,
             }),
+            dropped_streams: Vec::new(),
         },
     ))
 }
@@ -911,6 +934,19 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
                 raw_missing_bytes: placeholder.raw_missing_bytes,
             }),
             left_out: None,
+            // A sync root's folder: the Cloud Files API's own stream on it.
+            dropped_streams: if cloud.is_some_and(|placeholder| placeholder.directory) {
+                file.streams
+                    .iter()
+                    .filter(|stream| sync_root_stream(stream))
+                    .map(|stream| n2r_win32::plain_ledger::LedgerStream {
+                        name: String::from_utf16_lossy(&stream.name_utf16),
+                        bytes: stream.logical_size,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
         });
     }
     if let Some(first) = not_present.first() {
@@ -1193,6 +1229,22 @@ mod tests {
             raw_missing_bytes(&cloud_stream(true, 20, serde_json::json!([]))),
             0
         );
+    }
+
+    #[test]
+    fn only_the_cloud_files_apis_own_stream_is_a_sync_roots() {
+        let named = |name: &str| {
+            let mut stream = cloud_stream(true, 120, serde_json::json!([]));
+            stream.name = name.into();
+            stream.name_utf16 = name.encode_utf16().collect();
+            stream.flags = 0;
+            stream
+        };
+        assert!(sync_root_stream(&named(
+            "{3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity"
+        )));
+        assert!(!sync_root_stream(&named("Zone.Identifier")));
+        assert!(!sync_root_stream(&named("")));
     }
 
     #[test]

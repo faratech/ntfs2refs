@@ -2198,8 +2198,18 @@ pub(crate) fn user_issues_with_context_alias_scope(
     // An EFS object this run makes plain: its encrypted DATA and its $EFS
     // attribute are what the plain copy stands for.
     let efs_plain = ordinary && crate::plain_projection::efs_taken(f);
+    // A sync root's folder made plain: the Cloud Files API's own stream on
+    // it is left off, and declared so in the ledger.
+    let cloud_folder = ordinary && f.is_directory && crate::plain_projection::cloud_taken(f);
     let unsupported_attribute = f.attributes.iter().find(|a| {
         if efs_plain && crate::plain_projection::efs_attribute(a) {
+            return false;
+        }
+        if cloud_folder
+            && a.type_code == 0x80
+            && String::from_utf16(&a.name_utf16)
+                .is_ok_and(|name| n2r_win32::plain_ledger::is_cloud_private_stream(&name))
+        {
             return false;
         }
         let plain =
@@ -2379,7 +2389,7 @@ pub(crate) fn user_issues_with_context_alias_scope(
             );
         }
     }
-    if f.is_directory {
+    if f.is_directory && !cloud_folder {
         if let Some(issue) = directory_stream_issue(
             f,
             ordinary,

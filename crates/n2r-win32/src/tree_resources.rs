@@ -720,6 +720,7 @@ mod tests {
                     efs: None,
                     cloud: None,
                     left_out: None,
+                    dropped_streams: Vec::new(),
                 }],
             })
             .unwrap(),

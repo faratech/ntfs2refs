@@ -848,7 +848,23 @@ fn declared_after(row: &LedgerRow, before: &Record) -> Result<Record, String> {
         }
         PlainKind::SisExpanded => placeholder(&mut after, tag == SIS_TAG, "single-instance link")?,
         PlainKind::CloudPlaceholderPlain => {
-            placeholder(&mut after, is_cloud_tag(tag), "cloud placeholder")?
+            placeholder(&mut after, is_cloud_tag(tag), "cloud placeholder")?;
+            // A sync root's folder: the Cloud Files API's own streams on it
+            // are gone, each as the row declares it, and only those.
+            for dropped in &row.dropped_streams {
+                let listed = format!(":{}:$DATA", dropped.name);
+                let Some(at) = after
+                    .streams
+                    .iter()
+                    .position(|stream| stream.name == listed)
+                else {
+                    return Err(format!(
+                        "the ledger declares the stream {} dropped, and the listing before does not show it",
+                        dropped.name
+                    ));
+                };
+                after.streams.remove(at);
+            }
         }
         PlainKind::ProjfsPlaceholderPlain => {
             placeholder(&mut after, tag == PROJFS_TAG, "ProjFS placeholder")?
@@ -1923,6 +1939,7 @@ mod tests {
             efs: None,
             cloud: None,
             left_out: None,
+            dropped_streams: Vec::new(),
         }
     }
     /// A volume with an ordinary file and a TEMPORARY one, before and after
@@ -2252,6 +2269,54 @@ mod tests {
             there.plain.failure_kinds["left out, and there afterwards"],
             1
         );
+        // A sync root's folder made plain: its point and marks go, and the
+        // Cloud Files API's own stream on it, as declared, and only that.
+        let identity = "{3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity";
+        let stream = |name: &str| Stream {
+            name: format!(":{name}:$DATA"),
+            bytes: 120,
+            sha256: "s".into(),
+        };
+        let mut root = directory("\\sync");
+        root.attributes |= 0x400;
+        root.reparse_tag = Some(0x9000_701a);
+        root.streams = vec![stream(identity), stream("kept")];
+        let mut plain_root = directory("\\sync");
+        plain_root.streams = vec![stream("kept")];
+        let declared_row = LedgerRow {
+            paths: vec!["\\sync".into()],
+            dropped_streams: vec![n2r_win32_ledger_stream(identity)],
+            ..row(PlainKind::CloudPlaceholderPlain)
+        };
+        let verdict = compare_with_plain(
+            &[root.clone()],
+            &[plain_root.clone()],
+            Declared::default(),
+            &ledger(vec![declared_row.clone()]),
+        );
+        assert!(verdict.identical(), "{verdict:?}");
+        // Gone without being declared, or another stream gone: not identical.
+        let undeclared = compare_with_plain(
+            &[root.clone()],
+            &[plain_root],
+            Declared::default(),
+            &ledger(vec![LedgerRow {
+                dropped_streams: Vec::new(),
+                ..declared_row.clone()
+            }]),
+        );
+        assert!(!undeclared.identical(), "{undeclared:?}");
+        let mut lost = directory("\\sync");
+        lost.streams = Vec::new();
+        assert!(
+            !compare_with_plain(
+                &[root],
+                &[lost],
+                Declared::default(),
+                &ledger(vec![declared_row])
+            )
+            .identical()
+        );
         // A folder placeholder left out, and what is below it, each by its
         // own row: all absent afterwards. A plain file below it is left out
         // with it; one elsewhere is not a placeholder to leave out.
@@ -2319,6 +2384,13 @@ mod tests {
             )
             .identical()
         );
+    }
+
+    fn n2r_win32_ledger_stream(name: &str) -> crate::plain_ledger::LedgerStream {
+        crate::plain_ledger::LedgerStream {
+            name: name.into(),
+            bytes: 120,
+        }
     }
 
     #[test]

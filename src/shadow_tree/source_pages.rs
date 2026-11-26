@@ -1146,6 +1146,9 @@ fn build_object(
         .iter()
         .filter(|s| !s.name_utf16.is_empty())
         .filter(|s| !wof || !crate::plain_projection::is_wof_compressed_data(s))
+        // A sync root's folder made plain: the Cloud Files API's own stream
+        // is left off, as its ledger row declares.
+        .filter(|s| !crate::plain_projection::cloud_dropped_stream(file, s))
     {
         // A directory's named streams are planned as a file's are, where
         // admission carries them over (`DIRECTORY_STREAMS_CARRIED`).

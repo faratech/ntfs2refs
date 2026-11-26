@@ -29,6 +29,22 @@ pub const LEDGER_KIND: &str = "plain-conversions-v1";
 /// The first line of a list file, which names its format.
 pub const LIST_HEADER: &str = "ntfs2refs plain-conversions list v1";
 
+/// The start of the name of the named DATA stream in which the Cloud Files
+/// API keeps a sync root's registration on the sync root's own folder
+/// (`{3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity`, as the lab
+/// found it). Private to the API, and of no use on ReFS, where the sync
+/// root cannot run.
+pub const CLOUD_SYNC_ROOT_STREAM_PREFIX: &str = "{3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.";
+
+/// Whether a stream name is one of the Cloud Files API's own on a sync
+/// root's folder ([`CLOUD_SYNC_ROOT_STREAM_PREFIX`], any case).
+pub fn is_cloud_private_stream(name: &str) -> bool {
+    name.len() > CLOUD_SYNC_ROOT_STREAM_PREFIX.len()
+        && name.is_char_boundary(CLOUD_SYNC_ROOT_STREAM_PREFIX.len())
+        && name[..CLOUD_SYNC_ROOT_STREAM_PREFIX.len()]
+            .eq_ignore_ascii_case(CLOUD_SYNC_ROOT_STREAM_PREFIX)
+}
+
 /// FILE_ATTRIBUTE_TEMPORARY.
 pub const TEMPORARY: u32 = 0x100;
 /// FILE_ATTRIBUTE_OFFLINE.
@@ -346,6 +362,19 @@ pub struct LedgerRow {
     /// hold.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub left_out: Option<LedgerLeftOut>,
+    /// For a cloud sync root's folder made plain: the Cloud Files API's own
+    /// named streams on it ([`is_cloud_private_stream`]), which the new
+    /// directory is made without.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dropped_streams: Vec<LedgerStream>,
+}
+
+/// A named stream a row declares left off its object.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LedgerStream {
+    pub name: String,
+    pub bytes: u64,
 }
 
 /// What a left-out object took in the source's admission: the object, its
@@ -484,6 +513,10 @@ pub struct DeclaredDrops {
     /// The objects left out of the new tree altogether (`cloud_left_out`),
     /// each declared by its own row.
     left_out: BTreeMap<(u64, u16), LedgerLeftOut>,
+    /// The Cloud Files API's own streams on a sync root's folder made
+    /// plain. The source's admission does not count a directory's named
+    /// streams, so neither does this: they are only held to being gone.
+    uncounted: BTreeMap<(u64, u16), Vec<Vec<u16>>>,
 }
 
 impl DeclaredDrops {
@@ -493,8 +526,30 @@ impl DeclaredDrops {
         ledger.validate()?;
         let mut by_object: BTreeMap<(u64, u16), Vec<Vec<u16>>> = BTreeMap::new();
         let mut left_out: BTreeMap<(u64, u16), LedgerLeftOut> = BTreeMap::new();
+        let mut uncounted: BTreeMap<(u64, u16), Vec<Vec<u16>>> = BTreeMap::new();
         for row in &ledger.rows {
             let key = (row.record_number, row.sequence_number);
+            if !row.dropped_streams.is_empty() {
+                let sync_root_folder = row.kind == PlainKind::CloudPlaceholderPlain
+                    && row.cloud.as_ref().is_some_and(|cloud| cloud.directory);
+                if let Some(stream) = row
+                    .dropped_streams
+                    .iter()
+                    .find(|stream| !sync_root_folder || !is_cloud_private_stream(&stream.name))
+                {
+                    return Err(format!(
+                        "MFT record {} declares the stream {:?} dropped, which only the Cloud Files API's own stream on a cloud folder made plain may be",
+                        row.record_number, stream.name
+                    ));
+                }
+                uncounted.insert(
+                    key,
+                    row.dropped_streams
+                        .iter()
+                        .map(|stream| stream.name.encode_utf16().collect())
+                        .collect(),
+                );
+            }
             match (row.kind, row.left_out) {
                 (PlainKind::CloudLeftOut, Some(counted)) => {
                     if left_out.insert(key, counted).is_some() {
@@ -546,6 +601,7 @@ impl DeclaredDrops {
         Ok(Self {
             by_object,
             left_out,
+            uncounted,
         })
     }
 
@@ -663,17 +719,21 @@ impl DeclaredDrops {
         &self,
         record_number: u64,
         sequence_number: u16,
-        mut named_streams: impl Iterator<Item = &'a [u16]>,
+        named_streams: impl Iterator<Item = &'a [u16]>,
     ) -> Result<u64, String> {
-        let Some(names) = self.by_object.get(&(record_number, sequence_number)) else {
+        let counted = self.by_object.get(&(record_number, sequence_number));
+        let uncounted = self.uncounted.get(&(record_number, sequence_number));
+        if counted.is_none() && uncounted.is_none() {
             return Ok(0);
-        };
-        if named_streams.any(|name| names.iter().any(|dropped| dropped.as_slice() == name)) {
+        }
+        let gone: Vec<&Vec<u16>> = counted.into_iter().chain(uncounted).flatten().collect();
+        let mut named_streams = named_streams;
+        if named_streams.any(|name| gone.iter().any(|dropped| dropped.as_slice() == name)) {
             return Err(format!(
                 "MFT record {record_number} keeps a stream its plain-conversions ledger row declares dropped"
             ));
         }
-        Ok(names.len() as u64)
+        Ok(counted.map_or(0, |names| names.len() as u64))
     }
 
     /// Every object a drop was declared for has to have been met in the new
@@ -735,6 +795,7 @@ mod tests {
             efs: None,
             cloud: None,
             left_out: None,
+            dropped_streams: Vec::new(),
         }
     }
 
@@ -985,6 +1046,56 @@ mod tests {
     }
 
     #[test]
+    fn a_sync_roots_own_stream_is_dropped_from_its_folder_alone_and_not_counted() {
+        let identity = "{3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity";
+        assert!(is_cloud_private_stream(identity));
+        assert!(is_cloud_private_stream(&identity.to_ascii_lowercase()));
+        assert!(!is_cloud_private_stream(
+            "{3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}."
+        ));
+        assert!(!is_cloud_private_stream("Zone.Identifier"));
+        let folder = |kind, directory, name: &str| LedgerRow {
+            kind,
+            cloud: Some(LedgerCloud {
+                tag: 0x9000_701a,
+                directory,
+                plain_bytes: 0,
+                raw_missing_bytes: 0,
+            }),
+            dropped_streams: vec![LedgerStream {
+                name: name.into(),
+                bytes: 120,
+            }],
+            ..wof_row(40, kind)
+        };
+        let drops = DeclaredDrops::from_ledger(&ledger_of(vec![folder(
+            PlainKind::CloudPlaceholderPlain,
+            true,
+            identity,
+        )]))
+        .unwrap();
+        // Held to being gone, and not counted: the admission does not count
+        // a directory's named streams.
+        let kept: Vec<u16> = identity.encode_utf16().collect();
+        assert!(
+            drops
+                .for_object(40, 1, [kept.as_slice()].into_iter())
+                .is_err()
+        );
+        assert_eq!(drops.for_object(40, 1, std::iter::empty()), Ok(0));
+        assert_eq!(drops.total(), 0);
+        assert_eq!(drops.admitted_from_new(1, 1, 1), Ok((1, 1, 1)));
+        // Only that stream, only on a cloud folder made plain.
+        for row in [
+            folder(PlainKind::CloudPlaceholderPlain, true, "Zone.Identifier"),
+            folder(PlainKind::CloudPlaceholderPlain, false, identity),
+            folder(PlainKind::AttributesCleared, true, identity),
+        ] {
+            assert!(DeclaredDrops::from_ledger(&ledger_of(vec![row])).is_err());
+        }
+    }
+
+    #[test]
     fn left_out_objects_are_taken_off_the_counts_and_nothing_else() {
         let left = |record: u64, directory: bool, streams: u64, bytes: u64| LedgerRow {
             left_out: Some(LedgerLeftOut {
@@ -1076,6 +1187,7 @@ mod tests {
             efs: None,
             cloud: None,
             left_out: None,
+            dropped_streams: Vec::new(),
         };
         let mut ledger = PlainLedger {
             kind: LEDGER_KIND.into(),

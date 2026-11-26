@@ -117,6 +117,57 @@ fn assert_unresolved(report: &NtfsInspection, number: u64, issue: Issue) {
     }));
 }
 
+/// A file `compact /exe` left: its WOF reparse point as WOF writes it on
+/// the disk (16 bytes of data), its unnamed stream and WofCompressedData.
+fn wof_record(algorithm: u32) -> Vec<u8> {
+    let mut point = Vec::new();
+    point.extend_from_slice(&0x8000_0017u32.to_le_bytes());
+    point.extend_from_slice(&16u16.to_le_bytes());
+    point.extend_from_slice(&0u16.to_le_bytes());
+    for value in [1u32, 2, 1, algorithm] {
+        point.extend_from_slice(&value.to_le_bytes());
+    }
+    support::record(
+        &[
+            filename("wof-lzx.bin", 5, 1, 1, 0),
+            support::resident(0x80, "", b"", 1),
+            support::resident(0x80, "WofCompressedData", b"compressed chunks", 2),
+            support::resident(0xc0, "", &point, 3),
+        ],
+        1,
+        1,
+    )
+}
+
+/// The reading `--check`, a conversion's check before its question and its
+/// admission of the frozen source all begin with: a WOF file must come out
+/// of it with its point retained, for the plain census to classify, not
+/// stop it (lab, wof-plain: "a reparse point of tag 0x80000017 ... is not
+/// one the converter recreates").
+#[test]
+fn the_reading_keeps_a_wof_file_for_the_plain_census() {
+    for algorithm in 0..=3 {
+        let report = inspect_records(&[(20, wof_record(algorithm))]);
+        let wof = file(&report, 20);
+        let point = wof.reparse.as_ref().expect("the WOF point is retained");
+        assert_eq!(
+            n2r_win32::reparse_layout::wof_file_algorithm(&point.buffer),
+            Some(algorithm)
+        );
+        assert_eq!(wof.streams.len(), 2);
+        // Nothing the reading reports of the file refuses it by its tag.
+        assert!(
+            !report
+                .blockers
+                .iter()
+                .any(|blocker| blocker.file_record_number == Some(20)
+                    && blocker.message.contains("0x80000017")),
+            "{:?}",
+            report.blockers
+        );
+    }
+}
+
 #[test]
 fn follows_nested_extend_ancestry_and_retains_every_stream() {
     let data = support::record(

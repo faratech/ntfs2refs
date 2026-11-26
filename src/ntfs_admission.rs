@@ -808,6 +808,84 @@ fn only_a_consequence(code: &str, failed: &[&str]) -> bool {
 mod refusal_tests {
     use super::*;
 
+    fn directory_with_stream(name: &str, flags: u16) -> FileInventory {
+        FileInventory {
+            record_number: 40,
+            sequence_number: 1,
+            hard_link_count: 1,
+            is_directory: true,
+            is_metadata: false,
+            metadata_role: MetadataRole::OutsideExtendCandidate,
+            metadata_role_issue: None,
+            base_file_reference: 0,
+            names: vec![],
+            standard_information: None,
+            streams: vec![ntfs::StreamInventory {
+                name: name.to_owned(),
+                name_utf16: name.encode_utf16().collect(),
+                resident: true,
+                flags,
+                logical_size: 5,
+                initialized_size: 5,
+                allocated_size: 8,
+                extents: vec![],
+                resident_sha256: None,
+                logical_sha256: None,
+                logical_hash_status: Default::default(),
+            }],
+            attributes: vec![],
+            extended_attributes: None,
+            reparse: None,
+        }
+    }
+
+    #[test]
+    fn a_directory_stream_is_refused_by_name_until_it_is_carried() {
+        let directory = directory_with_stream("note", 0);
+        // As shipped: refused, with what to do. One place turns it on.
+        assert!(!DIRECTORY_STREAMS_CARRIED);
+        assert_eq!(
+            directory_stream_issue(&directory, true, false, 16, false, |_| true).as_deref(),
+            Some(DIRECTORY_STREAM_REFUSAL)
+        );
+        // Carried: a plain named stream on an ordinary directory passes.
+        assert_eq!(
+            directory_stream_issue(&directory, true, false, 16, true, |_| true),
+            None
+        );
+        // Not carried even then: compressed, unnamed, on a reparse point,
+        // on a system object, beyond the stream bound, or one whose source
+        // evidence does not hold.
+        for (file, ordinary, reparse, maximum, evidence) in [
+            (directory_with_stream("note", 1), true, false, 16, true),
+            (directory_with_stream("", 0), true, false, 16, true),
+            (directory_with_stream("note", 0), true, true, 16, true),
+            (directory_with_stream("note", 0), false, false, 16, true),
+            (directory_with_stream("note", 0), true, false, 0, true),
+            (directory_with_stream("note", 0), true, false, 16, false),
+        ] {
+            assert!(
+                directory_stream_issue(&file, ordinary, reparse, maximum, true, |_| evidence)
+                    .is_some_and(|issue| issue.contains("named data stream")),
+                "{:?} ordinary={ordinary} reparse={reparse}",
+                file.streams[0]
+            );
+        }
+        // A directory without streams, and a file, are not its business.
+        let mut plain = directory_with_stream("note", 0);
+        plain.streams.clear();
+        assert_eq!(
+            directory_stream_issue(&plain, true, false, 16, false, |_| true),
+            None
+        );
+        let mut file = directory_with_stream("note", 0);
+        file.is_directory = false;
+        assert_eq!(
+            directory_stream_issue(&file, true, false, 16, false, |_| true),
+            None
+        );
+    }
+
     #[test]
     fn refused_file_attributes_are_named() {
         assert_eq!(file_attribute_names(0x100), "TEMPORARY");
@@ -1659,6 +1737,66 @@ pub fn file_attribute_names(bits: u32) -> String {
     names.join(", ")
 }
 
+/// Whether named data streams on directories are carried over: each is
+/// made as the same named stream of the same directory on the new volume,
+/// with its data, so the listing stays identical. ReFS 3.14 takes a named
+/// stream on a directory (`dir:stream`; seen on the host's ReFS volume, a
+/// 1 MiB one included), and the planner, the constructor, the supply and
+/// the read-back carry them as they carry a file's. Until the lab's
+/// `dirstream` case has converted with an identical listing this stays
+/// off, and such a directory is refused by name. This is the one place to
+/// turn it on.
+pub const DIRECTORY_STREAMS_CARRIED: bool = false;
+
+/// See [`DIRECTORY_STREAMS_CARRIED`]; a function, so that the paths it
+/// guards are compiled and tested either way.
+pub(crate) fn directory_streams_carried() -> bool {
+    DIRECTORY_STREAMS_CARRIED
+}
+
+/// The refusal of a directory with a named data stream while they are not
+/// carried over.
+pub const DIRECTORY_STREAM_REFUSAL: &str = "it is a directory with a named data stream, which the converter does not carry over: remove the stream before converting";
+
+/// Why a directory's named data streams cannot be carried over, if they
+/// cannot: every one has to be named, plain (not encrypted, compressed or
+/// sparse), on an ordinary directory that is not a reparse point, and
+/// within what a file's named streams are held to.
+pub(crate) fn directory_stream_issue(
+    f: &FileInventory,
+    ordinary: bool,
+    reparse_point: bool,
+    maximum_streams: usize,
+    carried: bool,
+    mut source_evidence_valid: impl FnMut(&ntfs::StreamInventory) -> bool,
+) -> Option<String> {
+    if !f.is_directory || f.streams.is_empty() {
+        return None;
+    }
+    if !carried {
+        return Some(DIRECTORY_STREAM_REFUSAL.into());
+    }
+    let mut exact_names = BTreeSet::new();
+    let mut folded_names = BTreeSet::new();
+    let carried = ordinary
+        && !reparse_point
+        && f.streams.len() <= maximum_streams
+        && f.streams.iter().all(|s| {
+            !s.name_utf16.is_empty()
+                && valid_named_stream_name(&s.name_utf16)
+                && exact_names.insert(s.name_utf16.clone())
+                && String::from_utf16(&s.name_utf16)
+                    .is_ok_and(|name| folded_names.insert(name.to_uppercase()))
+                && s.flags == 0
+                && s.initialized_size <= s.logical_size
+                && source_evidence_valid(s)
+        });
+    (!carried).then(|| {
+        "it is a directory with a named data stream that the converter does not carry over (an unnamed one, one that is encrypted, compressed or sparse, one on a reparse point, or names outside what it handles)"
+            .into()
+    })
+}
+
 /// What an attribute the converter refuses is, where that says more than
 /// its type number.
 fn attribute_meaning(file: &FileInventory, attribute: &ntfs::AttributeInventory) -> &'static str {
@@ -1744,9 +1882,13 @@ pub(crate) fn user_issues_with_context_alias_scope(
     let unsupported_attribute = f.attributes.iter().find(|a| {
         let plain =
             matches!(a.type_code, 0x10 | 0x30 | 0x50) && a.name_utf16.is_empty() && a.resident;
-        let data = !f.is_directory
-            && a.type_code == 0x80
-            && (a.name_utf16.is_empty() || (ordinary && valid_named_stream_name(&a.name_utf16)));
+        let data = a.type_code == 0x80
+            && if f.is_directory {
+                // A directory's named streams, checked as streams below.
+                directory_streams_carried() && ordinary && valid_named_stream_name(&a.name_utf16)
+            } else {
+                a.name_utf16.is_empty() || (ordinary && valid_named_stream_name(&a.name_utf16))
+            };
         let index = f.is_directory
             && matches!(a.type_code, 0x90 | 0xa0 | 0xb0)
             && ntfs_namespace::is_i30(&a.name_utf16);
@@ -1781,6 +1923,7 @@ pub(crate) fn user_issues_with_context_alias_scope(
         let point = reparse.is_some() && a.type_code == 0xc0 && a.name_utf16.is_empty();
         let sparse_data = ordinary
             && data
+            && !f.is_directory
             && !a.resident
             && a.flags == 0x8000
             && crate::ntfs_inspect::sparse_unit_supported(
@@ -1789,6 +1932,7 @@ pub(crate) fn user_issues_with_context_alias_scope(
             );
         let compressed_data = ordinary
             && data
+            && !f.is_directory
             && a.flags == 1
             && crate::ntfs_compression::supported(a, geometry).is_ok();
         // Resident I30 compression is an inheritance policy marker; the
@@ -1898,11 +2042,15 @@ pub(crate) fn user_issues_with_context_alias_scope(
         }
     }
     if f.is_directory {
-        if !f.streams.is_empty() {
-            issues.push(
-                "it is a directory with a named data stream, which the converter does not carry over: remove the stream before converting"
-                    .into(),
-            );
+        if let Some(issue) = directory_stream_issue(
+            f,
+            ordinary,
+            reparse.is_some(),
+            maximum_streams,
+            directory_streams_carried(),
+            &mut source_evidence_valid,
+        ) {
+            issues.push(issue);
         }
     } else {
         let mut exact_names = BTreeSet::new();

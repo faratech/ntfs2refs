@@ -73,7 +73,7 @@ check and the run have to give the same refusal.
 | EFS-encrypted files | `cipher /d` | `efs` |
 | A file with the TEMPORARY or OFFLINE attribute | the attribute is named | `temporary`, `offline` |
 | A file compressed with `compact /exe` | `compact /u /exe <file>` | `wof` |
-| A named data stream on a directory | remove the stream | `dirstream` |
+| A named data stream on a directory | remove the stream. The converter can carry such streams as the same directory's named streams on ReFS (Windows' ReFS takes them); that is turned on once `dirstream` has converted with an identical listing | `dirstream` |
 | Two names in one directory that differ only by case | rename one of them, then `fsutil file setCaseSensitiveInfo <directory> disable` | `casesensitive` |
 | Beside the volume, on its disk: a volume with shadow copies | `vssadmin delete shadows /for=<drive>:` for that volume | `shared-snapshot`; the shadow copy is still there afterwards |
 | On the volume's disk: the crash-dump file of the running Windows | move the dump file (System Properties, Advanced, Startup and Recovery) | `shared-dump` |

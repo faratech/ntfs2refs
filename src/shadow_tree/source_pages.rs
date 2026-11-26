@@ -1105,7 +1105,12 @@ fn build_object(
         };
     let mut named_streams = Vec::new();
     for stream in file.streams.iter().filter(|s| !s.name_utf16.is_empty()) {
-        ensure!(!file.is_directory, "named directory streams unsupported");
+        // A directory's named streams are planned as a file's are, where
+        // admission carries them over (`DIRECTORY_STREAMS_CARRIED`).
+        ensure!(
+            !file.is_directory || ntfs_admission::directory_streams_carried(),
+            "named directory streams unsupported"
+        );
         let decision = classify(stream)?;
         ensure!(
             decision.disposition != Disposition::Reject,

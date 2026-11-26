@@ -68,9 +68,15 @@ fn validate_with_limit(
             .checked_add(usize::from(!object.directory))
             .and_then(|n| n.checked_add(object.named_streams.len()))
             .ok_or_else(|| invalid("stream count overflow"))?;
+        // A directory's named streams are plain and carry their digest: the
+        // source reads every one of them (none is left on its extents alone).
         if count > maximum_streams
             || (!resource && object.named_streams.len() >= stream_layout::MAX_STREAMS)
-            || (object.directory && !object.named_streams.is_empty())
+            || (object.directory
+                && object
+                    .named_streams
+                    .iter()
+                    .any(|s| s.sparse.is_some() || s.expected_sha256.is_none()))
         {
             return Err(invalid(
                 "named stream count or directory ADS exceeds profile",
@@ -198,12 +204,21 @@ pub(super) fn view_object<'a>(object: &'a Input<'_>, name: &[u16]) -> io::Result
                 .ok_or_else(|| invalid("named stream input absent"))?,
         )
     };
+    // A named stream is a data stream even on a directory: Windows opens
+    // `dir:stream` as one (FILE_BASIC_INFO without the directory bit,
+    // FILE_STANDARD_INFO.Directory clear, the directory's file ID), on NTFS
+    // and on ReFS alike.
+    let stream_of_directory = object.directory && named.is_some();
     Ok(Input {
         components: object.components,
         additional_names: object.additional_names,
-        directory: object.directory,
+        directory: object.directory && !stream_of_directory,
         times: object.times,
-        attributes: object.attributes,
+        attributes: if stream_of_directory {
+            object.attributes & !16
+        } else {
+            object.attributes
+        },
         security: object.security,
         expected_api_security: object.expected_api_security,
         extended_attributes: None,
@@ -221,11 +236,15 @@ pub(super) fn view_object<'a>(object: &'a Input<'_>, name: &[u16]) -> io::Result
 
 pub(super) fn exact_list(bytes: &[u8], item: &Input<'_>) -> io::Result<()> {
     let (entries, _) = stream_layout::parse_streams(bytes)?;
-    if entries.len() != 1 + item.named_streams.len() {
+    // A directory lists its named streams only; a file its unnamed one too.
+    if entries.len() != usize::from(!item.directory) + item.named_streams.len() {
         return Err(invalid("native stream set count differs"));
     }
     for entry in entries {
         let length = if entry.name.is_empty() {
+            if item.directory {
+                return Err(invalid("a directory lists an unnamed data stream"));
+            }
             item.logical_length()
         } else {
             item.named_streams
@@ -477,4 +496,110 @@ pub(super) fn verify(item: &Input<'_>, object: &ObjectReport, hash: bool) -> io:
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// FILE_STREAM_INFORMATION for `streams` (name, size), as Windows
+    /// lists them: `::$DATA` for the unnamed stream.
+    fn list(streams: &[(&str, u64)]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for (ordinal, (name, size)) in streams.iter().enumerate() {
+            let native: Vec<u8> = format!(":{name}:$DATA")
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect();
+            let length = (24 + native.len()).next_multiple_of(8);
+            let next = if ordinal + 1 == streams.len() {
+                0
+            } else {
+                length
+            };
+            let mut entry = vec![0u8; length];
+            entry[..4].copy_from_slice(&(next as u32).to_le_bytes());
+            entry[4..8].copy_from_slice(&(native.len() as u32).to_le_bytes());
+            entry[8..16].copy_from_slice(&size.to_le_bytes());
+            entry[16..24].copy_from_slice(&size.next_multiple_of(4096).to_le_bytes());
+            entry[24..24 + native.len()].copy_from_slice(&native);
+            bytes.extend(entry);
+        }
+        bytes
+    }
+
+    fn input<'a>(
+        components: &'a [String],
+        directory: bool,
+        named: Vec<NamedStreamInput<'a>>,
+    ) -> Input<'a> {
+        Input {
+            components,
+            additional_names: &[],
+            directory,
+            times: [1; 4],
+            attributes: if directory { 0x10 } else { 0x20 },
+            security: &[],
+            expected_api_security: None,
+            extended_attributes: None,
+            reparse: None,
+            case_sensitive: None,
+            payload: &[],
+            expected_length: (!directory).then_some(10),
+            expected_sha256: None,
+            source_offset: None,
+            source_runs: vec![],
+            named_streams: named,
+            sparse: None,
+        }
+    }
+
+    fn note(name: &[u16]) -> NamedStreamInput<'_> {
+        NamedStreamInput {
+            name_utf16: name,
+            expected_length: 5,
+            expected_sha256: Some("00000000000000000000000000000000"),
+            source_offset: None,
+            source_runs: vec![],
+            sparse: None,
+        }
+    }
+
+    #[test]
+    fn a_directory_lists_its_named_streams_and_no_unnamed_one() {
+        let name: Vec<u16> = "note".encode_utf16().collect();
+        let components = ["folder".to_owned()];
+        let directory = input(&components, true, vec![note(&name)]);
+        exact_list(&list(&[("note", 5)]), &directory).unwrap();
+        // An unnamed stream on a directory, or another stream, differs.
+        assert!(exact_list(&list(&[("", 0), ("note", 5)]), &directory).is_err());
+        assert!(exact_list(&list(&[("other", 5)]), &directory).is_err());
+        // A file still lists its unnamed stream beside its named ones.
+        let file = input(&components, false, vec![note(&name)]);
+        exact_list(&list(&[("", 10), ("note", 5)]), &file).unwrap();
+        assert!(exact_list(&list(&[("note", 5)]), &file).is_err());
+    }
+
+    #[test]
+    fn a_named_stream_of_a_directory_is_seen_as_a_data_stream() {
+        let name: Vec<u16> = "note".encode_utf16().collect();
+        let components = ["folder".to_owned()];
+        let directory = input(&components, true, vec![note(&name)]);
+        validate(std::slice::from_ref(&directory), 1 << 30).unwrap();
+        // As Windows opens `folder:note`, on NTFS and on ReFS: no directory
+        // bit, and the stream's own length.
+        let view = view_object(&directory, &name).unwrap();
+        assert!(!view.directory);
+        assert_eq!(view.attributes & 0x10, 0);
+        assert_eq!(view.logical_length(), 5);
+        // The directory itself stays a directory.
+        assert!(view_object(&directory, &[]).unwrap().directory);
+        // One without its digest is not taken: a directory's streams are
+        // read in full, never left on their extents alone.
+        let mut digest_free = note(&name);
+        digest_free.expected_sha256 = None;
+        digest_free.source_offset = Some(0);
+        let directory = input(&components, true, vec![digest_free]);
+        assert!(validate(std::slice::from_ref(&directory), 1 << 30).is_err());
+    }
 }

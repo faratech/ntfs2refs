@@ -676,7 +676,7 @@ fn classify_stream_with(
             && admission.mft_records == facts.mft_record_count
             && admission.raw_identities == facts.raw_identities
             && file.record_number < facts.mft_record_count
-            && !file.is_directory
+            && (!file.is_directory || !stream.name_utf16.is_empty())
             && file.metadata_role == MetadataRole::OutsideExtendCandidate,
         "stream candidate differs from the complete admitted source domain"
     );

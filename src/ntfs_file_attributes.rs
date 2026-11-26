@@ -27,7 +27,12 @@ pub(crate) fn project_user(file: &FileInventory) -> Result<Projection> {
     );
     if raw & NTFS_DIRECTORY != 0 {
         ensure!(
-            file.is_directory && file.base_file_reference == 0 && file.streams.is_empty(),
+            file.is_directory
+                && file.base_file_reference == 0
+                && file
+                    .streams
+                    .iter()
+                    .all(|stream| !stream.name_utf16.is_empty()),
             "NTFS directory marker requires a complete ordinary directory"
         );
         let mut roots = file.attributes.iter().filter(|attribute| {

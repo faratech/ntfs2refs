@@ -127,10 +127,11 @@ impl<'a> PagedObservationRequest<'a> {
                         .context("directory count overflow")?;
                 } else {
                     files = files.checked_add(1).context("file count overflow")?;
-                    streams = streams
-                        .checked_add(u64::try_from(file.streams.len())?)
-                        .context("stream count overflow")?;
                 }
+                // A directory's streams are its named ones, if it has any.
+                streams = streams
+                    .checked_add(u64::try_from(file.streams.len())?)
+                    .context("stream count overflow")?;
             }
             admit(
                 pin_bytes,

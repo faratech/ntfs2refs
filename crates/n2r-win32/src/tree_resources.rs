@@ -686,3 +686,46 @@ impl CountAdmission {
         Ok(count.used)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plain_ledger::{
+        DeclaredDrops, LEDGER_KIND, LedgerRow, LedgerState, PlainKind, PlainLedger, declare,
+    };
+
+    #[test]
+    fn the_new_tree_is_counted_with_exactly_its_declared_drops() {
+        // A source of 3 files and 2 directories with 4 data streams, one of
+        // them a WOF file's WofCompressedData, which the new tree drops.
+        let admission = CountAdmission::new([7; 32], 10, 3, 2, 4).unwrap();
+        assert!(admission.validate_new_tree(3, 2, 3).is_err());
+        declare(
+            DeclaredDrops::from_ledger(&PlainLedger {
+                kind: LEDGER_KIND.into(),
+                agreed_list_sha256: String::new(),
+                frozen_list_sha256: String::new(),
+                source_inspection_sha256: String::new(),
+                rows: vec![LedgerRow {
+                    kind: PlainKind::WofExpanded,
+                    paths: vec!["\\wof.bin".into()],
+                    record_number: 40,
+                    sequence_number: 1,
+                    before: LedgerState::default(),
+                    after: LedgerState::default(),
+                    witness: "raw".into(),
+                    plain_copy: None,
+                }],
+            })
+            .unwrap(),
+        );
+        let held = admission.validate_new_tree(3, 2, 3);
+        // The raw volume's own count is not the new tree's.
+        let raw = admission.validate_tree(3, 2, 3);
+        // A tree that kept the stream, or lost another, is not this one.
+        let kept = admission.validate_new_tree(3, 2, 4);
+        let lost = admission.validate_new_tree(3, 2, 2);
+        declare(DeclaredDrops::default());
+        assert!(held.is_ok() && raw.is_err() && kept.is_err() && lost.is_err());
+    }
+}

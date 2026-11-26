@@ -5892,11 +5892,15 @@ fn run_role_content_domain_accounted(
                         u64::from(admission.maximum_expected_tree_bytes),
                     )?;
                 }
-                admission.validate_tree(input.len() - directories, directories, stream_count)?;
+                admission.validate_new_tree(
+                    input.len() - directories,
+                    directories,
+                    stream_count,
+                )?;
                 admission.validate_constructor_metadata(&DomainMetadata(input))?;
             } else if let Some(admission) = resource_admission {
                 input.require_resource_metadata(admission)?;
-                admission.validate_tree(
+                admission.validate_new_tree(
                     (input.len() - directories) as u64,
                     directories as u64,
                     stream_count as u64,

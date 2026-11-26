@@ -2328,7 +2328,7 @@ fn preflight_input_domain(
         }
     }
     if let Some(admission) = admission {
-        admission.validate_tree(
+        admission.validate_new_tree(
             input.len() - directories.len(),
             directories.len(),
             stream_count,
@@ -2336,7 +2336,7 @@ fn preflight_input_domain(
         admission.validate_constructor_metadata(&DomainMetadata(input))?;
     }
     if let Some(admission) = resource_admission {
-        admission.validate_tree(
+        admission.validate_new_tree(
             (input.len() - directories.len()) as u64,
             directories.len() as u64,
             stream_count as u64,

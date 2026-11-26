@@ -7,7 +7,7 @@
 //! `lab-volume-manifest` tool. Both listings and the report stay with the
 //! run's records. It costs two full reads of the volume.
 use anyhow::{Context, Result};
-use n2r_win32::volume_manifest::{self, Comparison, Record};
+use n2r_win32::volume_manifest::{self, Comparison, PlainVerdict, Record};
 use std::{
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
@@ -153,6 +153,44 @@ fn describe(comparison: &Comparison, report: &Path) -> Vec<String> {
     lines
 }
 
+/// What the content verdict found for the objects made plain, as the lines
+/// a run prints after the listing's. Nothing when the run made none.
+fn describe_plain(verdict: &PlainVerdict) -> Vec<String> {
+    let mut lines = Vec::new();
+    if verdict.conversions.is_empty() && verdict.failure_count == 0 {
+        return lines;
+    }
+    let converted = verdict
+        .conversions
+        .iter()
+        .map(|(kind, count)| format!("{kind}: {count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if verdict.failure_count == 0 {
+        lines.push(format!(
+            "The objects converted to plain files were each verified apart from the listing, against what they were before with only the agreed feature taken off ({converted}); none failed."
+        ));
+        return lines;
+    }
+    lines.push(format!(
+        "{} object(s) converted to plain files do NOT match what they were before with only the agreed feature taken off ({}).",
+        verdict.failure_count,
+        verdict
+            .failure_kinds
+            .iter()
+            .map(|(kind, count)| format!("{kind}: {count}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    for failure in verdict.failures.iter().take(PRINTED) {
+        lines.push(format!("  {}: {}", failure.path, failure.what));
+    }
+    if verdict.failure_count > PRINTED {
+        lines.push(format!("  and {} more.", verdict.failure_count - PRINTED));
+    }
+    lines
+}
+
 /// Whether a listing shows the volume's root directory as marked
 /// case-sensitive.
 fn root_marked(listing: &[Record]) -> bool {
@@ -166,10 +204,14 @@ fn root_marked(listing: &[Record]) -> bool {
 /// `case_marks` is whether a run on this Windows, of this kind of volume,
 /// sets the directories' case-sensitive marks on the new volume; a root
 /// that the listing taken before shows as marked leaves the volume without.
+/// `plain_ledger` is the run's record of the objects it made plain files:
+/// those are left out of the listing comparison and each is held by the
+/// content verdict instead (`volume_manifest::compare_with_plain`).
 pub(super) fn after(
     root: &str,
     run: &Path,
     case_marks: n2r_win32::directory_case::CaseMarkCarry,
+    plain_ledger: Option<&Path>,
 ) -> Result<bool> {
     println!("Listing the converted volume and comparing it with the listing taken before.");
     let now = list(root, &run.join(AFTER))?;
@@ -179,30 +221,79 @@ pub(super) fn after(
     // it was asked to drop, and a case-sensitive mark where it said it does
     // not set one, are counted when they are gone, not differences. Where
     // the mark is carried over, a directory that lost it is a difference.
-    let comparison = volume_manifest::compare_declared(
-        &then,
-        &now,
-        volume_manifest::Declared {
-            short_names_dropped: crate::short_name_disposition::dropped(),
-            case_marks_not_carried: !case_marks.carried(),
-        },
-    );
+    let declared = volume_manifest::Declared {
+        short_names_dropped: crate::short_name_disposition::dropped(),
+        case_marks_not_carried: !case_marks.carried(),
+    };
     let report = run.join(REPORT);
     let mut out = BufWriter::new(
         File::create(&report).with_context(|| format!("creating {}", report.display()))?,
     );
-    serde_json::to_writer_pretty(&mut out, &comparison)?;
+    let verdict = match plain_ledger {
+        Some(path) => {
+            let ledger: n2r_win32::plain_ledger::PlainLedger =
+                serde_json::from_reader(BufReader::new(
+                    File::open(path).with_context(|| format!("opening {}", path.display()))?,
+                ))
+                .with_context(|| format!("reading {}", path.display()))?;
+            let verdict = volume_manifest::compare_with_plain(&then, &now, declared, &ledger);
+            serde_json::to_writer_pretty(&mut out, &verdict)?;
+            verdict
+        }
+        None => {
+            let listing = volume_manifest::compare_declared(&then, &now, declared);
+            serde_json::to_writer_pretty(&mut out, &listing)?;
+            volume_manifest::Verdict {
+                listing,
+                ..volume_manifest::Verdict::default()
+            }
+        }
+    };
     out.flush()?;
-    for line in describe(&comparison, &report) {
+    for line in describe(&verdict.listing, &report) {
         println!("{line}");
     }
-    Ok(comparison.identical())
+    for line in describe_plain(&verdict.plain) {
+        println!("{line}");
+    }
+    Ok(verdict.identical())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use n2r_win32::volume_manifest::Difference;
+
+    #[test]
+    fn the_run_says_what_the_content_verdict_found_apart() {
+        assert!(describe_plain(&PlainVerdict::default()).is_empty());
+        let mut passed = PlainVerdict::default();
+        passed.conversions.insert("attributes_cleared".into(), 2);
+        let text = describe_plain(&passed).join("\n");
+        assert!(
+            text.contains("verified apart from the listing")
+                && text.contains("attributes_cleared: 2")
+                && text.contains("none failed"),
+            "{text}"
+        );
+        let mut failed = PlainVerdict {
+            failure_count: 1,
+            ..PlainVerdict::default()
+        };
+        failed.failure_kinds.insert("content differs".into(), 1);
+        failed.failures.push(Difference {
+            path: "\\t.tmp".into(),
+            kind: "content differs".into(),
+            what: "content differs".into(),
+        });
+        let text = describe_plain(&failed).join("\n");
+        assert!(
+            text.contains("1 object(s) converted to plain files do NOT match")
+                && text.contains("content differs: 1")
+                && text.contains("\\t.tmp: content differs"),
+            "{text}"
+        );
+    }
 
     #[test]
     fn the_run_says_whether_the_volume_lists_as_before_and_what_differs() {

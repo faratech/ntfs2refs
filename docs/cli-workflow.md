@@ -133,6 +133,7 @@ What a conversion would take:
 | 0 | Nothing was found that a conversion refuses |
 | 3 | A conversion would refuse the volume; each reason is printed |
 | 5 | The volume changed during every reading: nothing is known, and nothing is refused |
+| 7 | Nothing is refused, and some objects would be converted to plain files: a conversion goes ahead once their list is agreed (see "Converted to plain" below) |
 | 1 | The check could not be made |
 
 A volume that is being written to can change between two of the structures a
@@ -330,6 +331,7 @@ Not carried over, and said so by the run:
 | The change journal | It describes the NTFS volume | The converted volume starts a new one |
 | Disk quotas: quota management, limits and the entries for users | ReFS has no NTFS quotas | Both quota indexes are read in full and every entry, with its limits and usage, is kept in the run's records (`internal-indexes\quotas-not-carried-over.jsonl`); `--check` and the lines before the question say so. The converted volume has no limits. (A volume that holds a Windows still needs quota management off, with no entries) |
 | 8.3 short names (the default; `--short-names drop` says the same) | ReFS has no short names | `--check` and the lines before the conversion's question say how many there are, one of them, and where the run lists them; the conversion goes ahead only once that is agreed (`--yes` with `--volume-serial`). Every file and directory is created under its long name; each short name is kept in the run's records (`source-short-names-not-carried.json` in the run's working directory). A program that stored a path in its short form no longer finds it. With `--short-names refuse` the volume is refused instead, see below |
+| The TEMPORARY or OFFLINE attribute of a file or directory without a reparse point, once its list is agreed | ReFS keeps neither as NTFS does | Converted to plain: the attribute is cleared, contents and every other attribute stay. See "Converted to plain" below |
 | The case-sensitive mark of a directory, except on Windows Server 2025 | WSL and Git set it on the directories they make. The converter sets it on the new volume only for a data volume converted on Windows Server 2025 (build 26100), where Windows was shown to keep such a directory on ReFS. The lab's Windows 11 (build 26300, an Insider build) stopped with a bugcheck both times a ReFS volume with such a directory was taken offline, which a conversion does with the volume it builds; so it is not set there, on any other Windows, in a recovery environment, on a volume that holds a Windows, on a partition converted through a restart, or on a volume whose root directory is itself marked (the new root is never empty when its mark could be set) | Where no two names in the directory differ only by case, every name stays reachable. The directories are listed in the run's records (`case-sensitive-directories`, `source-case-sensitive-directories.json`), and the run and `--check` say before the prompt how many there are, whether the mark is set and, where it is not, why. On Windows Server 2025 every directory of the new volume is made with the mark its source directory has, the mark is read back, and a directory whose mark differs afterwards fails the run. Windows lets a directory on ReFS be marked again with `fsutil file setCaseSensitiveInfo`; because of that bugcheck, try it where a restart costs nothing |
 
 Backup software, and the tools of some hypervisors, install a shadow-copy
@@ -348,7 +350,7 @@ Refused before anything is written, each with what was found and what to do:
 | Shadow copies of the volume, or snapshot storage kept on it | `vssadmin delete shadows /for=E:` |
 | A shadow-copy provider of backup software (any but Windows' own, Hyper-V's and Windows Server's for remote file shares) that holds a shadow copy on the machine, or does not answer when Windows asks it | The provider is named, and the shadow copy. Delete its shadow copies or let the backup that made them finish; a provider that does not answer has to be repaired or removed |
 | EFS-encrypted files | `cipher /d` |
-| Files with the TEMPORARY or OFFLINE attribute | Clear the attribute, or move the files |
+| An OFFLINE file with a reparse point (a storage manager's) | Recall it through its storage manager, or move it |
 | Cloud placeholders, `compact /exe` files, Data Deduplication | The kind is named, with the record number to find the file by |
 | A named data stream on a directory | Remove the stream. (Carrying it over as the same directory's named stream on ReFS is built and waits for the lab to show it) |
 | Two names in one directory that differ only by case (both are given) | Rename one of them, then `fsutil file setCaseSensitiveInfo <directory> disable` |
@@ -357,6 +359,38 @@ Refused before anything is written, each with what was found and what to do:
 | No file at all on the volume | Format it as ReFS |
 
 `--diagnose` reports the same without converting.
+
+### Converted to plain
+
+Some NTFS features have nothing on ReFS to become. A conversion makes such
+an object a plain file, with everything else about it carried over, and only
+after you agree to a list that names every one of them. Nothing is made
+plain silently. This version converts the TEMPORARY and OFFLINE attributes
+of a file or directory that has no reparse point (`attributes_cleared`):
+the attribute is cleared and nothing else changes. The other kinds a list
+can name (`efs_decrypted`, `wof_expanded`, `dedup_rehydrated`,
+`cloud_placeholder_plain`, `projfs_placeholder_plain`, `sis_expanded`, and
+`cloud_left_out` for a placeholder that cannot be brought onto the volume
+and stays in the cloud) are still refused as listed above.
+
+`--check` prints a "Converted to plain" section: how many objects of each
+kind, their bytes, the extra space on the new volume and in the working
+storage, what has to be downloaded first, the first few paths, and the file
+that lists them all with its SHA-256. It then exits 7. A conversion asks
+about the list on its own, before the question that starts it:
+
+```text
+Convert these 2 object(s) to plain files (list sha256 9f2c...)? [y/N]
+```
+
+`--yes` does not answer that question by itself: an unattended run also
+needs `--accept-plain <sha256>`, naming the list it agrees to. If the volume
+changes after the question is answered, every object the frozen volume would
+make plain has to be in the agreed list, or the run stops before anything is
+built. Each object made plain is kept in the run's records
+(`plain-conversions.json` in the run's directory), with its attributes
+before and after. Declining the question ends the run as declining the one
+that starts it does: nothing is changed, and it exits 0.
 
 ### Windows' drive optimization
 
@@ -742,6 +776,7 @@ differences it accepts.
 | `--target-cluster-bytes 4096\|65536` | ReFS cluster size |
 | `--target-format dev-drive\|standard` | How Windows formats the new file system; standard is the default on Windows Server, dev-drive elsewhere |
 | `--short-names refuse\|drop` | What to do with a data volume's 8.3 short names: convert without them and keep a list (the default; said before the question), or refuse the volume |
+| `--accept-plain <sha256>` | With `--yes`: agrees to the list of objects converted to plain files, by its SHA-256 as `--check` prints it |
 | `--windows-boot-volume` | The volume is an installed Windows that is not running |
 | `--restart-media <dir>` | Windows installation media, for a partition on the disk of the running Windows: it is converted through a restart |
 | `--recover <dir> --recovery-sha256 <sum>` `[--rollback]` | Finishes, or undoes, an interrupted run |
@@ -759,7 +794,9 @@ converted, a conversion or a diagnose run then also needs
 `--volume-serial XXXX-XXXX`, the volume's serial number as `--list` and `vol`
 print it. A run whose drive letter leads to another volume is refused before
 anything is opened. A recovery needs only `--yes`: its checksum already binds
-it to its run.
+it to its run. A run that would convert objects to plain files also needs
+`--accept-plain <sha256>`, the checksum of their list as `--check` prints it
+(see "Converted to plain").
 
 ```powershell
 .\ntfs2refs.exe --drive E --scratch-directory S:\runs --yes --volume-serial 1A2B-3C4D
@@ -939,6 +976,15 @@ is accepted and counted (the NTFS compression flag, what Windows keeps in
 `System Volume Information`, and on a Windows volume each 8.3 name as a link).
 A program that writes to the volume between the first listing and the start
 of the conversion shows as a difference, so close what uses the volume first.
+
+Objects the run converted to plain files, as agreed (see "Converted to
+plain"), are not accepted as differences. They are left out of the listing
+comparison, which is otherwise unchanged, and each is verified apart, by a
+content verdict: the same comparison, between what the object was before
+with only the agreed feature taken off and what it is afterwards. A ledger
+row whose object did not show that feature before fails it. The run reports
+the two apart, and exits 6 if either fails. By hand:
+`lab-volume-manifest compare ... --plain-ledger <run>\plain-conversions.json`, the ledger in the run's directory.
 
 The same by hand, with `lab-volume-manifest.exe` from the release, before and
 after any run:

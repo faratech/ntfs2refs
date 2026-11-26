@@ -355,6 +355,11 @@ pub fn verify_private_hybrid_contents_domain(
                             .checked_add(range.length)
                             .context("hole count overflow")?;
                     }
+                    // No object is supplied from the plain copy store yet.
+                    SupplyKind::PlainCopy => anyhow::bail!(
+                        "a plain-copy range of MFT record {} is not supplied by this build",
+                        object.record_number
+                    ),
                     SupplyKind::Materialize => {
                         ensure!(
                             range.source_physical_offset.is_none(),
@@ -381,6 +386,10 @@ pub fn verify_private_hybrid_contents_domain(
                         SupplyKind::Hole => {
                             target_buffer[..n].fill(0);
                         }
+                        SupplyKind::PlainCopy => anyhow::bail!(
+                            "a plain-copy range of MFT record {} is not supplied by this build",
+                            object.record_number
+                        ),
                         SupplyKind::SourceReference => {
                             bytes.read_into(&id, offset, &mut target_buffer[..n])?;
                         }

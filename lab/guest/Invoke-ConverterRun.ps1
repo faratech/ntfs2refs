@@ -1,6 +1,7 @@
 <# Guest worker for one converter run. Reads run.json beside itself, starts
-   ntfs2refs.exe with the listed arguments, answers its one confirmation
-   prompt (unless run.json says "answer": false, for a run that has to consent
+   ntfs2refs.exe with the listed arguments, answers its confirmation prompt
+   (and, with "answers": 2, its question about plain conversions before it)
+   (unless run.json says "answer": false, for a run that has to consent
    by its own --yes), streams stdout/stderr to files and writes
    native-terminal.json when the process exits. It pins nothing: the host
    harness decides what to run. #>
@@ -32,7 +33,11 @@ try {
         (@{ pid = $process.Id; arguments = $arguments; started_utc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json), $utf8)
     # An unattended run gets no answer from here: its standard input is closed empty.
     $answers = -not ($run.PSObject.Properties['answer'] -and $run.answer -eq $false)
-    if ($answers) { $process.StandardInput.WriteLine('y'); $process.StandardInput.Flush() }
+    # A run asked about its plain conversions as well asks twice (run.json "answers").
+    $count = if ($run.PSObject.Properties['answers']) { [int]$run.answers } else { 1 }
+    # Or the replies run.json lists, typed in order (a question to decline).
+    $replies = if ($run.PSObject.Properties['replies']) { @($run.replies) } else { @(1..([Math]::Max(1, $count)) | ForEach-Object { 'y' }) }
+    if ($answers) { foreach ($reply in $replies) { $process.StandardInput.WriteLine([string]$reply) }; $process.StandardInput.Flush() }
     $process.StandardInput.Close()
     $peak = 0L
     while (-not $process.WaitForExit(1000)) { $process.Refresh(); $peak = [Math]::Max($peak, $process.PeakWorkingSet64) }

@@ -105,6 +105,16 @@ pub struct DriveArgs {
     /// program that stored a path in its short form no longer finds it.
     #[arg(long, requires = "drive", value_parser = ["refuse", "drop"], conflicts_with_all = ["windows_boot_volume", "recover", "list"])]
     pub short_names: Option<String>,
+    /// With --yes: agree to convert to plain files the objects of the list
+    /// that `--check` (or the run itself) wrote, named by its SHA-256. A
+    /// data volume's files with a feature ReFS does not have (here the
+    /// TEMPORARY and OFFLINE attributes) are made plain only after their
+    /// list is agreed; --yes alone does not agree to it. A list that is not
+    /// this one refuses the run before anything is changed.
+    #[arg(long, requires_all = ["drive", "yes"], value_name = "SHA256",
+        value_parser = crate::plain_consent::parse_accept,
+        conflicts_with_all = ["windows_boot_volume", "offline_recovery_media", "recover", "list", "check"])]
+    pub accept_plain: Option<String>,
     /// Allocation unit of the ReFS target in bytes: 4096 (default) or 65536.
     /// Data stays where it is only if it lies on boundaries of this size, so
     /// 65536 suits a source with clusters of 64 KiB or larger; from smaller
@@ -299,6 +309,10 @@ pub const EXIT_CHECK_REFUSALS: u8 = 3;
 /// Exit code of `--check` when the volume changed during every reading:
 /// nothing is known of it, and nothing is refused.
 pub const EXIT_CHECK_INCONCLUSIVE: u8 = 5;
+/// Exit code of `--check` when nothing is refused and some objects would be
+/// converted to plain files: a conversion goes ahead once their list is
+/// agreed (`--accept-plain`).
+pub const EXIT_CHECK_PLAIN: u8 = 7;
 /// Exit code of a conversion with `--compare-listing` that completed and
 /// whose volume does not list afterwards as it did before.
 pub const EXIT_LISTING_DIFFERS: u8 = 6;
@@ -807,6 +821,10 @@ mod windows {
         // Not a data volume: its short names are not dropped in this process.
         crate::short_name_disposition::choose_for_this_run(None, false);
         ensure!(
+            args.accept_plain.is_none(),
+            "--accept-plain is for a data volume; the running Windows is converted without plain conversions. Nothing was changed."
+        );
+        ensure!(
             !args.minimize_scratch,
             "--minimize-scratch is for a data volume; the running Windows is converted with its full working storage. Nothing was changed."
         );
@@ -1314,6 +1332,10 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                     context()
                 );
             }
+            ensure!(
+                args.accept_plain.is_none(),
+                "--accept-plain is for a data volume on a disk the running Windows is not on; a partition on the running Windows disk is converted without plain conversions. Nothing was changed."
+            );
             // This route has no diagnose stop; refuse before discovering anything.
             let authority = mode
                 .source_change_authority("conversion of a partition on the running Windows disk")?;
@@ -1591,6 +1613,9 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             _ => None,
         };
         if !args.windows_boot_volume {
+            // A data volume's objects with a feature ReFS does not have are
+            // counted and listed, and made plain only once agreed below.
+            crate::plain_consent::offer_for_this_run();
             println!("Checking the volume first: it stays online and is only read.");
             let (os_root, work_root, journal) =
                 working_volume(args.scratch_directory.as_deref(), &before)?;
@@ -1632,6 +1657,20 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                         for line in super::precheck::describe(estimate, target_cluster) {
                             println!("  {line}");
                         }
+                    }
+                    // Its own question, before the one that starts the run.
+                    let list_file = (!report.plain.is_empty())
+                        .then(|| crate::plain_consent::write_list(&parent, &report.plain))
+                        .transpose()?;
+                    if !crate::plain_consent::ask(
+                        &report.plain,
+                        args.accept_plain.as_deref(),
+                        list_file.as_deref(),
+                    )? {
+                        println!(
+                            "Cancelled: nothing is made plain without your agreement. No conversion started, and nothing was changed."
+                        );
+                        return Ok(0);
                     }
                 }
                 super::precheck::Outcome::Changing { last } => println!(
@@ -2095,16 +2134,38 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             "Reading the volume's NTFS structures (the check keeps its own pages under {} meanwhile, and removes them).",
             parent.display()
         );
+        // What a conversion would make plain is listed, not refused.
+        crate::plain_consent::offer_for_this_run();
         let outcome =
             super::precheck::examine(&before, &journal_storage(&journal), &parent, &new_run_id()?)?;
         for line in super::precheck::lines(&outcome, target_cluster) {
             println!("{line}");
         }
-        Ok(match outcome {
+        if let super::precheck::Outcome::Read(report) = &outcome
+            && !report.plain.is_empty()
+        {
+            let file = crate::plain_consent::write_list(&parent, &report.plain)?;
+            for line in crate::plain_consent::section(&report.plain, Some(&file)) {
+                println!("{line}");
+            }
+            println!(
+                "A conversion asks about this list on its own; unattended, it takes --yes --accept-plain {}.",
+                report.plain.sha256()
+            );
+        }
+        Ok(check_exit_code(&outcome))
+    }
+
+    /// What `--check` exits with: a refusal first, then a list to agree to.
+    fn check_exit_code(outcome: &super::precheck::Outcome) -> u8 {
+        match outcome {
             super::precheck::Outcome::Changing { .. } => EXIT_CHECK_INCONCLUSIVE,
-            super::precheck::Outcome::Read(report) if report.refusals.is_empty() => 0,
-            super::precheck::Outcome::Read(_) => EXIT_CHECK_REFUSALS,
-        })
+            super::precheck::Outcome::Read(report) if !report.refusals.is_empty() => {
+                EXIT_CHECK_REFUSALS
+            }
+            super::precheck::Outcome::Read(report) if !report.plain.is_empty() => EXIT_CHECK_PLAIN,
+            super::precheck::Outcome::Read(_) => 0,
+        }
     }
 
     fn convert_selected(
@@ -2164,6 +2225,8 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             // Before anything of this run touches the volume.
             super::listing::before(root, &run)?;
         }
+        // The ledger of what this run makes plain files of is kept here.
+        crate::plain_consent::keep_ledger_in(&run);
         let native_creation_admission =
             n2r_win32::managed_shadow::admit_fresh_native_backing(&run.join("shadow.vhdx"))?;
         save_new(
@@ -2401,7 +2464,12 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                         before.binding.layout_profile
                             == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows,
                     )?;
-                    match super::listing::after(root, &run, case_marks) {
+                    // The objects this run made plain files, as it kept
+                    // them when the source was frozen: held apart by the
+                    // content verdict, and left out of the listing's.
+                    let plain_ledger = run.join(n2r_win32::plain_ledger::LEDGER_FILE);
+                    let plain_ledger = plain_ledger.is_file().then_some(plain_ledger);
+                    match super::listing::after(root, &run, case_marks, plain_ledger.as_deref()) {
                         Ok(true) => {}
                         Ok(false) => return Ok(EXIT_LISTING_DIFFERS),
                         Err(error) => {
@@ -3002,6 +3070,70 @@ mod tests {
         assert_eq!(EXIT_CHECK_REFUSALS, 3);
         assert_eq!(EXIT_CHECK_INCONCLUSIVE, 5);
         assert_ne!(EXIT_CHECK_INCONCLUSIVE, EXIT_LIST_INCOMPLETE);
+        assert_eq!(EXIT_CHECK_PLAIN, 7);
+        for taken in [
+            0,
+            1,
+            EXIT_CHECK_REFUSALS,
+            EXIT_LIST_INCOMPLETE,
+            EXIT_CHECK_INCONCLUSIVE,
+            EXIT_LISTING_DIFFERS,
+        ] {
+            assert_ne!(EXIT_CHECK_PLAIN, taken);
+        }
+    }
+
+    #[test]
+    fn a_plain_list_is_agreed_only_with_yes_and_its_checksum() {
+        let sha = "ab".repeat(32);
+        let agreed = parse(&[
+            "--yes",
+            "--volume-serial",
+            "1A2B-3C4D",
+            "--accept-plain",
+            &sha,
+        ])
+        .unwrap();
+        assert_eq!(agreed.accept_plain.as_deref(), Some(sha.as_str()));
+        // Upper case reads as the same checksum.
+        let upper = parse(&[
+            "--yes",
+            "--volume-serial",
+            "1A2B-3C4D",
+            "--accept-plain",
+            &sha.to_ascii_uppercase(),
+        ])
+        .unwrap();
+        assert_eq!(upper.accept_plain.as_deref(), Some(sha.as_str()));
+        // Not without --yes, not a short or non-hex value, not for a check
+        // or a Windows boot volume.
+        assert_eq!(
+            parse(&["--accept-plain", &sha]).unwrap_err().kind(),
+            ErrorKind::MissingRequiredArgument
+        );
+        assert!(
+            parse(&[
+                "--yes",
+                "--volume-serial",
+                "1A2B-3C4D",
+                "--accept-plain",
+                "ab"
+            ])
+            .is_err()
+        );
+        for refused in [
+            &["--check", "--accept-plain", &sha][..],
+            &[
+                "--yes",
+                "--volume-serial",
+                "1A2B-3C4D",
+                "--windows-boot-volume",
+                "--accept-plain",
+                &sha,
+            ],
+        ] {
+            assert!(parse(refused).is_err(), "{refused:?}");
+        }
     }
 
     #[test]

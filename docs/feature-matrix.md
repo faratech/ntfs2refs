@@ -93,6 +93,7 @@ These take the same paths as rows above, or are checked by tests only.
 | Found | Why it is not a lab case |
 |---|---|
 | A ProjFS placeholder (and the virtualization root's marker), converted to plain or left out once agreed, as a cloud placeholder | The lab has no ProjFS provider yet: covered by unit tests (classification, admission, the before-freeze read through the provider, the leave-out kind `projfs_left_out` and the content verdict) |
+| A Single Instance Storage link, made plain from its common store file once agreed (`sis_expanded`) | SIS ran on Windows Storage Server only, and the lab has none: covered by unit tests on synthetic records (the reparse point read exactly, the link's shape, the common store file held to the name, record and length the point gives, the room it takes and admission) |
 | Data Deduplication | Refused by its reparse tag, like `compact /exe`; the lab has no deduplication. The words for each tag are covered by a test |
 | A shadow-copy provider of backup software that holds a shadow copy on the machine | The lab has no backup product that makes one. The decision and its words are covered by a test |
 | A named data stream on the root directory or on a reparse-point directory, or one on a directory that is encrypted, compressed or sparse | The lab's `dirstream` makes plain streams on ordinary directories, which convert. The refusals and their words are covered by a test |

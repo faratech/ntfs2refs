@@ -62,10 +62,11 @@ fn capabilities_report_what_the_executable_enforces() {
     assert_eq!(plain["converted"][3]["kind"], "dedup_rehydrated");
     assert_eq!(plain["converted"][4]["kind"], "cloud_placeholder_plain");
     assert_eq!(plain["converted"][5]["kind"], "projfs_placeholder_plain");
-    assert_eq!(plain["converted"][6]["kind"], "cloud_left_out");
-    assert_eq!(plain["converted"][7]["kind"], "projfs_left_out");
-    assert_eq!(plain["converted"].as_array().unwrap().len(), 8);
-    assert_eq!(plain["modelled_still_refused"].as_array().unwrap().len(), 3);
+    assert_eq!(plain["converted"][6]["kind"], "sis_expanded");
+    assert_eq!(plain["converted"][7]["kind"], "cloud_left_out");
+    assert_eq!(plain["converted"][8]["kind"], "projfs_left_out");
+    assert_eq!(plain["converted"].as_array().unwrap().len(), 9);
+    assert_eq!(plain["modelled_still_refused"].as_array().unwrap().len(), 2);
     // Downloading cloud placeholders before the freeze is a change to the
     // source that a stopped run does not undo, and is said to be one.
     assert!(

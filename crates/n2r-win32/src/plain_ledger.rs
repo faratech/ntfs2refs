@@ -289,6 +289,7 @@ impl PlainKind {
                 | PlainKind::CloudLeftOut
                 | PlainKind::ProjfsPlaceholderPlain
                 | PlainKind::ProjfsLeftOut
+                | PlainKind::SisExpanded
         )
     }
 }
@@ -504,6 +505,23 @@ pub struct LedgerRow {
     /// as the frozen source held it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recorded_streams: Vec<LedgerRecordedStream>,
+    /// For a Single Instance Storage link expanded (`sis_expanded`): the
+    /// common store file its data was read from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sis: Option<LedgerSis>,
+}
+
+/// The common store file a Single Instance Storage link expanded was read
+/// from, as its reparse point names it and the frozen source holds it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LedgerSis {
+    /// `\SIS Common Store\{CSID}.sis`, as a listing names it.
+    pub common_store_path: String,
+    pub common_store_record: u64,
+    pub common_store_sequence: u16,
+    /// Its unnamed stream's length: the link's.
+    pub bytes: u64,
 }
 
 /// A data stream of an object not carried over, as the frozen source held
@@ -976,6 +994,7 @@ mod tests {
             efs: None,
             cloud: None,
             left_out: None,
+            sis: None,
             dropped_streams: Vec::new(),
             recorded_streams: Vec::new(),
         }
@@ -1111,6 +1130,7 @@ mod tests {
                 &PlainKind::DedupRehydrated,
                 &PlainKind::CloudPlaceholderPlain,
                 &PlainKind::ProjfsPlaceholderPlain,
+                &PlainKind::SisExpanded,
                 &PlainKind::CloudLeftOut,
                 &PlainKind::ProjfsLeftOut
             ]
@@ -1464,6 +1484,7 @@ mod tests {
             efs: None,
             cloud: None,
             left_out: None,
+            sis: None,
             dropped_streams: Vec::new(),
             recorded_streams: Vec::new(),
         };

@@ -78,6 +78,90 @@ pub fn wof_file_algorithm(buffer: &[u8]) -> Option<u32> {
         .filter(|algorithm| WOF_ALGORITHMS.iter().any(|(known, _)| known == algorithm))
 }
 
+/// IO_REPARSE_TAG_SIS: a link of Single Instance Storage (Windows Storage
+/// Server), whose data is a file of the volume's `\SIS Common Store`.
+pub const IO_REPARSE_TAG_SIS: u32 = 0x8000_0007;
+
+/// A Single Instance Storage link, as its reparse point names the file of
+/// the common store that holds its data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SisLink {
+    /// The common store file's identity (CSID), a GUID: the file is
+    /// `\SIS Common Store\{CSID}.sis`.
+    pub csid: [u8; 16],
+    /// The common store file's MFT reference: its record number (the low
+    /// 48 bits) and sequence number (the high 16).
+    pub common_store_record: u64,
+    pub common_store_sequence: u16,
+}
+
+impl SisLink {
+    /// The common store file's name, `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}.sis`,
+    /// the GUID in its registry form.
+    pub fn common_store_name(&self) -> String {
+        let g = &self.csid;
+        format!(
+            "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}.sis",
+            u32::from_le_bytes([g[0], g[1], g[2], g[3]]),
+            u16::from_le_bytes([g[4], g[5]]),
+            u16::from_le_bytes([g[6], g[7]]),
+            g[8],
+            g[9],
+            g[10],
+            g[11],
+            g[12],
+            g[13],
+            g[14],
+            g[15]
+        )
+    }
+}
+
+/// The folder of the volume's root that holds SIS's common store files.
+pub const SIS_COMMON_STORE: &str = "SIS Common Store";
+
+/// A Single Instance Storage link's reparse point, read exactly: the common
+/// header and SI_REPARSE_BUFFER of format version 5 (the version Windows
+/// Storage Server's SIS filter writes, as the old DDK's sis.h has it):
+/// version, a reserved word, the CSID, the link index, the link file's
+/// MFT reference, the common store file's, the common store file's
+/// checksum and the buffer's own (64 bytes). `None` for anything else. The
+/// two checksums are SIS's own and are not computed here: the common store
+/// file is held to its name, its record and its length instead.
+pub fn sis_link(buffer: &[u8]) -> Option<SisLink> {
+    const DATA: usize = 64;
+    let data = usize::from(word(buffer, 4).ok()?);
+    if data != DATA
+        || buffer.len() != HEADER_BYTES + DATA
+        || dword(buffer, 0).ok()? != IO_REPARSE_TAG_SIS
+        || word(buffer, 6).ok()? != 0
+        || dword(buffer, HEADER_BYTES).ok()? != 5
+    {
+        return None;
+    }
+    let csid: [u8; 16] = buffer
+        .get(HEADER_BYTES + 8..HEADER_BYTES + 24)?
+        .try_into()
+        .ok()?;
+    let reference = u64::from_le_bytes(
+        buffer
+            .get(HEADER_BYTES + 40..HEADER_BYTES + 48)?
+            .try_into()
+            .ok()?,
+    );
+    let record = reference & 0xffff_ffff_ffff;
+    // A common store file is an ordinary file of the volume, never one of
+    // NTFS's own records.
+    if record < 24 || csid == [0; 16] {
+        return None;
+    }
+    Some(SisLink {
+        csid,
+        common_store_record: record,
+        common_store_sequence: (reference >> 48) as u16,
+    })
+}
+
 /// IO_REPARSE_TAG_CLOUD and its sixteen variants (0x9000x01A): the
 /// placeholders of a Cloud Files API provider, such as OneDrive.
 pub fn is_cloud_tag(tag: u32) -> bool {
@@ -297,6 +381,12 @@ impl Point {
         if self.tag() == IO_REPARSE_TAG_DEDUP && is_dedup_point(bytes) {
             return Ok(());
         }
+        // A Single Instance Storage link of the one layout read exactly
+        // (`sis_link`): made plain from its common store file once the user
+        // agrees (`sis_expanded`), refused otherwise by admission.
+        if self.tag() == IO_REPARSE_TAG_SIS && sis_link(bytes).is_some() {
+            return Ok(());
+        }
         if LX_SPECIAL_TAGS.contains(&self.tag()) {
             if bytes.len() != HEADER_BYTES {
                 return Err(invalid(
@@ -372,6 +462,56 @@ mod refusal_tests {
             point.extend_from_slice(&value.to_le_bytes());
         }
         point
+    }
+
+    /// SI_REPARSE_BUFFER version 5: the common store file at MFT record
+    /// `record`, sequence 2.
+    fn sis_point(version: u32, record: u64) -> Vec<u8> {
+        let mut point = IO_REPARSE_TAG_SIS.to_le_bytes().to_vec();
+        point.extend_from_slice(&64u16.to_le_bytes());
+        point.extend_from_slice(&0u16.to_le_bytes());
+        point.extend_from_slice(&version.to_le_bytes());
+        point.extend_from_slice(&0u32.to_le_bytes());
+        point.extend_from_slice(&0x0123_4567_89ab_cdef_fedc_ba98_7654_3210u128.to_le_bytes());
+        point.extend_from_slice(&9u64.to_le_bytes());
+        point.extend_from_slice(&(40u64 | 1 << 48).to_le_bytes());
+        point.extend_from_slice(&(record | 2 << 48).to_le_bytes());
+        point.extend_from_slice(&[0xaa; 16]);
+        point
+    }
+
+    #[test]
+    fn a_sis_link_names_its_common_store_file_exactly() {
+        let link = sis_link(&sis_point(5, 77)).unwrap();
+        assert_eq!(
+            (link.common_store_record, link.common_store_sequence),
+            (77, 2)
+        );
+        assert_eq!(
+            link.common_store_name(),
+            "{76543210-BA98-FEDC-EFCD-AB8967452301}.sis"
+        );
+        assert!(
+            Point {
+                buffer: sis_point(5, 77)
+            }
+            .validate()
+            .is_ok()
+        );
+        // Another version, another length, a record of NTFS's own, no CSID:
+        // not a link this build reads, and refused as any unknown point.
+        for buffer in [sis_point(4, 77), sis_point(5, 11)] {
+            assert_eq!(sis_link(&buffer), None);
+            assert!(Point { buffer }.validate().is_err());
+        }
+        let mut longer = sis_point(5, 77);
+        longer.extend_from_slice(&[0; 8]);
+        longer[4..6].copy_from_slice(&72u16.to_le_bytes());
+        assert_eq!(sis_link(&longer), None);
+        let mut anonymous = sis_point(5, 77);
+        anonymous[16..32].fill(0);
+        assert_eq!(sis_link(&anonymous), None);
+        assert!(unsupported_tag_meaning(IO_REPARSE_TAG_SIS).contains("Single Instance Storage"));
     }
 
     #[test]

@@ -60,7 +60,7 @@ impl PlainTransform {
     /// WOF leaves on the source.
     pub(crate) fn target_cleared(self) -> u32 {
         match self.kind {
-            PlainKind::WofExpanded => {
+            PlainKind::WofExpanded | PlainKind::SisExpanded => {
                 n2r_win32::plain_ledger::REPARSE_POINT | n2r_win32::plain_ledger::SPARSE_FILE
             }
             PlainKind::EfsDecrypted => ENCRYPTED,
@@ -314,6 +314,139 @@ pub(crate) fn efs_taken(file: &FileInventory) -> bool {
         && efs_object(file).ok().flatten().is_some()
 }
 
+/// A Single Instance Storage link, as the raw source shows it: its reparse
+/// point read exactly (`reparse_layout::sis_link`), and one unnamed stream
+/// of the file's length that holds no data of its own (every byte below its
+/// length a hole). A link written to since SIS linked it (part of its data
+/// its own) is none, and is refused by name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SisFile {
+    pub link: n2r_win32::reparse_layout::SisLink,
+    /// The file's length as a program reads it: its common store file's.
+    pub plain_bytes: u64,
+}
+
+/// The SIS link `file` is, if it is one of the shape this build expands.
+pub(crate) fn sis_file(file: &FileInventory) -> Result<Option<SisFile>> {
+    let Some(point) = crate::ntfs_reparse::file_point(file)? else {
+        return Ok(None);
+    };
+    if point.tag() != n2r_win32::reparse_layout::IO_REPARSE_TAG_SIS || file.is_directory {
+        return Ok(None);
+    }
+    let Some(link) = n2r_win32::reparse_layout::sis_link(&point.buffer) else {
+        return Ok(None);
+    };
+    let [stream] = file.streams.as_slice() else {
+        return Ok(None);
+    };
+    if !stream.name_utf16.is_empty()
+        || !matches!(stream.flags, 0 | 0x8000)
+        || (stream.resident && stream.logical_size != 0)
+        || raw_missing_bytes(stream) != stream.logical_size
+    {
+        return Ok(None);
+    }
+    Ok(Some(SisFile {
+        link,
+        plain_bytes: stream.logical_size,
+    }))
+}
+
+/// Whether this run makes `file`, a SIS link, a plain file from its common
+/// store file (where `sis_expanded` is enabled).
+pub(crate) fn sis_taken(file: &FileInventory) -> bool {
+    PlainKind::SisExpanded.implemented()
+        && crate::plain_consent::takes_plain()
+        && sis_file(file).ok().flatten().is_some()
+}
+
+/// Pure: the common store file a SIS link's data is read from, held to
+/// what the link's reparse point says of it. `common` is the frozen
+/// source's record of the reference the point names (`None` where no
+/// record of that number and sequence number is in use) and `paths` its
+/// names, as a listing names them. It has to be an ordinary file named
+/// `\SIS Common Store\{CSID}.sis`, with an unnamed stream of the link's
+/// length; anything else refuses the run, by name.
+pub(crate) fn resolve_sis(
+    link_path: &str,
+    sis: &SisFile,
+    common: Option<&FileInventory>,
+    paths: &[String],
+) -> std::result::Result<n2r_win32::plain_ledger::LedgerSis, String> {
+    let expected = format!(
+        "\\{}\\{}",
+        n2r_win32::reparse_layout::SIS_COMMON_STORE,
+        sis.link.common_store_name()
+    );
+    let refuse = |why: String| {
+        Err(format!(
+            "{link_path} is a Single Instance Storage link whose data is the common store file {expected} (MFT record {}, sequence {}), and {why}. Nothing was changed: the link cannot be made a plain file",
+            sis.link.common_store_record, sis.link.common_store_sequence
+        ))
+    };
+    let Some(common) = common else {
+        return refuse("no such record is in use on the volume".into());
+    };
+    if common.is_directory
+        || crate::ntfs_reparse::file_point(common)
+            .ok()
+            .flatten()
+            .is_some()
+    {
+        return refuse("that record is a directory or has a reparse point of its own".into());
+    }
+    let Some(named) = paths
+        .iter()
+        .find(|path| path.eq_ignore_ascii_case(&expected))
+    else {
+        return refuse(format!("that record is named {}", paths.join(", ")));
+    };
+    let Some(unnamed) = common.streams.iter().find(|s| s.name_utf16.is_empty()) else {
+        return refuse("that file has no unnamed stream".into());
+    };
+    if unnamed.logical_size != sis.plain_bytes || unnamed.flags & 0x4000 != 0 {
+        return refuse(format!(
+            "its unnamed stream is {} bytes long{}, the link {}",
+            unnamed.logical_size,
+            if unnamed.flags & 0x4000 != 0 {
+                " and encrypted"
+            } else {
+                ""
+            },
+            sis.plain_bytes
+        ));
+    }
+    Ok(n2r_win32::plain_ledger::LedgerSis {
+        common_store_path: named.clone(),
+        common_store_record: common.record_number,
+        common_store_sequence: common.sequence_number,
+        bytes: unnamed.logical_size,
+    })
+}
+
+/// What expanding `links` takes on the new volume: each link's length,
+/// rounded up to the target's cluster (a link takes no cluster on the
+/// source).
+pub(crate) fn sis_growth(links: &[SisFile], target_cluster: u64) -> u64 {
+    links.iter().fold(0u64, |grows, link| {
+        grows.saturating_add(link.plain_bytes.div_ceil(target_cluster) * target_cluster)
+    })
+}
+
+/// Refuses, with the numbers, a volume whose SIS links expanded would not
+/// fit in `free` (its free space, less what WOF files made plain take).
+pub(crate) fn require_sis_room(links: &[SisFile], target_cluster: u64, free: u64) -> Result<()> {
+    let grows = sis_growth(links, target_cluster);
+    anyhow::ensure!(
+        grows <= free,
+        "the {} Single Instance Storage link(s) take {grows} bytes made plain (in {target_cluster}-byte clusters) and {free} bytes are free for them. Free {} bytes, or copy some of the files elsewhere and convert then. Nothing was changed",
+        links.len(),
+        grows - free
+    );
+    Ok(())
+}
+
 /// Said wherever a cloud placeholder is refused because its data is not on
 /// the volume.
 pub(crate) const CLOUD_REMEDY: &str = "start its cloud provider (OneDrive, say) so that the conversion can download it before the volume is frozen, and run the conversion as the user the provider runs for (a Cloud Files provider serves only the account that runs it); or make it always available on this device; or agree to leave it out, which keeps it in the cloud and not on the new volume";
@@ -454,7 +587,8 @@ pub(crate) fn plain_copy_pin(
     let copied = wof_taken(file)
         || dedup_taken(file)
         || (efs_taken(file) && matches!(efs_object(file)?, Some(EfsObject::File(_))))
-        || placeholder_copied(file);
+        || placeholder_copied(file)
+        || sis_taken(file);
     if !copied {
         return Ok(None);
     }
@@ -494,6 +628,13 @@ pub(crate) fn observed_view(file: &FileInventory) -> Result<Option<FileInventory
     // ERROR_HANDLE_EOF), so Windows is held to the folder without it.
     if file.is_directory && placeholder_taken(file) && file.streams.iter().any(sync_root_stream) {
         return Ok(Some(sync_root_view(file)));
+    }
+    // A SIS link: no filter of this Windows reads it (SIS's ran on Windows
+    // Storage Server only), so Windows' view of it is the link as the raw
+    // record holds it, every byte a hole. Its copy is its common store
+    // file's, which the new file is made from and the ledger names.
+    if sis_taken(file) {
+        return Ok(None);
     }
     let Some(pin) = plain_copy_pin(file)? else {
         return Ok(None);
@@ -688,6 +829,13 @@ pub(crate) fn of_file(file: &FileInventory) -> Result<Option<PlainTransform>> {
             cleared_attributes: 0,
         }));
     }
+    // A SIS link of another shape is refused by admission, by name.
+    if PlainKind::SisExpanded.implemented() && sis_file(file).ok().flatten().is_some() {
+        return Ok(Some(PlainTransform {
+            kind: PlainKind::SisExpanded,
+            cleared_attributes: 0,
+        }));
+    }
     // A placeholder of another shape is refused by admission, by name.
     if let Some(placeholder) = placeholder_of(file).ok().flatten() {
         return Ok(Some(PlainTransform {
@@ -784,6 +932,22 @@ pub(crate) fn entry(path: String, file: &FileInventory, transform: PlainTransfor
         };
     }
     let cluster = n2r_win32::target_cluster::bytes();
+    // A SIS link takes its whole length on the new volume (it took no
+    // cluster on the source), and its copy in the working storage.
+    if let Some(sis) = (transform.kind == PlainKind::SisExpanded)
+        .then(|| sis_file(file).ok().flatten())
+        .flatten()
+    {
+        return PlainEntry {
+            kind: transform.kind,
+            path,
+            cleared_attributes: transform.cleared_attributes,
+            bytes: sis.plain_bytes,
+            volume_extra_bytes: sis_growth(&[sis], cluster),
+            working_extra_bytes: sis.plain_bytes,
+            download_bytes: 0,
+        };
+    }
     PlainEntry {
         kind: transform.kind,
         path,
@@ -819,6 +983,8 @@ pub(crate) struct Census {
     /// What the objects of System Volume Information not carried over take
     /// on the source: room the new volume does not have to give them.
     pub not_carried_allocated: u64,
+    /// The SIS links expanded, which grow the volume as WOF files do.
+    pub sis: Vec<SisFile>,
 }
 
 /// Where a directory of a source is, from System Volume Information.
@@ -979,6 +1145,7 @@ fn not_carried_row(file: &FileInventory, paths: Vec<String>) -> LedgerRow {
             streams,
             bytes,
         }),
+        sis: None,
         dropped_streams: Vec::new(),
         recorded_streams: file
             .streams
@@ -1000,6 +1167,7 @@ fn not_carried_row(file: &FileInventory, paths: Vec<String>) -> LedgerRow {
 pub(crate) fn attach_copies(rows: &mut [LedgerRow]) -> Result<()> {
     for row in rows.iter_mut().filter(|row| {
         row.kind == PlainKind::WofExpanded
+            || row.kind == PlainKind::SisExpanded
             || (row.kind == PlainKind::EfsDecrypted && row.efs.is_some())
             || (row.kind.family().is_some()
                 && !row.kind.is_left_out()
@@ -1118,6 +1286,7 @@ fn left_out_row(
                 streams,
                 bytes,
             }),
+            sis: None,
             dropped_streams: Vec::new(),
             recorded_streams: Vec::new(),
         },
@@ -1143,8 +1312,8 @@ fn counted_streams(file: &FileInventory) -> (u64, u64) {
 /// does not take objects to plain converts none, and still leaves out what
 /// System Volume Information does not carry.
 pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
-    let (mut entries, mut rows, mut copies, mut wofs) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut entries, mut rows, mut copies, mut wofs, mut sis_links) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let takes_plain = crate::plain_consent::takes_plain();
     let mut system = SystemFolders::new(files);
     let mut not_carried_allocated = 0u64;
@@ -1245,6 +1414,46 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
                 through: n2r_win32::plain_copy::PlainRead::Decrypted,
             });
         }
+        // A SIS link: its data is its common store file's, which has to be
+        // the one its reparse point names; the copy is read from that file.
+        let sis = match (transform.kind == PlainKind::SisExpanded)
+            .then(|| sis_file(&file))
+            .transpose()?
+            .flatten()
+        {
+            Some(link) => {
+                let common = files.find_record(
+                    link.link.common_store_record,
+                    Some(link.link.common_store_sequence),
+                )?;
+                let common_paths: Vec<String> = match &common {
+                    Some(common) => ntfs_admission::paged::user_paths(files, common)
+                        .with_context(|| {
+                            format!(
+                                "the names of MFT record {}, the common store file of {first}",
+                                common.record_number
+                            )
+                        })?
+                        .iter()
+                        .map(|path| listing_path(path))
+                        .collect(),
+                    None => Vec::new(),
+                };
+                let resolved = resolve_sis(&first, &link, common.as_ref(), &common_paths)
+                    .map_err(anyhow::Error::msg)?;
+                copies.push(n2r_win32::plain_copy::PlainCopyRequest {
+                    key: copy_key(&file),
+                    bytes: link.plain_bytes,
+                    through: n2r_win32::plain_copy::PlainRead::CommonStore {
+                        record_number: resolved.common_store_record,
+                        sequence_number: resolved.common_store_sequence,
+                    },
+                });
+                sis_links.push(link);
+                Some(resolved)
+            }
+            None => None,
+        };
         let cloud = transform
             .kind
             .family()
@@ -1282,7 +1491,10 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
                 reparse_tag: wof
                     .map(|_| n2r_win32::reparse_layout::IO_REPARSE_TAG_WOF)
                     .or(cloud.map(|placeholder| placeholder.tag))
-                    .or(dedup.map(|_| n2r_win32::reparse_layout::IO_REPARSE_TAG_DEDUP)),
+                    .or(dedup.map(|_| n2r_win32::reparse_layout::IO_REPARSE_TAG_DEDUP))
+                    .or(sis
+                        .as_ref()
+                        .map(|_| n2r_win32::reparse_layout::IO_REPARSE_TAG_SIS)),
             },
             after: LedgerState {
                 attributes: transform.target_attributes(before),
@@ -1297,6 +1509,8 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
                     ", its placeholder's reparse point, the clusters of its whole unnamed stream, and its plain copy read through its provider's filter recalling nothing"
                 } else if cloud.is_some() {
                     ", its placeholder's reparse point"
+                } else if sis.is_some() {
+                    ", its Single Instance Storage reparse point and hole-only unnamed stream, the common store file it names, and its plain copy read from that file"
                 } else {
                     ""
                 }
@@ -1316,6 +1530,7 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
                 raw_missing_bytes: placeholder.raw_missing_bytes,
             }),
             left_out: None,
+            sis,
             // A sync root's folder: the Cloud Files API's own stream on it.
             dropped_streams: if cloud.is_some_and(|placeholder| placeholder.directory) {
                 file.streams
@@ -1346,6 +1561,7 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
         copies,
         wof: wofs,
         not_carried_allocated,
+        sis: sis_links,
     })
 }
 
@@ -1527,6 +1743,167 @@ mod tests {
         let mut none = wof_file();
         none.streams.retain(|s| !s.name_utf16.is_empty());
         assert!(filter_view(&none, false, &copy).is_err());
+    }
+
+    /// A SIS link's reparse point as SI_REPARSE_BUFFER version 5 has it,
+    /// naming the common store file `{0D0C0B0A-0F0E-1110-1213-141516171819}.sis`
+    /// at MFT record 70, sequence 3.
+    fn sis_point() -> Vec<u8> {
+        let mut point = n2r_win32::reparse_layout::IO_REPARSE_TAG_SIS
+            .to_le_bytes()
+            .to_vec();
+        point.extend_from_slice(&64u16.to_le_bytes());
+        point.extend_from_slice(&0u16.to_le_bytes());
+        point.extend_from_slice(&5u32.to_le_bytes());
+        point.extend_from_slice(&0u32.to_le_bytes());
+        point.extend((0x0au8..0x1a).collect::<Vec<u8>>());
+        point.extend_from_slice(&1u64.to_le_bytes());
+        point.extend_from_slice(&(41u64 | 1 << 48).to_le_bytes());
+        point.extend_from_slice(&(70u64 | 3 << 48).to_le_bytes());
+        point.extend_from_slice(&0x1111u64.to_le_bytes());
+        point.extend_from_slice(&0x2222u64.to_le_bytes());
+        point
+    }
+
+    /// `file` with the reparse point `point`, as the raw source holds one:
+    /// its resident $REPARSE_POINT attribute and the point read from it.
+    fn with_point(mut file: FileInventory, point: Vec<u8>) -> FileInventory {
+        file.attributes
+            .retain(|attribute| attribute.type_code != 0xc0);
+        file.attributes
+            .push(crate::ntfs_inspect::AttributeInventory {
+                type_code: 0xc0,
+                instance: 0,
+                name_utf16: Vec::new(),
+                flags: 0,
+                resident: true,
+                logical_size: point.len() as u64,
+                initialized_size: point.len() as u64,
+                allocated_size: point.len().next_multiple_of(8) as u64,
+                lowest_vcn: 0,
+                compression_unit: 0,
+                total_allocated_size: None,
+                extents: vec![],
+                resident_sha256: Some(n2r_win32::content_digest::of(&point)),
+                resident_metadata_hex: Some(hex::encode(&point)),
+            });
+        file.reparse = Some(n2r_win32::reparse_layout::Point { buffer: point });
+        file
+    }
+
+    /// A SIS link of 10 000 bytes, every one a hole.
+    fn sis_link_file() -> FileInventory {
+        let mut link = wof_file();
+        link.streams = vec![cloud_stream(
+            false,
+            10_000,
+            serde_json::json!([{"logical_offset": 0, "physical_offset": null, "length": 12288}]),
+        )];
+        link.attributes = vec![attribute(0x80, "", 0x8000)];
+        with_point(link, sis_point())
+    }
+
+    /// Its common store file: an ordinary file of the link's length.
+    fn common_store_file() -> FileInventory {
+        let mut common = wof_file();
+        common.record_number = 70;
+        common.sequence_number = 3;
+        common.reparse = None;
+        common.streams = vec![cloud_stream(
+            false,
+            10_000,
+            serde_json::json!([{"logical_offset": 0, "physical_offset": 40960, "length": 12288}]),
+        )];
+        common.streams[0].flags = 0;
+        common.attributes = vec![attribute(0x80, "", 0)];
+        common
+    }
+
+    #[test]
+    fn a_sis_link_is_read_exactly_and_only_while_it_holds_no_data_of_its_own() {
+        let sis = sis_file(&sis_link_file()).unwrap().unwrap();
+        assert_eq!(sis.plain_bytes, 10_000);
+        assert_eq!(sis.link.common_store_record, 70);
+        assert_eq!(sis.link.common_store_sequence, 3);
+        assert_eq!(
+            sis.link.common_store_name(),
+            "{0D0C0B0A-0F0E-1110-1213-141516171819}.sis"
+        );
+        // Written to since it was linked: part of its data its own.
+        let mut written = sis_link_file();
+        written.streams[0] = cloud_stream(
+            false,
+            10_000,
+            serde_json::json!([
+                {"logical_offset": 0, "physical_offset": 40960, "length": 4096},
+                {"logical_offset": 4096, "physical_offset": null, "length": 8192},
+            ]),
+        );
+        assert_eq!(sis_file(&written).unwrap(), None);
+        // A named stream beside it, or a directory: not a link this build reads.
+        let mut named = sis_link_file();
+        named.streams.push(stream("extra", 0));
+        assert_eq!(sis_file(&named).unwrap(), None);
+        let mut folder = sis_link_file();
+        folder.is_directory = true;
+        assert_eq!(sis_file(&folder).unwrap(), None);
+        // Expanded, it is made without its reparse point and sparse mark.
+        let t = PlainTransform {
+            kind: PlainKind::SisExpanded,
+            cleared_attributes: 0,
+        };
+        assert_eq!(t.target_attributes(0x620), 0x20);
+    }
+
+    #[test]
+    fn a_sis_links_common_store_file_has_to_be_the_one_its_point_names() {
+        let sis = sis_file(&sis_link_file()).unwrap().unwrap();
+        let named =
+            vec!["\\SIS Common Store\\{0d0c0b0a-0f0e-1110-1213-141516171819}.sis".to_owned()];
+        let common = common_store_file();
+        let resolved = resolve_sis("\\a.bin", &sis, Some(&common), &named).unwrap();
+        assert_eq!(resolved.common_store_path, named[0]);
+        assert_eq!(
+            (
+                resolved.common_store_record,
+                resolved.common_store_sequence,
+                resolved.bytes
+            ),
+            (70, 3, 10_000)
+        );
+        let refused = |common: Option<&FileInventory>, paths: &[String]| {
+            resolve_sis("\\a.bin", &sis, common, paths).unwrap_err()
+        };
+        assert!(refused(None, &[]).contains("no such record is in use"));
+        let elsewhere = vec!["\\other\\x.sis".to_owned()];
+        assert!(refused(Some(&common), &elsewhere).contains("that record is named \\other\\x.sis"));
+        let mut shorter = common_store_file();
+        shorter.streams[0].logical_size = 9_999;
+        assert!(refused(Some(&shorter), &named).contains("9999 bytes long"));
+        let pointed = with_point(common_store_file(), sis_point());
+        assert!(refused(Some(&pointed), &named).contains("reparse point of its own"));
+        let mut encrypted = common_store_file();
+        encrypted.streams[0].flags = 0x4000;
+        assert!(refused(Some(&encrypted), &named).contains("encrypted"));
+        // Every refusal names the link and the file it needs.
+        assert!(refused(None, &[]).starts_with(
+            "\\a.bin is a Single Instance Storage link whose data is the common store file \\SIS Common Store\\{0D0C0B0A-0F0E-1110-1213-141516171819}.sis (MFT record 70, sequence 3)"
+        ));
+    }
+
+    #[test]
+    fn sis_links_expanded_are_held_to_the_free_space() {
+        let link = sis_file(&sis_link_file()).unwrap().unwrap();
+        assert_eq!(sis_growth(&[link, link], 4096), 24_576);
+        assert!(require_sis_room(&[link, link], 4096, 24_576).is_ok());
+        let refused = require_sis_room(&[link, link], 4096, 24_575)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.starts_with("the 2 Single Instance Storage link(s) take 24576 bytes made plain (in 4096-byte clusters) and 24575 bytes are free for them. Free 1 bytes"),
+            "{refused}"
+        );
+        assert!(require_sis_room(&[], 4096, 0).is_ok());
     }
 
     #[test]

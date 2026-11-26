@@ -671,6 +671,8 @@ fn read(
             let mut refused = ntfs_admission::RefusedObjects::default();
             let mut plain = Vec::new();
             let mut wof = Vec::new();
+            // SIS links, which grow the volume made plain as WOF files do.
+            let mut sis = Vec::new();
             // EFS files this run would decrypt, whose key is asked for below.
             let mut efs_files = Vec::new();
             // Cloud placeholders, asked of the Cloud Files API below.
@@ -729,6 +731,9 @@ fn read(
                 // A deduplicated file grows the volume as a WOF file does.
                 if let Ok(Some(file)) = crate::plain_projection::dedup_file(&file) {
                     wof.push(file.growing());
+                }
+                if let Ok(Some(link)) = crate::plain_projection::sis_file(&file) {
+                    sis.push(link);
                 }
                 let mut issues = ntfs_admission::paged::ordinary_user_issues_before_freeze(
                     &raw,
@@ -830,15 +835,39 @@ fn read(
                         .push(crate::plain_projection::wof_note(&wof, cluster, free)),
                 }
             }
+            if !sis.is_empty() && crate::plain_projection::PlainKind::SisExpanded.implemented() {
+                // In what the WOF files made plain leave free, as the
+                // conversion holds it once the volume is frozen.
+                let free = header
+                    .free_clusters
+                    .unwrap_or(0)
+                    .saturating_mul(u64::from(header.geometry.cluster_size));
+                let cluster = n2r_win32::target_cluster::bytes();
+                let (grows, frees) = crate::plain_projection::wof_growth(&wof, cluster);
+                let left = free.saturating_sub(grows.saturating_sub(frees));
+                match crate::plain_projection::require_sis_room(&sis, cluster, left) {
+                    Err(refusal) => report.refusals.push(refusal.to_string()),
+                    Ok(()) => report.notes.push(format!(
+                        "{} file(s) are Single Instance Storage links. Made plain from their common store files they take {} bytes, and {left} are free for them.",
+                        sis.len(),
+                        crate::plain_projection::sis_growth(&sis, cluster)
+                    )),
+                }
+            }
             estimate.stays_bytes = stays;
             estimate.copied_bytes = copied;
-            // Each WOF file's plain copy is kept in the working storage.
+            // Each WOF file's plain copy, and each SIS link's, is kept in the
+            // working storage.
             let copies = if crate::plain_projection::PlainKind::WofExpanded.implemented() {
                 wof.iter()
                     .fold(0u64, |sum, file| sum.saturating_add(file.plain_bytes))
             } else {
                 0
-            };
+            }
+            .saturating_add(
+                sis.iter()
+                    .fold(0u64, |sum, link| sum.saturating_add(link.plain_bytes)),
+            );
             estimate.working_needed_bytes = working_needed(copied).saturating_add(copies);
         }
     }

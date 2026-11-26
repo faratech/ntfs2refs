@@ -451,6 +451,17 @@ plain silently. This version converts:
   marks. Not wholly here, it may be left out (`projfs_left_out`) with the
   same question and `--leave-out-cloud`. A ProjFS tombstone (a file deleted
   from a projection) is refused by name.
+- a Single Instance Storage link (`sis_expanded`), left by Windows Storage
+  Server's SIS: its reparse point names the file of `\SIS Common Store`
+  that holds its data, and the new file is made from a copy of that file,
+  without the link's reparse point and sparse mark. The common store file
+  has to be the one the point names (its name, MFT record and sequence
+  number) and of the link's length, and the link must hold no data of its
+  own (one written to since it was linked is refused by name, as is a point
+  of another layout). Each link takes its whole length on the new volume:
+  `--check` says how much, and the conversion is refused where that does
+  not fit in the free space. The common store folder itself is carried over
+  as it is.
 
 What a data volume keeps in `System Volume Information` below that folder's
 own folders (a chkdsk log, Data Deduplication's chunk store) is Windows' own,
@@ -466,9 +477,6 @@ check. An object with a name there and another elsewhere is refused by name.
 Nothing outside `System Volume Information` is affected. A volume that shares
 its disk with another is converted without this, and such objects are refused
 by name.
-
-The other kind a list can name (`sis_expanded`) is still refused as listed
-above.
 
 `--check` prints a "Converted to plain" section: how many objects of each
 kind, their bytes, the extra space on the new volume and in the working

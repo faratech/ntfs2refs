@@ -1025,6 +1025,11 @@ mod refusal_tests {
         point.extend_from_slice(&8u16.to_le_bytes());
         point.extend_from_slice(&0u16.to_le_bytes());
         point.extend_from_slice(b"provider");
+        pointed_folder(point, streams)
+    }
+
+    /// A folder with the reparse point `point` and the given named streams.
+    fn pointed_folder(point: Vec<u8>, streams: &[&str]) -> FileInventory {
         let attribute = |type_code: u32, name: &str, value: &[u8]| ntfs::AttributeInventory {
             type_code,
             instance: 0,
@@ -1191,6 +1196,68 @@ mod refusal_tests {
         );
     }
 
+    /// A Single Instance Storage link (SI_REPARSE_BUFFER version 5, its
+    /// unnamed stream all holes): admitted where it is taken plain, refused
+    /// by name where it is not, and of another layout refused either way.
+    #[test]
+    fn a_sis_link_is_admitted_only_where_it_is_expanded() {
+        let link = |version: u32| {
+            let mut point = n2r_win32::reparse_layout::IO_REPARSE_TAG_SIS
+                .to_le_bytes()
+                .to_vec();
+            point.extend_from_slice(&64u16.to_le_bytes());
+            point.extend_from_slice(&0u16.to_le_bytes());
+            point.extend_from_slice(&version.to_le_bytes());
+            point.extend_from_slice(&0u32.to_le_bytes());
+            point.extend_from_slice(&[0x5a; 16]);
+            point.extend_from_slice(&1u64.to_le_bytes());
+            point.extend_from_slice(&(39u64 | 1 << 48).to_le_bytes());
+            point.extend_from_slice(&(70u64 | 1 << 48).to_le_bytes());
+            point.extend_from_slice(&[0; 16]);
+            let mut file = pointed_folder(point, &[]);
+            file.record_number = 39;
+            file.is_directory = false;
+            file.streams = vec![
+                serde_json::from_value(serde_json::json!({
+                    "name": "", "name_utf16": [], "resident": false, "flags": 0x8000,
+                    "logical_size": 8192, "initialized_size": 8192, "allocated_size": 8192,
+                    "extents": [{"logical_offset": 0, "physical_offset": null, "length": 8192}],
+                    "resident_sha256": null,
+                }))
+                .unwrap(),
+            ];
+            if let Some(information) = file.standard_information.as_mut() {
+                information.file_attributes = 0x620;
+            }
+            file
+        };
+        let clean = link(5);
+        crate::plain_consent::take_plain_on_this_thread(true);
+        let taken = (
+            admission_issues(&clean),
+            crate::plain_projection::sis_taken(&clean),
+            crate::plain_projection::of_file(&clean)
+                .unwrap()
+                .map(|t| t.kind),
+        );
+        crate::plain_consent::take_plain_on_this_thread(false);
+        assert!(taken.0.is_empty(), "{:?}", taken.0);
+        assert!(taken.1);
+        assert_eq!(
+            taken.2,
+            Some(n2r_win32::plain_ledger::PlainKind::SisExpanded)
+        );
+        let refused = admission_issues(&clean);
+        assert!(
+            refused
+                .iter()
+                .any(|issue| issue.contains("Single Instance Storage link")),
+            "{refused:?}"
+        );
+        // Version 4: its point is not one this build reads.
+        assert!(crate::ntfs_reparse::file_point(&link(4)).is_err());
+    }
+
     /// The lab (cl3-down-leave-out, MFT record 42): a placeholder file left
     /// out has no copy, and Windows' view of it at the freeze is not asked
     /// for one; one made plain is.
@@ -1225,6 +1292,7 @@ mod refusal_tests {
                             streams: 1,
                             bytes: 5,
                         }),
+                        sis: None,
                         dropped_streams: Vec::new(),
                         recorded_streams: Vec::new(),
                     }],
@@ -2695,6 +2763,20 @@ pub(crate) fn user_issues_with_context_alias_scope(
                     )
                 },
             );
+        }
+    } else if let Some(point) = reparse
+        .as_ref()
+        .filter(|point| point.tag() == n2r_win32::reparse_layout::IO_REPARSE_TAG_SIS)
+    {
+        // A Single Instance Storage link is never recreated as such. A data
+        // volume's, of the one shape read exactly, is made a plain file from
+        // its common store file once its list is agreed (`sis_expanded`);
+        // anywhere else, or of another shape, it is refused by name.
+        if !(ordinary && crate::plain_projection::sis_taken(f)) {
+            issues.push(format!(
+                "it is a Single Instance Storage link{}",
+                n2r_win32::reparse_layout::unsupported_tag_meaning(point.tag())
+            ));
         }
     } else if let Some(point) = &reparse {
         if (point.tag() == 0xa0000003 && !f.is_directory)

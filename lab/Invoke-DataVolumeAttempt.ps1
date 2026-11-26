@@ -2237,10 +2237,11 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         if ($verdict.outcome -in 'refused-source-unchanged', 'refused-as-expected') { $verdict.outcome = 'refused-after-shrinking-the-partition' }
         elseif ($verdict.outcome -in 'diagnose-clean', 'diagnose-found-failures') { $verdict.outcome = 'diagnose-changed-the-source' }
     }
-    if ($ntfs12Any) {
+    if ($ntfs12Any -and "$($verdict.outcome)" -notmatch '^(converted|resumed)') {
         # Windows makes the TxF resource manager's files on an NTFS 1.2
         # volume while the run reads it: every record from 16 on, whole, as
-        # the disk holds them once the run is over (where it is still NTFS).
+        # the disk holds them once the run is over (where it is still NTFS:
+        # not after a conversion, whose volume is ReFS).
         try {
             $afterRun = Invoke-Command -Session $session -ArgumentList $guestRoot, $sourceDisk, $sourceOffset -ScriptBlock {
                 param($root, $number, $offset)

@@ -83,6 +83,13 @@ param(
     # anything), and efs, wof, casesensitive, snapshot, bitlocker (which are
     # refused). dirstream converts (named streams on directories). quota
     # converts: the quotas are recorded, not carried over.
+    # cloud and cloud-down: a sync root of lab-cloud-provider.exe with
+    # placeholders fully present, partly present, not present and pinned;
+    # with -AcceptPlain 'cloud' converts (its provider runs, and the run
+    # downloads what is missing before the freeze: it lists the volume
+    # itself after that, --compare-listing, and that listing is the one
+    # compared), and 'cloud-down' is refused naming the two it cannot
+    # download (its provider is stopped), with the source unchanged.
     # Two are not made through Windows but on the disk itself,
     # by guest\Use-RawNtfs.ps1, with the disk offline just before the run:
     # lfs2 (the control OS's NtfsDisableLfsDowngrade is 1 from before the
@@ -304,6 +311,10 @@ $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 $workspace = Split-Path -Parent $PSScriptRoot
 if (-not $Binary) { $Binary = Join-Path $workspace 'target\release\ntfs2refs.exe' }
 if (-not $ManifestBinary) { $ManifestBinary = Join-Path $workspace 'target\release\lab-volume-manifest.exe' }
+# The lab's Cloud Files API provider, for -Features cloud and cloud-down.
+$cloudFeatures = @($Features | Where-Object { $_ -in 'cloud', 'cloud-down' })
+$CloudProviderBinary = Join-Path (Split-Path -Parent $ManifestBinary) 'lab-cloud-provider.exe'
+if ($cloudFeatures -and -not (Test-Path -LiteralPath $CloudProviderBinary)) { throw "Not found: $CloudProviderBinary (cargo build --locked --release --bin lab-cloud-provider)" }
 foreach ($file in $Binary, $ManifestBinary) { if (-not (Test-Path -LiteralPath $file)) { throw "Not found: $file (cargo build --locked --release --bin ntfs2refs --bin lab-volume-manifest)" } }
 if ($ClusterBytes -lt 512 -or $ClusterBytes -gt 2097152 -or ($ClusterBytes -band ($ClusterBytes - 1))) { throw "-ClusterBytes $ClusterBytes is not a power of two from 512 to 2097152" }
 if ($ClusterBytes -lt $SectorBytes) { throw "-ClusterBytes $ClusterBytes is smaller than the $SectorBytes-byte sector" }
@@ -475,6 +486,7 @@ try {
         Copy-Item -ToSession $session -LiteralPath $symbols -Destination "$guestRoot\ntfs2refs.pdb" -Force
     }
     Copy-Item -ToSession $session -LiteralPath $ManifestBinary -Destination "$guestRoot\lab-volume-manifest.exe" -Force
+    if ($cloudFeatures) { Copy-Item -ToSession $session -LiteralPath $CloudProviderBinary -Destination "$guestRoot\lab-cloud-provider.exe" -Force }
     Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Invoke-ConverterRun.ps1') -Destination "$guestRoot\worker.ps1" -Force
     Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Add-VolumeFeatures.ps1') -Destination "$guestRoot\features.ps1" -Force
     Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Use-RawNtfs.ps1') -Destination "$guestRoot\rawntfs.ps1" -Force
@@ -710,7 +722,7 @@ try {
             $featureJson = Invoke-Command -Session $session -ArgumentList $guestRoot, $guestFeatures, $DirectoryEntries, $BigFileGB, $FileCount -ScriptBlock {
                 param($root, $features, $entries, $bigGB, $files)
                 $block = [scriptblock]::Create((Get-Content -LiteralPath "$root\features.ps1" -Raw))
-                & $block -Root 'V:\' -Features $features -DirectoryEntries $entries -BigFileGB $bigGB -FileCount $files
+                & $block -Root 'V:\' -Features $features -DirectoryEntries $entries -BigFileGB $bigGB -FileCount $files -CloudProvider "$root\lab-cloud-provider.exe"
             }
         } catch { $verdict.outcome = 'feature-not-made'; throw "a feature could not be put on the volume: $($_.Exception.Message)" }
         $verdict.source.features = ($featureJson | Select-Object -Last 1) | ConvertFrom-Json
@@ -1158,7 +1170,7 @@ public static class SiblingRaw {
     if ($Diagnose) { $arguments += '--diagnose' }
     if ($Review) { $arguments += '--review' }
     if ($Verify) { $arguments += @('--verify', $Verify) }
-    if ($CompareListing) { $arguments += '--compare-listing' }
+    if ($CompareListing -or $Features -contains 'cloud') { $arguments += '--compare-listing' }
     if ($DropShortNames -and $RefuseShortNames) { throw '-DropShortNames and -RefuseShortNames ask for opposite things' }
     # Short names are dropped unless the run is asked to refuse them.
     $shortNamesDropped = -not $RefuseShortNames
@@ -1937,9 +1949,19 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                 Get-ChildItem -LiteralPath $working -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending |
                     ForEach-Object { Join-Path $_.FullName 'plain-conversions.json' } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1 }
             if ($ledger) { Copy-Item -LiteralPath $ledger -Destination "$root\plain-conversions.json" -Force }
+            # A run that downloaded cloud placeholders before the freeze
+            # changed the volume then, and listed it itself afterwards
+            # (--compare-listing): that listing is the one the new volume is
+            # held to; the harness's own, from before the downloads, is kept.
+            $before = "$root\manifest-before.jsonl"
+            $run = if ($ledger) { Split-Path -Parent $ledger }
+            if ($run -and (Test-Path -LiteralPath "$run\plain-prefreeze-after.json") -and (Test-Path -LiteralPath "$run\listing-before.jsonl")) {
+                Copy-Item -LiteralPath "$run\listing-before.jsonl" -Destination "$root\manifest-before-downloaded.jsonl" -Force
+                $before = "$root\manifest-before-downloaded.jsonl"
+            }
             $arguments = @('compare'); if ($exact) { $arguments += '--exact' } else { if ($dropped) { $arguments += '--short-names-dropped' }; if ($marksLeft) { $arguments += '--case-marks-not-carried' } }
             if ($ledger) { $arguments += @('--plain-ledger', "$root\plain-conversions.json") }
-            $arguments += @('--before', "$root\manifest-before.jsonl", '--after', "$root\manifest-after.jsonl", '--report', "$root\manifest-report.json")
+            $arguments += @('--before', $before, '--after', "$root\manifest-after.jsonl", '--report', "$root\manifest-report.json")
             $summary = & "$root\lab-volume-manifest.exe" $arguments 2>&1
             $exit = $LASTEXITCODE; $differences = $null; $kinds = @{}; $plain = $null; $plainRows = @()
             if (Test-Path -LiteralPath "$root\manifest-report.json") {
@@ -2241,6 +2263,18 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                 "$said; providers now: $(@(& vssadmin.exe list providers 2>&1 | Where-Object { "$_" -match 'Provider name' }).Count)"
             }
             Say "shadow-copy provider: $removed"
+        }
+        if ($cloudFeatures) {
+            # The lab provider: stopped, and its sync roots unregistered.
+            $stopped = Invoke-Command -Session $session -ArgumentList $guestRoot, $cloudFeatures -ScriptBlock {
+                param($root, $features)
+                foreach ($feature in $features) {
+                    Set-Content -LiteralPath "C:\n2r-cloud-backing\$feature.stop" -Value 'stop' -ErrorAction SilentlyContinue
+                    $null = & "$root\lab-cloud-provider.exe" unregister --root "V:\feature-$feature\synced" 2>&1
+                    "$feature unregistered: $LASTEXITCODE"
+                }
+            }
+            Say "cloud provider: $($stopped -join '; ')"
         }
         if (-not $KeepVolume) {
             Invoke-Command -Session $session -ArgumentList $guestRoot, $Name -ErrorAction Stop -ScriptBlock {

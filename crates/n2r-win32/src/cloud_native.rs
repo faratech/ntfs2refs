@@ -196,11 +196,23 @@ impl SyncRoot {
 
 /// What the Cloud Files API said of a placeholder it could not report on.
 pub fn describe_error(code: i32) -> String {
+    // Only an HRESULT of FACILITY_WIN32 carries a Win32 error to name; the
+    // filter manager's (0x801Fxxxx, for a volume cldflt does not attach to,
+    // such as a ReFS one) and others are given as they are.
+    if (code as u32 >> 16) & 0x1fff != 7 {
+        return format!(
+            "the Cloud Files API answered {code:#010x}{}",
+            if code as u32 >> 16 == 0x801f {
+                " (the Cloud Files filter is not attached to this volume)"
+            } else {
+                ""
+            }
+        );
+    }
     let text = std::io::Error::from_raw_os_error(code & 0xffff).to_string();
     match code as u32 & 0xffff {
         // ERROR_CLOUD_FILE_PROVIDER_NOT_RUNNING
         362 => format!("its cloud provider is not running ({text})"),
-        // ERROR_CLOUD_FILE_NOT_IN_SYNC .. the 0x18x family of cloud errors.
         _ => format!("the Cloud Files API answered {code:#010x} ({text})"),
     }
 }
@@ -506,5 +518,6 @@ mod tests {
         // HRESULT_FROM_WIN32(ERROR_CLOUD_FILE_PROVIDER_NOT_RUNNING)
         assert!(describe_error(0x8007_016a_u32 as i32).contains("provider is not running"));
         assert!(describe_error(0x8007_0005_u32 as i32).contains("0x80070005"));
+        assert!(describe_error(0x801f_000f_u32 as i32).contains("not attached to this volume"));
     }
 }

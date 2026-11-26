@@ -497,6 +497,18 @@ When `-SampleStacks` is used on an interrupted run, the last profile written
 before the cut is collected as `interrupted-stacks.txt` when available.
 The recovery writes its own `stacks.txt`.
 
+`cloud` and `cloud-down` make a sync root of the lab's own Cloud Files API
+provider (`lab-cloud-provider.exe`, built with `--bin lab-cloud-provider`
+and copied beside the converter), backed by a folder on the control OS's
+C:, with placeholders fully present, partly present, not present and pinned,
+and a folder of them. `cloud` leaves the provider running: with
+`-AcceptPlain` the run downloads the two that are not wholly present before
+the freeze, lists the volume itself after that (`--compare-listing`), and
+that listing is the one the new volume is compared with. `cloud-down` stops
+it: the run is refused naming the two it cannot download, with the source
+unchanged. The harness stops the provider and unregisters the sync root
+when the attempt ends. Both are still to be run.
+
 `temporary`, `offline` and `wof` (four `compact /exe` files, one per WOF
 algorithm, listed before the run in `wof-listed-before.jsonl`) convert with
 `-AcceptPlain`; without it a run stops before it changes anything. So does

@@ -454,6 +454,7 @@ if ($IntegrityRecords) {
 }
 # Set only by the cloud feature; read on every run under strict mode.
 $script:cloudServe = $null
+$script:projfsServe = $null
 $script:cloudStopOnDownloads = $null
 $session = New-PSSession -VMId $VmId -Credential $credential
 # The control OS's scheduled drive optimisation holds up writes to its ReFS
@@ -1099,6 +1100,34 @@ public static class SiblingRaw {
                 # done: a connected provider holds its sync root open, and the
                 # volume cannot be locked until it is closed (Wait-Worker).
                 $script:cloudStopOnDownloads = $c.stop
+            }
+            if ($script:projfsServe) {
+                # The lab ProjFS provider likewise: a provider the feature
+                # step started did not serve the converter's session (the
+                # lab, s321-projfs: "The provider that supports file system
+                # virtualization is unknown", os error 372). Started here,
+                # then proven by reading probe.bin (not on the volume until
+                # now) through it from this session.
+                $p = $script:projfsServe
+                $script:projfsServe = $null
+                $probe = Invoke-Command -Session $script:worker -ArgumentList $p.exe, $p.root, $p.backing, $p.stop, $p.probe -ScriptBlock {
+                    param($exe, $projected, $backing, $stop, $probe)
+                    Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
+                    $process = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden -ArgumentList @(
+                        'serve', '--root', "`"$projected`"", '--backing', "`"$backing`"", '--stop-file', "`"$stop`"")
+                    Start-Sleep -Seconds 2
+                    $read = try { "read $([IO.File]::ReadAllBytes($probe).Length) bytes" } catch { "error: $($_.Exception.Message)" }
+                    [pscustomobject]@{ process = $process.Id; alive = -not $process.HasExited; read = $read
+                        report = ((& $exe report --root $projected 2>&1) -join ' | ') }
+                }
+                Say "projfs: the provider in the worker's session (process $($probe.process)): probe $($probe.read); $($probe.report)"
+                if (-not $probe.alive -or $probe.read -notlike 'read *') {
+                    $verdict.outcome = 'projfs-provider-not-serving'
+                    throw "the lab ProjFS provider does not serve the converter's session: $($probe.read)"
+                }
+                # Stopped once the converter's reads before the freeze are
+                # done: it holds its virtualization root open (Wait-Worker).
+                $script:cloudStopOnDownloads = $p.stop
             }
             $null = Invoke-Command -Session $script:worker -ArgumentList $Root -AsJob -ScriptBlock {
                 param($root) $null = & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$root\worker.ps1" -Root $root 2>&1 }
@@ -1811,18 +1840,28 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         Say "cloud: $reported"
     }
     if ($Features -contains 'projfs') {
-        # The lab's ProjFS provider serves every process, whatever its
-        # session: the feature step's runs on. It holds its virtualization
-        # root open, so it is stopped as soon as the converter says its reads
-        # before the freeze are done (Wait-Worker), and the volume can be
-        # taken offline.
-        $served = $verdict.source.features.projfs.provider_process
-        $alive = Invoke-Command -Session $session -ArgumentList $served -ScriptBlock { param($id) [bool](Get-Process -Id $id -ErrorAction SilentlyContinue) }
-        if (-not $alive) { $verdict.outcome = 'projfs-provider-not-running'; throw "the lab ProjFS provider (process $served) is no longer running before the conversion" }
-        $script:cloudStopOnDownloads = $verdict.source.features.projfs.stop_file
-        $reported = Invoke-Command -Session $session -ArgumentList $guestRoot, $verdict.source.features.projfs.root -ScriptBlock {
-            param($root, $projected) (& "$root\lab-projfs-provider.exe" report --root $projected 2>&1) -join ' | ' }
-        Say "projfs: the lab provider (process $served) is serving; $reported"
+        # The lab's ProjFS provider has to serve the converter's own session,
+        # as the cloud one does: the feature step's is stopped here, and
+        # Start-Worker starts one in the worker's session before the
+        # converter, proves it by reading probe.bin through it, and stops it
+        # once the converter's reads before the freeze are done (it holds its
+        # virtualization root open). Only -RunAs administrator runs the
+        # converter in a session the harness can start it in.
+        if ($RunAs -ne 'administrator') { $verdict.outcome = 'projfs-needs-administrator'; throw "-Features projfs needs -RunAs administrator: its provider has to run in the converter's own session" }
+        $p = $verdict.source.features.projfs
+        $served = $p.provider_process
+        $stopped = Invoke-Command -Session $session -ArgumentList $served, $p.stop_file -ScriptBlock {
+            param($id, $stop)
+            Set-Content -LiteralPath $stop -Value 'stop'
+            $process = Get-Process -Id $id -ErrorAction SilentlyContinue
+            if ($process) { $null = $process.WaitForExit(15000) }
+            Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
+            -not (Get-Process -Id $id -ErrorAction SilentlyContinue)
+        }
+        if (-not $stopped) { $verdict.outcome = 'projfs-provider-not-stopped'; throw "the feature step's lab ProjFS provider (process $served) did not stop" }
+        $script:projfsServe = @{ exe = "$guestRoot\lab-projfs-provider.exe"; root = $p.root; backing = $p.backing; stop = $p.stop_file
+            probe = "$($p.root)\probe.bin" }
+        Say "projfs: the feature step's provider (process $served) stopped; the worker's session starts its own"
     }
     Start-Worker $guestRoot $arguments $task $(if ($declinePlain) { @('n') } else { @() })
     Say "converter started: ntfs2refs $($arguments -join ' ')$(if ($declinePlain) { ' (its question about plain conversions answered no)' })"

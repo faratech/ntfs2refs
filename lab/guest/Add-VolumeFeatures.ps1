@@ -567,6 +567,10 @@ try {
             foreach ($file in 'present.bin', 'absent.bin', 'folder\inner.bin') {
                 [IO.File]::WriteAllBytes("$backing\$file", (Bytes 300000))
             }
+            # For 'projfs': a small placeholder, not on the volume, that the
+            # harness reads from the converter's own session to prove the
+            # provider serves it.
+            if ($feature -eq 'projfs') { [IO.File]::WriteAllBytes("$backing\probe.bin", (Bytes 4096)) }
             $projected = "$dir\projected"
             $null = New-Item -ItemType Directory -Path $dir -Force
             $created = & $projfsCreate @('create', '--root', $projected, '--backing', $backing,
@@ -579,7 +583,7 @@ try {
             # The virtualization root is itself a placeholder folder: its
             # marker is its reparse point.
             $plain.Add([ordered]@{ kind = 'projfs_placeholder_plain'; path = "\feature-$feature\projected" })
-            foreach ($path in 'folder', 'folder\inner.bin', 'present.bin', 'absent.bin') {
+            foreach ($path in @('folder', 'folder\inner.bin', 'present.bin', 'absent.bin') + @(if ($feature -eq 'projfs') { 'probe.bin' })) {
                 # With the provider stopped, absent.bin can only be left out
                 # (the run is refused unless that is agreed: -LeaveOutCloud),
                 # and is absent afterwards.

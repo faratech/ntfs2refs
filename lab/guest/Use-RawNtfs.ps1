@@ -49,7 +49,7 @@ param(
     [Parameter(Mandatory)][int]$DiskNumber,
     # The partition's byte offset on the disk.
     [Parameter(Mandatory)][long]$PartitionOffset,
-    [Parameter(Mandatory)][ValidateSet('read-version', 'set-version', 'read-log', 'set-headers-30', 'read-headers')][string]$Action,
+    [Parameter(Mandatory)][ValidateSet('read-version', 'set-version', 'read-log', 'set-headers-30', 'read-headers', 'write-image')][string]$Action,
     [int]$Major = -1,
     [int]$Minor = -1,
     # read-headers: the records set-headers-30 rewrote, each checked again.
@@ -63,7 +63,12 @@ param(
     # system files too; 16 only ordinary files and directories (records 0
     # to 15, $MFT to the reserved ones, keep the 3.1 form, and $MFTMirr with
     # them).
-    [ValidateRange(0, 16)][int]$FromRecord = 0
+    [ValidateRange(0, 16)][int]$FromRecord = 0,
+    # write-image: a volume's first bytes as a file (tests/support/ntfs12.rs
+    # writes them), and the partition's length, which the image's boot
+    # sector has to state.
+    [string]$Image,
+    [long]$PartitionBytes = 0
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 if (-not ('N2RLabRawNtfs' -as [type])) {
@@ -558,6 +563,40 @@ switch ($Action) {
             })
         $volume = Read-FileRecord 3 'mft'
         $result.version = (Get-VolumeVersion $volume).version
+    }
+    'write-image' {
+        # A whole volume's metadata written over the partition: the image
+        # from its first byte, and its boot sector again in the partition's
+        # last sector (where NTFS keeps the backup), each read back.
+        Assert-Offline 'a volume image is written over it'
+        $bytes = [IO.File]::ReadAllBytes($Image)
+        if ($bytes.Length -lt 4096 -or [Text.Encoding]::ASCII.GetString($bytes, 3, 8) -ne 'NTFS    ' -or $bytes[510] -ne 0x55 -or $bytes[511] -ne 0xAA) { throw "$Image does not begin with an NTFS boot sector" }
+        if ($PartitionBytes -le 0 -or $PartitionBytes % 4096) { throw "write-image takes the partition's length in bytes (-PartitionBytes), a multiple of 4096: $PartitionBytes" }
+        $stated = [BitConverter]::ToInt64($bytes, 0x28)
+        if ($stated -ne $PartitionBytes / 512 - 1) { throw "$Image states $stated sectors; a partition of $PartitionBytes bytes holds a volume of $($PartitionBytes / 512 - 1)" }
+        if ($bytes.Length -gt $PartitionBytes - 512) { throw "$Image ($($bytes.Length) bytes) does not fit the partition" }
+        # The sectors before the partition, as the boot sector states them.
+        $hidden = [BitConverter]::GetBytes([uint32]($PartitionOffset / 512))
+        [Array]::Copy($hidden, 0, $bytes, 0x1c, 4)
+        $chunk = 1MB
+        for ($at = 0; $at -lt $bytes.Length; $at += $chunk) {
+            $count = [Math]::Min($chunk, $bytes.Length - $at)
+            $part = New-Object byte[] $count
+            [Array]::Copy($bytes, $at, $part, 0, $count)
+            [N2RLabRawNtfs]::Write($device, $PartitionOffset + $at, $part)
+            $back = [N2RLabRawNtfs]::Read($device, $PartitionOffset + $at, $count)
+            if (-not [N2RLabRawNtfs]::Same($back, $part)) { throw "the image does not read back at byte $at of the partition" }
+        }
+        $bootSector = New-Object byte[] 512
+        [Array]::Copy($bytes, 0, $bootSector, 0, 512)
+        [N2RLabRawNtfs]::Write($device, $PartitionOffset + $PartitionBytes - 512, $bootSector)
+        if (-not [N2RLabRawNtfs]::Same(([N2RLabRawNtfs]::Read($device, $PartitionOffset + $PartitionBytes - 512, 512)), $bootSector)) { throw 'the backup boot sector does not read back' }
+        $result.image = $Image
+        $result.image_bytes = $bytes.Length
+        $result.image_sha256 = Get-Sha256 $bytes
+        $result.partition_bytes = $PartitionBytes
+        $result.hidden_sectors = [uint32]($PartitionOffset / 512)
+        $result.backup_boot_at = $PartitionOffset + $PartitionBytes - 512
     }
     'read-log' {
         $record = Read-FileRecord 2 'mft'

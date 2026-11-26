@@ -47,6 +47,11 @@ pub enum SupplyKind {
     Materialize,
     SourceReference,
     Hole,
+    /// Supplied from the run's plain copy store (`crate::plain_copy`): the
+    /// bytes a program read through Windows' filters on the frozen source,
+    /// for an object converted to a plain file. Nothing is supplied so yet:
+    /// no range of this kind is derived, and every consumer refuses one.
+    PlainCopy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -55,6 +60,8 @@ pub struct StreamSupplySummary {
     pub materialize_bytes: u64,
     pub source_reference_bytes: u64,
     pub hole_bytes: u64,
+    #[serde(skip_serializing_if = "zero")]
+    pub plain_copy_bytes: u64,
     pub ranges: u64,
     pub ordered_range_sha256: String,
 }
@@ -362,6 +369,7 @@ fn stream_inner(
         materialize_bytes: 0,
         source_reference_bytes: 0,
         hole_bytes: 0,
+        plain_copy_bytes: 0,
         ranges: 0,
         ordered_range_sha256: String::new(),
     };
@@ -388,6 +396,7 @@ fn stream_inner(
             SupplyKind::Materialize => &mut summary.materialize_bytes,
             SupplyKind::SourceReference => &mut summary.source_reference_bytes,
             SupplyKind::Hole => &mut summary.hole_bytes,
+            SupplyKind::PlainCopy => &mut summary.plain_copy_bytes,
         };
         *total = total
             .checked_add(range.length)
@@ -400,6 +409,7 @@ fn stream_inner(
             SupplyKind::Materialize => 0,
             SupplyKind::SourceReference => 1,
             SupplyKind::Hole => 2,
+            SupplyKind::PlainCopy => 3,
         }]);
         hash.update(range.logical_offset.to_le_bytes());
         hash.update(range.length.to_le_bytes());

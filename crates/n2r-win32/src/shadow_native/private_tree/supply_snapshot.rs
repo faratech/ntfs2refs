@@ -439,6 +439,7 @@ pub(super) fn with_snapshot<T>(
                 materialize_bytes: 0,
                 source_reference_bytes: 0,
                 hole_bytes: 0,
+                plain_copy_bytes: 0,
                 ranges: 0,
                 ordered_range_sha256: String::new(),
             },

@@ -113,10 +113,13 @@ fn verify_parts<R: Read + Seek>(
     fingerprint: impl FnOnce() -> Result<String>,
 ) -> Result<VerifiedBackups> {
     ensure!(
-        matches!(g.bytes_per_sector, 512 | 4096)
+        ntfs::supports_sector_size(g.bytes_per_sector)
             && crate::ntfs_index::supports_cluster_size(g.cluster_size)
-            && matches!(g.file_record_size, 1024 | 4096),
-        "backup checks require supported clusters, 512- or 4096-byte sectors and 1 or 4 KiB MFT records"
+            && ntfs::supports_file_record_size(g.file_record_size),
+        "backup checks cannot read this geometry: {}-byte sectors, {}-byte clusters, {}-byte MFT records",
+        g.bytes_per_sector,
+        g.cluster_size,
+        g.file_record_size
     );
     // NTFS leaves the partition's last sector to the backup boot sector.
     let sector = u64::from(g.bytes_per_sector);

@@ -765,7 +765,8 @@ mod working_ram_tests {
 
     #[test]
     fn what_is_leased_for_a_record_covers_what_the_fullest_record_is_counted_as() {
-        for size in [1024usize, 4096] {
+        // Every FILE record size the boot sector can state.
+        for size in [512usize, 1024, 2048, 4096, 8192, 65536] {
             let geometry = geometry(size as u32);
             let bound = lists::record_working_bound(size as u32).unwrap();
             let room = size - (48 + usa_entries(size) * 2).next_multiple_of(8) - 8;
@@ -789,7 +790,11 @@ mod working_ram_tests {
             // times the fullest of these records, and a few MiB, not a
             // share of the budget.
             assert!(bound <= most * 8, "{size}: {bound} for {most}");
-            assert!(bound <= 16 * 1024 * 1024);
+            // It grows with the record: 16 MiB for each 4 KiB of it.
+            assert!(
+                bound <= 16 * 1024 * 1024 * (size as u64 / 4096).max(1),
+                "{size}: {bound}"
+            );
         }
         // The densest mapping really is dense: half the record in runs.
         let raw = file_record(1024, &densest_mapping(1024 - 56 - 8));

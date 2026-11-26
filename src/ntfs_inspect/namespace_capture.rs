@@ -969,10 +969,12 @@ impl NamespaceCapture {
     ) -> Result<()> {
         use crate::ntfs_namespace as ns;
         ensure!(
-            geometry.bytes_per_sector == 512
-                && crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
-                && geometry.index_record_size == 4096,
-            "raw namespace requires supported clusters, 512-byte sectors and 4 KiB index records"
+            crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
+                && super::supports_record_geometry(geometry),
+            "the raw namespace cannot read this geometry: {}-byte sectors, {}-byte clusters, {}-byte index records",
+            geometry.bytes_per_sector,
+            geometry.cluster_size,
+            geometry.index_record_size
         );
         if number == 10 {
             let table = unnamed(record, 0x80)?;
@@ -1040,13 +1042,14 @@ impl NamespaceCapture {
         } else {
             Vec::new()
         };
-        let directory = ns::parse_directory_with_cluster_size(
+        let directory = ns::parse_directory_with_geometry(
             number | (u64::from(record.sequence) << 48),
             root_bytes,
             &allocation,
             initialized,
             &bitmap,
             geometry.cluster_size,
+            geometry.index_record_size,
         )?;
         self.entries = self
             .entries

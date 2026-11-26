@@ -621,6 +621,34 @@ fn record_size(encoded: u8, cluster_size: u32, label: &str) -> Result<u32> {
     Ok(size)
 }
 
+/// Whether an NTFS boot sector's bytes-per-sector can be read: a power of two
+/// from 512 to 4096, which covers every sector size NTFS formats on (512,
+/// 1024, 2048 and 4096). The update-sequence stride stays 512 bytes whatever
+/// this is ([`USA_STRIDE`]).
+pub fn supports_sector_size(bytes: u16) -> bool {
+    bytes.is_power_of_two() && (512..=4096).contains(&bytes)
+}
+
+/// Whether a FILE record of this size can be read: a power of two the boot
+/// sector can state (512 bytes to 64 KiB) whose fixed header and update
+/// sequence array, one word per 512 bytes of the record and one for the
+/// sequence number, fit before the first stride's sequence word.
+pub fn supports_file_record_size(bytes: u32) -> bool {
+    const FILE_HEADER_BYTES: usize = 0x30;
+    bytes.is_power_of_two()
+        && (512..=65536).contains(&bytes)
+        && FILE_HEADER_BYTES + 2 * usa_entries(bytes as usize) <= USA_STRIDE - 2
+}
+
+/// Whether every record geometry the boot sector states can be read: its
+/// sector, file-record and index-record sizes. Cluster sizes are a separate
+/// question for each reader ([`crate::ntfs_index::supports_cluster_size`]).
+pub fn supports_record_geometry(geometry: &NtfsGeometry) -> bool {
+    supports_sector_size(geometry.bytes_per_sector)
+        && supports_file_record_size(geometry.file_record_size)
+        && crate::ntfs_index::supports_index_record_size(geometry.index_record_size)
+}
+
 /// Whether a partition's first sector is BitLocker's: it carries this name
 /// where a file system's own would be.
 pub fn is_bitlocker_boot_sector(bytes: &[u8]) -> bool {
@@ -649,8 +677,8 @@ pub fn inspect_boot_sector(bytes: &[u8], length: u64) -> Result<NtfsGeometry> {
     );
     let bytes_per_sector = u16le(bytes, 11)?;
     ensure!(
-        (512..=4096).contains(&bytes_per_sector) && bytes_per_sector.is_power_of_two(),
-        "invalid bytes per sector"
+        supports_sector_size(bytes_per_sector),
+        "invalid bytes per sector {bytes_per_sector}"
     );
     let encoded = bytes[13];
     let sectors_per_cluster = if encoded > 128 {
@@ -705,6 +733,10 @@ pub fn inspect_boot_sector(bytes: &[u8], length: u64) -> Result<NtfsGeometry> {
         "MFT mirror location outside volume"
     );
     let file_record_size = record_size(bytes[64], cluster_size, "file record")?;
+    ensure!(
+        supports_file_record_size(file_record_size),
+        "unsupported file record size {file_record_size}"
+    );
     let index_record_size = record_size(bytes[68], cluster_size, "index record")?;
     for lcn in [mft_lcn, mftmirr_lcn] {
         let end = lcn
@@ -900,6 +932,26 @@ mod update_sequence_tests {
         // A 1 KiB file record and a 4 KiB index record, on any sector size.
         assert_eq!(usa_entries(1024), 3);
         assert_eq!(usa_entries(4096), 9);
+        assert_eq!(usa_entries(2048), 5);
+        assert_eq!(usa_entries(65536), 129);
+    }
+
+    #[test]
+    fn every_record_geometry_the_boot_sector_can_state_is_read() {
+        use super::{supports_file_record_size, supports_sector_size};
+        for sector in [512u16, 1024, 2048, 4096] {
+            assert!(supports_sector_size(sector), "{sector}");
+        }
+        for sector in [0u16, 256, 768, 8192] {
+            assert!(!supports_sector_size(sector), "{sector}");
+        }
+        // Each holds its update sequence array in its first 512 bytes.
+        for record in [512u32, 1024, 2048, 4096, 8192, 16384, 32768, 65536] {
+            assert!(supports_file_record_size(record), "{record}");
+        }
+        for record in [0u32, 256, 1536, 3072, 131072] {
+            assert!(!supports_file_record_size(record), "{record}");
+        }
     }
 }
 

@@ -254,7 +254,10 @@ pub fn walk_ranges(
         range.revalidate()?;
     }
     let root_len = input.root.byte_len();
-    ensure!((48..=4096).contains(&root_len), "invalid index root bound");
+    ensure!(
+        (48..=super::MAX_INDEX_ROOT_BYTES as u64).contains(&root_len),
+        "invalid index root bound"
+    );
     let ram = scratch.lease_ram(frame_ram(index_record_bytes))?;
     let mut root = Vec::new();
     root.try_reserve_exact(root_len as usize)?;

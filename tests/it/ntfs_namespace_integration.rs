@@ -1237,13 +1237,15 @@ fn detects_bad_volume_upcase_data() {
     assert!(ns.detail.contains("ASCII $UpCase"));
 }
 #[test]
-fn rejects_unqualified_index_geometry_without_failing_raw_mft_inventory() {
+fn rejects_index_roots_that_disagree_with_the_boot_sector_without_failing_raw_mft_inventory() {
+    // 8 KiB index records are admitted, but the fixture's roots state 4 KiB.
     let mut image = fixture();
     image[68] = 2;
     let r = inspect(&image);
+    assert_eq!(r.geometry.index_record_size, 8192);
     let ns = r.namespace_reconciliation.unwrap();
     assert_eq!(ns.status, Status::Rejected);
-    assert!(ns.detail.contains("4 KiB"));
+    assert!(ns.detail.contains("geometry"), "{}", ns.detail);
     assert!(!r.files.is_empty());
 }
 #[test]

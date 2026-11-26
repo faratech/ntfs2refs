@@ -628,3 +628,79 @@ fn reads_internal_security_keys_and_leaf_values_in_order() {
         assert_eq!(index.index_blocks, 2);
     }
 }
+
+/// `$SII` and `$SDH` in index records of every size the boot sector can
+/// state, on 4 KiB clusters: a record smaller than a cluster is addressed in
+/// 512-byte units, a larger one in clusters.
+#[test]
+fn reads_security_indexes_in_every_index_record_size() {
+    let (_, headers) = corpus(&[empty(), empty(), empty()]);
+    for (record, units) in [
+        (512usize, 1u8),
+        (1024, 2),
+        (2048, 4),
+        (4096, 1),
+        (8192, 2),
+        (65536, 16),
+    ] {
+        for kind in [IndexKind::Id, IndexKind::Hash] {
+            let strides = record / 512;
+            let mut allocation = Vec::new();
+            for (slot, h) in [headers[0].clone(), headers[2].clone()].iter().enumerate() {
+                let leaf = root(std::slice::from_ref(h), kind);
+                let start = (40 + 2 * (strides + 1)).next_multiple_of(8).max(64);
+                let mut b = vec![0; record];
+                b[..4].copy_from_slice(b"INDX");
+                p16(&mut b, 4, 40);
+                p16(&mut b, 6, (strides + 1) as u16);
+                p64(&mut b, 16, slot as u64 * u64::from(units));
+                p32(&mut b, 24, (start - 24) as u32);
+                p32(&mut b, 28, (start - 24 + leaf.len() - 32) as u32);
+                p32(&mut b, 32, (record - 24) as u32);
+                b[start..start + leaf.len() - 32].copy_from_slice(&leaf[32..]);
+                p16(&mut b, 40, 0xabcd);
+                for stride in 1..=strides {
+                    let prior = [b[512 * stride - 2], b[512 * stride - 1]];
+                    b[40 + 2 * stride..42 + 2 * stride].copy_from_slice(&prior);
+                    p16(&mut b, 512 * stride - 2, 0xabcd);
+                }
+                allocation.extend(b);
+            }
+            let leaf = root(&headers[1..2], kind);
+            let old_size = usize::from(u16::from_le_bytes(leaf[40..42].try_into().unwrap()));
+            let mut node = vec![0; leaf.len() + 16];
+            node[..32 + old_size].copy_from_slice(&leaf[..32 + old_size]);
+            p32(&mut node, 8, record as u32);
+            node[12] = units;
+            p16(&mut node, 40, (old_size + 8) as u16);
+            p16(&mut node, 44, 1);
+            let terminal = 32 + old_size + 8;
+            p16(&mut node, terminal + 8, 24);
+            p16(&mut node, terminal + 12, 3);
+            p64(&mut node, terminal + 16, u64::from(units));
+            node[28] = 1;
+            let size = node.len() - 16;
+            p32(&mut node, 20, size as u32);
+            p32(&mut node, 24, size as u32);
+            let input = Input {
+                root: &node,
+                allocation: &allocation,
+                initialized: 2 * record as u64,
+                bitmap: &[3],
+            };
+            let index = sec::parse_index_with_geometry(input, kind, 4096, record as u32)
+                .unwrap_or_else(|error| panic!("{record}: {error:#}"));
+            assert_eq!(index.entries, headers, "{record}");
+            assert_eq!(index.index_blocks, 2);
+            // The same bytes read as records of another size are refused.
+            let other = if record == 4096 { 2048 } else { 4096 };
+            let input = Input {
+                root: &node,
+                allocation: &allocation,
+                initialized: 2 * record as u64,
+                bitmap: &[3],
+            };
+            assert!(sec::parse_index_with_geometry(input, kind, 4096, other).is_err());
+        }
+    }
+}

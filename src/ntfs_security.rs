@@ -377,8 +377,7 @@ pub fn reconcile_paged(
     files.revalidate()?;
     capture.revalidate()?;
     ensure!(
-        matches!(files.header().geometry.bytes_per_sector, 512 | 4096)
-            && ntfs_index::supports_index_record_size(files.header().geometry.index_record_size)
+        crate::ntfs_inspect::supports_record_geometry(&files.header().geometry)
             && ntfs_index::supports_cluster_size(files.header().geometry.cluster_size),
         "paged security indexes require supported NTFS index geometry"
     );
@@ -834,20 +833,37 @@ pub fn parse_index(input: Input<'_>, kind: IndexKind) -> Result<SecurityIndex> {
     parse_index_with_cluster_size(input, kind, 4096)
 }
 
-/// Geometry-aware security indexes with the existing 4 KiB record profile.
+/// As [`parse_index_with_geometry`], with the 4 KiB index records Windows
+/// formats.
 pub fn parse_index_with_cluster_size(
     input: Input<'_>,
     kind: IndexKind,
     cluster_bytes: u32,
 ) -> Result<SecurityIndex> {
+    parse_index_with_geometry(
+        input,
+        kind,
+        cluster_bytes,
+        ntfs_index::DEFAULT_INDEX_RECORD_BYTES,
+    )
+}
+
+/// Security indexes for the volume's cluster and index record sizes.
+pub fn parse_index_with_geometry(
+    input: Input<'_>,
+    kind: IndexKind,
+    cluster_bytes: u32,
+    index_record_bytes: u32,
+) -> Result<SecurityIndex> {
     let profile = match kind {
         IndexKind::Id => Profile::SECURITY_ID,
         IndexKind::Hash => Profile::SECURITY_HASH,
     };
-    let index = ntfs_index::parse_with_cluster_size(
+    let index = ntfs_index::parse_with_geometry(
         input,
         profile,
         cluster_bytes,
+        index_record_bytes,
         |_entry, key, value| {
             let h = header(value)?;
             match kind {

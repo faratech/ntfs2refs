@@ -95,7 +95,13 @@ impl SecurityCapture {
     ) -> Result<crate::ntfs_security::SecurityIndex> {
         let root = Self::named(record, 0x90, name)?.context("missing security INDEX_ROOT")?;
         ensure!(root.report.resident, "security INDEX_ROOT must be resident");
-        let root = self.bytes(reader, root, geometry, &format!("{name}:root"), 4096)?;
+        let root = self.bytes(
+            reader,
+            root,
+            geometry,
+            &format!("{name}:root"),
+            crate::ntfs_index::MAX_INDEX_ROOT_BYTES as u64,
+        )?;
         let allocation_attr = Self::named(record, 0xa0, name)?;
         let bitmap_attr = Self::named(record, 0xb0, name)?;
         let (allocation, initialized) = if let Some(a) = allocation_attr {
@@ -137,7 +143,7 @@ impl SecurityCapture {
         } else {
             Vec::new()
         };
-        crate::ntfs_security::parse_index_with_cluster_size(
+        crate::ntfs_security::parse_index_with_geometry(
             crate::ntfs_index::Input {
                 root: &root,
                 allocation: &allocation,
@@ -146,6 +152,7 @@ impl SecurityCapture {
             },
             kind,
             geometry.cluster_size,
+            geometry.index_record_size,
         )
     }
     pub(super) fn charge_descriptors(
@@ -174,10 +181,12 @@ impl SecurityCapture {
         use crate::ntfs_security as sec;
         if number == 9 {
             ensure!(
-                geometry.bytes_per_sector == 512
-                    && crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
-                    && geometry.index_record_size == 4096,
-                "security indexes require supported clusters, 512-byte sectors and 4 KiB index records"
+                crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
+                    && super::supports_record_geometry(geometry),
+                "the security indexes cannot be read in this geometry: {}-byte sectors, {}-byte clusters, {}-byte index records",
+                geometry.bytes_per_sector,
+                geometry.cluster_size,
+                geometry.index_record_size
             );
             let sds = Self::named(record, 0x80, "$SDS")?.context("$Secure lacks SDS data")?;
             let sds = self.bytes(reader, sds, geometry, "SDS", sec::MAX_METADATA_BYTES as u64)?;

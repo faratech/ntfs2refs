@@ -148,7 +148,9 @@ impl PagedSecurityCapture {
     ) -> Result<SecurityIndexPins> {
         let root = Self::named(record, 0x90, name)?.context("missing security index root")?;
         ensure!(
-            root.report.resident && (48..=4096).contains(&root.report.logical_size),
+            root.report.resident
+                && (48..=crate::ntfs_index::MAX_INDEX_ROOT_BYTES as u64)
+                    .contains(&root.report.logical_size),
             "unsupported security root layout"
         );
         let root_pin = self.capture(
@@ -218,8 +220,7 @@ impl PagedSecurityCapture {
         if number == 9 {
             ensure!(
                 self.secure.is_none()
-                    && matches!(geometry.bytes_per_sector, 512 | 4096)
-                    && crate::ntfs_index::supports_index_record_size(geometry.index_record_size)
+                    && super::supports_record_geometry(geometry)
                     && crate::ntfs_index::supports_cluster_size(geometry.cluster_size),
                 "unsupported or duplicate Secure index geometry"
             );

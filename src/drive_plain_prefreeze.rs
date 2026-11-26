@@ -44,6 +44,11 @@ pub(crate) struct CloudFinding {
     /// As a listing names it.
     pub path: String,
     pub directory: bool,
+    /// Whose placeholder it is. A cloud one is asked of the Cloud Files
+    /// API; any other is taken as the raw reading shows it, and is
+    /// brought onto the volume by reading it through its provider.
+    #[serde(skip)]
+    pub family: crate::plain_projection::PlaceholderFamily,
     /// What is on the volume of it, or why that could not be asked.
     pub report: std::result::Result<PlaceholderReport, String>,
     /// Its provider, asked only of a placeholder that needs a download.
@@ -65,13 +70,6 @@ impl CloudFinding {
             .is_ok_and(PlaceholderReport::needs_download)
     }
 
-    /// Whether its provider is known to run. `None` when it was not asked.
-    fn provider_running(&self) -> Option<bool> {
-        self.sync_root
-            .as_ref()
-            .map(|root| root.as_ref().is_ok_and(SyncRoot::running))
-    }
-
     fn provider(&self) -> String {
         match &self.sync_root {
             // With the status it reports (CF_SYNC_PROVIDER_STATUS): 0 is
@@ -85,23 +83,48 @@ impl CloudFinding {
     }
 }
 
-/// Asks the Cloud Files API of each placeholder (`path` as a listing names
-/// it, and whether it is a directory) of the volume `root`
-/// (`\\?\Volume{...}\`). Downloads and lists nothing.
-#[cfg(windows)]
-pub(crate) fn find(root: &str, placeholders: &[(String, bool)]) -> Vec<CloudFinding> {
+/// Pure: what the raw reading shows of a placeholder no API reports on
+/// (ProjFS's, a storage manager's): its length and the bytes below it no
+/// cluster holds.
+pub(crate) fn raw_report(placeholder: &crate::plain_projection::Placeholder) -> PlaceholderReport {
+    if placeholder.directory {
+        return n2r_win32::cloud_native::directory_report(
+            n2r_win32::cloud_native::PLACEHOLDER_STATE_PLACEHOLDER,
+            None,
+        );
+    }
+    let present = placeholder.plain_bytes - placeholder.raw_missing_bytes;
+    n2r_win32::cloud_native::file_report(
+        placeholder.plain_bytes,
+        &[n2r_win32::cloud_native::FileRange {
+            offset: 0,
+            length: present,
+        }],
+        None,
+    )
+}
+
+/// Asks of each placeholder (`path` as a listing names it) of the volume
+/// `root` (`\\?\Volume{...}\`) what of it is on the volume: the Cloud Files
+/// API of a cloud one, the raw reading of any other. Downloads and lists
+/// nothing.
+pub(crate) fn find(
+    root: &str,
+    placeholders: &[(String, crate::plain_projection::Placeholder)],
+) -> Vec<CloudFinding> {
     placeholders
         .iter()
-        .map(|(path, directory)| {
-            let at = std::path::PathBuf::from(format!("{root}{}", path.trim_start_matches('\\')));
-            let report = n2r_win32::cloud_native::report(&at).map_err(|error| error.to_string());
-            let sync_root = report
-                .as_ref()
-                .is_ok_and(PlaceholderReport::needs_download)
-                .then(|| n2r_win32::cloud_native::sync_root(&at).map_err(|e| e.to_string()));
+        .map(|(path, placeholder)| {
+            let (report, sync_root) =
+                if placeholder.family == crate::plain_projection::PlaceholderFamily::Cloud {
+                    ask_cloud(root, path)
+                } else {
+                    (Ok(raw_report(placeholder)), None)
+                };
             CloudFinding {
                 path: path.clone(),
-                directory: *directory,
+                directory: placeholder.directory,
+                family: placeholder.family,
                 report,
                 sync_root,
             }
@@ -109,17 +132,25 @@ pub(crate) fn find(root: &str, placeholders: &[(String, bool)]) -> Vec<CloudFind
         .collect()
 }
 
+type Asked = (
+    std::result::Result<PlaceholderReport, String>,
+    Option<std::result::Result<SyncRoot, String>>,
+);
+
+#[cfg(windows)]
+fn ask_cloud(root: &str, path: &str) -> Asked {
+    let at = std::path::PathBuf::from(format!("{root}{}", path.trim_start_matches('\\')));
+    let report = n2r_win32::cloud_native::report(&at).map_err(|error| error.to_string());
+    let sync_root = report
+        .as_ref()
+        .is_ok_and(PlaceholderReport::needs_download)
+        .then(|| n2r_win32::cloud_native::sync_root(&at).map_err(|e| e.to_string()));
+    (report, sync_root)
+}
+
 #[cfg(not(windows))]
-pub(crate) fn find(_root: &str, placeholders: &[(String, bool)]) -> Vec<CloudFinding> {
-    placeholders
-        .iter()
-        .map(|(path, directory)| CloudFinding {
-            path: path.clone(),
-            directory: *directory,
-            report: Err("the Cloud Files API is a Windows one".into()),
-            sync_root: None,
-        })
-        .collect()
+fn ask_cloud(_root: &str, _path: &str) -> Asked {
+    (Err("the Cloud Files API is a Windows one".into()), None)
 }
 
 /// Sets each cloud entry's bytes to download to what the Cloud Files API
@@ -127,7 +158,7 @@ pub(crate) fn find(_root: &str, placeholders: &[(String, bool)]) -> Vec<CloudFin
 pub(crate) fn apply_downloads(entries: &mut [PlainEntry], findings: &[CloudFinding]) {
     for entry in entries
         .iter_mut()
-        .filter(|entry| entry.kind == PlainKind::CloudPlaceholderPlain)
+        .filter(|entry| entry.kind.family().is_some() && !entry.kind.is_left_out())
     {
         if let Some(finding) = findings.iter().find(|finding| finding.path == entry.path)
             && finding.report.is_ok()
@@ -305,7 +336,7 @@ pub(crate) fn leave_out_list(findings: &[CloudFinding]) -> Result<PlainList> {
                 })
             })
             .map(|finding| PlainEntry {
-                kind: PlainKind::CloudLeftOut,
+                kind: finding.family.left_out_kind(),
                 path: finding.path.clone(),
                 cleared_attributes: 0,
                 bytes: finding.report.as_ref().map_or(0, |report| report.size),
@@ -474,6 +505,11 @@ static LEAVE_OUT_LIST: Mutex<Option<String>> = Mutex::new(None);
 pub(crate) struct Download {
     pub path: String,
     pub missing_bytes: u64,
+    /// Brought onto the volume by reading it through its provider (a
+    /// ProjFS placeholder, a storage manager's file), not through the Cloud
+    /// Files API.
+    #[serde(default)]
+    pub read_through: bool,
 }
 
 /// Pure: what a run downloads before the freeze, for an agreed list. Every
@@ -486,7 +522,7 @@ pub(crate) fn plan_for(
     let listed: BTreeSet<&str> = agreed
         .entries()
         .iter()
-        .filter(|entry| entry.kind == PlainKind::CloudPlaceholderPlain)
+        .filter(|entry| entry.kind.family().is_some() && !entry.kind.is_left_out())
         .map(|entry| entry.path.as_str())
         .collect();
     findings
@@ -500,6 +536,7 @@ pub(crate) fn plan_for(
         .map(|finding| Download {
             path: finding.path.clone(),
             missing_bytes: finding.missing_bytes(),
+            read_through: finding.family != crate::plain_projection::PlaceholderFamily::Cloud,
         })
         .collect()
 }
@@ -574,7 +611,11 @@ pub(crate) fn run(run: &Path, root: &str, mode: ExecutionMode) -> Result<()> {
         "downloading cloud placeholders onto the volume before it is frozen",
     )?;
     download(run, root, planned, &authority, |download| {
-        hydrate_within(at(&download.path), timeout_for(download.missing_bytes))
+        hydrate_within(
+            at(&download.path),
+            download.read_through,
+            timeout_for(download.missing_bytes),
+        )
     })?;
     // A provider that served the downloads is still connected, and holds
     // its sync root open: the volume cannot be locked until it is closed.
@@ -644,11 +685,16 @@ pub(crate) fn timeout_for(missing: u64) -> std::time::Duration {
 /// freeze.)
 fn hydrate_within(
     at: std::path::PathBuf,
+    read_through: bool,
     timeout: std::time::Duration,
 ) -> std::result::Result<(), String> {
     let (sent, answer) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = sent.send(hydrate(&at));
+        let _ = sent.send(if read_through {
+            read_whole(&at)
+        } else {
+            hydrate(&at)
+        });
     });
     match answer.recv_timeout(timeout) {
         Ok(result) => result,
@@ -675,6 +721,24 @@ fn hydrate(at: &Path) -> std::result::Result<(), String> {
 #[cfg(not(windows))]
 fn hydrate(_at: &Path) -> std::result::Result<(), String> {
     Err("the Cloud Files API is a Windows one".into())
+}
+
+/// Brings a placeholder whose provider fills it in as a program reads it
+/// (ProjFS, a storage manager's recall) onto the volume: opened as any
+/// program opens it, through its provider, and read to its end. Whether
+/// it is then wholly on the volume is held at the freeze, from the raw
+/// source.
+fn read_whole(at: &Path) -> std::result::Result<(), String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(at).map_err(|error| error.to_string())?;
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(_) => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
 }
 
 /// [`run`] with the download of one placeholder (`path` as a listing names
@@ -781,6 +845,7 @@ mod tests {
         CloudFinding {
             path: path.into(),
             directory: false,
+            family: crate::plain_projection::PlaceholderFamily::Cloud,
             report: Ok(file_report(
                 4096,
                 &[FileRange {
@@ -831,11 +896,13 @@ mod tests {
             [
                 Download {
                     path: "\\c\\half.txt".into(),
-                    missing_bytes: 2048
+                    missing_bytes: 2048,
+                    read_through: false,
                 },
                 Download {
                     path: "\\c\\none.txt".into(),
-                    missing_bytes: 4096
+                    missing_bytes: 4096,
+                    read_through: false,
                 }
             ]
         );
@@ -874,6 +941,7 @@ mod tests {
         let folder = |path: &str, state| CloudFinding {
             path: path.into(),
             directory: true,
+            family: crate::plain_projection::PlaceholderFamily::Cloud,
             report: Ok(n2r_win32::cloud_native::directory_report(state, None)),
             sync_root: None,
         };
@@ -946,16 +1014,74 @@ mod tests {
     }
 
     #[test]
+    fn a_projfs_placeholder_is_read_through_its_provider_or_left_out_as_its_own() {
+        let projected = crate::plain_projection::Placeholder {
+            family: crate::plain_projection::PlaceholderFamily::Projfs,
+            tag: n2r_win32::plain_ledger::PROJFS_TAG,
+            directory: false,
+            plain_bytes: 4096,
+            raw_missing_bytes: 4096,
+        };
+        // As the raw reading shows it: nothing of it on the volume.
+        let report = raw_report(&projected);
+        assert_eq!(report.missing_bytes, 4096);
+        assert!(report.needs_download());
+        let findings = find("V:\\", &[("\\p\\a.txt".to_owned(), projected)]);
+        assert_eq!(
+            findings[0].family,
+            crate::plain_projection::PlaceholderFamily::Projfs
+        );
+        assert!(findings[0].sync_root.is_none());
+        let plan = plan_for(
+            &findings,
+            &agreed_as(&["\\p\\a.txt"], PlainKind::ProjfsPlaceholderPlain),
+            &BTreeSet::new(),
+        );
+        assert_eq!(plan.len(), 1);
+        assert!(plan[0].read_through);
+        let list = leave_out_list(&findings).unwrap();
+        assert_eq!(list.entries()[0].kind, PlainKind::ProjfsLeftOut);
+        // A placeholder folder is listed in full: nothing to download.
+        let folder = raw_report(&crate::plain_projection::Placeholder {
+            directory: true,
+            plain_bytes: 0,
+            raw_missing_bytes: 0,
+            ..projected
+        });
+        assert!(!folder.needs_download());
+    }
+
+    fn agreed_as(paths: &[&str], kind: PlainKind) -> PlainList {
+        PlainList::new(
+            paths
+                .iter()
+                .map(|path| PlainEntry {
+                    kind,
+                    path: (*path).into(),
+                    cleared_attributes: 0,
+                    bytes: 4096,
+                    volume_extra_bytes: 0,
+                    working_extra_bytes: 4096,
+                    download_bytes: 0,
+                })
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    #[test]
     fn what_cannot_be_named_or_asked_is_refused() {
         let unlisted = CloudFinding {
             path: "\\c\\folder".into(),
             directory: true,
+            family: crate::plain_projection::PlaceholderFamily::Cloud,
             report: Ok(n2r_win32::cloud_native::directory_report(0x11, None)),
             sync_root: None,
         };
         let unasked = CloudFinding {
             path: "\\c\\x".into(),
             directory: false,
+            family: crate::plain_projection::PlaceholderFamily::Cloud,
             report: Err("access denied".into()),
             sync_root: None,
         };
@@ -974,6 +1100,7 @@ mod tests {
         set_plan(vec![Download {
             path: "\\c\\half.txt".into(),
             missing_bytes: 3072,
+            read_through: false,
         }]);
         let directory = tempfile::tempdir().unwrap();
         let refused = run(directory.path(), "V:\\", ExecutionMode::Diagnose)
@@ -996,10 +1123,12 @@ mod tests {
             Download {
                 path: "\\c\\a.txt".into(),
                 missing_bytes: 10,
+                read_through: false,
             },
             Download {
                 path: "\\c\\b.txt".into(),
                 missing_bytes: 20,
+                read_through: false,
             },
         ];
         let refused = download(directory.path(), "V:\\", planned, &authority, |path| {

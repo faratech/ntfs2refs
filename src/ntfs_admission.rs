@@ -1016,7 +1016,12 @@ mod refusal_tests {
     /// A cloud folder as the lab's `cloud` volume has it: a directory with a
     /// cloud reparse point and the given named streams.
     fn cloud_folder(streams: &[&str]) -> FileInventory {
-        let mut point = 0x9000_701au32.to_le_bytes().to_vec();
+        placeholder_folder(0x9000_701a, streams)
+    }
+
+    /// A folder with a placeholder's reparse point of `tag`.
+    fn placeholder_folder(tag: u32, streams: &[&str]) -> FileInventory {
+        let mut point = tag.to_le_bytes().to_vec();
         point.extend_from_slice(&8u16.to_le_bytes());
         point.extend_from_slice(&0u16.to_le_bytes());
         point.extend_from_slice(b"provider");
@@ -1115,7 +1120,7 @@ mod refusal_tests {
             admission_issues(&sync_root),
             admission_issues(&folder),
             admission_issues(&other),
-            crate::plain_projection::cloud_placeholder(&sync_root)
+            crate::plain_projection::placeholder_of(&sync_root)
                 .unwrap()
                 .is_some_and(|placeholder| placeholder.directory),
         );
@@ -1145,6 +1150,47 @@ mod refusal_tests {
         );
     }
 
+    /// A ProjFS virtualization root and its placeholders: taken plain, their
+    /// point (the root's marker) is settled as a cloud one's; refused by
+    /// name where nothing is taken plain.
+    #[test]
+    fn a_projfs_placeholder_is_settled_as_a_cloud_one() {
+        let root = placeholder_folder(n2r_win32::plain_ledger::PROJFS_TAG, &[]);
+        let mut file = placeholder_folder(n2r_win32::plain_ledger::PROJFS_TAG, &[]);
+        file.record_number = 39;
+        file.is_directory = false;
+        file.streams = directory_with_stream("", 0).streams;
+        // A ProjFS folder has no stream of the Cloud Files API's.
+        let with_stream = placeholder_folder(
+            n2r_win32::plain_ledger::PROJFS_TAG,
+            &["${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity"],
+        );
+        crate::plain_consent::take_plain_on_this_thread(true);
+        let taken = (
+            admission_issues(&root),
+            admission_issues(&file),
+            admission_issues(&with_stream),
+            crate::plain_projection::placeholder_of(&root)
+                .unwrap()
+                .map(|p| p.family),
+        );
+        crate::plain_consent::take_plain_on_this_thread(false);
+        assert!(taken.0.is_empty(), "{:?}", taken.0);
+        assert!(taken.1.is_empty(), "{:?}", taken.1);
+        assert!(!taken.2.is_empty());
+        assert_eq!(
+            taken.3,
+            Some(n2r_win32::plain_ledger::PlaceholderFamily::Projfs)
+        );
+        let refused = admission_issues(&root);
+        assert!(
+            refused
+                .iter()
+                .any(|issue| issue.contains("ProjFS placeholder")),
+            "{refused:?}"
+        );
+    }
+
     /// The lab (cl3-down-leave-out, MFT record 42): a placeholder file left
     /// out has no copy, and Windows' view of it at the freeze is not asked
     /// for one; one made plain is.
@@ -1155,7 +1201,7 @@ mod refusal_tests {
         file.is_directory = false;
         file.streams = directory_with_stream("", 0).streams;
         crate::plain_consent::take_plain_on_this_thread(true);
-        let copied = crate::plain_projection::cloud_copied(&file);
+        let copied = crate::plain_projection::placeholder_copied(&file);
         n2r_win32::plain_ledger::declare(
             n2r_win32::plain_ledger::DeclaredDrops::from_ledger(
                 &n2r_win32::plain_ledger::PlainLedger {
@@ -1186,7 +1232,7 @@ mod refusal_tests {
             )
             .unwrap(),
         );
-        let left_out = crate::plain_projection::cloud_copied(&file);
+        let left_out = crate::plain_projection::placeholder_copied(&file);
         let view = crate::plain_projection::observed_view(&file);
         n2r_win32::plain_ledger::declare(Default::default());
         crate::plain_consent::take_plain_on_this_thread(false);
@@ -2607,17 +2653,19 @@ pub(crate) fn user_issues_with_context_alias_scope(
                 n2r_win32::reparse_layout::unsupported_tag_meaning(point.tag())
             ));
         }
-    } else if let Some(point) = reparse
-        .as_ref()
-        .filter(|point| n2r_win32::reparse_layout::is_cloud_tag(point.tag()))
-    {
-        // A cloud provider's placeholder is never recreated as such. A data
-        // volume's is made a plain file once its list is agreed
-        // (`cloud_placeholder_plain`); anywhere else, or of another shape,
-        // it is refused by name, with the remedy.
-        if !(ordinary && crate::plain_projection::cloud_taken(f)) {
+    } else if let Some((point, family)) = reparse.as_ref().and_then(|point| {
+        n2r_win32::plain_ledger::PlaceholderFamily::of_tag(point.tag())
+            .map(|family| (point, family))
+    }) {
+        // A provider's placeholder (cloud files, ProjFS) is never recreated
+        // as such. A data volume's is made a plain file once its list is
+        // agreed (`cloud_placeholder_plain`, `projfs_placeholder_plain`);
+        // anywhere else, or of another shape, it is refused by name, with
+        // the remedy.
+        if !(ordinary && crate::plain_projection::placeholder_taken(f)) {
             issues.push(format!(
-                "it is a cloud placeholder{}",
+                "it is a {} placeholder{}",
+                family.name(),
                 n2r_win32::reparse_layout::unsupported_tag_meaning(point.tag())
             ));
         }
@@ -2684,7 +2732,7 @@ pub(crate) fn user_issues_with_context_alias_scope(
     let efs_plain = ordinary && crate::plain_projection::efs_taken(f);
     // A sync root's folder made plain: the Cloud Files API's own stream on
     // it is left off, and declared so in the ledger.
-    let cloud_folder = ordinary && f.is_directory && crate::plain_projection::cloud_taken(f);
+    let cloud_folder = ordinary && f.is_directory && crate::plain_projection::placeholder_taken(f);
     let unsupported_attribute = f.attributes.iter().find(|a| {
         if efs_plain && crate::plain_projection::efs_attribute(a) {
             return false;
@@ -2826,8 +2874,8 @@ pub(crate) fn user_issues_with_context_alias_scope(
         | if efs_plain { n2r_win32::plain_ledger::ENCRYPTED } else { 0 }
         // A cloud placeholder made plain: the provider's pin and recall
         // marks and OFFLINE, which the new object is made without.
-        | if ordinary && crate::plain_projection::cloud_taken(f) {
-            crate::plain_projection::CLOUD_CLEARED
+        | if ordinary && crate::plain_projection::placeholder_taken(f) {
+            crate::plain_projection::PLACEHOLDER_CLEARED
         } else {
             0
         };

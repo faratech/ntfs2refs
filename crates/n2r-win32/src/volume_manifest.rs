@@ -123,7 +123,9 @@ pub const WOF_WIM_BACKED: u32 = 0x100;
 /// through the filter that owns it, and the listing reads as
 /// [`Record::plain_sha256`].
 pub fn is_placeholder_tag(tag: u32) -> bool {
-    is_cloud_tag(tag) || matches!(tag, PROJFS_TAG | DEDUP_TAG | SIS_TAG)
+    is_cloud_tag(tag)
+        || matches!(tag, PROJFS_TAG | DEDUP_TAG | SIS_TAG)
+        || crate::plain_ledger::HSM_TAGS.contains(&tag)
 }
 /// Whether the listing lists what a directory entry holds: a directory,
 /// and of the directories with a reparse point only a placeholder folder
@@ -894,7 +896,15 @@ fn declared_after(row: &LedgerRow, before: &Record) -> Result<Record, String> {
         PlainKind::ProjfsPlaceholderPlain => {
             placeholder(&mut after, tag == PROJFS_TAG, "ProjFS placeholder")?
         }
-        PlainKind::CloudLeftOut | PlainKind::SystemVolumeInformationNotCarried => {
+        PlainKind::HsmRecalled => placeholder(
+            &mut after,
+            crate::plain_ledger::HSM_TAGS.contains(&tag),
+            "file of a storage manager",
+        )?,
+        PlainKind::CloudLeftOut
+        | PlainKind::ProjfsLeftOut
+        | PlainKind::HsmLeftOut
+        | PlainKind::SystemVolumeInformationNotCarried => {
             return Err("an object left out has no record afterwards".into());
         }
     }
@@ -1025,13 +1035,22 @@ pub fn compare_with_plain(
     let left_out_folders: Vec<&str> = ledger
         .rows
         .iter()
-        .filter(|row| row.kind == PlainKind::CloudLeftOut)
-        .flat_map(|row| row.paths.iter().map(String::as_str))
-        .filter(|path| {
+        .filter(|row| row.kind.is_left_out())
+        .flat_map(|row| {
+            row.paths
+                .iter()
+                .map(move |path| (path.as_str(), row.kind.family()))
+        })
+        .filter(|(path, family)| {
             before_by_path.get(path).is_some_and(|record| {
-                record.directory && record.reparse_tag.is_some_and(is_cloud_tag)
+                record.directory
+                    && record
+                        .reparse_tag
+                        .and_then(crate::plain_ledger::PlaceholderFamily::of_tag)
+                        == *family
             })
         })
+        .map(|(path, _)| path)
         .collect();
     for row in &ledger.rows {
         // An object of System Volume Information not carried over: below
@@ -1063,19 +1082,24 @@ pub fn compare_with_plain(
                 );
                 continue;
             };
-            if row.kind == PlainKind::CloudLeftOut {
+            if row.kind.is_left_out() {
                 let below_a_left_out_folder = left_out_folders.iter().any(|folder| {
                     path.len() > folder.len()
                         && path.starts_with(folder)
                         && path.as_bytes()[folder.len()] == b'\\'
                 });
-                if !was.reparse_tag.is_some_and(is_cloud_tag) && !below_a_left_out_folder {
+                // A placeholder of the family the row's kind leaves out.
+                let of_its_family = was
+                    .reparse_tag
+                    .and_then(crate::plain_ledger::PlaceholderFamily::of_tag)
+                    == row.kind.family();
+                if !of_its_family && !below_a_left_out_folder {
                     fail(
                         path,
                         "declared feature not shown before",
                         format!(
-                            "left out as a cloud placeholder, and the listing before shows reparse tag {:?}, below no cloud folder left out",
-                            was.reparse_tag
+                            "left out as {}, and the listing before shows reparse tag {:?}, below no folder of its kind left out",
+                            row.kind, was.reparse_tag
                         ),
                     );
                 }
@@ -2501,6 +2525,45 @@ mod tests {
             name: name.into(),
             bytes: 120,
         }
+    }
+
+    #[test]
+    fn a_projfs_placeholder_is_made_plain_or_left_out_as_its_row_says() {
+        let row = |kind, path: &str| LedgerRow {
+            kind,
+            paths: vec![path.into()],
+            ..cleared_row(&["\\x"], 0, 0)
+        };
+        let mut projected = file("\\p\\a.txt", "stub");
+        projected.attributes = 0x20 | 0x400 | 0x40_0000;
+        projected.reparse_tag = Some(PROJFS_TAG);
+        projected.plain_sha256 = Some("bytes".into());
+        let verdict = compare_with_plain(
+            &[projected.clone()],
+            &[file("\\p\\a.txt", "bytes")],
+            Declared::default(),
+            &ledger(vec![row(PlainKind::ProjfsPlaceholderPlain, "\\p\\a.txt")]),
+        );
+        assert!(verdict.identical(), "{verdict:?}");
+        // Left out as ProjFS: absent afterwards.
+        let left = compare_with_plain(
+            &[directory("\\"), projected.clone()],
+            &[directory("\\")],
+            Declared::default(),
+            &ledger(vec![row(PlainKind::ProjfsLeftOut, "\\p\\a.txt")]),
+        );
+        assert!(left.identical(), "{left:?}");
+        // Left out as a cloud placeholder: not what the listing shows.
+        let wrong = compare_with_plain(
+            &[directory("\\"), projected],
+            &[directory("\\")],
+            Declared::default(),
+            &ledger(vec![row(PlainKind::CloudLeftOut, "\\p\\a.txt")]),
+        );
+        assert_eq!(
+            wrong.plain.failure_kinds["declared feature not shown before"],
+            1
+        );
     }
 
     #[test]

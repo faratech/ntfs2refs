@@ -288,7 +288,8 @@ impl Point {
         // is read as bytes only. It is never recreated either: such an
         // object is made plain once the user agrees
         // (`cloud_placeholder_plain`), and refused otherwise by admission.
-        if is_cloud_tag(self.tag()) {
+        // A ProjFS placeholder's likewise (`projfs_placeholder_plain`).
+        if is_cloud_tag(self.tag()) || self.tag() == crate::plain_ledger::PROJFS_TAG {
             return Ok(());
         }
         // A deduplicated file, likewise: made plain once agreed
@@ -496,9 +497,11 @@ mod refusal_tests {
             assert!(point(tag, &[1, 2, 3, 4]).validate().is_ok(), "{tag:#x}");
             assert!(point(tag, &[]).validate().is_ok(), "{tag:#x}");
         }
-        // ProjFS and other tags are not cloud placeholders.
+        // ProjFS is not a cloud placeholder, and reads as one of its own.
         assert!(!is_cloud_tag(0x9000_001c) && !is_cloud_tag(0x8000_001a));
-        assert!(point(0x9000_001c, &[1]).validate().is_err());
+        assert!(point(0x9000_001c, &[1]).validate().is_ok());
+        // A ProjFS tombstone is still refused.
+        assert!(point(0xa000_0022, &[]).validate().is_err());
         // The common header still has to say the point's length.
         let mut short = point(0x9000_001a, &[1, 2]);
         short.buffer.pop();

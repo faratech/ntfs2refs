@@ -752,12 +752,9 @@ fn read(
                     {
                         efs_files.push(crate::plain_projection::listing_path(&path));
                     }
-                    if let Ok(Some(placeholder)) = crate::plain_projection::cloud_placeholder(&file)
+                    if let Ok(Some(placeholder)) = crate::plain_projection::placeholder_of(&file)
                     {
-                        cloud.push((
-                            crate::plain_projection::listing_path(&path),
-                            placeholder.directory,
-                        ));
+                        cloud.push((crate::plain_projection::listing_path(&path), placeholder));
                     }
                     plain.push(crate::plain_projection::entry(
                         crate::plain_projection::listing_path(&path),

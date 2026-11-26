@@ -1085,8 +1085,8 @@ fn build_object(
                     } else {
                         0
                     }
-                    | if crate::plain_projection::cloud_taken(file) {
-                        crate::plain_projection::CLOUD_CLEARED
+                    | if crate::plain_projection::placeholder_taken(file) {
+                        crate::plain_projection::PLACEHOLDER_CLEARED
                     } else {
                         0
                     })
@@ -1109,7 +1109,7 @@ fn build_object(
     // A cloud placeholder made plain (`cloud_placeholder_plain`): its
     // unnamed stream is its plain copy, as a WOF file's; its reparse point
     // is not carried over.
-    let cloud = crate::plain_projection::cloud_taken(file);
+    let cloud = crate::plain_projection::placeholder_taken(file);
     let classify = |stream: &ntfs::StreamInventory| {
         reads.classify(file, stream, admission, extent_paths_eligible)
     };

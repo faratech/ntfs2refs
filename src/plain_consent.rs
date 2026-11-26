@@ -105,14 +105,16 @@ pub(crate) fn leave_out(left: &PlainList) -> Result<()> {
     Ok(())
 }
 
-/// The paths this run agreed to leave out.
-pub(crate) fn left_out_paths() -> std::collections::BTreeSet<String> {
+/// The paths this run agreed to leave out, each with the kind it is left
+/// out as.
+pub(crate) fn left_out_paths()
+-> std::collections::BTreeMap<String, n2r_win32::plain_ledger::PlainKind> {
     match &*state() {
         State::Agreed(list) => list
             .entries()
             .iter()
-            .filter(|entry| entry.kind == n2r_win32::plain_ledger::PlainKind::CloudLeftOut)
-            .map(|entry| entry.path.clone())
+            .filter(|entry| entry.kind.is_left_out())
+            .map(|entry| (entry.path.clone(), entry.kind))
             .collect(),
         _ => Default::default(),
     }

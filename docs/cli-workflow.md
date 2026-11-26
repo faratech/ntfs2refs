@@ -441,6 +441,16 @@ plain silently. This version converts:
   store, under `System Volume Information\Dedup`, is then not carried over
   (below): no file on the new volume needs it. Where a deduplicated file is
   not made plain, the chunk store is refused by name with the same remedies.
+- a ProjFS placeholder (`projfs_placeholder_plain`), as a cloud one: the
+  raw reading says what of each is on the volume; what is not is brought
+  onto it before the freeze by reading it through its provider (which has
+  to be running), each within a minute and a second per MiB, every failure
+  named; the new file is made from a copy read through the ProjFS filter,
+  without its reparse point and marks, and a folder (the virtualization
+  root among them, whose marker is its reparse point) loses its point and
+  marks. Not wholly here, it may be left out (`projfs_left_out`) with the
+  same question and `--leave-out-cloud`. A ProjFS tombstone (a file deleted
+  from a projection) is refused by name.
 
 What a data volume keeps in `System Volume Information` below that folder's
 own folders (a chkdsk log, Data Deduplication's chunk store) is Windows' own,
@@ -457,8 +467,8 @@ Nothing outside `System Volume Information` is affected. A volume that shares
 its disk with another is converted without this, and such objects are refused
 by name.
 
-The other kinds a list can name (`projfs_placeholder_plain`,
-`sis_expanded`) are still refused as listed above.
+The other kind a list can name (`sis_expanded`) is still refused as listed
+above.
 
 `--check` prints a "Converted to plain" section: how many objects of each
 kind, their bytes, the extra space on the new volume and in the working

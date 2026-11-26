@@ -701,7 +701,10 @@ fn canonical_stream_shape<'a>(
     Option<&'a str>,
     Option<&'a n2r_win32::sparse_layout::SparseLayout>,
 )> {
-    ensure!(!object.directory, "directories do not receive payload");
+    ensure!(
+        !object.directory || !stream_name_utf16.is_empty(),
+        "a directory receives payload only in its named streams"
+    );
     if stream_name_utf16.is_empty() {
         return Ok((
             object.length,

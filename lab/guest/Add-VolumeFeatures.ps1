@@ -396,7 +396,14 @@ public static class ManyFiles {
             $null = New-Item -ItemType Directory -Path "$dir\directory with a stream" -Force
             $null = & cmd.exe /c "echo a named stream on a directory> `"$dir\directory with a stream:note`""
             if ($LASTEXITCODE -ne 0) { throw 'could not write a named stream on a directory' }
-            $made[$feature] = 'a directory with a named stream'
+            # And one past a cluster that does not end on one: its data is
+            # placed through a carrier and its tail supplied apart.
+            $null = New-Item -ItemType Directory -Path "$dir\directory with a large stream" -Force
+            [IO.File]::WriteAllText("$dir\large-stream.txt", ('directory stream ' * 65600))
+            $null = & cmd.exe /c "type `"$dir\large-stream.txt`" > `"$dir\directory with a large stream:large`""
+            if ($LASTEXITCODE -ne 0) { throw 'could not write a large named stream on a directory' }
+            Remove-Item -LiteralPath "$dir\large-stream.txt" -Force
+            $made[$feature] = 'a directory with a named stream, and one with a named stream of about 1 MiB'
         }
         'wsl' {
             # What the Windows Subsystem for Linux leaves on a Windows

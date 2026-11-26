@@ -2641,7 +2641,7 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
             ));
         }
         hard_links::verify(i, &o.before, &o.additional_names)?;
-        if !i.directory {
+        if !i.directory || !i.named_streams.is_empty() {
             streams::verify(i, o, verify_contents)?;
         }
         let skip_security = allow_layout_only_security
@@ -4147,10 +4147,8 @@ pub(crate) fn observe_general_layout_residuals_readonly_domain(
         let owner = input.object(index)?;
         let view = owner.input();
         let item = &view;
-        if item.directory {
-            continue;
-        }
-        if item.logical_length() % cluster != 0
+        if !item.directory
+            && item.logical_length() % cluster != 0
             && item.sparse.is_none_or(|s| {
                 s.allocated.iter().any(|r| {
                     r.offset <= item.logical_length() / cluster * cluster
@@ -4281,10 +4279,8 @@ fn required_residuals(
     for index in 0..input.len() {
         let owned = input.object(index)?;
         let item = owned.input();
-        if item.directory {
-            continue;
-        }
-        if needed(item.logical_length(), item.sparse) {
+        // A directory has no unnamed stream; its named ones are as a file's.
+        if !item.directory && needed(item.logical_length(), item.sparse) {
             visit(count, index, &[], item.logical_length())?;
             count = count
                 .checked_add(1)
@@ -5406,9 +5402,8 @@ pub fn verify_general_converted_known_contents_domain(
         let expected = owner.input();
         let item = &expected;
         if item.directory {
-            continue;
-        }
-        if let Some(expected) = item.logical_sha256() {
+            // No unnamed stream: its named ones, below, as a file's.
+        } else if let Some(expected) = item.logical_sha256() {
             let path = streams::path(&root, item.components, &[])?;
             let mut file = open_input(&path, item, false)?;
             let actual = rows.with(index, |object| {
@@ -6996,8 +6991,16 @@ fn run_role_content_domain_accounted(
             }
             after
         };
-        let streams = if i.directory {
+        let streams = if i.directory && i.named_streams.is_empty() {
             vec![]
+        } else if i.directory {
+            // A directory's named streams, and nothing else.
+            let (_, b) = stream_info_read(&h, |list| {
+                let (_, used) = stream_layout::parse_streams(list)?;
+                streams::exact_list(list, i)?;
+                Ok(((), list[..used].to_vec()))
+            })?;
+            b
         } else {
             let (entries, b) = stream_info_read(&h, |list| {
                 let (entries, used) = stream_layout::parse_streams(list)?;

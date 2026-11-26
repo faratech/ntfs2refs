@@ -545,23 +545,7 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
         if !object.directory {
             stream_count = stream_count
                 .checked_add(1)
-                .and_then(|count| count.checked_add(object.named_streams.len()))
                 .context("expected DATA stream count overflow")?;
-            ensure!(
-                resource_admission.is_some() || stream_count <= ntfs_admission::MAX_DATA_STREAMS,
-                "expected total DATA stream count exceeds 16,384"
-            );
-            ensure!(
-                object.named_streams.is_empty()
-                    || std::iter::once(&object.path)
-                        .chain(object.additional_names.iter())
-                        .all(|path| {
-                            path.first().is_none_or(|part| {
-                                !part.eq_ignore_ascii_case("System Volume Information")
-                            })
-                        }),
-                "named streams on System Volume Information objects are unsupported"
-            );
             ensure!(
                 object.length <= limits.maximum_stream_bytes,
                 "expected stream exceeds selected resource profile"
@@ -570,42 +554,68 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
             bytes = bytes
                 .checked_add(object.length)
                 .context("expected byte overflow")?;
-            ensure!(
-                resource_admission.is_some()
-                    || object.named_streams.len() < n2r_win32::stream_layout::MAX_STREAMS,
-                "expected named stream count exceeds the native stream-list bound"
-            );
-            let mut exact_names = BTreeSet::new();
-            let mut folded_names = BTreeSet::new();
-            for stream in &object.named_streams {
-                ensure!(
-                    ntfs_admission::valid_named_stream_name(&stream.name_utf16)
-                        && exact_names.insert(stream.name_utf16.as_slice())
-                        && folded_names
-                            .insert(String::from_utf16(&stream.name_utf16)?.to_uppercase())
-                        && stream.length <= limits.maximum_stream_bytes,
-                    "expected named stream identity, size or digest differs"
-                );
-                validate_stream_evidence(
-                    object
-                        .stream(&stream.name_utf16)
-                        .context("named stream absent")?,
-                )?;
-                bytes = bytes
-                    .checked_add(stream.length)
-                    .context("named stream byte overflow")?;
-            }
         } else {
+            // A directory has no unnamed stream. Its named ones are carried
+            // only where admission carries them, and then plain and read in
+            // full (each with its digest), never left on its extents alone.
             ensure!(
                 object.length == 0
                     && object.sha256.is_none()
                     && object.source_evidence.is_none()
                     && object.source_offset.is_none()
                     && object.source_extents.is_empty()
-                    && object.named_streams.is_empty()
-                    && object.sparse.is_none(),
+                    && object.sparse.is_none()
+                    && (object.named_streams.is_empty()
+                        || (ntfs_admission::directory_streams_carried()
+                            && object.named_streams.iter().all(|stream| {
+                                stream.sha256.is_some()
+                                    && stream.source_evidence.is_none()
+                                    && stream.sparse.is_none()
+                            }))),
                 "expected directory carries stream data"
             );
+        }
+        stream_count = stream_count
+            .checked_add(object.named_streams.len())
+            .context("expected DATA stream count overflow")?;
+        ensure!(
+            resource_admission.is_some() || stream_count <= ntfs_admission::MAX_DATA_STREAMS,
+            "expected total DATA stream count exceeds 16,384"
+        );
+        ensure!(
+            object.named_streams.is_empty()
+                || std::iter::once(&object.path)
+                    .chain(object.additional_names.iter())
+                    .all(|path| {
+                        path.first().is_none_or(|part| {
+                            !part.eq_ignore_ascii_case("System Volume Information")
+                        })
+                    }),
+            "named streams on System Volume Information objects are unsupported"
+        );
+        ensure!(
+            resource_admission.is_some()
+                || object.named_streams.len() < n2r_win32::stream_layout::MAX_STREAMS,
+            "expected named stream count exceeds the native stream-list bound"
+        );
+        let mut exact_names = BTreeSet::new();
+        let mut folded_names = BTreeSet::new();
+        for stream in &object.named_streams {
+            ensure!(
+                ntfs_admission::valid_named_stream_name(&stream.name_utf16)
+                    && exact_names.insert(stream.name_utf16.as_slice())
+                    && folded_names.insert(String::from_utf16(&stream.name_utf16)?.to_uppercase())
+                    && stream.length <= limits.maximum_stream_bytes,
+                "expected named stream identity, size or digest differs"
+            );
+            validate_stream_evidence(
+                object
+                    .stream(&stream.name_utf16)
+                    .context("named stream absent")?,
+            )?;
+            bytes = bytes
+                .checked_add(stream.length)
+                .context("named stream byte overflow")?;
         }
         for stream in object.data_streams() {
             validate_stream_source(stream, &mut source_ranges)?;

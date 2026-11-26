@@ -251,7 +251,13 @@ $dataCases = @(
     # Memory taken away from a run that fits itself to the machine: it has
     # to go on and convert.
     'files-100k-memory-taken|-Content minimal -Features manyfiles -FileCount 100000 -TakeMemoryMB 3000 -TimeoutMinutes 25'
-    'shortnames|-Content minimal -Features shortnames -Check -ExpectRefusal short-names.drop'
+    # Short names: dropped by default, after the check and the question
+    # have said how many; refused only when asked.
+    'shortnames|-Content minimal -Features shortnames -Check -Acceptance'
+    'shortnames-refuse|-Content minimal -Features shortnames -RefuseShortNames -Check -ExpectRefusal short-names.refuse'
+    # Quotas enforced, with an entry for one user: recorded, not carried
+    # over, and said by the check and the run.
+    'quota|-Content minimal -Features quota -Check -Acceptance'
     # --review (#110): the run stops with the volume mounted read-only as
     # ReFS, listing as before; the command it printed then keeps the
     # conversion, or puts NTFS back (compared exactly, and the recovery has

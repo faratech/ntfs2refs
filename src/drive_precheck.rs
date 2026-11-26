@@ -520,6 +520,10 @@ fn read(
             ntfs_admission::index_refusal_cause(&index.role),
         );
     }
+    // Quotas are recorded and not carried over: said before the question.
+    if let Some(quotas) = indexes.quotas_not_carried() {
+        report.notes.push(crate::quota_disposition::note(quotas));
+    }
 
     // What there is to convert. Each directory is also asked of Windows
     // whether it is case-sensitive, which is not in the structures read

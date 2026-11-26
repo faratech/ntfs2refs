@@ -147,7 +147,8 @@ fn user_plan(
     let (mut logical, mut materialized, mut referenced, mut holes) = (0u64, 0u64, 0u64, 0u64);
     for index in 0..expected.len() {
         let object = expected.object_leased(index)?;
-        if object.directory || system(&object) {
+        // A directory's data streams are its named ones, if any.
+        if system(&object) {
             continue;
         }
         for stream in object.data_streams() {
@@ -213,7 +214,8 @@ pub fn materialize_private_supply_plan_domain(
     hash.update(b"n2r-paged-private-materialization-v1\0");
     for index in 0..expected.len() {
         let object = expected.object_leased(index)?;
-        if object.directory || system(&object) {
+        // A directory's data streams are its named ones, if any.
+        if system(&object) {
             continue;
         }
         for stream in object.data_streams() {
@@ -317,7 +319,8 @@ pub fn verify_private_hybrid_contents_domain(
     let mut target_buffer = vec![0; WINDOW];
     for index in 0..expected.len() {
         let object = expected.object_leased(index)?;
-        if object.directory || system(&object) {
+        // A directory's data streams are its named ones, if any.
+        if system(&object) {
             continue;
         }
         for stream in object.data_streams() {

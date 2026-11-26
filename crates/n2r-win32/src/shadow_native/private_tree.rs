@@ -2319,11 +2319,12 @@ fn preflight_input_domain(
             total = total
                 .checked_add(item.logical_length())
                 .ok_or_else(|| invalid("private tree length overflow"))?;
-            for named in &item.named_streams {
-                total = total
-                    .checked_add(named.expected_length)
-                    .ok_or_else(|| invalid("private stream total overflow"))?;
-            }
+        }
+        // A directory's named streams are counted as a file's.
+        for named in &item.named_streams {
+            total = total
+                .checked_add(named.expected_length)
+                .ok_or_else(|| invalid("private stream total overflow"))?;
         }
     }
     if let Some(admission) = admission {
@@ -2852,6 +2853,45 @@ fn allocate_domain_with_memory(
                     index,
                     open(&format!("{root}{}", item.components.join("\\")), true, true)?,
                 );
+                // A directory's named streams, made beside it as a file's
+                // are: their data is placed and supplied like any other
+                // named stream's. (Admitted only where they are carried.)
+                for named in &item.named_streams {
+                    input.before_mutation(0)?;
+                    if named.sparse.is_some() {
+                        return Err(invalid("a directory's named stream is sparse"));
+                    }
+                    let base = &metadata_targets[&index];
+                    let key = StreamKey::named(index, named.name_utf16);
+                    if named.expected_length >= crate::target_cluster::bytes() {
+                        let target = sparse_stream::Target::create_plain(
+                            &root,
+                            item.components,
+                            named.name_utf16,
+                            named.expected_length,
+                            Some(base),
+                        )?;
+                        register_sparse(
+                            &root,
+                            &carrier_directory,
+                            key,
+                            target,
+                            &mut files,
+                            &mut sparse_targets,
+                            pair.shadow.identity.partition_bytes,
+                        )?;
+                    } else {
+                        let stream = unwritten::PrivatePlaceholder::allocate_named_stream(
+                            &root,
+                            item.components,
+                            named.name_utf16,
+                            named.expected_length,
+                            pair.shadow.identity.partition_bytes,
+                            base,
+                        )?;
+                        files.insert(key, stream);
+                    }
+                }
             } else {
                 let key = StreamKey::unnamed(index);
                 input.before_mutation(0)?;

@@ -260,7 +260,7 @@ impl<'observation> PagedPayloadRoutes<'observation> {
                 .checked_add(route.length)
                 .context("route target overflow")?;
             ensure!(
-                !object.directory
+                (!object.directory || !route.stream_name_utf16.is_empty())
                     && route.components == object.path
                     && route.stream_length == stream.length
                     && route.expected_sha256.as_deref() == stream.sha256

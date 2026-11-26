@@ -392,8 +392,11 @@ before. Where the run carries the mark over, the comparison is the ordinary
 one: a directory that lost its mark, or gained one, differs, and as many
 must be marked afterwards as before (`case_marks` in the verdict).
 
-`-DropShortNames` runs the converter, and the check before it, with
-`--short-names drop`. The listings are then compared with
+A data volume's short names are dropped by default, as with
+`-DropShortNames`, which runs the converter, and the check before it, with
+`--short-names drop`; `-RefuseShortNames` runs both with `--short-names
+refuse`, and the volume is then refused. Unless refused, the listings are
+compared with
 `lab-volume-manifest compare --short-names-dropped`, which counts a short
 name that is gone and allows nothing else that the ordinary comparison does
 not; the converted volume must list no short name, and as many must have
@@ -439,7 +442,9 @@ which used to be fixed: one with 200 named streams, and a sparse file with
 needs many file records.
 
 `-Features <name,...>` adds what a volume that has been in use has, made by
-`guest\Add-VolumeFeatures.ps1` after the content. These convert: `objectids`
+`guest\Add-VolumeFeatures.ps1` after the content. These convert: `quota`
+(quotas enforced, with an entry for one user: recorded, not carried over),
+`objectids`
 (a file with an object ID, and a shortcut to a file and to a directory, which
 give their targets one), `manyobjectids` (`-DirectoryEntries` files with object
 IDs, so that the volume's object-ID index outgrows its root), `security`
@@ -477,8 +482,8 @@ When `-SampleStacks` is used on an interrupted run, the last profile written
 before the cut is collected as `interrupted-stacks.txt` when available.
 The recovery writes its own `stacks.txt`.
 
-These are refused, each by name: `shortnames`, `temporary`, `offline`, `efs`,
-`wof` (a `compact /exe` file), `quota`, `casesensitive` (two names in one
+These are refused, each by name: `shortnames` with `-RefuseShortNames`, `temporary`, `offline`, `efs`,
+`wof` (a `compact /exe` file), `casesensitive` (two names in one
 directory that differ only by case), `snapshot`,
 `bitlocker` and `dirstream`. A feature that cannot be made ends the attempt as
 `feature-not-made`: it is never skipped silently. A volume with shadow copies

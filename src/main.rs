@@ -161,6 +161,12 @@ fn run() -> Result<u8> {
                             {"what": "the case-sensitive mark of a directory in which no two names differ only by case, except where case_sensitive_mark.set_on lists the running Windows",
                              "why": "the converter does not set it on the new volume; every name stays reachable",
                              "record": "the directories are kept in the run's records, and their number and the reason are printed before the prompt"},
+                            {"what": "disk quotas: quota management, limits and the entries for users",
+                             "why": "ReFS has no NTFS quotas",
+                             "record": "both quota indexes are walked completely and every entry is kept in the run's records (internal-indexes\\quotas-not-carried-over.jsonl); --check and the lines before the prompt say so"},
+                            {"what": "8.3 short names, unless --short-names refuse",
+                             "why": "ReFS has no short names",
+                             "record": "every object is created under its long name; --check and the lines before the prompt give their number, and each is kept in the run's records (source-short-names-not-carried.json)"},
                         ],
                         // A directory's case-sensitive mark: where it is
                         // set on the new volume, and where it is not.
@@ -181,8 +187,8 @@ fn run() -> Result<u8> {
                             "two_names_that_differ_only_by_case": "refused everywhere, with both names",
                         },
                         "refused_by_name": [
-                            {"what": "8.3 short names", "remedy": "fsutil 8dot3name strip, then fsutil 8dot3name set <drive>: 1",
-                             "or": "--short-names drop converts without them: every object under its long name, each short name kept in the run's records"},
+                            {"what": "8.3 short names, with --short-names refuse", "remedy": "fsutil 8dot3name strip, then fsutil 8dot3name set <drive>: 1",
+                             "or": "without --short-names refuse (the default, or --short-names drop) the volume converts without them: every object under its long name, each short name kept in the run's records"},
                             {"what": "a BitLocker-encrypted volume", "remedy": "decrypt it (manage-bde -off)"},
                             {"what": "shadow copies of the volume, snapshot storage kept on it, or a shadow-copy provider of backup software that holds a shadow copy on the machine or does not answer",
                              "remedy": "delete the shadow copies; the provider is named",
@@ -192,7 +198,6 @@ fn run() -> Result<u8> {
                             {"what": "reparse points other than symbolic links, junctions, app execution aliases and the files of the Windows Subsystem for Linux (Data Deduplication, compact /exe, cloud placeholders)",
                              "remedy": "named per kind"},
                             {"what": "a named data stream on a directory"},
-                            {"what": "disk quotas in use", "remedy": "fsutil quota disable"},
                             {"what": "two names in one directory that differ only by case", "remedy": "rename one of them, then fsutil file setCaseSensitiveInfo <directory> disable"},
                             {"what": "a dirty volume, an NTFS log that was not closed, an open transaction", "remedy": "chkdsk /f, or a clean dismount"},
                             {"what": "a volume with no file on it", "remedy": "format it as ReFS"},

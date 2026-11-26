@@ -892,7 +892,10 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
                 .raw
                 .find_record(identity.record_number, Some(identity.sequence_number))?
                 .context("paged source byte identity is missing or stale")?;
-            ensure!(!file.is_directory, "directory cannot supply DATA payload");
+            ensure!(
+                !file.is_directory || !identity.name_utf16.is_empty(),
+                "directory cannot supply unnamed DATA payload"
+            );
             let mut streams = file
                 .streams
                 .iter()
@@ -1761,7 +1764,7 @@ impl<'a> SourceBackedShadow<'a> {
                 .stream(&route.stream_name_utf16)
                 .context("payload stream absent from canonical object")?;
             ensure!(
-                !object.directory
+                (!object.directory || !route.stream_name_utf16.is_empty())
                     && object.path == route.components
                     && stream.length == route.stream_length
                     && stream.sha256 == route.expected_sha256.as_deref()

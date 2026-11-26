@@ -72,7 +72,8 @@ back up first.
 
 **What does not come across?**
 What ReFS does not have: object IDs, NTFS compression and the change journal;
-on a data drive, 8.3 short names are refused or dropped. The guide lists each.
+on a data drive, 8.3 short names are dropped after you agree (or refused,
+if you ask). The guide lists each.
 
 ## Build
 

@@ -74,6 +74,8 @@ pub mod planner;
 pub(crate) mod preparation_progress;
 #[cfg(windows)]
 pub(crate) mod preparation_resume;
+#[cfg(windows)]
+pub(crate) mod quota_disposition;
 pub(crate) mod refs_allocator;
 pub mod refs_bootstrap;
 pub mod refs_containers;

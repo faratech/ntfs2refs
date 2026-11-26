@@ -2057,11 +2057,18 @@ impl ResourceSourceContext {
             }
             if let Some(ledger) = plain.as_ref().filter(|ledger| !ledger.rows.is_empty()) {
                 ledger.validate().map_err(anyhow::Error::msg)?;
+                // In the run's own directory, which outlives the run: the
+                // copy below, among the source's working files, is a
+                // temporary file of the run's arena and is retired with it.
+                let kept = crate::plain_consent::write_ledger(ledger)?;
                 println!(
                     "{} object(s) are converted to plain files, as agreed (list sha256 {}); each is kept in the run's records ({}).",
                     ledger.rows.len(),
                     ledger.agreed_list_sha256,
-                    n2r_win32::plain_ledger::LEDGER_FILE
+                    kept.as_deref().map_or_else(
+                        || n2r_win32::plain_ledger::LEDGER_FILE.to_owned(),
+                        |path| path.display().to_string()
+                    )
                 );
                 save(
                     output,

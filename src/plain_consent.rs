@@ -91,6 +91,57 @@ pub(crate) fn bind_frozen(frozen: &PlainList) -> Result<String> {
     }
 }
 
+static LEDGER_DIRECTORY: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Where this run keeps its ledger of plain conversions: its own directory,
+/// which outlives the run. (The source admission's working files are
+/// temporary files of the run's arena and are retired with it.)
+pub(crate) fn keep_ledger_in(run: &Path) {
+    *LEDGER_DIRECTORY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(run.to_owned());
+}
+
+/// Writes the ledger to the run's directory, as a file of its own that is
+/// never overwritten, and flushes it. Where it went; `None` for a route
+/// that names no directory.
+pub(crate) fn write_ledger(
+    ledger: &n2r_win32::plain_ledger::PlainLedger,
+) -> Result<Option<PathBuf>> {
+    let directory = LEDGER_DIRECTORY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    directory
+        .map(|directory| write_ledger_in(&directory, ledger))
+        .transpose()
+}
+
+pub(crate) fn write_ledger_in(
+    directory: &Path,
+    ledger: &n2r_win32::plain_ledger::PlainLedger,
+) -> Result<PathBuf> {
+    use std::io::Write;
+    ledger.validate().map_err(anyhow::Error::msg)?;
+    let path = directory.join(n2r_win32::plain_ledger::LEDGER_FILE);
+    let written = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)?;
+        serde_json::to_writer_pretty(&mut file, ledger)?;
+        file.write_all(b"\n")?;
+        file.sync_all()
+    })();
+    written.map_err(|error| {
+        anyhow::anyhow!(
+            "writing the ledger of plain conversions to {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(path)
+}
+
 /// Reads `--accept-plain`: a SHA-256 as a check prints it.
 pub(crate) fn parse_accept(text: &str) -> std::result::Result<String, String> {
     if text.len() == 64 && text.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -305,6 +356,26 @@ mod tests {
         assert!(bind(&PlainList::default(), None).is_ok());
         let unasked = bind(&agreed, None).unwrap_err().to_string();
         assert!(unasked.contains("no list of them was agreed"), "{unasked}");
+    }
+
+    #[test]
+    fn the_ledger_is_kept_in_a_file_of_its_own_that_is_never_overwritten() {
+        let directory = tempfile::tempdir().unwrap();
+        let ledger = n2r_win32::plain_ledger::PlainLedger {
+            kind: n2r_win32::plain_ledger::LEDGER_KIND.into(),
+            agreed_list_sha256: "a".repeat(64),
+            frozen_list_sha256: "b".repeat(64),
+            source_inspection_sha256: "c".repeat(64),
+            rows: Vec::new(),
+        };
+        let path = write_ledger_in(directory.path(), &ledger).unwrap();
+        assert_eq!(path, directory.path().join("plain-conversions.json"));
+        let back: n2r_win32::plain_ledger::PlainLedger =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(back, ledger);
+        assert!(write_ledger_in(directory.path(), &ledger).is_err());
+        // Nowhere named: nothing is written, and that is no error.
+        assert!(write_ledger(&ledger).unwrap().is_none());
     }
 
     #[test]

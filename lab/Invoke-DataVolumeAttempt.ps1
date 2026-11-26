@@ -929,11 +929,15 @@ public static class SiblingRaw {
     # Starts the guest worker (the one the boot harness uses) in a guest
     # folder with these converter arguments: as SYSTEM from a scheduled task,
     # or as the elevated administrator in a session of its own.
-    function Start-Worker([string]$Root, [string[]]$Arguments, [string]$Task) {
+    function Start-Worker([string]$Root, [string[]]$Arguments, [string]$Task, [string[]]$Replies = @()) {
         # A run that is asked about its plain conversions as well asks twice.
+        # $Replies, where given, are typed instead, in order.
         $answers = if ($Unattended) { 0 } elseif ($AcceptPlain) { 2 } else { 1 }
-        Invoke-Command -Session $session -ArgumentList $Root, ($Arguments -join "`t"), (-not $Unattended), $answers -ScriptBlock {
-            param($root, $joined, $answer, $answers) [IO.File]::WriteAllText("$root\run.json", (@{ arguments = @([string[]]$joined.Split("`t")); answer = [bool]$answer; answers = [int]$answers } | ConvertTo-Json), [Text.UTF8Encoding]::new($false)) }
+        Invoke-Command -Session $session -ArgumentList $Root, ($Arguments -join "`t"), (-not $Unattended), $answers, ($Replies -join "`t") -ScriptBlock {
+            param($root, $joined, $answer, $answers, $replies)
+            $run = @{ arguments = @([string[]]$joined.Split("`t")); answer = [bool]$answer; answers = [int]$answers }
+            if ($replies) { $run.replies = @([string[]]$replies.Split("`t")) }
+            [IO.File]::WriteAllText("$root\run.json", ($run | ConvertTo-Json), [Text.UTF8Encoding]::new($false)) }
         if ($RunAs -eq 'administrator') {
             if ($script:worker) { Remove-PSSession $script:worker -ErrorAction SilentlyContinue }
             $script:worker = New-PSSession -VMId $VmId -Credential $credential
@@ -1377,8 +1381,11 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         $resourceSamples = Join-Path $records $verdict.resource_samples
         [IO.File]::WriteAllText($resourceSamples, '', [Text.UTF8Encoding]::new($false))
     }
-    Start-Worker $guestRoot $arguments $task
-    Say "converter started: ntfs2refs $($arguments -join ' ')"
+    # Without -AcceptPlain, a run with objects to make plain (the check printed
+    # their list) is asked about them and declines: it has to stop there.
+    $declinePlain = -not $Unattended -and -not $AcceptPlain -and [bool]$plainSha
+    Start-Worker $guestRoot $arguments $task $(if ($declinePlain) { @('n') } else { @() })
+    Say "converter started: ntfs2refs $($arguments -join ' ')$(if ($declinePlain) { ' (its question about plain conversions answered no)' })"
     $waited = Wait-Worker $guestRoot $InterruptAt $StopDuringPreparation
     $verdict.resources = [ordered]@{ peak_working_set_bytes = $usage.peak_working_set; peak_private_bytes = $usage.private_bytes
         peak_working_storage_bytes = $usage.working_bytes; samples = $usage.samples; sampled_every_seconds = 2 }
@@ -1818,7 +1825,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
             # those objects are held by the content verdict, apart.
             $ledger = if ($exact) { $null } else {
                 Get-ChildItem -LiteralPath $working -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending |
-                    ForEach-Object { Join-Path $_.FullName 'conversion\source\plain-conversions.json' } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1 }
+                    ForEach-Object { Join-Path $_.FullName 'plain-conversions.json' } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1 }
             if ($ledger) { Copy-Item -LiteralPath $ledger -Destination "$root\plain-conversions.json" -Force }
             $arguments = @('compare'); if ($exact) { $arguments += '--exact' } else { if ($dropped) { $arguments += '--short-names-dropped' }; if ($marksLeft) { $arguments += '--case-marks-not-carried' } }
             if ($ledger) { $arguments += @('--plain-ledger', "$root\plain-conversions.json") }
@@ -1895,6 +1902,8 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         Say "listing after the run: $($compared.listed)"
         Say "before/after comparison$(if (-not $converted) { ', exact' }): $listing ($($compared.stage) exit $($compared.exit)): $($compared.summary)"
     }
+    # The run stopped at the question about its plain conversions, declined.
+    $plainDeclined = (Test-Path -LiteralPath $stdout) -and [bool](Select-String -LiteralPath $stdout -SimpleMatch -Pattern 'Cancelled: nothing is made plain without your agreement' -Quiet)
     $verdict.outcome = if ($StopDuringPreparation -and $PowerOffDuringPreparation) {
         # The same after the VM was turned off and started again: the NTFS volume must be back and list exactly as before.
         if ($run.exit -eq 0 -and $returned -and $listing -eq 'identical') { 'preparation-cancelled-after-power-off' }
@@ -1927,7 +1936,8 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         elseif ($run.exit -eq 0) { 'diagnose-clean' } else { 'diagnose-found-failures' }
     } elseif ($converted) {
         switch ($listing) { 'identical' { 'converted' } 'differs' { 'converted-but-listing-differs' } default { 'converted-listing-tool-failed' } }
-    } elseif ($run.exit -eq 0) { 'exit-0-but-not-refs' }
+    } elseif ($run.exit -eq 0 -and $plainDeclined -and $returned -and $listing -eq 'identical') { 'plain-declined' }
+    elseif ($run.exit -eq 0) { 'exit-0-but-not-refs' }
     elseif ($returned -and $listing -in 'identical', 'unreadable-both-times') { if ($ExpectRefusal -and $errorLine -match $ExpectRefusal) { 'refused-as-expected' } else { 'refused-source-unchanged' } }
     elseif ($returned) { "refused-source-listing-$listing" }
     elseif ($run.filesystem -eq 'ReFS') { 'failed-after-conversion' }

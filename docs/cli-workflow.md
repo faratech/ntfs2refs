@@ -388,7 +388,9 @@ needs `--accept-plain <sha256>`, naming the list it agrees to. If the volume
 changes after the question is answered, every object the frozen volume would
 make plain has to be in the agreed list, or the run stops before anything is
 built. Each object made plain is kept in the run's records
-(`plain-conversions.json`), with its attributes before and after.
+(`plain-conversions.json` in the run's directory), with its attributes
+before and after. Declining the question ends the run as declining the one
+that starts it does: nothing is changed, and it exits 0.
 
 ### Windows' drive optimization
 
@@ -982,7 +984,7 @@ content verdict: the same comparison, between what the object was before
 with only the agreed feature taken off and what it is afterwards. A ledger
 row whose object did not show that feature before fails it. The run reports
 the two apart, and exits 6 if either fails. By hand:
-`lab-volume-manifest compare ... --plain-ledger <run>\conversion\source\plain-conversions.json`.
+`lab-volume-manifest compare ... --plain-ledger <run>\plain-conversions.json`, the ledger in the run's directory.
 
 The same by hand, with `lab-volume-manifest.exe` from the release, before and
 after any run:

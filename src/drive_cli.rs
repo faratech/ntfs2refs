@@ -2225,6 +2225,8 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             // Before anything of this run touches the volume.
             super::listing::before(root, &run)?;
         }
+        // The ledger of what this run makes plain files of is kept here.
+        crate::plain_consent::keep_ledger_in(&run);
         let native_creation_admission =
             n2r_win32::managed_shadow::admit_fresh_native_backing(&run.join("shadow.vhdx"))?;
         save_new(
@@ -2465,9 +2467,7 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                     // The objects this run made plain files, as it kept
                     // them when the source was frozen: held apart by the
                     // content verdict, and left out of the listing's.
-                    let plain_ledger = output
-                        .join("source")
-                        .join(n2r_win32::plain_ledger::LEDGER_FILE);
+                    let plain_ledger = run.join(n2r_win32::plain_ledger::LEDGER_FILE);
                     let plain_ledger = plain_ledger.is_file().then_some(plain_ledger);
                     match super::listing::after(root, &run, case_marks, plain_ledger.as_deref()) {
                         Ok(true) => {}

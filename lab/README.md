@@ -408,7 +408,9 @@ and a name outside ASCII, beside a name that is its own short name.
 files of (`-Features temporary`, `offline`). Unattended it passes
 `--accept-plain` with the checksum `--check` printed, so it needs `-Check`;
 otherwise the worker answers the run's question about the list as well as
-its prompt. Without it, such a run stops before anything is changed. The
+its prompt. Without it, a run whose check printed such a list answers the
+question no and has to stop there, exit 0 with the volume NTFS and listing
+exactly as before (`plain-declined`); unattended, it is refused. The
 check of such a volume exits 7 (`check-plain-to-agree` with `-CheckOnly`).
 After the run the comparison is given the run's ledger
 (`lab-volume-manifest compare --plain-ledger`): the objects it names are

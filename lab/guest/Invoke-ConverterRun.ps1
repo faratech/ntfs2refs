@@ -35,7 +35,9 @@ try {
     $answers = -not ($run.PSObject.Properties['answer'] -and $run.answer -eq $false)
     # A run asked about its plain conversions as well asks twice (run.json "answers").
     $count = if ($run.PSObject.Properties['answers']) { [int]$run.answers } else { 1 }
-    if ($answers) { foreach ($i in 1..([Math]::Max(1, $count))) { $process.StandardInput.WriteLine('y') }; $process.StandardInput.Flush() }
+    # Or the replies run.json lists, typed in order (a question to decline).
+    $replies = if ($run.PSObject.Properties['replies']) { @($run.replies) } else { @(1..([Math]::Max(1, $count)) | ForEach-Object { 'y' }) }
+    if ($answers) { foreach ($reply in $replies) { $process.StandardInput.WriteLine([string]$reply) }; $process.StandardInput.Flush() }
     $process.StandardInput.Close()
     $peak = 0L
     while (-not $process.WaitForExit(1000)) { $process.Refresh(); $peak = [Math]::Max($peak, $process.PeakWorkingSet64) }

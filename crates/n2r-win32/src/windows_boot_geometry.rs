@@ -125,7 +125,8 @@ pub fn observe_clean(
 }
 
 /// What Windows said of an NTFS volume it was asked to mount read-write and
-/// to write out, for the upgrade of an NTFS 1.2 or 3.0 volume to 3.1.
+/// to write out, in case that upgrades an NTFS 1.2 volume, which the
+/// converter does not read.
 #[derive(Debug, Serialize)]
 pub struct NtfsVersionSettle {
     pub binding: GeneralDiskBinding,
@@ -194,10 +195,11 @@ pub fn extended_versions(data: &[u8]) -> (Option<Version>, Option<Version>) {
 }
 
 /// Have Windows mount the volume read-write, as it does when a volume is
-/// opened for writing, and write out everything it holds for it. Windows
-/// upgrades an NTFS volume of an older version when it mounts it
-/// read-write; the caller reads $Volume again from the raw partition to
-/// see whether it did. Nothing is written here but by the NTFS driver.
+/// opened for writing, and write out everything it holds for it. Older
+/// Windows upgraded an NTFS volume of an older version when it mounted it
+/// read-write; Windows 11 (build 26300) did not upgrade NTFS 3.0 so in the
+/// lab. The caller reads $Volume again from the raw partition to see
+/// whether it did. Nothing is written here but by the NTFS driver.
 pub fn settle_ntfs_version(
     binding: &GeneralDiskBinding,
     events: &mut Vec<NativeEvent>,

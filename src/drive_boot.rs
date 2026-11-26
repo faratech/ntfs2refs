@@ -383,12 +383,14 @@ pub(super) fn normalize_geometry(
 }
 
 /// Called only after interactive confirmation, before the freeze, for an
-/// NTFS 1.2 or 3.0 volume (announced before the question, not undone).
-/// Windows mounts the volume read-write and writes out what it holds for
-/// it, which upgrades it to NTFS 3.1; then $Volume is read again from the
-/// raw partition. A volume that still reads an older version stops the run:
-/// nothing was changed but that Windows mounted it. The NTFS driver makes
-/// every write; the converter writes nothing to the source here.
+/// NTFS 1.2 volume, which the converter does not read (announced before the
+/// question, not undone). Windows mounts the volume read-write and writes
+/// out what it holds for it, in case that upgrades it; then $Volume is read
+/// again from the raw partition. A volume that does not then read a version
+/// the converter reads (3.0 or 3.1) stops the run: nothing was changed but
+/// that Windows mounted it. Windows 11 did not upgrade NTFS 3.0 this way in
+/// the lab, which is why 3.0 is read and never comes here. The NTFS driver
+/// makes every write; the converter writes nothing to the source here.
 pub(super) fn settle_ntfs_version(
     before: &n2r_win32::discovery::VolumeDiscovery,
     version: (u8, u8),
@@ -414,14 +416,15 @@ pub(super) fn settle_ntfs_version(
         &serde_json::to_vec_pretty(&serde_json::json!({
         "kind":"confirmed-NTFS-version-upgrade-by-windows-v1","source_before":before,
         "ntfs_version_before":crate::ntfs_version::describe(version),
-        "ntfs_version_required":crate::ntfs_version::describe(crate::ntfs_version::CURRENT),
+        "ntfs_versions_read":crate::ntfs_version::READ.map(crate::ntfs_version::describe),
         "native_ntfs_driver_upgrade_authorized":true,"raw_source_writes_authorized":false,
         "conversion_recovery_baseline":"after the upgrade",
-        "later_cancellation_leaves_ntfs_3_1":true}))?,
+        "later_cancellation_keeps_any_upgrade":true}))?,
     )?;
     println!(
-        "Having Windows upgrade this volume from NTFS {} to NTFS 3.1. Record: {}",
+        "Having Windows mount this NTFS {} volume read-write, so that it may upgrade it to a version the converter reads ({}). Record: {}",
         crate::ntfs_version::describe(version),
+        crate::ntfs_version::describe_read(),
         run.join("ntfs-version-intent.json").display()
     );
     let mut events = Vec::new();
@@ -461,11 +464,14 @@ pub(super) fn settle_ntfs_version(
         )
     })?;
     ensure!(
-        after == crate::ntfs_version::CURRENT,
+        crate::ntfs_version::reads(after),
         "{}",
         crate::ntfs_version::still_older(version, after, settled.windows_version_after, run)
     );
-    println!("Windows upgraded the volume to NTFS 3.1; this is not undone.");
+    println!(
+        "Windows upgraded the volume to NTFS {}; this is not undone.",
+        crate::ntfs_version::describe(after)
+    );
     Ok(())
 }
 /// How long the storage service is left alone before a shrink it answered

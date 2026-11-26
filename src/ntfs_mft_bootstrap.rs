@@ -687,13 +687,14 @@ mod working_ram_tests {
         }
     }
     /// A FILE record of `size` bytes whose attributes are `body`, with its
-    /// update sequence array applied as it is on disk.
-    fn file_record(size: usize, body: &[u8]) -> Vec<u8> {
+    /// update sequence array at `usa` (0x30 in the NTFS 3.1 header, 0x2A in
+    /// the NTFS 3.0 one) applied as it is on disk.
+    fn file_record(size: usize, usa: usize, body: &[u8]) -> Vec<u8> {
         let mut bytes = vec![0u8; size];
         let entries = usa_entries(size);
-        let first = (48 + entries * 2).next_multiple_of(8);
+        let first = (usa + entries * 2).next_multiple_of(8);
         bytes[..4].copy_from_slice(b"FILE");
-        bytes[4..6].copy_from_slice(&48u16.to_le_bytes());
+        bytes[4..6].copy_from_slice(&(usa as u16).to_le_bytes());
         bytes[6..8].copy_from_slice(&(entries as u16).to_le_bytes());
         bytes[16..18].copy_from_slice(&1u16.to_le_bytes());
         bytes[18..20].copy_from_slice(&1u16.to_le_bytes());
@@ -705,11 +706,11 @@ mod working_ram_tests {
         bytes[28..32].copy_from_slice(&(size as u32).to_le_bytes());
         bytes[first..first + body.len()].copy_from_slice(body);
         bytes[first + body.len()..first + body.len() + 4].copy_from_slice(&u32::MAX.to_le_bytes());
-        bytes[48..50].copy_from_slice(&[0x5a, 0xa5]);
+        bytes[usa..usa + 2].copy_from_slice(&[0x5a, 0xa5]);
         for index in 1..entries {
             let tail = index * USA_STRIDE - 2;
             let saved = [bytes[tail], bytes[tail + 1]];
-            bytes[48 + index * 2..48 + index * 2 + 2].copy_from_slice(&saved);
+            bytes[usa + index * 2..usa + index * 2 + 2].copy_from_slice(&saved);
             bytes[tail..tail + 2].copy_from_slice(&[0x5a, 0xa5]);
         }
         bytes
@@ -769,20 +770,26 @@ mod working_ram_tests {
         for size in [512usize, 1024, 2048, 4096, 8192, 65536] {
             let geometry = geometry(size as u32);
             let bound = lists::record_working_bound(size as u32).unwrap();
-            let room = size - (48 + usa_entries(size) * 2).next_multiple_of(8) - 8;
             let mut most = 0;
-            for (name, body) in [
-                ("runs", densest_mapping(room)),
-                ("attributes", most_attributes(room)),
-                ("resident", largest_resident(room)),
-            ] {
-                let raw = file_record(size, &body);
-                let record = parse_record(raw.clone(), &geometry)
-                    .unwrap_or_else(|error| panic!("{size} {name}: {error:#}"));
-                let evidence = assembled_io::evidence(16, &raw, &record);
-                let counted = lists::working_assembly_bytes(&evidence, &[], 0).unwrap();
-                assert!(counted <= bound, "{size} {name}: {counted} > {bound}");
-                most = most.max(counted);
+            // The NTFS 3.0 header leaves a little more room for attributes.
+            for usa in [0x30, 0x2a] {
+                let room = size - (usa + usa_entries(size) * 2).next_multiple_of(8) - 8;
+                for (name, body) in [
+                    ("runs", densest_mapping(room)),
+                    ("attributes", most_attributes(room)),
+                    ("resident", largest_resident(room)),
+                ] {
+                    let raw = file_record(size, usa, &body);
+                    let record = parse_record(raw.clone(), &geometry)
+                        .unwrap_or_else(|error| panic!("{size} {usa:#x} {name}: {error:#}"));
+                    let evidence = assembled_io::evidence(16, &raw, &record);
+                    let counted = lists::working_assembly_bytes(&evidence, &[], 0).unwrap();
+                    assert!(
+                        counted <= bound,
+                        "{size} {usa:#x} {name}: {counted} > {bound}"
+                    );
+                    most = most.max(counted);
+                }
             }
             // The bound is of the size of what it covers (it allows for
             // the most runs, attributes and resident bytes at once, and
@@ -797,7 +804,7 @@ mod working_ram_tests {
             );
         }
         // The densest mapping really is dense: half the record in runs.
-        let raw = file_record(1024, &densest_mapping(1024 - 56 - 8));
+        let raw = file_record(1024, 0x30, &densest_mapping(1024 - 56 - 8));
         let record = parse_record(raw, &geometry(1024)).unwrap();
         assert!(record.attributes[0].report.extents.len() >= 440);
     }

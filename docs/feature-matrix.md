@@ -18,6 +18,7 @@ converter prints.
 |---|---|
 | Files of every size around the resident, cluster and megabyte boundaries; nested and empty directories; names outside ASCII; a 200-character name | `mixed` (every data-volume case that is not `minimal`) |
 | Named data streams on files, small and larger than the file | `mixed` |
+| Named data streams on directories, as the same directory's named streams on ReFS: one of 31 bytes, and one of 1,115,200 bytes that ends inside a cluster. Converted with identical listings and passed acceptance alone (`ds3-dirstream-minimal`) and with a lived-in volume (`ds3-dirstream-lived-in`), each with `-Check -Acceptance`. One on the root directory, on a reparse-point directory, or one that is encrypted, compressed or sparse is still refused, by name | `dirstream` |
 | Hard links, in one directory and across two | `mixed` |
 | Sparse files, up to 70,000 separately allocated islands | `mixed`, `many` |
 | Fragmented files | `mixed` |
@@ -74,7 +75,6 @@ check and the run have to give the same refusal.
 | A shadow-copy provider of backup software (any but Windows' own, Hyper-V's and Windows Server's for remote file shares) that does not answer when Windows asks it | Repair or remove the provider, which is named: whether it holds shadow copies cannot be known | `vss-silent` (a provider registered without its class) |
 | EFS-encrypted files | `cipher /d` | `efs` |
 | A file compressed with `compact /exe` on a Windows boot volume, backed by a WIM image, or on a data volume without its list agreed | `compact /u /exe <file>` | `wof` (without `-AcceptPlain`) |
-| A named data stream on a directory | remove the stream. The converter can carry such streams as the same directory's named streams on ReFS (Windows' ReFS takes them); that is turned on once `dirstream` has converted with an identical listing | `dirstream` |
 | Two names in one directory that differ only by case | rename one of them, then `fsutil file setCaseSensitiveInfo <directory> disable` | `casesensitive` |
 | Beside the volume, on its disk: a volume with shadow copies | `vssadmin delete shadows /for=<drive>:` for that volume | `shared-snapshot`; the shadow copy is still there afterwards |
 | On the volume's disk: the crash-dump file of the running Windows | move the dump file (System Properties, Advanced, Startup and Recovery) | `shared-dump` |
@@ -88,6 +88,7 @@ These take the same paths as rows above, or are checked by tests only.
 |---|---|
 | Cloud placeholders, Data Deduplication | Refused by their reparse tag, like `compact /exe`; the lab has no sync provider or deduplication. The words for each tag are covered by a test |
 | A shadow-copy provider of backup software that holds a shadow copy on the machine | The lab has no backup product that makes one. The decision and its words are covered by a test |
+| A named data stream on the root directory or on a reparse-point directory, or one on a directory that is encrypted, compressed or sparse | The lab's `dirstream` makes plain streams on ordinary directories, which convert. The refusals and their words are covered by a test |
 | A dirty volume, an NTFS log that was not closed, an open transaction | The lab dismounts its volumes cleanly |
 | A program holding a file on the volume open | Not arranged in the lab; the lock is retried for 20 seconds and then refused by name |
 | A volume with no file on it | An empty volume is formatted, not converted |
@@ -113,14 +114,23 @@ These take the same paths as rows above, or are checked by tests only.
   take those sectors and their tests cover them, but the disk checks admit
   only 512- and 4096-byte sectors: the working shadow is a VHDX, which has
   no other sizes, and Hyper-V cannot present such a disk to the lab.
-- An NTFS 1.2 or 3.0 volume. A conversion has Windows mount it read-write
-  before the freeze, which upgrades it to 3.1 (announced before the
-  question, not undone), and reads `$Volume` again; it stops if the volume
-  does not then read 3.1. Tests cover reading the version and the words. The
-  lab case `ntfs30` writes 3.0 into `$Volume` of an offline volume and holds
-  the run to recording the upgrade from 3.0 to 3.1; it has not been run, so
-  that the Windows 11 NTFS driver upgrades such a volume on mount is not yet
-  shown. No NTFS 1.2 fixture exists.
+- An NTFS 3.0 volume. It is read as it is: FILE records in both header
+  forms (the 3.0 form, update sequence array at 0x2A and no record number,
+  and the 3.1 form Windows XP and later write to it) are read, and every
+  gate admits 3.0 as it does 3.1. Parser and inspection tests cover both
+  forms. Two lab cases, not yet run: `ntfs30` writes 3.0 into `$Volume` of a
+  volume whose records keep the 3.1 form, and `ntfs30-headers` first
+  rewrites every in-use MFT record (and its `$MFTMirr` copy) into the 3.0
+  form; each has to convert with an identical listing and without the
+  Windows mount. Neither is a volume Windows 2000 formatted (its first
+  attributes stay where the 3.1 form put them, and its `$UpCase` and
+  `$AttrDef` are Windows 11's).
+- An NTFS 1.2 volume. It is not read (no `$Extend`, no `$Secure`). A
+  conversion has Windows mount it read-write before the freeze, in case
+  that upgrades it (announced before the question, not undone), and reads
+  `$Volume` again; it stops if the volume does not then read 3.0 or 3.1.
+  The Windows 11 NTFS driver did not upgrade a 3.0 volume this way in the
+  lab, so the same is expected of 1.2; no lab fixture of 1.2 exists.
 - An NTFS log in the LFS 2.0 format, or with restart or log pages other
   than 4 KiB. The restart-page reader takes both formats Windows writes
   (1.1 and 2.0) and pages of 4 to 64 KiB, under the same clean-dismount

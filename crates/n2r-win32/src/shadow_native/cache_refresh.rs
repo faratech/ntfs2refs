@@ -1632,6 +1632,21 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             if let Some(layout) = item.sparse {
                 super::sparse_stream::observe(handle, layout, item.logical_length())?;
             }
+        } else if !item.named_streams.is_empty() {
+            // A directory's named streams, and no unnamed one, looked at
+            // once more as a file's are.
+            super::streams::exact_list(&stream_info(handle)?, item)?;
+            super::streams::observe(
+                &format!("{}\\", pair.shadow.volume_path()?),
+                item,
+                actual,
+                false,
+                false,
+                pair.shadow.identity.partition_bytes / crate::target_cluster::bytes(),
+                resource_admission
+                    .map(|a| usize::try_from(a.budget.max_row_bytes).map_err(io::Error::other))
+                    .transpose()?,
+            )?;
         }
         Ok(())
     };

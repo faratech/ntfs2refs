@@ -38,9 +38,8 @@ $named = Join-Path $root ('Bericht f' + [char]0xFC + 'r M' + [char]0xE4 + 'rz.tx
 $only = [IO.File]::Open($named, 'Create'); $only.Dispose()
 Set-Content -LiteralPath $named -Stream ([char]0xDC + 'bersicht') -Value 'stream on a file with a non-ASCII name' -Encoding ASCII
 
-# A stream on a directory is not made here: the converter refuses that at
-# admission ("directory data streams exceed the profile"), which is a
-# separate shape, Add-DirectoryStream.ps1.
+# A stream on a directory is not made here: it is a separate shape,
+# Add-DirectoryStream.ps1.
 
 $streams = @(Get-ChildItem -LiteralPath $root -Force | ForEach-Object { Get-Item -LiteralPath $_.FullName -Stream * } | Where-Object Stream -NE ':$DATA')
 [ordered]@{ kind = 'source-shape-v1'; shape = 'named-streams'; root = $root; objects = @(Get-ChildItem -LiteralPath $root -Force).Count

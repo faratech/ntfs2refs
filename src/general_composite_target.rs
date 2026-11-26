@@ -1438,12 +1438,8 @@ fn protected_prefix(
     )?;
     let mut residuals = Vec::new();
     let mut buffer = [0u8; 4096];
-    for (index, object) in tree
-        .objects
-        .iter()
-        .enumerate()
-        .filter(|(_, item)| !item.directory)
-    {
+    // A directory's data streams are its named ones, if any.
+    for (index, object) in tree.objects.iter().enumerate() {
         for stream in object.data_streams() {
             let count = (stream.length % 4096) as usize;
             if count == 0 || !stream.tail_requires_materialization() {

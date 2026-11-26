@@ -113,6 +113,13 @@ param(
     # written over the partition, made by tests/support/ntfs12.rs for this
     # partition's length (lab/README.md says how).
     [string]$Ntfs12Image,
+    # With -Features ntfs12 or ntfs12-version: when Windows leaves the
+    # mounted volume dirty or unhealthy, run `chkdsk V: /f /x` on it (output
+    # in chkdsk.txt), read its version and health again, and go on to the
+    # conversion if it is then healthy: what a user does when the
+    # converter's refusal says to run chkdsk, and what chkdsk repairs names
+    # what Windows found wrong.
+    [switch]$Ntfs12Chkdsk,
     [int]$DirectoryEntries = 20000,
     [int]$BigFileGB = 6,
     # Files of the 'manyfiles' feature: a volume for measuring how a run
@@ -340,6 +347,7 @@ if ($ntfs12) {
     if (-not $Ntfs12Image -or -not (Test-Path -LiteralPath $Ntfs12Image -PathType Leaf)) { throw "-Features ntfs12 needs -Ntfs12Image, the image tests/support/ntfs12.rs wrote for a partition of -PartitionMB: '$Ntfs12Image'" }
     $Ntfs12Image = (Resolve-Path -LiteralPath $Ntfs12Image).Path
 } elseif ($Ntfs12Image) { throw '-Ntfs12Image is for -Features ntfs12' }
+if ($Ntfs12Chkdsk -and -not $ntfs12Any) { throw '-Ntfs12Chkdsk is for -Features ntfs12 or ntfs12-version' }
 if ($RestartForLfs2 -and -not $lfs2) { throw '-RestartForLfs2 is for -Features lfs2' }
 
 $records = Join-Path $workspace ".lab\hyperv\attempts\$Name"
@@ -1356,8 +1364,8 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         # brought back. The volume is then listed again: the listing before
         # the run is of the volume as the run gets it.
         try {
-            $rawJson = Invoke-Command -Session $session -ArgumentList $guestRoot, $sourceDisk, $sourceOffset, $lfs2, $ntfs30, $unlock, $ntfs30Headers, $Ntfs30HeaderLayout, $Ntfs30HeaderFrom, $ntfs12, $ntfs12Version -ScriptBlock {
-                param($root, $number, $offset, $lfs2, $ntfs30, $unlock, $ntfs30Headers, $layout, $fromRecord, $ntfs12, $ntfs12Version)
+            $rawJson = Invoke-Command -Session $session -ArgumentList $guestRoot, $sourceDisk, $sourceOffset, $lfs2, $ntfs30, $unlock, $ntfs30Headers, $Ntfs30HeaderLayout, $Ntfs30HeaderFrom, $ntfs12, $ntfs12Version, [bool]$Ntfs12Chkdsk -ScriptBlock {
+                param($root, $number, $offset, $lfs2, $ntfs30, $unlock, $ntfs30Headers, $layout, $fromRecord, $ntfs12, $ntfs12Version, $chkdsk)
                 $tool = [scriptblock]::Create((Get-Content -LiteralPath "$root\rawntfs.ps1" -Raw))
                 $last = { param($lines) (@($lines) | Select-Object -Last 1) | ConvertFrom-Json }
                 $result = [ordered]@{}
@@ -1389,11 +1397,14 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                 if ($result.v_back) {
                     $text = & "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-before.jsonl" 2>&1
                     $result.listed_exit = $LASTEXITCODE; $result.listed = ($text -join ' ')
-                    if ($ntfs12 -or $ntfs12Version) {
-                        # Windows goes on writing to an NTFS 1.2 volume it has just
-                        # mounted ($Extend, $RmMetadata, the TxF log): the listing
-                        # the run is held to is taken once two listings five
-                        # seconds apart agree, for up to two minutes.
+                    # Windows goes on writing to an NTFS 1.2 volume it has just
+                    # mounted ($Extend, $RmMetadata, the TxF log): the listing
+                    # the run is held to is taken once two listings five
+                    # seconds apart agree, for up to two minutes; then what
+                    # Windows says of the volume is read.
+                    $settle = {
+                        $text = & "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-before.jsonl" 2>&1
+                        $result.listed_exit = $LASTEXITCODE; $result.listed = ($text -join ' ')
                         $settleUntil = (Get-Date).AddSeconds(120)
                         $previous = (Get-FileHash -LiteralPath "$root\manifest-before.jsonl").Hash
                         $result.listings_taken = 1; $result.settled = $false
@@ -1412,6 +1423,24 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                         $result.operational = if ($mounted) { "$(@($mounted.OperationalStatus) -join ',')" } else { $null }
                         $result.dirty_query = (& fsutil dirty query V: 2>&1) -join ' '
                         $result.dirty = $result.dirty_query -match 'is Dirty'
+                    }
+                    if ($ntfs12 -or $ntfs12Version) {
+                        . $settle
+                        if ($chkdsk -and ($result.dirty -or $result.health -ne 'Healthy')) {
+                            # As a user would: chkdsk /f, the volume dismounted for it
+                            # (/x), nothing scheduled. What it repaired is in its output.
+                            $result.before_chkdsk = [ordered]@{ health = $result.health; operational = $result.operational; dirty_query = $result.dirty_query
+                                settled = $result.settled; listings_taken = $result.listings_taken
+                                version = $(try { & $last (& $tool -DiskNumber $number -PartitionOffset $offset -Action read-version) } catch { "unread: $($_.Exception.Message)" }) }
+                            $chkdskStarted = Get-Date
+                            $result.chkdsk_output = (& chkdsk.exe V: /f /x 2>&1 | Out-String)
+                            $result.chkdsk_exit = $LASTEXITCODE
+                            $result.chkdsk_seconds = [Math]::Round(((Get-Date) - $chkdskStarted).TotalSeconds, 1)
+                            $until = (Get-Date).AddSeconds(60)
+                            while (-not (Test-Path -LiteralPath 'V:\') -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 500 }
+                            $result.v_back_after_chkdsk = [bool](Test-Path -LiteralPath 'V:\')
+                            if ($result.v_back_after_chkdsk) { . $settle } else { $result.listed_exit = -1; $result.listed = 'V: did not come back after chkdsk' }
+                        }
                     }
                 }
                 # What the disk says when the run starts, read raw (whether or
@@ -1465,7 +1494,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         $onDisk = ($rawJson | Select-Object -Last 1) | ConvertFrom-Json
         # The guest sets only what applied; under strict mode a field it left
         # out would throw when read, so each is present, null when absent.
-        foreach ($field in 'ntfs30', 'ntfs12', 'ntfs12_as_written', 'settled', 'listings_taken', 'health', 'operational', 'dirty', 'dirty_query', 'lfs2', 'version_when_the_run_starts', 'headers_when_the_run_starts', 'diagnostics', 'made_error', 'v_back', 'listed_exit', 'listed') {
+        foreach ($field in 'ntfs30', 'ntfs12', 'ntfs12_as_written', 'settled', 'listings_taken', 'health', 'operational', 'dirty', 'dirty_query', 'before_chkdsk', 'chkdsk_output', 'chkdsk_exit', 'chkdsk_seconds', 'v_back_after_chkdsk', 'lfs2', 'version_when_the_run_starts', 'headers_when_the_run_starts', 'diagnostics', 'made_error', 'v_back', 'listed_exit', 'listed') {
             if (-not $onDisk.PSObject.Properties[$field]) { $onDisk | Add-Member -NotePropertyName $field -NotePropertyValue $null }
         }
         # Kept before anything is decided: what was written, what the disk
@@ -1508,6 +1537,15 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
             }
             $verdict.outcome = 'feature-not-made'; throw 'V: did not come back after its disk was taken offline for lfs2 or ntfs30'
         }
+        if ($onDisk.before_chkdsk) {
+            # chkdsk ran on the fixture: its whole output, and what it left.
+            [IO.File]::WriteAllText((Join-Path $records 'chkdsk.txt'), "$($onDisk.chkdsk_output)", [Text.UTF8Encoding]::new($false))
+            Say "ntfs12: Windows left the volume $(if ($onDisk.before_chkdsk.dirty_query -match 'is Dirty') { 'dirty' } else { 'unhealthy' }) (health $($onDisk.before_chkdsk.health), $($onDisk.before_chkdsk.operational)); chkdsk V: /f /x exited $($onDisk.chkdsk_exit) after $($onDisk.chkdsk_seconds) s (chkdsk.txt)$(if ($onDisk.v_back_after_chkdsk) { "; afterwards health $($onDisk.health) ($($onDisk.operational)), $($onDisk.dirty_query)" } else { '; V: did NOT come back' })"
+            if (-not $onDisk.v_back_after_chkdsk) {
+                $verdict.outcome = 'ntfs12-volume-not-mounted-after-chkdsk'
+                throw "V: did not come back within 60 s after chkdsk V: /f /x; records: chkdsk.txt, ntfs12.json"
+            }
+        }
         if ($onDisk.listed_exit -ne 0) { throw "listing the volume again after lfs2 or ntfs30 failed (exit $($onDisk.listed_exit)): $($onDisk.listed)" }
         Copy-Item -FromSession $session -LiteralPath "$guestRoot\manifest-before.jsonl" -Destination $records -Force
         Say "listing again, of the volume as the run gets it: $($onDisk.listed)"
@@ -1522,12 +1560,20 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                 ntfs_events = @($onDisk.diagnostics.events | Where-Object { $_.provider -match 'Ntfs' -or $_.id -in 55, 98, 130, 137 } | ForEach-Object { "$($_.id)" } | Select-Object -Unique) }
             $verdict.ntfs12.settled = $onDisk.settled; $verdict.ntfs12.listings_taken = $onDisk.listings_taken
             $verdict.ntfs12.health = $onDisk.health; $verdict.ntfs12.operational = $onDisk.operational; $verdict.ntfs12.dirty = $onDisk.dirty
+            if ($onDisk.before_chkdsk) {
+                # Before chkdsk, and what chkdsk did; the version after it is version_when_the_run_starts.
+                $verdict.ntfs12.before_chkdsk = [ordered]@{ health = $onDisk.before_chkdsk.health; operational = $onDisk.before_chkdsk.operational
+                    dirty = [bool]($onDisk.before_chkdsk.dirty_query -match 'is Dirty')
+                    version = $(if ($onDisk.before_chkdsk.version -is [string]) { $onDisk.before_chkdsk.version } else { $onDisk.before_chkdsk.version.mft.version }) }
+                $verdict.ntfs12.chkdsk = [ordered]@{ exit = $onDisk.chkdsk_exit; seconds = $onDisk.chkdsk_seconds; output = 'chkdsk.txt'
+                    version_after = $(if ($startsAt) { $startsAt.mft.version } else { $null }) }
+            }
             Say "ntfs12: Windows mounted the volume ($($verdict.ntfs12.made)); `$Volume reads $(if ($startsAt) { "NTFS $($startsAt.mft.version) when the run starts (mirror $($startsAt.mirror.version))" } else { 'unread' })$(if ($ntfs12) { "; in-use records by update sequence array offset: $(($verdict.ntfs12.in_use_by_array_offset | ConvertTo-Json -Compress))" }); listing $(if ($onDisk.settled) { 'settled' } else { 'NOT settled' }) after $($onDisk.listings_taken) listing(s); health $($onDisk.health) ($($onDisk.operational)), $($onDisk.dirty_query)"
             # A volume Windows leaves dirty or unhealthy, or still changing, is
             # the fixture's failure, not the converter's: the run is not made.
             if ($onDisk.dirty -or ($onDisk.health -and $onDisk.health -ne 'Healthy')) {
                 $verdict.outcome = 'ntfs12-fixture-unhealthy-after-mount'
-                throw "Windows left the NTFS 1.2 volume $(if ($onDisk.dirty) { 'dirty' } else { 'unhealthy' }) when it mounted it (health $($onDisk.health), $($onDisk.operational)): the fixture, not the converter, is at fault; records: ntfs12.json and raw-feature-diagnostics.json"
+                throw "Windows left the NTFS 1.2 volume $(if ($onDisk.dirty) { 'dirty' } else { 'unhealthy' }) $(if ($onDisk.before_chkdsk) { 'even after chkdsk V: /f' } else { 'when it mounted it' }) (health $($onDisk.health), $($onDisk.operational)): the fixture, not the converter, is at fault$(if (-not $Ntfs12Chkdsk) { ' (-Ntfs12Chkdsk has chkdsk repair it and say what it repaired)' }); records: ntfs12.json and raw-feature-diagnostics.json$(if ($onDisk.before_chkdsk) { ', chkdsk.txt' })"
             }
             if (-not $onDisk.settled) {
                 $verdict.outcome = 'ntfs12-volume-did-not-settle'

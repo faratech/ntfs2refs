@@ -601,7 +601,13 @@ so the listing before the run is taken once two listings five seconds
 apart agree (up to two minutes, else `ntfs12-volume-did-not-settle`), and
 the volume's health and dirty bit are then read: a volume Windows leaves
 dirty or unhealthy ends the attempt `ntfs12-fixture-unhealthy-after-mount`,
-the fixture's failure rather than the converter's. Otherwise the verdict's
+the fixture's failure rather than the converter's. With `-Ntfs12Chkdsk` such
+a volume is first given `chkdsk V: /f /x` (dismounted for it, nothing
+scheduled), as the converter's refusal tells a user to: its whole output is
+kept in `chkdsk.txt`, the version and health before it in the verdict's
+`ntfs12.before_chkdsk`, and the volume is settled, read and judged again;
+if it is then healthy the run goes on, and `ntfs12.chkdsk.version_after`
+says whether chkdsk left it 1.2. Otherwise the verdict's
 `ntfs12` says in what version and state Windows left it, and the run goes
 on to convert it. The image carries the `$AttrDef` Windows writes (with
 `$OBJECT_ID`, `$REPARSE_POINT` and `$LOGGED_UTILITY_STREAM`, which Windows

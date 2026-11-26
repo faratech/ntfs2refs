@@ -106,9 +106,8 @@ impl<'a> PagedObservationRequest<'a> {
         let admission = if let Some(admission) = recounted {
             admission
         } else {
-            let mut files = 0u64;
-            let mut directories = 0u64;
-            let mut streams = 0u64;
+            // Counted as the frozen source's gates count them.
+            let mut counts = crate::ntfs_admission::TreeCounts::default();
             for ordinal in 0..source.file_count() {
                 let file = source.file_shared(ordinal)?;
                 if crate::ntfs_admission::paged::internal_role(source, &file)?.is_some() {
@@ -121,25 +120,15 @@ impl<'a> PagedObservationRequest<'a> {
                 } else {
                     crate::ntfs_admission::paged::user_paths(source, &file)?;
                 }
-                if file.is_directory {
-                    directories = directories
-                        .checked_add(1)
-                        .context("directory count overflow")?;
-                } else {
-                    files = files.checked_add(1).context("file count overflow")?;
-                }
-                // A directory's streams are its named ones, if it has any.
-                streams = streams
-                    .checked_add(u64::try_from(file.streams.len())?)
-                    .context("stream count overflow")?;
+                counts.add(&file)?;
             }
             admit(
                 pin_bytes,
                 header.mft_record_count,
                 source.file_count(),
-                files,
-                directories,
-                streams,
+                counts.files,
+                counts.directories,
+                counts.streams,
                 budget,
             )?
         };

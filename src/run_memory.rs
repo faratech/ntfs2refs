@@ -150,19 +150,20 @@ pub(crate) fn short_of_memory(needed: u64, free: u64) -> Short {
 /// Refuse the frozen source of a run that may hold `ram_bytes`, where its
 /// volume needs more. Nothing was changed by then.
 pub(crate) fn refuse_frozen_source(raw: &PagedInspection, ram_bytes: u64) -> Result<()> {
-    let (mut files, mut directories, mut streams) = (0u64, 0u64, 0u64);
+    let mut counts = ntfs_admission::TreeCounts::default();
     for ordinal in 0..raw.file_count() {
         let file = raw.file_shared(ordinal)?;
         if ntfs_admission::paged::internal_role(raw, &file)?.is_some() {
             continue;
         }
-        if file.is_directory {
-            directories += 1;
-        } else {
-            files += 1;
-            streams += file.streams.len() as u64;
-        }
+        counts.add(&file)?;
     }
+    let ntfs_admission::TreeCounts {
+        files,
+        directories,
+        streams,
+        ..
+    } = counts;
     let needed = ledger_needed(raw.file_count(), files, directories, streams);
     // A run held to a limit is measured against the limit, which is what
     // the estimate asks for: the ledger's own budget is the limit less what

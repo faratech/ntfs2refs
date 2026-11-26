@@ -532,7 +532,9 @@ fn read(
     let (mut case_sensitive, mut case_unknown, mut case_example) = (0u64, 0u64, None);
     // Whether the root directory (FILE 5) is marked: no mark is set then.
     let mut case_mark_on_root = false;
-    let (mut files, mut directories, mut streams, mut logical_bytes) = (0u64, 0u64, 0u64, 0u64);
+    // Counted as a conversion counts them, a directory's named streams
+    // included: the frozen source is held to these same counts.
+    let mut counts = ntfs_admission::TreeCounts::default();
     // Where NTFS keeps what was deleted while a program still had it open.
     let mut deleted_directory = None;
     for ordinal in 0..raw.file_count() {
@@ -552,8 +554,8 @@ fn read(
             deleted_while_open += 1;
             continue;
         }
+        counts.add(&file)?;
         if file.is_directory {
-            directories += 1;
             let reference = file.record_number | (u64::from(file.sequence_number) << 48);
             match case.flags(reference) {
                 Ok(0) => {}
@@ -569,14 +571,14 @@ fn read(
                 // Left to the frozen source, which asks again.
                 Err(_) => {}
             }
-        } else {
-            files += 1;
-            streams += file.streams.len() as u64;
-            for stream in &file.streams {
-                logical_bytes = logical_bytes.saturating_add(stream.logical_size);
-            }
         }
     }
+    let ntfs_admission::TreeCounts {
+        files,
+        directories,
+        streams,
+        logical_bytes,
+    } = counts;
     // Two names that differ only by case would have stopped the reading.
     // Whether the mark alone is set on the new volume depends on the
     // running Windows, and a conversion says which, as this does. (A check
@@ -680,14 +682,13 @@ fn read(
                     let path = ntfs_admission::paged::refused_object_path(&raw, &file);
                     refused.note(file.record_number, path.as_deref(), &issues);
                 }
-                if !file.is_directory {
-                    for stream in &file.streams {
-                        let (stay, copy) = crate::ntfs_stream_plan::estimate_stream_bytes(
-                            &raw, &file, stream, admission,
-                        )?;
-                        stays = stays.saturating_add(stay);
-                        copied = copied.saturating_add(copy);
-                    }
+                // A directory's named streams are carried as a file's.
+                for stream in &file.streams {
+                    let (stay, copy) = crate::ntfs_stream_plan::estimate_stream_bytes(
+                        &raw, &file, stream, admission,
+                    )?;
+                    stays = stays.saturating_add(stay);
+                    copied = copied.saturating_add(copy);
                 }
             }
             if let Some(outside) = refused.outside_policy("") {

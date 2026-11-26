@@ -241,7 +241,8 @@ impl ResourceSourceContext {
         let mut policy_rejections = 0u64;
         let mut refused = ntfs_admission::RefusedObjects::default();
         let mut no_dos = true;
-        let (mut files, mut directories, mut streams, mut logical_bytes) = (0u64, 0u64, 0u64, 0u64);
+        // Counted as the admission the observation pinned counts them.
+        let mut counts = ntfs_admission::TreeCounts::default();
         let (mut raw_directories, mut user_case_matched, mut internal_directories) =
             (0u64, 0u64, 0u64);
         let internal_bound = indexes.binds_domain(&raw)
@@ -286,21 +287,7 @@ impl ResourceSourceContext {
                 )?;
                 Vec::new()
             } else {
-                if file.is_directory {
-                    directories = directories
-                        .checked_add(1)
-                        .context("directory count overflow")?;
-                } else {
-                    files = files.checked_add(1).context("file count overflow")?;
-                    streams = streams
-                        .checked_add(file.streams.len() as u64)
-                        .context("stream count overflow")?;
-                    for stream in &file.streams {
-                        logical_bytes = logical_bytes
-                            .checked_add(stream.logical_size)
-                            .context("logical total overflow")?;
-                    }
-                }
+                counts.add(&file)?;
                 ntfs_admission::paged::ordinary_user_issues(&raw, &file, admission)?
             };
             policy_rejections = policy_rejections
@@ -386,9 +373,9 @@ impl ResourceSourceContext {
                 .is_some_and(|flags| flags & 1 == 0)
             && raw.header().volume_version.as_deref() == Some("3.1");
         let policy_flags = raw.header().volume_flags == Some(0) || short_policy;
-        let resource_counts = admission.validate_tree(files, directories, streams).is_ok()
-            && files > 0
-            && logical_bytes <= i64::MAX as u64;
+        let resource_counts = counts.fit(admission);
+        let limits_detail = counts.limits_detail(admission);
+        let directories = counts.directories;
         let source_objects =
             comparison.all_supported_user_views_compatible && policy_rejections == 0;
         let objects_detail = refused.detail(
@@ -451,7 +438,7 @@ impl ResourceSourceContext {
             (
                 "resource_limits",
                 resource_counts,
-                "exact source counts and logical total match pinned resources",
+                limits_detail.as_str(),
             ),
             (
                 "source_backups",
@@ -494,12 +481,19 @@ impl ResourceSourceContext {
         ] {
             gate(&mut gates, code, satisfied, detail);
         }
-        let replacement_ready = internal_bound
-            && clean
-            && policy_flags
-            && source_objects
-            && resource_counts
-            && unresolved_count == 0;
+        let (replacement_ready, case_matched) =
+            ntfs_admission::dependent_gates(ntfs_admission::DependentGateInputs {
+                internal_bound,
+                clean,
+                policy_flags,
+                source_objects,
+                resource_counts,
+                unresolved: unresolved_count,
+                directories,
+                raw_directories,
+                internal_directories,
+                user_case_matched,
+            });
         gate(
             &mut gates,
             "internal_replacement_state",
@@ -509,10 +503,7 @@ impl ResourceSourceContext {
         gate(
             &mut gates,
             "native_directory_case_sensitivity",
-            directories > 0
-                && user_case_matched == directories
-                && (internal_directories == 0 || replacement_ready)
-                && raw_directories == directories + internal_directories,
+            case_matched,
             "every transferred directory needs actual stable zero case flags; only exact proof-bound internals are excluded",
         );
         gate(

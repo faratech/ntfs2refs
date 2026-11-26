@@ -205,32 +205,46 @@ pub(crate) fn summary(findings: &[CloudFinding]) -> Vec<String> {
     lines
 }
 
+fn left(path: &str, left_out: &BTreeSet<String>) -> bool {
+    left_out
+        .iter()
+        .any(|gone| crate::plain_projection::within(path, gone))
+}
+
+/// Whether a placeholder cannot be brought onto the volume now: a file
+/// that needs a download its provider cannot make (not running, or not
+/// known to run), or a folder its provider has not listed in full (what it
+/// lacks cannot be named, so it can only be left out whole).
+fn stranded(finding: &CloudFinding) -> bool {
+    match &finding.report {
+        Ok(report) if finding.directory => report.unpopulated,
+        Ok(_) => finding.needs_download() && finding.provider_running() != Some(true),
+        Err(_) => false,
+    }
+}
+
 /// Why a run would stop for the volume's placeholders, before it changes
-/// anything: a directory its provider has not listed in full (what it
-/// lacks cannot be named), a placeholder the Cloud Files API could not
-/// report on, and one that needs a download its provider cannot make now,
-/// unless the user agreed to leave it out (`left_out`, by path).
+/// anything: a placeholder the Cloud Files API could not report on, and
+/// one it cannot bring onto the volume now ([`stranded`]), unless the user
+/// agreed to leave it out (`left_out`, by path: a folder left out takes
+/// what is below it).
 pub(crate) fn refusals(findings: &[CloudFinding], left_out: &BTreeSet<String>) -> Vec<String> {
     let mut refusals = Vec::new();
     let unlisted: Vec<String> = findings
         .iter()
-        .filter(|finding| {
-            finding
-                .report
-                .as_ref()
-                .is_ok_and(|report| report.unpopulated)
-        })
+        .filter(|finding| finding.directory && stranded(finding) && !left(&finding.path, left_out))
         .map(|finding| finding.path.clone())
         .collect();
     if !unlisted.is_empty() {
         refusals.push(format!(
-            "{} cloud folder(s) have not been listed in full on this device by their provider, so what they hold cannot be named: {}. Open each with its provider running, or make it always available on this device, and run again",
+            "{} cloud folder(s) have not been listed in full on this device by their provider, so what they hold cannot be named: {}. Open each with its provider running, or make it always available on this device, and run again; or agree to leave it out whole",
             unlisted.len(),
             named(&unlisted)
         ));
     }
     let unasked: Vec<String> = findings
         .iter()
+        .filter(|finding| !left(&finding.path, left_out))
         .filter_map(|finding| match &finding.report {
             Err(error) => Some(format!("{} ({error})", finding.path)),
             Ok(_) => None,
@@ -243,21 +257,16 @@ pub(crate) fn refusals(findings: &[CloudFinding], left_out: &BTreeSet<String>) -
             named(&unasked)
         ));
     }
-    let stranded: Vec<String> = findings
+    let files: Vec<String> = findings
         .iter()
-        .filter(|finding| {
-            !finding.directory
-                && finding.needs_download()
-                && finding.provider_running() != Some(true)
-                && !left_out.contains(&finding.path)
-        })
+        .filter(|finding| !finding.directory && stranded(finding) && !left(&finding.path, left_out))
         .map(|finding| format!("{} ({})", finding.path, finding.provider()))
         .collect();
-    if !stranded.is_empty() {
+    if !files.is_empty() {
         refusals.push(format!(
             "{} cloud placeholder(s) are not wholly on this device and their provider is not running to download them: {}. Nothing was changed: {}",
-            stranded.len(),
-            named(&stranded),
+            files.len(),
+            named(&files),
             crate::plain_projection::CLOUD_REMEDY
         ));
     }
@@ -265,44 +274,182 @@ pub(crate) fn refusals(findings: &[CloudFinding], left_out: &BTreeSet<String>) -
 }
 
 /// What a check, and a conversion's check before its questions, refuse of
-/// the volume's placeholders. Those whose provider cannot download them
-/// are not among them where they may be left out (`cloud_left_out`): the
-/// conversion asks about them, and refuses them only if the user does not
-/// agree.
+/// the volume's placeholders. Those that cannot be brought onto the volume
+/// now are not among them: they may be left out (`cloud_left_out`), and
+/// the conversion asks about them, and refuses them only if the user does
+/// not agree.
 pub(crate) fn check_refusals(findings: &[CloudFinding]) -> Result<Vec<String>> {
     if !PlainKind::CloudLeftOut.implemented() {
         return Ok(refusals(findings, &BTreeSet::new()));
     }
-    let left_out: BTreeSet<String> = leave_out_list(findings)?
-        .entries()
-        .iter()
-        .map(|entry| entry.path.clone())
-        .collect();
-    Ok(refusals(findings, &left_out))
+    Ok(refusals(findings, &paths_of(&leave_out_list(findings)?)))
 }
 
-/// The placeholders a user may agree to leave out: those not wholly on
-/// this device. Its SHA-256 is what `--leave-out-cloud` names.
+/// The paths a list names.
+pub(crate) fn paths_of(list: &PlainList) -> BTreeSet<String> {
+    list.entries()
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect()
+}
+
+/// The placeholders a user may agree to leave out: those that cannot be
+/// brought onto the volume now ([`stranded`]), outermost first: what is
+/// below a folder among them goes with it and is not named apart. Its
+/// SHA-256 is what `--leave-out-cloud` names.
 pub(crate) fn leave_out_list(findings: &[CloudFinding]) -> Result<PlainList> {
+    let folders: BTreeSet<String> = findings
+        .iter()
+        .filter(|finding| finding.directory && stranded(finding))
+        .map(|finding| finding.path.clone())
+        .collect();
     PlainList::new(
         findings
             .iter()
-            .filter(|finding| !finding.directory && finding.needs_download())
-            .map(|finding| {
-                let report = finding.report.as_ref().ok();
-                PlainEntry {
-                    kind: PlainKind::CloudLeftOut,
-                    path: finding.path.clone(),
-                    cleared_attributes: 0,
-                    bytes: report.map_or(0, |report| report.size),
-                    volume_extra_bytes: 0,
-                    working_extra_bytes: 0,
-                    download_bytes: 0,
-                }
+            .filter(|finding| stranded(finding))
+            .filter(|finding| {
+                !folders.iter().any(|folder| {
+                    folder != &finding.path
+                        && crate::plain_projection::within(&finding.path, folder)
+                })
+            })
+            .map(|finding| PlainEntry {
+                kind: PlainKind::CloudLeftOut,
+                path: finding.path.clone(),
+                cleared_attributes: 0,
+                bytes: finding.report.as_ref().map_or(0, |report| report.size),
+                volume_extra_bytes: 0,
+                working_extra_bytes: 0,
+                download_bytes: 0,
             })
             .collect(),
     )
     .map_err(anyhow::Error::msg)
+}
+
+/// Reads `--leave-out-cloud`: a SHA-256 as a check prints it.
+pub(crate) fn parse_leave_out(text: &str) -> std::result::Result<String, String> {
+    if text.len() == 64 && text.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(text.to_ascii_lowercase())
+    } else {
+        Err(format!(
+            "--leave-out-cloud takes the SHA-256 of a list of cloud placeholders to leave out, as `--check` prints it (64 hexadecimal digits), not {text:?}"
+        ))
+    }
+}
+
+/// Pure: what a run does with the list of placeholders it may leave out,
+/// given `--leave-out-cloud` and whether `--yes` answers its questions.
+pub(crate) fn decide_leave_out(
+    list: &PlainList,
+    agreed: Option<&str>,
+    unattended: bool,
+) -> Result<crate::plain_consent::Decision> {
+    let given = agreed;
+    use crate::plain_consent::Decision;
+    let sha = list.sha256();
+    if list.is_empty() {
+        if let Some(named) = given {
+            bail!(
+                "--leave-out-cloud names the list {named}, and every cloud placeholder of this volume can be brought onto it: there is nothing to leave out. Nothing was changed"
+            );
+        }
+        return Ok(Decision::Nothing);
+    }
+    match given {
+        Some(named) if named == sha => Ok(if unattended {
+            Decision::Accepted
+        } else {
+            Decision::Ask
+        }),
+        Some(named) => bail!(
+            "--leave-out-cloud names the list {named}, and the cloud placeholders this run would leave out are {sha}: the volume is not as it was when that list was made. Nothing was changed. Read the list again (--check) and agree to it as it is"
+        ),
+        None if unattended => bail!(
+            "{} cloud placeholder(s) cannot be brought onto the volume now, because their provider is not running or has not listed a folder in full: {} (list sha256 {sha}). --yes does not leave them out by itself: start their provider, or add --leave-out-cloud {sha} after reading the list. Nothing was changed",
+            list.len(),
+            named(
+                &list
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.path.clone())
+                    .collect::<Vec<_>>()
+            )
+        ),
+        None => Ok(Decision::Ask),
+    }
+}
+
+/// The question a run asks about leaving placeholders out.
+pub(crate) fn leave_out_question(list: &PlainList) -> String {
+    format!(
+        "Leave these {} cloud placeholder(s) out of the conversion? They stay in the cloud and are not on the new volume (list sha256 {}). [y/N]",
+        list.len(),
+        list.sha256()
+    )
+}
+
+/// Writes the list of placeholders that may be left out under
+/// `directory`, and says where.
+pub(crate) fn write_leave_out_list(
+    directory: &Path,
+    list: &PlainList,
+) -> Result<std::path::PathBuf> {
+    let path = directory.join(format!("cloud-left-out-{}.txt", &list.sha256()[..16]));
+    std::fs::write(&path, list.text())
+        .map_err(|error| anyhow::anyhow!("writing the list to {}: {error}", path.display()))?;
+    Ok(path)
+}
+
+/// After the plain-conversions list was agreed: the placeholders that
+/// cannot be brought onto the volume now are named, and the user asked to
+/// leave them out (they stay in the cloud). Agreed, the run's list leaves
+/// them out and what is downloaded before the freeze is planned without
+/// them; not agreed, the run is refused with nothing changed. `Ok(false)`
+/// when the user declined.
+pub(crate) fn settle(
+    findings: &[CloudFinding],
+    agreed: &PlainList,
+    named: Option<&str>,
+    directory: &Path,
+) -> Result<bool> {
+    let list = leave_out_list(findings)?;
+    let decision = decide_leave_out(&list, named, crate::confirmation::assumed())?;
+    let mut left_out = BTreeSet::new();
+    if decision != crate::plain_consent::Decision::Nothing {
+        let file = write_leave_out_list(directory, &list)?;
+        println!(
+            "{} cloud placeholder(s) cannot be brought onto this volume now: their provider is not running, or has not listed the folder in full. The full list: {} (sha256 {}).",
+            list.len(),
+            file.display(),
+            list.sha256()
+        );
+        for entry in list.entries().iter().take(5) {
+            println!("  {}", entry.path);
+        }
+        if list.len() > 5 {
+            println!("  and {} more.", list.len() - 5);
+        }
+        println!("{}", leave_out_question(&list));
+        let yes = if decision == crate::plain_consent::Decision::Accepted {
+            println!("yes (--yes --leave-out-cloud {})", list.sha256());
+            true
+        } else {
+            print!("> ");
+            crate::confirmation::answer()?
+        };
+        if !yes {
+            return Ok(false);
+        }
+        crate::plain_consent::leave_out(&list)?;
+        left_out = paths_of(&list);
+    }
+    let refused = refusals(findings, &left_out);
+    if let Some(first) = refused.first() {
+        bail!("this volume is refused, and nothing on it was changed: {first}");
+    }
+    set_plan(plan_for(findings, agreed, &left_out));
+    Ok(true)
 }
 
 /// One placeholder to download before the freeze.
@@ -332,7 +479,7 @@ pub(crate) fn plan_for(
             !finding.directory
                 && finding.needs_download()
                 && listed.contains(finding.path.as_str())
-                && !left_out.contains(&finding.path)
+                && !left(&finding.path, left_out)
         })
         .map(|finding| Download {
             path: finding.path.clone(),
@@ -568,15 +715,8 @@ mod tests {
         assert_eq!(plan_for(&findings, &list, &left_out).len(), 1);
         // Nothing outside the agreed list is downloaded.
         assert!(plan_for(&findings, &agreed(&["\\c\\full.txt"]), &BTreeSet::new()).is_empty());
-        // The list a user may leave out: those not wholly here.
-        let leave = leave_out_list(&findings).unwrap();
-        assert_eq!(leave.len(), 2);
-        assert!(
-            leave
-                .entries()
-                .iter()
-                .all(|e| e.kind == PlainKind::CloudLeftOut)
-        );
+        // Their provider runs: nothing is offered to be left out.
+        assert!(leave_out_list(&findings).unwrap().is_empty());
     }
 
     #[test]
@@ -604,6 +744,72 @@ mod tests {
                 && text.contains("provider of 1 of them is not running"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn what_cannot_be_brought_now_may_be_left_out_whole_and_bound_to_its_list() {
+        use crate::plain_consent::Decision;
+        let folder = |path: &str, state| CloudFinding {
+            path: path.into(),
+            directory: true,
+            report: Ok(n2r_win32::cloud_native::directory_report(state, None)),
+            sync_root: None,
+        };
+        let findings = [
+            finding("\\c\\full.txt", 4096, None),
+            finding("\\c\\up.txt", 0, Some(true)),
+            finding("\\c\\down.txt", 0, Some(false)),
+            folder("\\c\\unlisted", 0x11),
+            finding("\\c\\unlisted\\x.txt", 0, Some(false)),
+            folder("\\c\\listed", 0x1),
+        ];
+        // Only what cannot be brought now; what is below a folder left out
+        // goes with it and is not named apart.
+        let list = leave_out_list(&findings).unwrap();
+        let paths: Vec<_> = list.entries().iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["\\c\\down.txt", "\\c\\unlisted"]);
+        // A check does not refuse what may be left out; a run that leaves
+        // it out is refused for nothing, and downloads the rest only.
+        assert!(check_refusals(&findings).unwrap().is_empty());
+        let left = paths_of(&list);
+        assert!(refusals(&findings, &left).is_empty());
+        assert_eq!(refusals(&findings, &BTreeSet::new()).len(), 2);
+        let agreed = agreed(&[
+            "\\c\\full.txt",
+            "\\c\\up.txt",
+            "\\c\\down.txt",
+            "\\c\\unlisted\\x.txt",
+        ]);
+        let plan = plan_for(&findings, &agreed, &left);
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].path, "\\c\\up.txt");
+        // Bound to the exact list: --yes needs it named, another is refused.
+        let sha = list.sha256();
+        assert_eq!(
+            decide_leave_out(&list, Some(&sha), true).unwrap(),
+            Decision::Accepted
+        );
+        assert_eq!(
+            decide_leave_out(&list, Some(&sha), false).unwrap(),
+            Decision::Ask
+        );
+        assert_eq!(decide_leave_out(&list, None, false).unwrap(), Decision::Ask);
+        let unattended = decide_leave_out(&list, None, true).unwrap_err().to_string();
+        assert!(
+            unattended.contains(&format!("--leave-out-cloud {sha}"))
+                && unattended.contains("\\c\\down.txt")
+                && unattended.contains("Nothing was changed"),
+            "{unattended}"
+        );
+        let other = "0".repeat(64);
+        assert!(decide_leave_out(&list, Some(&other), true).is_err());
+        assert_eq!(
+            decide_leave_out(&PlainList::default(), None, true).unwrap(),
+            Decision::Nothing
+        );
+        assert!(decide_leave_out(&PlainList::default(), Some(&sha), true).is_err());
+        assert!(parse_leave_out(&"AB".repeat(32)).is_ok() && parse_leave_out("ab").is_err());
+        assert!(leave_out_question(&list).contains("stay in the cloud"));
     }
 
     #[test]

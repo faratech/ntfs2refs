@@ -115,6 +115,17 @@ pub struct DriveArgs {
         value_parser = crate::plain_consent::parse_accept,
         conflicts_with_all = ["windows_boot_volume", "offline_recovery_media", "recover", "list", "check"])]
     pub accept_plain: Option<String>,
+    /// With --yes: agree to leave out of the conversion the cloud
+    /// placeholders that cannot be brought onto the volume now (their
+    /// provider is not running, or has not listed a folder in full), named
+    /// by the SHA-256 of their list as `--check` prints it. They stay in the
+    /// cloud and are not on the new volume. Without it an unattended run
+    /// with such placeholders is refused before anything is changed; a list
+    /// that is not this one refuses it too.
+    #[arg(long, requires_all = ["drive", "yes", "accept_plain"], value_name = "SHA256",
+        value_parser = crate::drive_plain_prefreeze::parse_leave_out,
+        conflicts_with_all = ["windows_boot_volume", "offline_recovery_media", "recover", "list", "check"])]
+    pub leave_out_cloud: Option<String>,
     /// Allocation unit of the ReFS target in bytes: 4096 (default) or 65536.
     /// Data stays where it is only if it lies on boundaries of this size, so
     /// 65536 suits a source with clusters of 64 KiB or larger; from smaller
@@ -821,8 +832,8 @@ mod windows {
         // Not a data volume: its short names are not dropped in this process.
         crate::short_name_disposition::choose_for_this_run(None, false);
         ensure!(
-            args.accept_plain.is_none(),
-            "--accept-plain is for a data volume; the running Windows is converted without plain conversions. Nothing was changed."
+            args.accept_plain.is_none() && args.leave_out_cloud.is_none(),
+            "--accept-plain and --leave-out-cloud are for a data volume; the running Windows is converted without plain conversions. Nothing was changed."
         );
         ensure!(
             !args.minimize_scratch,
@@ -1340,8 +1351,8 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                 );
             }
             ensure!(
-                args.accept_plain.is_none(),
-                "--accept-plain is for a data volume on a disk the running Windows is not on; a partition on the running Windows disk is converted without plain conversions. Nothing was changed."
+                args.accept_plain.is_none() && args.leave_out_cloud.is_none(),
+                "--accept-plain and --leave-out-cloud are for a data volume on a disk the running Windows is not on; a partition on the running Windows disk is converted without plain conversions. Nothing was changed."
             );
             // This route has no diagnose stop; refuse before discovering anything.
             let authority = mode
@@ -1680,13 +1691,22 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                         );
                         return Ok(0);
                     }
-                    // The cloud placeholders of the agreed list that are not
-                    // wholly on this device are downloaded before the freeze.
-                    crate::drive_plain_prefreeze::set_plan(crate::drive_plain_prefreeze::plan_for(
+                    // The cloud placeholders that cannot be brought onto
+                    // this device now are named, and left out only if the
+                    // user agrees to that too; the others of the agreed list
+                    // that are not wholly on it are downloaded before the
+                    // freeze.
+                    if !crate::drive_plain_prefreeze::settle(
                         &report.cloud,
                         &report.plain,
-                        &Default::default(),
-                    ));
+                        args.leave_out_cloud.as_deref(),
+                        &parent,
+                    )? {
+                        println!(
+                            "Cancelled: the placeholders that cannot be brought onto the volume are left out only with your agreement. No conversion started, and nothing was changed."
+                        );
+                        return Ok(0);
+                    }
                 }
                 super::precheck::Outcome::Changing { last } => println!(
                     "The volume changed while it was read, so this check says nothing of it (the last reading stopped at: {last}). The run examines the volume again once it is frozen{}.",
@@ -2167,6 +2187,16 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                 "A conversion asks about this list on its own; unattended, it takes --yes --accept-plain {}.",
                 report.plain.sha256()
             );
+            let left = crate::drive_plain_prefreeze::leave_out_list(&report.cloud)?;
+            if !left.is_empty() {
+                let file = crate::drive_plain_prefreeze::write_leave_out_list(&parent, &left)?;
+                println!(
+                    "{} cloud placeholder(s) cannot be brought onto the volume now (their provider is not running, or has not listed a folder in full). A conversion asks whether to leave them out (they stay in the cloud, and are not on the new volume), or is refused; unattended, it takes --leave-out-cloud {} as well. The list: {}.",
+                    left.len(),
+                    left.sha256(),
+                    file.display()
+                );
+            }
         }
         Ok(check_exit_code(&outcome))
     }

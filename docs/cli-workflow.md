@@ -358,7 +358,7 @@ Refused before anything is written, each with what was found and what to do:
 | EFS-encrypted files this account cannot decrypt (each named), or encrypted with named streams, or compressed or sparse | Run as the user who encrypted them, import that user's EFS key, or run as the data recovery agent; or `cipher /d` |
 | An OFFLINE file with a reparse point (a storage manager's) | Recall it through its storage manager, or move it |
 | Data Deduplication, and a `compact /exe` file on a Windows boot volume or backed by a WIM image | The kind is named, with the record number to find the file by; a `compact /exe` file with `compact /u /exe <file>` |
-| Cloud placeholders (OneDrive and other Cloud Files API providers) not wholly on this device whose provider is not running, a folder its provider has not listed in full, one the Cloud Files API cannot report on, and any on a Windows boot volume | Each is named. Start the provider, or make the files always available on this device |
+| Cloud placeholders (OneDrive and other Cloud Files API providers) not wholly on this device whose provider is not running, or a folder its provider has not listed in full, that you did not agree to leave out; one the Cloud Files API cannot report on; any on a Windows boot volume | Each is named. Start the provider, or make the files always available on this device; or agree to leave them out (`--leave-out-cloud`) |
 | A named data stream on the root directory or on a reparse-point directory, or one on a directory that is encrypted, compressed or sparse | Remove the stream. A plain named stream on any other directory is carried over as the same directory's named stream on ReFS (shown in the lab by `ds3-dirstream-minimal` and `ds3-dirstream-lived-in`: identical listings, acceptance passed) |
 | Two names in one directory that differ only by case (both are given) | Rename one of them, then `fsutil file setCaseSensitiveInfo <directory> disable` |
 | A dirty volume, an NTFS log that was not closed, an open transaction | `chkdsk E: /f`, or dismount cleanly |
@@ -415,12 +415,28 @@ plain silently. This version converts:
   and sparse marks, and a folder loses its point and marks. OneDrive and
   the Cloud Files API do not run on ReFS: the folders stop syncing, and the
   section says so. Move the provider's folder to an NTFS volume first to
-  keep it syncing.
+  keep it syncing;
+- a cloud placeholder that cannot be brought onto the volume now, left out
+  (`cloud_left_out`): its provider is not running, or has not listed a
+  folder in full. `--check` names them and writes their own list, with its
+  SHA-256. After the question about the list above, a conversion asks a
+  second one:
+
+  ```text
+  Leave these 2 cloud placeholder(s) out of the conversion? They stay in the cloud and are not on the new volume (list sha256 5d1e...). [y/N]
+  ```
+
+  Unattended it needs `--leave-out-cloud <sha256>` naming that list as
+  well. Declined, or not named, the run is refused and nothing is changed.
+  Agreed, each placeholder of the list is not made on the new volume, and
+  a folder left out takes everything below it; once the volume is frozen
+  every object left out has its own row in `plain-conversions.json`, and
+  every count the new volume is checked against (objects, streams and
+  bytes) is the source's less exactly those objects.
 
 The other kinds a list can name (`dedup_rehydrated`,
-`projfs_placeholder_plain`, `sis_expanded`, and `cloud_left_out` for a
-placeholder that cannot be brought onto the volume and stays in the cloud)
-are still refused as listed above.
+`projfs_placeholder_plain`, `sis_expanded`) are still refused as listed
+above.
 
 `--check` prints a "Converted to plain" section: how many objects of each
 kind, their bytes, the extra space on the new volume and in the working
@@ -826,6 +842,7 @@ differences it accepts.
 | `--target-format dev-drive\|standard` | How Windows formats the new file system; standard is the default on Windows Server, dev-drive elsewhere |
 | `--short-names refuse\|drop` | What to do with a data volume's 8.3 short names: convert without them and keep a list (the default; said before the question), or refuse the volume |
 | `--accept-plain <sha256>` | With `--yes`: agrees to the list of objects converted to plain files, by its SHA-256 as `--check` prints it |
+| `--leave-out-cloud <sha256>` | With `--yes --accept-plain`: agrees to leave out the cloud placeholders that cannot be brought onto the volume now, by the SHA-256 of their list as `--check` prints it; they stay in the cloud |
 | `--windows-boot-volume` | The volume is an installed Windows that is not running |
 | `--restart-media <dir>` | Windows installation media, for a partition on the disk of the running Windows: it is converted through a restart |
 | `--recover <dir> --recovery-sha256 <sum>` `[--rollback]` | Finishes, or undoes, an interrupted run |
@@ -844,8 +861,10 @@ converted, a conversion or a diagnose run then also needs
 print it. A run whose drive letter leads to another volume is refused before
 anything is opened. A recovery needs only `--yes`: its checksum already binds
 it to its run. A run that would convert objects to plain files also needs
-`--accept-plain <sha256>`, the checksum of their list as `--check` prints it
-(see "Converted to plain").
+`--accept-plain <sha256>`, the checksum of their list as `--check` prints it,
+and one that would leave cloud placeholders out also needs
+`--leave-out-cloud <sha256>`, the checksum of that list (see "Converted to
+plain").
 
 ```powershell
 .\ntfs2refs.exe --drive E --scratch-directory S:\runs --yes --volume-serial 1A2B-3C4D

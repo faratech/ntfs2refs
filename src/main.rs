@@ -214,7 +214,7 @@ fn run() -> Result<u8> {
                             {"what": "EFS-encrypted files this account cannot decrypt, or of a shape not made plain (named streams, compressed or sparse and encrypted)", "remedy": "run as the user who encrypted them, import their key or use the recovery agent; or cipher /d"},
                             {"what": "an OFFLINE file with a reparse point (a hierarchical storage manager's)"},
                             {"what": "cloud placeholders (OneDrive and other Cloud Files API providers) not wholly on the device whose provider is not running, of a folder the provider has not listed in full, or that the Cloud Files API cannot report on",
-                             "remedy": "start the provider, or make the files always available on this device"},
+                             "remedy": "start the provider, or make the files always available on this device; or agree to leave them out (--leave-out-cloud), and they stay in the cloud"},
                             {"what": "reparse points other than symbolic links, junctions, app execution aliases and the files of the Windows Subsystem for Linux (Data Deduplication, compact /exe)",
                              "remedy": "named per kind"},
                             {"what": "a named data stream on the root directory, on a reparse-point directory, or one on a directory that is encrypted, compressed or sparse",
@@ -241,6 +241,7 @@ fn run() -> Result<u8> {
                         "answers": "every question of the run",
                         "requires": "--volume-serial for a conversion or a diagnose run (the serial number --list prints); a recovery is bound to its run by its checksum",
                         "plain_conversions": "--accept-plain <sha256>, naming the list of objects made plain files; --yes alone does not agree to it",
+                        "cloud_left_out": "--leave-out-cloud <sha256>, naming the list of cloud placeholders that cannot be brought onto the volume, which are then left out; --yes alone does not leave them out",
                     },
                     "list": {
                         "option": "--list",

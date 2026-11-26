@@ -58,6 +58,50 @@ pub(crate) fn agree(list: PlainList) {
     *state() = State::Agreed(list);
 }
 
+/// Pure: `agreed` with the placeholders of `left` left out instead: every
+/// entry within a path of `left` (the path itself, or below a folder of
+/// it) goes, and `left`'s own entries come in.
+pub(crate) fn with_left_out(agreed: &PlainList, left: &PlainList) -> Result<PlainList> {
+    let mut entries: Vec<_> = agreed
+        .entries()
+        .iter()
+        .filter(|entry| {
+            !left
+                .entries()
+                .iter()
+                .any(|gone| crate::plain_projection::within(&entry.path, &gone.path))
+        })
+        .cloned()
+        .collect();
+    entries.extend(left.entries().iter().cloned());
+    PlainList::new(entries).map_err(anyhow::Error::msg)
+}
+
+/// The user agreed, besides the list, to leave out the placeholders of
+/// `left` (`cloud_left_out`): the run's agreed list is the one with them
+/// left out.
+pub(crate) fn leave_out(left: &PlainList) -> Result<()> {
+    let mut state = state();
+    let State::Agreed(agreed) = &*state else {
+        bail!("placeholders are left out only of a list that was agreed");
+    };
+    *state = State::Agreed(with_left_out(agreed, left)?);
+    Ok(())
+}
+
+/// The paths this run agreed to leave out.
+pub(crate) fn left_out_paths() -> std::collections::BTreeSet<String> {
+    match &*state() {
+        State::Agreed(list) => list
+            .entries()
+            .iter()
+            .filter(|entry| entry.kind == n2r_win32::plain_ledger::PlainKind::CloudLeftOut)
+            .map(|entry| entry.path.clone())
+            .collect(),
+        _ => Default::default(),
+    }
+}
+
 /// What the frozen source would make plain, held to what was agreed. The
 /// SHA-256 of the agreed list, when every object of `frozen` is in it.
 pub(crate) fn bind(frozen: &PlainList, agreed: Option<&PlainList>) -> Result<String> {
@@ -394,6 +438,56 @@ mod tests {
         assert!(bind(&PlainList::default(), None).is_ok());
         let unasked = bind(&agreed, None).unwrap_err().to_string();
         assert!(unasked.contains("no list of them was agreed"), "{unasked}");
+    }
+
+    #[test]
+    fn a_list_with_placeholders_left_out_holds_them_and_what_is_below_them() {
+        let entry = |path: &str, kind| PlainEntry {
+            kind,
+            path: path.into(),
+            cleared_attributes: 0,
+            bytes: 1,
+            volume_extra_bytes: 0,
+            working_extra_bytes: 0,
+            download_bytes: 0,
+        };
+        let agreed = PlainList::new(vec![
+            entry("\\c\\a.bin", PlainKind::CloudPlaceholderPlain),
+            entry("\\c\\folder", PlainKind::CloudPlaceholderPlain),
+            entry("\\c\\folder\\x.bin", PlainKind::CloudPlaceholderPlain),
+            entry("\\c\\kept.bin", PlainKind::CloudPlaceholderPlain),
+        ])
+        .unwrap();
+        let left = PlainList::new(vec![
+            entry("\\c\\a.bin", PlainKind::CloudLeftOut),
+            entry("\\c\\folder", PlainKind::CloudLeftOut),
+        ])
+        .unwrap();
+        let both = with_left_out(&agreed, &left).unwrap();
+        let shown: Vec<_> = both
+            .entries()
+            .iter()
+            .map(|e| (e.path.as_str(), e.kind))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("\\c\\a.bin", PlainKind::CloudLeftOut),
+                ("\\c\\folder", PlainKind::CloudLeftOut),
+                ("\\c\\kept.bin", PlainKind::CloudPlaceholderPlain),
+            ]
+        );
+        // What the frozen source then finds below the folder is agreed.
+        let frozen = PlainList::new(vec![
+            entry("\\c\\folder\\x.bin", PlainKind::CloudLeftOut),
+            entry("\\c\\kept.bin", PlainKind::CloudPlaceholderPlain),
+        ])
+        .unwrap();
+        assert!(bind(&frozen, Some(&both)).is_ok());
+        // Made plain where it was agreed left out: not agreed.
+        let made =
+            PlainList::new(vec![entry("\\c\\a.bin", PlainKind::CloudPlaceholderPlain)]).unwrap();
+        assert!(bind(&made, Some(&both)).is_err());
     }
 
     #[test]

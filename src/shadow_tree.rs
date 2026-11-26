@@ -592,10 +592,15 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
             )
             .map_err(anyhow::Error::msg)?;
         // (The admission is compared with the tree's counts and these
-        // drops added back: `validate_new_tree`.)
+        // drops, and the objects left out, added back: `validate_new_tree`.)
         if dropped != 0 {
             drops_met.insert((object.record_number, object.sequence_number));
         }
+        ensure!(
+            !drops.is_left_out(object.record_number, object.sequence_number),
+            "MFT record {} is left out of the conversion, and is in the expected tree",
+            object.record_number
+        );
         ensure!(
             resource_admission.is_some() || stream_count <= ntfs_admission::MAX_DATA_STREAMS,
             "expected total DATA stream count exceeds 16,384"

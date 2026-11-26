@@ -663,6 +663,105 @@ pub(crate) fn attach_copies(rows: &mut [LedgerRow]) -> Result<()> {
     Ok(())
 }
 
+/// Whether `path` (as a listing names it) is `left` or below it.
+pub(crate) fn within(path: &str, left: &str) -> bool {
+    path == left
+        || (path.len() > left.len()
+            && path.starts_with(left)
+            && path.as_bytes()[left.len()] == b'\\')
+}
+
+/// Whether an object with these names is left out: every name within a
+/// path agreed to be left out, or none. An object some of whose names are
+/// left out and some not (a hard link out of a folder left out) cannot be
+/// half made, and is refused by name.
+pub(crate) fn left_out_by(
+    paths: &[String],
+    left_out: &std::collections::BTreeSet<String>,
+) -> std::result::Result<bool, String> {
+    let inside = paths
+        .iter()
+        .filter(|path| left_out.iter().any(|left| within(path, left)))
+        .count();
+    match inside {
+        0 => Ok(false),
+        n if n == paths.len() => Ok(true),
+        _ => Err(format!(
+            "{} has names both in a cloud folder left out and outside it ({}): it cannot be left out in part. Nothing was changed: remove the hard links that leave the folder, or do not leave the folder out",
+            paths[0],
+            paths.join(", ")
+        )),
+    }
+}
+
+/// The list entry and the ledger row of an object left out of the
+/// conversion (`cloud_left_out`): what the admission counted of it (the
+/// object, a file's data streams and their bytes), which the new tree does
+/// not hold.
+fn left_out_row(file: &FileInventory, paths: Vec<String>) -> Result<(PlainEntry, LedgerRow)> {
+    let first = paths
+        .first()
+        .cloned()
+        .with_context(|| format!("MFT record {} has no name", file.record_number))?;
+    let bytes = if file.is_directory {
+        0
+    } else {
+        file.streams
+            .iter()
+            .fold(0u64, |sum, stream| sum.saturating_add(stream.logical_size))
+    };
+    let before = crate::ntfs_file_attributes::project_user(file)?.win32_attributes;
+    let placeholder = cloud_placeholder(file)?;
+    Ok((
+        PlainEntry {
+            kind: PlainKind::CloudLeftOut,
+            path: first,
+            cleared_attributes: 0,
+            bytes,
+            volume_extra_bytes: 0,
+            working_extra_bytes: 0,
+            download_bytes: 0,
+        },
+        LedgerRow {
+            kind: PlainKind::CloudLeftOut,
+            paths,
+            record_number: file.record_number,
+            sequence_number: file.sequence_number,
+            before: LedgerState {
+                attributes: before,
+                reparse_tag: placeholder.map(|placeholder| placeholder.tag),
+            },
+            after: LedgerState::default(),
+            witness: format!(
+                "MFT record {} on the frozen source, {}; left out as agreed, it stays in the cloud",
+                file.record_number,
+                if placeholder.is_some() {
+                    "a cloud placeholder"
+                } else {
+                    "below a cloud folder left out"
+                }
+            ),
+            plain_copy: None,
+            efs: None,
+            cloud: placeholder.map(|placeholder| n2r_win32::plain_ledger::LedgerCloud {
+                tag: placeholder.tag,
+                directory: placeholder.directory,
+                plain_bytes: placeholder.plain_bytes,
+                raw_missing_bytes: placeholder.raw_missing_bytes,
+            }),
+            left_out: Some(n2r_win32::plain_ledger::LedgerLeftOut {
+                directory: file.is_directory,
+                streams: if file.is_directory {
+                    0
+                } else {
+                    file.streams.len() as u64
+                },
+                bytes,
+            }),
+        },
+    ))
+}
+
 /// The objects of a frozen source that are converted to plain: the list,
 /// and the ledger's rows with every name of each object. NTFS-internal
 /// objects are never converted.
@@ -670,10 +769,32 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
     let (mut entries, mut rows, mut copies, mut wofs) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut not_present: Vec<String> = Vec::new();
+    // What the user agreed to leave out: those paths, and everything below
+    // a folder among them. Each object is found and declared by its own
+    // row; nothing is left out by inference afterwards.
+    let left_out = crate::plain_consent::left_out_paths();
     for ordinal in 0..files.file_count() {
         let file = files.file(ordinal)?;
         if ntfs_admission::paged::internal_role(files, &file)?.is_some() {
             continue;
+        }
+        if !left_out.is_empty() {
+            let paths: Vec<String> = ntfs_admission::paged::user_paths(files, &file)
+                .with_context(|| {
+                    format!(
+                        "the names of MFT record {}, which may be left out",
+                        file.record_number
+                    )
+                })?
+                .iter()
+                .map(|path| listing_path(path))
+                .collect();
+            if left_out_by(&paths, &left_out).map_err(anyhow::Error::msg)? {
+                let (entry, row) = left_out_row(&file, paths)?;
+                entries.push(entry);
+                rows.push(row);
+                continue;
+            }
         }
         let Some(transform) = of_file(&file)? else {
             continue;
@@ -783,6 +904,7 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
                 plain_bytes: placeholder.plain_bytes,
                 raw_missing_bytes: placeholder.raw_missing_bytes,
             }),
+            left_out: None,
         });
     }
     if let Some(first) = not_present.first() {
@@ -1069,6 +1191,26 @@ mod tests {
         );
         assert!(CLOUD_WARNING.contains("do not run on ReFS"));
         assert!(CLOUD_REMEDY.contains("leave it out"));
+    }
+
+    #[test]
+    fn what_is_left_out_is_each_object_within_a_path_agreed() {
+        let left: std::collections::BTreeSet<String> =
+            ["\\c\\folder".to_owned(), "\\c\\a.bin".to_owned()].into();
+        let paths = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        assert_eq!(left_out_by(&paths(&["\\c\\a.bin"]), &left), Ok(true));
+        assert_eq!(left_out_by(&paths(&["\\c\\folder"]), &left), Ok(true));
+        assert_eq!(
+            left_out_by(&paths(&["\\c\\folder\\deep\\x.txt"]), &left),
+            Ok(true)
+        );
+        // A sibling whose name only begins the same is not below it.
+        assert_eq!(left_out_by(&paths(&["\\c\\folder2\\x"]), &left), Ok(false));
+        assert_eq!(left_out_by(&paths(&["\\c\\a.bin2"]), &left), Ok(false));
+        // A file with a name inside and one outside cannot be half made.
+        let split = left_out_by(&paths(&["\\c\\folder\\x", "\\d\\x"]), &left).unwrap_err();
+        assert!(split.contains("cannot be left out in part"), "{split}");
+        assert!(within("\\c", "\\c") && !within("\\c", "\\c\\d"));
     }
 
     #[test]

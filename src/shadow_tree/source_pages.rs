@@ -1551,6 +1551,8 @@ struct AtOnceJob<'a> {
 enum AtOnce {
     /// An NTFS internal role.
     Role(String),
+    /// An object the run's ledger leaves out: not made.
+    LeftOut(u64, u16),
     /// The row could not be read, or its role derived: the projection
     /// stops there.
     Refused(anyhow::Error),
@@ -1631,10 +1633,14 @@ impl SourceExpectedDomain {
             object_ids: None,
             once: None,
         };
+        let declared = n2r_win32::plain_ledger::declared();
         for ordinal in 0..source.file_count() {
             let file = source.file_shared(ordinal)?;
             if let Some(role) = ntfs_admission::paged::internal_role(source, &file)? {
                 roles.push(role);
+                continue;
+            }
+            if declared.is_left_out(file.record_number, file.sequence_number) {
                 continue;
             }
             let (object, _) = build_object(
@@ -1957,6 +1963,11 @@ impl SourceExpectedDomain {
             .map_or(1, |n| n.get())
             .saturating_sub(1)
             .min(8);
+        // The objects the run's plain-conversions ledger leaves out
+        // (`cloud_left_out`) are not made: each is passed over here, and
+        // every one declared has to be met.
+        let declared = n2r_win32::plain_ledger::declared();
+        let mut left_out = std::collections::BTreeSet::new();
         let at_once = match (compared, once.as_ref()) {
             (Some(rows), Some(once)) if helpers >= 1 => scratch
                 // The batch being built and the one being read beside it.
@@ -2000,6 +2011,13 @@ impl SourceExpectedDomain {
                                 batch.push(in_order::Slot::Ready(AtOnce::Refused(error)));
                                 break;
                             }
+                        }
+                        if declared.is_left_out(file.record_number, file.sequence_number) {
+                            batch.push(in_order::Slot::Ready(AtOnce::LeftOut(
+                                file.record_number,
+                                file.sequence_number,
+                            )));
+                            continue;
                         }
                         let (reads, workspace) =
                             GatheredReads::gather(&live, once, rows, &file, admission);
@@ -2054,6 +2072,10 @@ impl SourceExpectedDomain {
                 },
                 |made| match made {
                     AtOnce::Role(role) => projecting.role(role),
+                    AtOnce::LeftOut(record, sequence) => {
+                        left_out.insert((record, sequence));
+                        Ok(())
+                    }
                     AtOnce::Refused(error) => Err(error),
                     AtOnce::InTurn { ordinal, file } => {
                         let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::InTurn);
@@ -2078,11 +2100,18 @@ impl SourceExpectedDomain {
                     projecting.role(role)?;
                     continue;
                 }
+                if declared.is_left_out(file.record_number, file.sequence_number) {
+                    left_out.insert((file.record_number, file.sequence_number));
+                    continue;
+                }
                 let (object, ea_normalization) =
                     build_object(&live, ordinal, &file, admission, carry_case_marks)?;
                 projecting.record(ordinal, &file, object, ea_normalization, None)?;
             }
         }
+        declared
+            .require_left_out(&left_out)
+            .map_err(anyhow::Error::msg)?;
         projecting.flush()?;
         let Projecting {
             objects,

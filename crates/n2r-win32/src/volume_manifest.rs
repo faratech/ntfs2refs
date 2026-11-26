@@ -972,6 +972,19 @@ pub fn compare_with_plain(
     // that makes, held to what is there afterwards.
     let mut expected: Vec<Record> = Vec::new();
     let mut compared: BTreeSet<&str> = BTreeSet::new();
+    // A folder placeholder left out takes everything below it with it; each
+    // of those objects has its own row, and is held to being below one.
+    let left_out_folders: Vec<&str> = ledger
+        .rows
+        .iter()
+        .filter(|row| row.kind == PlainKind::CloudLeftOut)
+        .flat_map(|row| row.paths.iter().map(String::as_str))
+        .filter(|path| {
+            before_by_path.get(path).is_some_and(|record| {
+                record.directory && record.reparse_tag.is_some_and(is_cloud_tag)
+            })
+        })
+        .collect();
     for row in &ledger.rows {
         for path in &row.paths {
             let Some(was) = before_by_path.get(path.as_str()) else {
@@ -986,12 +999,17 @@ pub fn compare_with_plain(
                 continue;
             };
             if row.kind == PlainKind::CloudLeftOut {
-                if !was.reparse_tag.is_some_and(is_cloud_tag) {
+                let below_a_left_out_folder = left_out_folders.iter().any(|folder| {
+                    path.len() > folder.len()
+                        && path.starts_with(folder)
+                        && path.as_bytes()[folder.len()] == b'\\'
+                });
+                if !was.reparse_tag.is_some_and(is_cloud_tag) && !below_a_left_out_folder {
                     fail(
                         path,
                         "declared feature not shown before",
                         format!(
-                            "left out as a cloud placeholder, and the listing before shows reparse tag {:?}",
+                            "left out as a cloud placeholder, and the listing before shows reparse tag {:?}, below no cloud folder left out",
                             was.reparse_tag
                         ),
                     );
@@ -1904,6 +1922,7 @@ mod tests {
             plain_copy: None,
             efs: None,
             cloud: None,
+            left_out: None,
         }
     }
     /// A volume with an ordinary file and a TEMPORARY one, before and after
@@ -2233,6 +2252,44 @@ mod tests {
             there.plain.failure_kinds["left out, and there afterwards"],
             1
         );
+        // A folder placeholder left out, and what is below it, each by its
+        // own row: all absent afterwards. A plain file below it is left out
+        // with it; one elsewhere is not a placeholder to leave out.
+        let mut folder = directory("\\c");
+        folder.attributes |= 0x400;
+        folder.reparse_tag = Some(0x9000_001a);
+        let inner = file("\\c\\plain.txt", "x");
+        let outside = file("\\d.txt", "y");
+        let left = |path: &str| LedgerRow {
+            paths: vec![path.into()],
+            ..row(PlainKind::CloudLeftOut)
+        };
+        let verdict = compare_with_plain(
+            &[directory("\\"), folder.clone(), inner.clone()],
+            &[directory("\\")],
+            Declared::default(),
+            &ledger(vec![left("\\c"), left("\\c\\plain.txt")]),
+        );
+        assert!(verdict.identical(), "{verdict:?}");
+        let stray = compare_with_plain(
+            &[directory("\\"), outside],
+            &[directory("\\")],
+            Declared::default(),
+            &ledger(vec![left("\\d.txt")]),
+        );
+        assert_eq!(
+            stray.plain.failure_kinds["declared feature not shown before"],
+            1
+        );
+        // Below the folder, but not declared: the listing comparison finds
+        // it missing.
+        let undeclared = compare_with_plain(
+            &[directory("\\"), folder, inner],
+            &[directory("\\")],
+            Declared::default(),
+            &ledger(vec![left("\\c")]),
+        );
+        assert!(!undeclared.identical(), "{undeclared:?}");
         // A directory placeholder: its point and marks go, and nothing is
         // read of it.
         let mut folder = directory("\\d");

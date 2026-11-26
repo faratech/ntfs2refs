@@ -22,10 +22,16 @@ pub struct SecurityIndexPins {
 #[serde(deny_unknown_fields)]
 pub struct SecurityCapturePins {
     schema_version: u32,
+    /// The central table: absent on NTFS 1.2, which has no $Secure.
+    central: Option<CentralPins>,
+    legacy: RecordStorePin,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CentralPins {
     sds: SourcePagePin,
     sii: SecurityIndexPins,
     sdh: SecurityIndexPins,
-    legacy: RecordStorePin,
 }
 struct IndexOwner {
     root: PagedMetadataRange,
@@ -77,6 +83,9 @@ pub(super) struct PagedSecurityCapture {
     scratch: SourceScratch,
     legacy: SortedRecordWriter,
     secure: Option<(SourcePagePin, SecurityIndexPins, SecurityIndexPins)>,
+    /// NTFS 1.2: no $Secure (record 9 is $Quota); every descriptor is a
+    /// file's own. Set once $Volume has been read.
+    pub(super) legacy_layout: bool,
 }
 fn key(number: u64) -> [u8; 16] {
     let mut value = [0; 16];
@@ -94,6 +103,7 @@ impl PagedSecurityCapture {
                 scratch,
             )?,
             secure: None,
+            legacy_layout: false,
         })
     }
     fn named<'a>(record: &'a Record, kind: u32, name: &str) -> Result<Option<&'a Attribute>> {
@@ -217,7 +227,7 @@ impl PagedSecurityCapture {
             record.base == 0 && !record.attributes.iter().any(|a| a.report.type_code == 0x20),
             "unresolved extension/list cannot establish complete security capture"
         );
-        if number == 9 {
+        if number == 9 && !self.legacy_layout {
             ensure!(
                 self.secure.is_none()
                     && super::supports_record_geometry(geometry)
@@ -274,21 +284,21 @@ impl PagedSecurityCapture {
         Ok(())
     }
     pub(super) fn finish(self) -> Result<PagedSecurityInput> {
-        let (sds, sii, sdh) = self.secure.context("complete Secure capture absent")?;
+        let central = match self.secure {
+            Some((sds, sii, sdh)) => Some(CentralPins { sds, sii, sdh }),
+            None if self.legacy_layout => None,
+            None => anyhow::bail!("complete Secure capture absent"),
+        };
         let pin = SecurityCapturePins {
             schema_version: 1,
-            sds,
-            sii,
-            sdh,
+            central,
             legacy: self.legacy.finish()?,
         };
         PagedSecurityInput::open(&pin, &self.scratch)
     }
 }
 pub struct PagedSecurityInput {
-    sds: PagedMetadataRange,
-    sii: IndexOwner,
-    sdh: IndexOwner,
+    central: Option<(PagedMetadataRange, IndexOwner, IndexOwner)>,
     legacy: SortedRecordStore,
     pin: SecurityCapturePins,
 }
@@ -299,9 +309,17 @@ impl PagedSecurityInput {
             "unsupported security capture schema"
         );
         let value = Self {
-            sds: PagedMetadataRange::open(&pin.sds, scratch)?,
-            sii: IndexOwner::open(&pin.sii, scratch)?,
-            sdh: IndexOwner::open(&pin.sdh, scratch)?,
+            central: pin
+                .central
+                .as_ref()
+                .map(|c| -> Result<_> {
+                    Ok((
+                        PagedMetadataRange::open(&c.sds, scratch)?,
+                        IndexOwner::open(&c.sii, scratch)?,
+                        IndexOwner::open(&c.sdh, scratch)?,
+                    ))
+                })
+                .transpose()?,
             legacy: SortedRecordStore::open(&pin.legacy, scratch)?,
             pin: pin.clone(),
         };
@@ -323,13 +341,18 @@ impl PagedSecurityInput {
     }
 }
 impl RootSecurityCaptureDomain for PagedSecurityInput {
-    fn sds(&self) -> &dyn SourceMetadataRange {
-        &self.sds
+    fn has_central(&self) -> bool {
+        self.central.is_some()
+    }
+    fn sds(&self) -> Result<&dyn SourceMetadataRange> {
+        let (sds, _, _) = self.central.as_ref().context("the volume has no $Secure")?;
+        Ok(sds)
     }
     fn index(&self, kind: crate::ntfs_security::IndexKind) -> Result<SourceIndexRanges<'_>> {
+        let (_, sii, sdh) = self.central.as_ref().context("the volume has no $Secure")?;
         Ok(match kind {
-            crate::ntfs_security::IndexKind::Id => self.sii.ranges(),
-            crate::ntfs_security::IndexKind::Hash => self.sdh.ranges(),
+            crate::ntfs_security::IndexKind::Id => sii.ranges(),
+            crate::ntfs_security::IndexKind::Hash => sdh.ranges(),
         })
     }
     fn legacy_count(&self) -> u64 {
@@ -339,9 +362,11 @@ impl RootSecurityCaptureDomain for PagedSecurityInput {
         self.legacy.get(ordinal)
     }
     fn revalidate(&self) -> Result<()> {
-        self.sds.revalidate()?;
-        self.sii.revalidate()?;
-        self.sdh.revalidate()?;
+        if let Some((sds, sii, sdh)) = &self.central {
+            sds.revalidate()?;
+            sii.revalidate()?;
+            sdh.revalidate()?;
+        }
         self.legacy.revalidate()
     }
 }

@@ -2102,11 +2102,14 @@ fn classify_metadata_roles(report: &mut NtfsInspection, budget: &mut ReportBudge
     let root_valid = root.is_some_and(|i| {
         valid_role_anchor(&files[i], &[u16::from(b'.')], files[i].sequence_number)
     });
+    // NTFS 1.2 has no $Extend: record 11 is a reserved record like 12 to 15.
+    let legacy = crate::ntfs_version::legacy_layout_text(report.volume_version.as_deref());
     for (i, file) in files.iter().enumerate() {
         if file.record_number < 16 {
             states[i] = match file.record_number {
                 5 if root_valid => State::OutsideExtend,
                 5 => State::Unresolved(Issue::InvalidRootAnchor),
+                11 if legacy => State::Unresolved(Issue::UnsupportedReservedParent),
                 11 if root_valid
                     && valid_role_anchor(
                         file,
@@ -2202,7 +2205,8 @@ fn classify_metadata_roles(report: &mut NtfsInspection, budget: &mut ReportBudge
         let issue = if file.record_number < 16 {
             file.metadata_role = MetadataRole::ReservedSystemRecord;
             match (file.record_number, state) {
-                (5 | 11, State::Unresolved(issue)) => Some(issue),
+                (5, State::Unresolved(issue)) => Some(issue),
+                (11, State::Unresolved(issue)) if !legacy => Some(issue),
                 _ => None,
             }
         } else {
@@ -4335,6 +4339,7 @@ fn inspect_internal<R: Read + Seek>(
             ensure!(value.len() >= 12, "truncated volume information");
             let flags = u16le(&value, 10)?;
             let volume_version = format!("{}.{}", value[8], value[9]);
+            security.legacy_layout = crate::ntfs_version::legacy_layout((value[8], value[9]));
             budget.charge(volume_version.capacity() as u64)?;
             report.volume_version = Some(volume_version);
             report.volume_flags = Some(flags);

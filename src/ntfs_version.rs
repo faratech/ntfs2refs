@@ -54,6 +54,23 @@ pub fn reads_text(version: Option<&str>) -> bool {
     version.and_then(parse).is_some_and(reads)
 }
 
+/// Whether a volume of this version has NT 4.0's layout: no `$Extend` and
+/// no `$Secure` (record 9 is `$Quota`, records 11 to 15 are reserved), a
+/// `$SECURITY_DESCRIPTOR` (0x50) on every file in place of a security ID,
+/// and the 48-byte `$STANDARD_INFORMATION`. NTFS 1.2 has it; 3.x does not.
+/// Its attribute types 0x40 ($VOLUME_VERSION) and 0xC0 ($SYMBOLIC_LINK)
+/// are not the object ID and reparse point of 3.x; a file that has one is
+/// refused on such a volume rather than read as the 3.x attribute.
+pub fn legacy_layout(version: (u8, u8)) -> bool {
+    version.0 < 3
+}
+
+/// [`legacy_layout`] for the inspection's "major.minor" form. (A version
+/// that is not read is refused by its own blocker whatever this says.)
+pub fn legacy_layout_text(version: Option<&str>) -> bool {
+    version.and_then(parse).is_some_and(legacy_layout)
+}
+
 /// The version in the inspection's "major.minor" form.
 pub fn parse(text: &str) -> Option<(u8, u8)> {
     let (major, minor) = text.split_once('.')?;
@@ -127,6 +144,15 @@ mod tests {
         assert_eq!(parse("1.2"), Some((1, 2)));
         assert_eq!(parse("3"), None);
         assert_eq!(parse("x.1"), None);
+    }
+
+    #[test]
+    fn only_nt4_volumes_have_the_legacy_layout() {
+        assert!(legacy_layout_text(Some("1.2")));
+        for version in ["3.0", "3.1", "x.y"] {
+            assert!(!legacy_layout_text(Some(version)), "{version}");
+        }
+        assert!(!legacy_layout_text(None));
     }
 
     #[test]

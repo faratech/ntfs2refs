@@ -220,8 +220,10 @@ pub fn reconcile(
             "duplicate or invalid file identity"
         );
         if file.names.is_empty() {
+            // Reserved records 12 to 15, and 11 on NTFS 1.2, which has no
+            // $Extend (on 3.x a nameless record 11 is refused by its role).
             ensure!(
-                (12..16).contains(&file.record_number)
+                (11..16).contains(&file.record_number)
                     && !file.is_directory
                     && file.hard_link_count == 0,
                 "allocated object has no namespace name"
@@ -360,7 +362,7 @@ pub fn reconcile(
     }
     ensure!(
         objects.iter().all(|(r, f)| reachable.contains(r)
-            || ((12..16).contains(&f.record_number) && f.names.is_empty())),
+            || ((11..16).contains(&f.record_number) && f.names.is_empty())),
         "unreachable namespace component or directory cycle"
     );
     Ok(reachable.len())
@@ -521,8 +523,10 @@ fn reconcile_joined(
         );
         prior_file = Some(file.record_number);
         if file.names.is_empty() {
+            // Reserved records 12 to 15, and 11 on NTFS 1.2, which has no
+            // $Extend (on 3.x a nameless record 11 is refused by its role).
             ensure!(
-                (12..16).contains(&file.record_number)
+                (11..16).contains(&file.record_number)
                     && !file.is_directory
                     && file.hard_link_count == 0,
                 "allocated object has no namespace name"

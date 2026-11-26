@@ -160,6 +160,8 @@ pub(super) fn classify(
     root: &Path,
     scratch: &SourceScratch,
     windows_link_counter_hint: bool,
+    // NTFS 1.2 has no $Extend: record 11 is a reserved record like 12 to 15.
+    legacy: bool,
     mut blocked: impl FnMut(InspectionBlocker) -> Result<()>,
 ) -> Result<()> {
     use AncestryState as State;
@@ -185,6 +187,7 @@ pub(super) fn classify(
                 match file.record_number {
                     5 if root_valid => State::OutsideExtend,
                     5 => State::Unresolved(Issue::InvalidRootAnchor),
+                    11 if legacy => State::Unresolved(Issue::UnsupportedReservedParent),
                     11 if root_valid
                         && valid_role_anchor(
                             &file,
@@ -294,7 +297,8 @@ pub(super) fn classify(
             let problem = if file.record_number < 16 {
                 file.metadata_role = MetadataRole::ReservedSystemRecord;
                 match (file.record_number, state) {
-                    (5 | 11, State::Unresolved(problem)) => Some(problem),
+                    (5, State::Unresolved(problem)) => Some(problem),
+                    (11, State::Unresolved(problem)) if !legacy => Some(problem),
                     _ => None,
                 }
             } else {

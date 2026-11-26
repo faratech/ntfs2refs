@@ -1296,6 +1296,8 @@ fn inspect_paged_internal<R: Read + Seek>(
                     ensure!(value.len() >= 12, "truncated volume information");
                     let flags = u16le(&value, 10)?;
                     report.volume_version = Some(format!("{}.{}", value[8], value[9]));
+                    security.legacy_layout =
+                        crate::ntfs_version::legacy_layout((value[8], value[9]));
                     report.volume_flags = Some(flags);
                     report.dirty = Some(flags & 1 != 0);
                     if flags != 0 {
@@ -1405,6 +1407,7 @@ fn inspect_paged_internal<R: Read + Seek>(
         &root.join("roles"),
         &scratch,
         purpose == InspectionPurpose::WindowsConversion,
+        crate::ntfs_version::legacy_layout_text(report.volume_version.as_deref()),
         |item| emit_blocker(&mut blockers, &mut blocker_count, &item),
     )?;
     n2r_win32::perf::step("NTFS: finish and reconcile namespace");

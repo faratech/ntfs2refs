@@ -25,6 +25,9 @@ pub(super) struct SecurityCapture {
     pub(super) evidence: Sha256,
     pub(super) failure: Option<String>,
     pub(super) incomplete_attributes: bool,
+    /// NTFS 1.2: no $Secure (record 9 is $Quota); every file's descriptor
+    /// is its own $SECURITY_DESCRIPTOR attribute.
+    pub(super) legacy_layout: bool,
 }
 
 impl SecurityCapture {
@@ -179,7 +182,7 @@ impl SecurityCapture {
         geometry: &NtfsGeometry,
     ) -> Result<()> {
         use crate::ntfs_security as sec;
-        if number == 9 {
+        if number == 9 && !self.legacy_layout {
             ensure!(
                 crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
                     && super::supports_record_geometry(geometry),
@@ -270,7 +273,10 @@ impl SecurityCapture {
                     .into();
         } else if let Some(error) = self.failure {
             result.detail = error;
-        } else if let Some(mut table) = self.table {
+        } else if let Some(mut table) = self.table.or_else(|| {
+            self.legacy_layout
+                .then(crate::ntfs_security::Table::default)
+        }) {
             table.records.extend(self.legacy);
             match sec::bind_files(files, &table.records) {
                 Ok(bindings) => {

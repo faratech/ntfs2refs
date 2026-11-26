@@ -385,92 +385,122 @@ pub fn reconcile_paged(
     let index_record = files.header().geometry.index_record_size;
     let mut central_writer =
         SortedRecordWriter::new(&base.join("security-central"), *b"N2RSCEN1", scratch)?;
-    let mut previous: Option<Header> = None;
     let mut descriptor_bytes = 0u64;
     let mut aces = 0u64;
-    let sii = ntfs_index::paged::walk_ranges(
-        capture.index(IndexKind::Id)?,
-        Profile::SECURITY_ID,
-        cluster,
-        index_record,
-        scratch,
-        &base.join("security-sii.visited"),
-        |_entry, key, value| {
-            let h = header(value)?;
+    // NTFS 1.2 has no $Secure: no central descriptors, and every file's
+    // descriptor is its own, bound below like any legacy one.
+    let central_present = capture.has_central();
+    let (sii_entries, sdh_entries, index_blocks, sds_sha256, central_pin, central) =
+        if !central_present {
+            let central_pin = central_writer.finish()?;
+            let central = SortedRecordStore::open(&central_pin, scratch)?;
+            (
+                0,
+                0,
+                0,
+                String::from("no-central-security-table"),
+                central_pin,
+                central,
+            )
+        } else {
+            let mut previous: Option<Header> = None;
+            let sii = ntfs_index::paged::walk_ranges(
+                capture.index(IndexKind::Id)?,
+                Profile::SECURITY_ID,
+                cluster,
+                index_record,
+                scratch,
+                &base.join("security-sii.visited"),
+                |_entry, key, value| {
+                    let h = header(value)?;
+                    ensure!(
+                        key.len() == 4
+                            && u32le(key, 0)? == h.id
+                            && previous.as_ref().is_none_or(|prior| prior.id < h.id),
+                        "SII keys duplicate, unordered or differ from their values"
+                    );
+                    let record = descriptor_at(capture.sds()?, &h, budget.record_bytes)?;
+                    descriptor_bytes = descriptor_bytes
+                        .checked_add((record.descriptor.relative_hex.len() / 2) as u64)
+                        .context("security descriptor byte count overflow")?;
+                    aces = aces
+                        .checked_add(
+                            (record.descriptor.dacl.aces.len() + record.descriptor.sacl.aces.len())
+                                as u64,
+                        )
+                        .context("security ACE count overflow")?;
+                    central_writer.push(identity_key(u64::from(h.id)), &record)?;
+                    previous = Some(h);
+                    Ok(())
+                },
+            )?;
+            let central_pin = central_writer.finish()?;
+            let central = SortedRecordStore::open(&central_pin, scratch)?;
             ensure!(
-                key.len() == 4
-                    && u32le(key, 0)? == h.id
-                    && previous.as_ref().is_none_or(|prior| prior.id < h.id),
-                "SII keys duplicate, unordered or differ from their values"
+                sii.entries == central.len(),
+                "complete SII descriptor domain differs"
             );
-            let record = descriptor_at(capture.sds(), &h, budget.record_bytes)?;
-            descriptor_bytes = descriptor_bytes
-                .checked_add((record.descriptor.relative_hex.len() / 2) as u64)
-                .context("security descriptor byte count overflow")?;
-            aces = aces
-                .checked_add(
-                    (record.descriptor.dacl.aces.len() + record.descriptor.sacl.aces.len()) as u64,
-                )
-                .context("security ACE count overflow")?;
-            central_writer.push(identity_key(u64::from(h.id)), &record)?;
-            previous = Some(h);
-            Ok(())
-        },
-    )?;
-    let central_pin = central_writer.finish()?;
-    let central = SortedRecordStore::open(&central_pin, scratch)?;
-    ensure!(
-        sii.entries == central.len(),
-        "complete SII descriptor domain differs"
-    );
-    let mut previous: Option<Header> = None;
-    let sdh = ntfs_index::paged::walk_ranges(
-        capture.index(IndexKind::Hash)?,
-        Profile::SECURITY_HASH,
-        cluster,
-        index_record,
-        scratch,
-        &base.join("security-sdh.visited"),
-        |_entry, key, value| {
-            let h = header(value)?;
+            let mut previous: Option<Header> = None;
+            let sdh = ntfs_index::paged::walk_ranges(
+                capture.index(IndexKind::Hash)?,
+                Profile::SECURITY_HASH,
+                cluster,
+                index_record,
+                scratch,
+                &base.join("security-sdh.visited"),
+                |_entry, key, value| {
+                    let h = header(value)?;
+                    ensure!(
+                        key.len() == 8
+                            && u32le(key, 0)? == h.hash
+                            && u32le(key, 4)? == h.id
+                            && previous
+                                .as_ref()
+                                .is_none_or(|prior| (prior.hash, prior.id) < (h.hash, h.id)),
+                        "SDH keys duplicate, unordered or differ from their values"
+                    );
+                    let record: DescriptorRecord = central
+                        .find(identity_key(u64::from(h.id)))?
+                        .context("SDH descriptor is absent from SII")?;
+                    ensure!(
+                        descriptor_header(&record)? == h,
+                        "SDH/SII/SDS header differs"
+                    );
+                    previous = Some(h);
+                    Ok(())
+                },
+            )?;
             ensure!(
-                key.len() == 8
-                    && u32le(key, 0)? == h.hash
-                    && u32le(key, 4)? == h.id
-                    && previous
-                        .as_ref()
-                        .is_none_or(|prior| (prior.hash, prior.id) < (h.hash, h.id)),
-                "SDH keys duplicate, unordered or differ from their values"
+                sdh.entries == central.len(),
+                "complete SDH/SII descriptor sets differ"
             );
-            let record: DescriptorRecord = central
-                .find(identity_key(u64::from(h.id)))?
-                .context("SDH descriptor is absent from SII")?;
+            let sds = scan_sds_range(capture.sds()?, budget, |h, _bytes| {
+                let record: DescriptorRecord = central
+                    .find(identity_key(u64::from(h.id)))?
+                    .context("unindexed primary SDS descriptor")?;
+                ensure!(
+                    descriptor_header(&record)? == h,
+                    "SDS primary ID/header is duplicated or differs from SII/SDH"
+                );
+                Ok(())
+            })?;
             ensure!(
-                descriptor_header(&record)? == h,
-                "SDH/SII/SDS header differs"
+                sds.records == central.len() && sds.descriptor_bytes == descriptor_bytes,
+                "complete SDS/SII/SDH record and byte domains differ"
             );
-            previous = Some(h);
-            Ok(())
-        },
-    )?;
-    ensure!(
-        sdh.entries == central.len(),
-        "complete SDH/SII descriptor sets differ"
-    );
-    let sds = scan_sds_range(capture.sds(), budget, |h, _bytes| {
-        let record: DescriptorRecord = central
-            .find(identity_key(u64::from(h.id)))?
-            .context("unindexed primary SDS descriptor")?;
-        ensure!(
-            descriptor_header(&record)? == h,
-            "SDS primary ID/header is duplicated or differs from SII/SDH"
-        );
-        Ok(())
-    })?;
-    ensure!(
-        sds.records == central.len() && sds.descriptor_bytes == descriptor_bytes,
-        "complete SDS/SII/SDH record and byte domains differ"
-    );
+            let index_blocks = sii
+                .index_blocks
+                .checked_add(sdh.index_blocks)
+                .context("security index block count overflow")?;
+            (
+                sii.entries,
+                sdh.entries,
+                index_blocks,
+                sds.sha256,
+                central_pin,
+                central,
+            )
+        };
     let mut legacy_writer =
         SortedRecordWriter::new(&base.join("security-legacy"), *b"N2RSLEG1", scratch)?;
     for ordinal in 0..capture.legacy_count() {
@@ -615,11 +645,16 @@ pub fn reconcile_paged(
     files.revalidate()?;
     let mut evidence = Sha256::new();
     evidence.update(b"ntfs2refs-paged-security-v1\0");
-    evidence.update(sds.sha256.as_bytes());
+    evidence.update(sds_sha256.as_bytes());
     // Commit every captured index byte as well as the independently walked
     // reachable rows. Working memory stays one small fixed read window.
     let mut buffer = [0u8; 65536];
-    for kind in [IndexKind::Id, IndexKind::Hash] {
+    let kinds: &[IndexKind] = if central_present {
+        &[IndexKind::Id, IndexKind::Hash]
+    } else {
+        &[]
+    };
+    for &kind in kinds {
         let index = capture.index(kind)?;
         for range in [Some(index.root), index.allocation, index.bitmap]
             .into_iter()
@@ -645,12 +680,9 @@ pub fn reconcile_paged(
         central_descriptors: central.len(),
         legacy_descriptors: legacy.len(),
         bound_files: bindings.len(),
-        sii_entries: sii.entries,
-        sdh_entries: sdh.entries,
-        index_blocks: sii
-            .index_blocks
-            .checked_add(sdh.index_blocks)
-            .context("security index block count overflow")?,
+        sii_entries,
+        sdh_entries,
+        index_blocks,
         descriptor_bytes,
         aces,
         evidence_sha256: hex::encode(evidence.finalize()),
@@ -676,6 +708,8 @@ pub struct SecurityIndex {
     pub entries: Vec<Header>,
     pub index_blocks: usize,
 }
+/// The central table ($Secure). Empty on NTFS 1.2, which has none.
+#[derive(Default)]
 pub struct Table {
     pub records: Vec<DescriptorRecord>,
     pub index_blocks: usize,

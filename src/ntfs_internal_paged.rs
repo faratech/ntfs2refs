@@ -584,6 +584,37 @@ fn verify_domain_with_windows<R: Read + Seek>(
     }
     let expected_pin = expected_reparse.finish()?;
     let expected = SortedRecordStore::open(&expected_pin, &scratch)?;
+    // NTFS 1.2 has no $Extend, so no object-ID, reparse-point or quota
+    // index. Its attribute types 0x40 and 0xC0 are NT 4.0's $VOLUME_VERSION
+    // and $SYMBOLIC_LINK, not an object ID or a reparse point: a file that
+    // has one is refused, not read as the 3.x attribute.
+    if crate::ntfs_version::legacy_layout_text(source.header().volume_version.as_deref()) {
+        ensure!(
+            selected.iter().all(Option::is_none),
+            "this NTFS 1.2 volume has files in $Extend's roles, which NTFS 1.2 does not have"
+        );
+        ensure!(
+            object_id_count == 0 && expected.len() == 0,
+            "a file on this NTFS 1.2 volume has attribute 0x40 ($VOLUME_VERSION) or 0xC0 ($SYMBOLIC_LINK), which the converter does not read"
+        );
+        drop(expected);
+        scratch.retire_created(&expected_pin.data)?;
+        scratch.retire_created(&expected_pin.directory)?;
+        source.revalidate()?;
+        return Ok(PagedVerifiedIndexes {
+            inspection_sha256: source.canonical_sha256()?,
+            internal_volume_object_id: None,
+            replacement_supported: true,
+            default_quotas_only: true,
+            native_quota_policy_bound: false,
+            indexes: Vec::new(),
+            stores: Vec::new(),
+            ranges: Vec::new(),
+            windows_object_ids: None,
+            data_object_ids: None,
+            quotas_not_carried: None,
+        });
+    }
     let mut indexes = Vec::new();
     let mut stores = Vec::new();
     let mut ranges = Vec::new();

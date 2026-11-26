@@ -1828,7 +1828,10 @@ fn internal_role_with_path(
     if f.base_file_reference != 0 || f.metadata_role_issue.is_some() {
         return None;
     }
-    if (12..16).contains(&f.record_number) {
+    // Reserved records 12 to 15, and 11 nameless: NTFS 1.2's, which has no
+    // $Extend (on 3.x, a nameless record 11 has a role issue and is refused
+    // above).
+    if (12..16).contains(&f.record_number) || (f.record_number == 11 && f.names.is_empty()) {
         return (f.metadata_role == MetadataRole::ReservedSystemRecord
             && f.names.is_empty()
             && f.streams.iter().all(|s| {
@@ -1851,6 +1854,19 @@ fn internal_role_with_path(
         .then(|| "reserved_mft_slot".into());
     }
     let p = source_path()?;
+    // NTFS 1.2's record 9: $Quota, which NT 4.0 formats and never fills.
+    // Recognized only empty; anything in it is refused as an unknown object.
+    if f.record_number == 9 && p == ["$Quota"] {
+        return (f.metadata_role == MetadataRole::ReservedSystemRecord
+            && !f.is_directory
+            && f.streams
+                .iter()
+                .all(|s| s.name_utf16.is_empty() && s.logical_size == 0 && s.extents.is_empty())
+            && f.attributes
+                .iter()
+                .all(|a| matches!(a.type_code, 0x10 | 0x30 | 0x50 | 0x80)))
+        .then(|| "$Quota".into());
+    }
     let canonical = match f.record_number {
         0 => "$MFT",
         1 => "$MFTMirr",

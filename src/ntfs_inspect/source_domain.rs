@@ -233,7 +233,10 @@ pub struct LegacySecurityRecord {
     pub bytes: Vec<u8>,
 }
 pub trait RootSecurityCaptureDomain {
-    fn sds(&self) -> &dyn SourceMetadataRange;
+    /// Whether the volume has a central table ($Secure). NTFS 1.2 has none:
+    /// every descriptor is a file's own, and `sds` and `index` are absent.
+    fn has_central(&self) -> bool;
+    fn sds(&self) -> Result<&dyn SourceMetadataRange>;
     fn index(&self, kind: crate::ntfs_security::IndexKind) -> Result<SourceIndexRanges<'_>>;
     /// Legacy descriptor rows follow strict ascending canonical MFT numbers.
     fn legacy_count(&self) -> u64;

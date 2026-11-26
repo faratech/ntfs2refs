@@ -546,7 +546,13 @@ try {
                 $loaded = ((& fltmc.exe load PrjFlt 2>&1) -join ' ').Trim()
                 if (-not ((& fltmc.exe filters 2>&1) -match '^\s*PrjFlt\s')) { throw "ProjFS cannot run here: its filter PrjFlt is not loaded (fltmc load PrjFlt: $loaded)" }
             }
-            $attachedTo = { @(& fltmc.exe instances -f PrjFlt 2>&1) -match "^\s*PrjFlt\s+$([regex]::Escape($drive))\s" }
+            # fltmc instances names a volume by its drive letter or by its
+            # device path (\Device\HarddiskVolumeN); fltmc volumes maps one to
+            # the other.
+            $device = $null
+            foreach ($line in @(& fltmc.exe volumes 2>&1)) { if ("$line" -match "^\s*$([regex]::Escape($drive))\\?\s+(\\Device\\\S+)") { $device = $Matches[1] } }
+            $names = @($drive) + @($device | Where-Object { $_ })
+            $attachedTo = { $lines = @(& fltmc.exe instances -f PrjFlt 2>&1); @($names | Where-Object { $n = $_; $lines | Where-Object { "$_" -match "^\s*PrjFlt\s+$([regex]::Escape($n))\\?\s" } }).Count -gt 0 }
             $attach = 'already attached'
             if (-not (& $attachedTo)) {
                 $attach = ((& fltmc.exe attach PrjFlt $drive 2>&1) -join ' ').Trim()

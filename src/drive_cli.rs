@@ -1696,17 +1696,12 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                     // user agrees to that too; the others of the agreed list
                     // that are not wholly on it are downloaded before the
                     // freeze.
-                    if !crate::drive_plain_prefreeze::settle(
+                    crate::drive_plain_prefreeze::settle(
                         &report.cloud,
                         &report.plain,
                         args.leave_out_cloud.as_deref(),
                         &parent,
-                    )? {
-                        println!(
-                            "Cancelled: the placeholders that cannot be brought onto the volume are left out only with your agreement. No conversion started, and nothing was changed."
-                        );
-                        return Ok(0);
-                    }
+                    )?;
                 }
                 super::precheck::Outcome::Changing { last } => println!(
                     "The volume changed while it was read, so this check says nothing of it (the last reading stopped at: {last}). The run examines the volume again once it is frozen{}.",

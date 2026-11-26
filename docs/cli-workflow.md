@@ -358,7 +358,7 @@ Refused before anything is written, each with what was found and what to do:
 | EFS-encrypted files this account cannot decrypt (each named), or encrypted with named streams, or compressed or sparse | Run as the user who encrypted them, import that user's EFS key, or run as the data recovery agent; or `cipher /d` |
 | An OFFLINE file with a reparse point (a storage manager's) | Recall it through its storage manager, or move it |
 | Data Deduplication, and a `compact /exe` file on a Windows boot volume or backed by a WIM image | The kind is named, with the record number to find the file by; a `compact /exe` file with `compact /u /exe <file>` |
-| Cloud placeholders (OneDrive and other Cloud Files API providers) not wholly on this device whose provider is not running, or a folder its provider has not listed in full, that you did not agree to leave out; one the Cloud Files API cannot report on; any on a Windows boot volume | Each is named. Start the provider, or make the files always available on this device; or agree to leave them out (`--leave-out-cloud`) |
+| Cloud placeholders (OneDrive and other Cloud Files API providers) not wholly on this device that could not be downloaded before the freeze (each is named; a provider serves only the account that runs it), or a folder its provider has not listed in full, that you did not agree to leave out; one the Cloud Files API cannot report on; any on a Windows boot volume | Each is named. Start the provider, or make the files always available on this device; or agree to leave them out (`--leave-out-cloud`) |
 | A named data stream on the root directory or on a reparse-point directory, or one on a directory that is encrypted, compressed or sparse | Remove the stream. A plain named stream on any other directory is carried over as the same directory's named stream on ReFS (shown in the lab by `ds3-dirstream-minimal` and `ds3-dirstream-lived-in`: identical listings, acceptance passed) |
 | Two names in one directory that differ only by case (both are given) | Rename one of them, then `fsutil file setCaseSensitiveInfo <directory> disable` |
 | A dirty volume, an NTFS log that was not closed, an open transaction | `chkdsk E: /f`, or dismount cleanly |
@@ -417,17 +417,21 @@ plain silently. This version converts:
   section says so. Move the provider's folder to an NTFS volume first to
   keep it syncing;
 - a cloud placeholder that cannot be brought onto the volume now, left out
-  (`cloud_left_out`): its provider is not running, or has not listed a
+  (`cloud_left_out`): it is not wholly on this device, or its provider has not listed a
   folder in full. `--check` names them and writes their own list, with its
   SHA-256. After the question about the list above, a conversion asks a
   second one:
 
   ```text
-  Leave these 2 cloud placeholder(s) out of the conversion? They stay in the cloud and are not on the new volume (list sha256 5d1e...). [y/N]
+  Leave these 2 cloud placeholder(s) out of the conversion? They stay in the cloud and are not on the new volume (list sha256 5d1e...). Answer no to have them downloaded from their provider before the volume is frozen. [y/N]
   ```
 
-  Unattended it needs `--leave-out-cloud <sha256>` naming that list as
-  well. Declined, or not named, the run is refused and nothing is changed.
+  Unattended, `--leave-out-cloud <sha256>` naming that list leaves them
+  out. Declined, or not named, they are downloaded before the freeze
+  (whatever status their provider reports, which is only shown), each
+  within a minute and a second per MiB; one that cannot be is named, and
+  the run stops before the freeze with nothing converted. A folder its
+  provider has not listed in full can only be left out.
   Agreed, each placeholder of the list is not made on the new volume, and
   a folder left out takes everything below it; once the volume is frozen
   every object left out has its own row in `plain-conversions.json`, and

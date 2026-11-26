@@ -213,7 +213,7 @@ fn run() -> Result<u8> {
                              "passed_over": "a provider of backup software that answers and holds no shadow copy, named in a note: make a full backup afterwards"},
                             {"what": "EFS-encrypted files this account cannot decrypt, or of a shape not made plain (named streams, compressed or sparse and encrypted)", "remedy": "run as the user who encrypted them, import their key or use the recovery agent; or cipher /d"},
                             {"what": "an OFFLINE file with a reparse point (a hierarchical storage manager's)"},
-                            {"what": "cloud placeholders (OneDrive and other Cloud Files API providers) not wholly on the device whose provider is not running, of a folder the provider has not listed in full, or that the Cloud Files API cannot report on",
+                            {"what": "cloud placeholders (OneDrive and other Cloud Files API providers) that could not be downloaded before the freeze (each named; a provider serves only the account that runs it), of a folder the provider has not listed in full, or that the Cloud Files API cannot report on",
                              "remedy": "start the provider, or make the files always available on this device; or agree to leave them out (--leave-out-cloud), and they stay in the cloud"},
                             {"what": "reparse points other than symbolic links, junctions, app execution aliases and the files of the Windows Subsystem for Linux (Data Deduplication, compact /exe)",
                              "remedy": "named per kind"},

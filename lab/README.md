@@ -505,15 +505,17 @@ and a folder of them. `cloud` leaves the provider running: with
 `-AcceptPlain` the run downloads the two that are not wholly present before
 the freeze, lists the volume itself after that (`--compare-listing`), and
 that listing is the one the new volume is compared with. `cloud-down` stops
-it: the run is refused naming the two it cannot download, with the source
-unchanged; with `-LeaveOutCloud` as well (and `-Check -AcceptPlain
+it: the unattended run tries to download the two, names both, and stops
+before the freeze with the source unchanged; with `-LeaveOutCloud` as well (and `-Check -AcceptPlain
 -Unattended`, whose check prints the list's checksum) it passes
 `--leave-out-cloud` and converts without them, each declared
 `cloud_left_out` and absent afterwards (`cloud-down-leave-out`). The harness stops the provider and unregisters the sync root
 when the attempt ends. A Cloud Files provider serves only the account that
 runs it, and the feature step starts it as the account the harness works as:
-run `cloud` with `-RunAs administrator` (as SYSTEM the run finds the
-provider not running for it, and says so). The harness checks that the
+run `cloud` with `-RunAs administrator`. The provider's status is shown
+(the check, and `lab-cloud-provider report` before the run), never a gate.
+The listing descends into placeholder folders, so it lists a sync root's
+contents whether its provider runs or not. The harness checks that the
 provider is still serving before it starts the converter. Both are still to be run.
 
 `temporary`, `offline` and `wof` (four `compact /exe` files, one per WOF

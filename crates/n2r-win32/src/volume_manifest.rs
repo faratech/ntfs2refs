@@ -1633,9 +1633,17 @@ mod capture {
                 Err(error) => note(&mut record, "file identity", &error),
             }
         }
+        // Extended attributes are read of an object without a reparse
+        // point, as always, and of a placeholder (cloud files, ProjFS, Data
+        // Deduplication, single instance storage), which a conversion to
+        // plain carries over as a plain file: its record before has to hold
+        // them for the content verdict. Other reparse points (links,
+        // junctions, WSL files) are listed as they always were.
+        let mut read_extended_attributes = record.attributes & REPARSE == 0;
         if record.attributes & REPARSE != 0 {
             match crate::reparse_native::capture(&file) {
                 Ok(Some(point)) => {
+                    read_extended_attributes = super::is_placeholder_tag(point.tag());
                     record.reparse_tag = Some(point.tag());
                     record.reparse_sha256 = Some(hex::encode(Sha256::digest(&point.buffer)));
                     record.relative_link_target = relative_target(&point.buffer);
@@ -1653,7 +1661,8 @@ mod capture {
                 ),
                 Err(error) => note(&mut record, "reparse point", &error),
             }
-        } else {
+        }
+        if read_extended_attributes {
             // Asked of the object itself: the size a directory entry reports
             // for extended attributes can be stale.
             match crate::extended_attributes_native::capture(&file) {

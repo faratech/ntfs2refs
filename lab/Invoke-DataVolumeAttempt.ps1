@@ -285,6 +285,12 @@ param(
     # run the comparison is given the run's ledger (--plain-ledger), and the
     # ledger has to name exactly the (kind, path) pairs the features planted.
     [switch]$AcceptPlain,
+    # Agree to leave out the cloud placeholders that cannot be brought onto
+    # the volume (-Features cloud-down: its provider is stopped): with
+    # -AcceptPlain -Unattended -Check, it passes --leave-out-cloud with the
+    # checksum the check printed. Those placeholders are then absent after
+    # the run, each declared cloud_left_out in the ledger.
+    [switch]$LeaveOutCloud,
     # A shadow-copy (VSS) provider that the converter does not know.
     # 'answering' is one of Windows Server's own, the iSCSI target storage
     # provider (the Windows feature iSCSITarget-VSS-VDS, so the VM has to run
@@ -1231,6 +1237,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     }
     # The checksum of the list of objects to make plain files, as the check prints it.
     $plainSha = ''
+    $leaveOutSha = ''
     if ($Check -or $CheckOnly) {
         $checkArguments = @('--drive', 'V', '--scratch-directory', $working, '--check')
         if ($TargetFormat -ne 'default') { $checkArguments += @('--target-format', $TargetFormat) }
@@ -1275,6 +1282,9 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         # Exit 7: nothing refused, and a list of objects to make plain files, with its checksum.
         $plainSha = [string]($checked.text | ForEach-Object { if ($_ -match '--accept-plain ([0-9a-f]{64})') { $Matches[1] } } | Select-Object -Last 1)
         if ($plainSha) { $verdict.check.plain_list_sha256 = $plainSha; Say "check: a list of objects to make plain files, sha256 $plainSha" }
+        # The list of cloud placeholders that cannot be brought onto the volume, which a run may leave out.
+        $leaveOutSha = [string]($checked.text | ForEach-Object { if ($_ -match '--leave-out-cloud ([0-9a-f]{64})') { $Matches[1] } } | Select-Object -Last 1)
+        if ($leaveOutSha) { $verdict.check.leave_out_list_sha256 = $leaveOutSha; Say "check: cloud placeholders that may be left out, sha256 $leaveOutSha" }
         if ($checked.exit -eq 7 -and -not $plainSha) { $verdict.outcome = 'check-plain-without-checksum'; throw 'the check exited 7 and printed no list checksum' }
         if ($FreshFile) {
             # The check's count of short names against Windows' own: the
@@ -1341,6 +1351,10 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         if ($AcceptPlain) {
             if (-not $plainSha) { $verdict.outcome = 'accept-plain-without-a-list'; throw '-AcceptPlain -Unattended needs -Check, whose list checksum it passes, and the check printed none' }
             $arguments += @('--accept-plain', $plainSha)
+        }
+        if ($LeaveOutCloud) {
+            if (-not $leaveOutSha) { $verdict.outcome = 'leave-out-without-a-list'; throw '-LeaveOutCloud needs -Check -AcceptPlain -Unattended, and the check printed no --leave-out-cloud checksum' }
+            $arguments += @('--leave-out-cloud', $leaveOutSha)
         }
     }
     if ($lfs2 -or $ntfs30) {

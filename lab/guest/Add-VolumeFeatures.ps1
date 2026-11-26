@@ -352,7 +352,11 @@ public static class ManyFiles {
             # The sync root is itself a placeholder (a cloud tag on the folder).
             $plain.Add([ordered]@{ kind = 'cloud_placeholder_plain'; path = "\feature-$feature\synced" })
             foreach ($path in 'folder', 'folder\inner.bin', 'present.bin', 'partial.bin', 'absent.bin', 'pinned.bin') {
-                $plain.Add([ordered]@{ kind = 'cloud_placeholder_plain'; path = "\feature-$feature\synced\$path" })
+                # With the provider stopped, the two not wholly present can only
+                # be left out (the run is refused unless that is agreed:
+                # -LeaveOutCloud), and are absent afterwards.
+                $kind = if ($feature -eq 'cloud-down' -and $path -in 'partial.bin', 'absent.bin') { 'cloud_left_out' } else { 'cloud_placeholder_plain' }
+                $plain.Add([ordered]@{ kind = $kind; path = "\feature-$feature\synced\$path" })
             }
             $stop = "C:\n2r-cloud-backing\$feature.stop"
             Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue

@@ -254,7 +254,9 @@ $dataCases = @(
     # device are downloaded before the freeze and all made plain; with it stopped,
     # refused by name before anything is changed.
     'cloud-plain|-Content minimal -Features cloud -Check -AcceptPlain -Unattended'
-    'cloud-down|-Content minimal -Features cloud-down -AcceptPlain -ExpectRefusal provider.is.not.running'
+    'cloud-down|-Content minimal -Features cloud-down -Check -AcceptPlain -Unattended -ExpectRefusal leave-out-cloud'
+    # The same, with leaving the two out agreed: it converts without them.
+    'cloud-down-leave-out|-Content minimal -Features cloud-down -Check -AcceptPlain -Unattended -LeaveOutCloud'
     'names|-Content minimal -Features names -Check'
     # MBR disks: the volume alone on one, the working directory on one, both
     # with a run interrupted half way through the writes and resumed; and a

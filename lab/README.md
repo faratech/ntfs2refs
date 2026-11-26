@@ -506,7 +506,10 @@ and a folder of them. `cloud` leaves the provider running: with
 the freeze, lists the volume itself after that (`--compare-listing`), and
 that listing is the one the new volume is compared with. `cloud-down` stops
 it: the run is refused naming the two it cannot download, with the source
-unchanged. The harness stops the provider and unregisters the sync root
+unchanged; with `-LeaveOutCloud` as well (and `-Check -AcceptPlain
+-Unattended`, whose check prints the list's checksum) it passes
+`--leave-out-cloud` and converts without them, each declared
+`cloud_left_out` and absent afterwards (`cloud-down-leave-out`). The harness stops the provider and unregisters the sync root
 when the attempt ends. Both are still to be run.
 
 `temporary`, `offline` and `wof` (four `compact /exe` files, one per WOF

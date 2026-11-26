@@ -611,7 +611,10 @@ says whether chkdsk left it 1.2. Every `ntfs12` and `ntfs12-version`
 attempt also keeps, as the disk holds them once the volume has settled
 (after chkdsk where it ran), record 9 whole in `ntfs12.json` and the
 `$UpCase` table and `$Secure`'s `$SDS` as files, `upcase.bin` and `sds.bin`
-(the latter where there is one), to set beside a volume Windows made.
+(the latter where there is one), to set beside a volume Windows made;
+and, once the run is over and where the volume is still NTFS, every
+record from 16 on whole in `ntfs12-after-run.json` (Windows makes the TxF
+resource manager's files while the run reads the volume).
 Otherwise the verdict's
 `ntfs12` says in what version and state Windows left it, and the run goes
 on to convert it. The image carries the `$AttrDef` Windows writes (with

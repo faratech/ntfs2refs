@@ -2237,6 +2237,20 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         if ($verdict.outcome -in 'refused-source-unchanged', 'refused-as-expected') { $verdict.outcome = 'refused-after-shrinking-the-partition' }
         elseif ($verdict.outcome -in 'diagnose-clean', 'diagnose-found-failures') { $verdict.outcome = 'diagnose-changed-the-source' }
     }
+    if ($ntfs12Any) {
+        # Windows makes the TxF resource manager's files on an NTFS 1.2
+        # volume while the run reads it: every record from 16 on, whole, as
+        # the disk holds them once the run is over (where it is still NTFS).
+        try {
+            $afterRun = Invoke-Command -Session $session -ArgumentList $guestRoot, $sourceDisk, $sourceOffset -ScriptBlock {
+                param($root, $number, $offset)
+                $tool = [scriptblock]::Create((Get-Content -LiteralPath "$root\rawntfs.ps1" -Raw))
+                (@(& $tool -DiskNumber $number -PartitionOffset $offset -Action read-headers -Records ([long[]](16..255)) -SampleAll) | Select-Object -Last 1)
+            }
+            [IO.File]::WriteAllText((Join-Path $records 'ntfs12-after-run.json'), "$afterRun", [Text.UTF8Encoding]::new($false))
+            Say "ntfs12: the records after the run are in ntfs12-after-run.json"
+        } catch { Say "ntfs12: the records after the run could not be read: $($_.Exception.Message)" }
+    }
     if ($lfs2 -or $ntfs30) {
         # What the run recorded of the volume it was given, from its working
         # directory (removed when the attempt ends): any NTFS upgrade it had

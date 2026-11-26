@@ -73,7 +73,9 @@ param(
     # -StreamName), at most -MaxBytes of it, written raw to -Output.
     [string]$StreamName = '',
     [string]$Output,
-    [long]$MaxBytes = 16MB
+    [long]$MaxBytes = 16MB,
+    # read-headers: keep every one of -Records whole, not the first six.
+    [switch]$SampleAll
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 if (-not ('N2RLabRawNtfs' -as [type])) {
@@ -544,7 +546,7 @@ switch ($Action) {
         $state = @{}
         # Raw headers of the records NTFS needs to mount the volume and of the
         # first few rewritten ones, as the disk holds them now.
-        $sampled = @(@(0, 1, 2, 3, 5) + @($Records | Select-Object -First 6) | ForEach-Object { [long]$_ } | Select-Object -Unique)
+        $sampled = @(@(0, 1, 2, 3, 5) + @($Records | Select-Object -First $(if ($SampleAll) { [Math]::Max(1, $Records.Count) } else { 6 })) | ForEach-Object { [long]$_ } | Select-Object -Unique)
         $sample = [Collections.Generic.List[object]]::new()
         foreach ($chunk in (Get-MftChunks $mft)) {
             $bytes = [N2RLabRawNtfs]::ReadStream($device, $PartitionOffset, $cluster, $mft.runs, $chunk.first * [long]$recordBytes, $chunk.count * $recordBytes)

@@ -86,9 +86,14 @@ param(
     # lfs2 (the control OS's NtfsDisableLfsDowngrade is 1 from before the
     # volume is made until the attempt ends, so a clean dismount leaves the
     # $LogFile restart pages LFS 2.0; they are read and have to be 2.0 and
-    # clean, else the outcome is lfs2-not-produced; lfs2.json) and ntfs30
-    # ($Volume's version written as 3.0 in the MFT and in $MFTMirr; the run
-    # has to have Windows upgrade it to 3.1 and record that; ntfs30.json).
+    # clean, else the outcome is lfs2-not-produced; lfs2.json), ntfs30
+    # ($Volume's version written as 3.0 in the MFT and in $MFTMirr, on
+    # records still in the 3.1 header form) and ntfs30-headers (as ntfs30,
+    # and every in-use MFT record, and the $MFTMirr records that mirror them,
+    # rewritten into the NTFS 3.0 header form first). For both the run has
+    # to convert the volume as it is, with an identical listing and no
+    # ntfs-version-intent.json (the converter reads NTFS 3.0 itself);
+    # ntfs30.json.
     [string[]]$Features = @(),
     # With -Features lfs2: restart the control OS after NtfsDisableLfsDowngrade
     # is set (and again at the end, after it is put back), for an NTFS that
@@ -297,9 +302,12 @@ if ($PowerOffDuringPreparation) {
     if ($Siblings) { throw '-PowerOffDuringPreparation does not put the volumes of -Siblings back under their letters after the restart: not with -Siblings' }
 }
 # The features made on the disk itself rather than through Windows.
-$rawFeatures = @('lfs2', 'ntfs30')
+$rawFeatures = @('lfs2', 'ntfs30', 'ntfs30-headers')
 $requestedFeatures = @($Features | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
-$lfs2 = $requestedFeatures -contains 'lfs2'; $ntfs30 = $requestedFeatures -contains 'ntfs30'
+$lfs2 = $requestedFeatures -contains 'lfs2'
+# ntfs30-headers is ntfs30 and more: what is said of ntfs30 holds for it.
+$ntfs30Headers = $requestedFeatures -contains 'ntfs30-headers'
+$ntfs30 = $ntfs30Headers -or $requestedFeatures -contains 'ntfs30'
 if (($lfs2 -or $ntfs30) -and ($NativeRefsControl -or $CheckOnly)) { throw '-Features lfs2 and ntfs30 shape the NTFS volume a run converts: not with -NativeRefsControl or -CheckOnly' }
 if ($RestartForLfs2 -and -not $lfs2) { throw '-RestartForLfs2 is for -Features lfs2' }
 
@@ -1290,13 +1298,14 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         # Made on the disk itself, as late as can be: the disk is taken
         # offline, which dismounts the volume cleanly (and keeps any file
         # system off it while its bytes are read and written), the restart
-        # pages of $LogFile are read (lfs2) and $Volume's version is written
-        # as 3.0 (ntfs30), and the disk is brought back. The volume is then
-        # listed again: the listing before the run is of the volume as the
-        # run gets it.
+        # pages of $LogFile are read (lfs2), every in-use MFT record is
+        # rewritten into the NTFS 3.0 header form (ntfs30-headers) and
+        # $Volume's version is written as 3.0 (ntfs30), and the disk is
+        # brought back. The volume is then listed again: the listing before
+        # the run is of the volume as the run gets it.
         try {
-            $rawJson = Invoke-Command -Session $session -ArgumentList $guestRoot, $sourceDisk, $sourceOffset, $lfs2, $ntfs30, $unlock -ScriptBlock {
-                param($root, $number, $offset, $lfs2, $ntfs30, $unlock)
+            $rawJson = Invoke-Command -Session $session -ArgumentList $guestRoot, $sourceDisk, $sourceOffset, $lfs2, $ntfs30, $unlock, $ntfs30Headers -ScriptBlock {
+                param($root, $number, $offset, $lfs2, $ntfs30, $unlock, $ntfs30Headers)
                 $tool = [scriptblock]::Create((Get-Content -LiteralPath "$root\rawntfs.ps1" -Raw))
                 $result = [ordered]@{}
                 Set-Disk -Number $number -IsOffline $true
@@ -1304,7 +1313,8 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                     $disk = Get-Disk -Number $number
                     if (-not $disk.IsOffline) { throw "disk $number did not go offline" }
                     if ($lfs2) { $result.lfs2 = (& $tool -DiskNumber $number -PartitionOffset $offset -Action read-log | Select-Object -Last 1) | ConvertFrom-Json }
-                    if ($ntfs30) { $result.ntfs30 = (& $tool -DiskNumber $number -PartitionOffset $offset -Action set-version -Major 3 -Minor 0 | Select-Object -Last 1) | ConvertFrom-Json }
+                    if ($ntfs30Headers) { $result.ntfs30 = (& $tool -DiskNumber $number -PartitionOffset $offset -Action set-headers-30 | Select-Object -Last 1) | ConvertFrom-Json }
+                    elseif ($ntfs30) { $result.ntfs30 = (& $tool -DiskNumber $number -PartitionOffset $offset -Action set-version -Major 3 -Minor 0 | Select-Object -Last 1) | ConvertFrom-Json }
                 } finally { Set-Disk -Number $number -IsOffline $false }
                 $until = (Get-Date).AddSeconds(60)
                 while (-not (Test-Path -LiteralPath 'V:\') -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 500 }
@@ -1315,6 +1325,9 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                 # What the disk says when the run starts: Windows has had the
                 # volume mounted again for as long as the listing took.
                 if ($ntfs30) { $result.version_when_the_run_starts = (& $tool -DiskNumber $number -PartitionOffset $offset -Action read-version | Select-Object -Last 1) | ConvertFrom-Json }
+                # Every in-use record read again, and each one rewritten held
+                # to the 3.0 form: Windows has had the volume mounted.
+                if ($ntfs30Headers) { $result.headers_when_the_run_starts = (& $tool -DiskNumber $number -PartitionOffset $offset -Action read-headers -Records ([long[]]@($result.ntfs30.rewritten_records)) | Select-Object -Last 1) | ConvertFrom-Json }
                 [pscustomobject]$result | ConvertTo-Json -Depth 8 -Compress
             }
         } catch { $verdict.outcome = 'feature-not-made'; throw "lfs2 or ntfs30 could not be made on the disk: $($_.Exception.Message)" }
@@ -1337,6 +1350,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         if ($ntfs30) {
             $patch = $onDisk.ntfs30
             $patch | Add-Member -NotePropertyName version_when_the_run_starts -NotePropertyValue $onDisk.version_when_the_run_starts
+            if ($ntfs30Headers) { $patch | Add-Member -NotePropertyName headers_when_the_run_starts -NotePropertyValue $onDisk.headers_when_the_run_starts }
             [IO.File]::WriteAllText((Join-Path $records 'ntfs30.json'), ($patch | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
             $startsAt = $onDisk.version_when_the_run_starts
             $verdict.ntfs30 = [ordered]@{ version_before = $patch.mft.version_before; mft = $patch.mft.version_after; mirror = $patch.mirror.version_after
@@ -1345,6 +1359,20 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
             if ($startsAt.mft.version -ne '3.0') {
                 $verdict.outcome = 'ntfs30-upgraded-by-windows-before-the-run'
                 throw "Windows wrote NTFS $($startsAt.mft.version) to `$Volume when it mounted the volume again after the patch, before the run started: the run cannot be shown an NTFS 3.0 volume this way"
+            }
+            if ($ntfs30Headers) {
+                $headers = $onDisk.headers_when_the_run_starts
+                $toCurrent = @($headers.rewritten_now_3_1_form); $toOther = @($headers.rewritten_now_other_form); $gone = @($headers.rewritten_no_longer_in_use)
+                $verdict.ntfs30.headers = [ordered]@{ records = $patch.headers.records; in_use = $patch.headers.in_use; rewritten = $patch.rewritten_count
+                    already_3_0_form = $patch.headers.already_3_0_form; mirror_rewritten = @($patch.mirror_rewritten).Count; mirror_left_as_templates = @($patch.mirror_left_as_templates).Count
+                    mft_runs = [int](@($patch.mft_runs).Count / 3)
+                    when_the_run_starts = [ordered]@{ in_use_by_array_offset = $headers.in_use_by_array_offset; in_use_in_3_1_form = @($headers.in_use_in_3_1_form).Count
+                        rewritten_now_3_1_form = $toCurrent; rewritten_now_other_form = $toOther; rewritten_no_longer_in_use = $gone.Count; mirror = $headers.mirror } }
+                Say "ntfs30-headers: $($patch.rewritten_count) of $($patch.headers.in_use) in-use MFT records (in $($verdict.ntfs30.headers.mft_runs) run(s)) and $(@($patch.mirror_rewritten).Count) `$MFTMirr record(s) rewritten into the NTFS 3.0 header form; once V: was mounted again and listed, $($toCurrent.Count) of them read the 3.1 form again and $(@($headers.in_use_in_3_1_form).Count) in-use record(s) in all are in it"
+                if ($toCurrent.Count -or $toOther.Count) {
+                    $verdict.outcome = 'ntfs30-headers-rewritten-by-windows-before-the-run'
+                    throw "Windows rewrote MFT record(s) $(@($toCurrent + $toOther | Select-Object -First 20) -join ', ')$(if ($toCurrent.Count + $toOther.Count -gt 20) { ', ...' }) out of the NTFS 3.0 header form when it mounted the volume again, before the run started: the run would not be shown the 3.0 form there"
+                }
             }
         }
     }
@@ -1921,7 +1949,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     }
     if ($lfs2 -or $ntfs30) {
         # What the run recorded of the volume it was given, from its working
-        # directory (removed when the attempt ends): the NTFS upgrade it had
+        # directory (removed when the attempt ends): any NTFS upgrade it had
         # Windows make (ntfs-version-intent.json, ntfs-version-after.json),
         # and the LFS version of the restart pages it read at its freeze,
         # wherever a record of its own names one.
@@ -1944,8 +1972,11 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
             $from = try { ("$($recorded.intent)" | ConvertFrom-Json).ntfs_version_before } catch { $null }
             $to = try { ("$($recorded.after)" | ConvertFrom-Json).ntfs_version_after } catch { $null }
             $verdict.ntfs30.run_recorded = [ordered]@{ intent = $recorded.intent_path; from = $from; after = $recorded.after_path; to = $to }
-            Say "ntfs30: the run recorded $(if ($recorded.intent) { "an upgrade from NTFS $from" } else { 'NO ntfs-version-intent.json' }) and $(if ($recorded.after) { "NTFS $to afterwards" } else { 'NO ntfs-version-after.json' })"
-            if ($passed -and -not ($from -eq '3.0' -and $to -eq '3.1')) { $verdict.outcome = "$($verdict.outcome)-but-ntfs-upgrade-not-recorded" }
+            Say "ntfs30: the run $(if ($recorded.intent) { "recorded an upgrade from NTFS $from$(if ($recorded.after) { " and NTFS $to afterwards" })" } else { 'read the NTFS 3.0 volume as it was (no ntfs-version-intent.json)' })"
+            # The converter reads NTFS 3.0 itself: a converted run with an
+            # identical listing that never had Windows mount the volume for
+            # an upgrade.
+            if ($passed -and ($recorded.intent -or $recorded.after)) { $verdict.outcome = "$($verdict.outcome)-but-ntfs-upgrade-attempted" }
         }
         if ($lfs2) {
             $verdict.lfs2.run_read = @($recorded.lfs_versions)

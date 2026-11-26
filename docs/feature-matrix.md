@@ -116,8 +116,13 @@ These take the same paths as rows above, or are checked by tests only.
   forms (the 3.0 form, update sequence array at 0x2A and no record number,
   and the 3.1 form Windows XP and later write to it) are read, and every
   gate admits 3.0 as it does 3.1. Parser and inspection tests cover both
-  forms; the lab fixture so far is a 3.1-format volume whose `$Volume`
-  states 3.0, not one Windows 2000 formatted.
+  forms. Two lab cases, not yet run: `ntfs30` writes 3.0 into `$Volume` of a
+  volume whose records keep the 3.1 form, and `ntfs30-headers` first
+  rewrites every in-use MFT record (and its `$MFTMirr` copy) into the 3.0
+  form; each has to convert with an identical listing and without the
+  Windows mount. Neither is a volume Windows 2000 formatted (its first
+  attributes stay where the 3.1 form put them, and its `$UpCase` and
+  `$AttrDef` are Windows 11's).
 - An NTFS 1.2 volume. It is not read (no `$Extend`, no `$Secure`). A
   conversion has Windows mount it read-write before the freeze, in case
   that upgrades it (announced before the question, not undone), and reads

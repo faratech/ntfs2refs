@@ -70,6 +70,9 @@ pub struct PlainCopyPin {
     pub file_name: String,
     pub bytes: u64,
     pub sha256: String,
+    /// The copy's [`crate::content_digest`] (XXH3-128): what the shadow's
+    /// expected stream carries, and holds the converted file to.
+    pub content_digest: String,
 }
 
 struct Held {
@@ -161,6 +164,7 @@ impl PlainCopyStore {
                 .open(&path)?;
             let mut buffer = vec![0u8; 1 << 20];
             let mut hash = Sha256::new();
+            let mut content = crate::content_digest::Hasher::new();
             let mut bytes = 0u64;
             loop {
                 let count = source.read(&mut buffer)?;
@@ -168,6 +172,7 @@ impl PlainCopyStore {
                     break;
                 }
                 hash.update(&buffer[..count]);
+                content.update(&buffer[..count]);
                 file.write_all(&buffer[..count])?;
                 bytes += count as u64;
             }
@@ -188,9 +193,9 @@ impl PlainCopyStore {
                     key.record_number
                 )));
             }
-            Ok((bytes, sha256))
+            Ok((bytes, sha256, content.finish()))
         })();
-        let (bytes, sha256) = match written {
+        let (bytes, sha256, content_digest) = match written {
             Ok(done) => done,
             Err(error) => {
                 // Nothing half-written stays in the store.
@@ -207,28 +212,54 @@ impl PlainCopyStore {
                 file_name,
                 bytes,
                 sha256,
+                content_digest,
             },
             file,
         });
         Ok(&self.copies.last().expect("just pushed").pin)
     }
 
+    fn find(&self, key: &PlainCopyKey) -> Option<&Held> {
+        self.copies.iter().find(|held| {
+            held.pin.record_number == key.record_number
+                && held.pin.sequence_number == key.sequence_number
+                && held.pin.stream_name_utf16 == key.stream_name_utf16
+        })
+    }
+
+    /// Reads `output.len()` bytes of one copy from `offset`; a range past
+    /// its end is an error.
+    pub fn read_at(&self, key: &PlainCopyKey, offset: u64, output: &mut [u8]) -> io::Result<()> {
+        let held = self.find(key).ok_or_else(|| {
+            invalid(format!(
+                "MFT record {} has no plain copy of that stream",
+                key.record_number
+            ))
+        })?;
+        if offset
+            .checked_add(output.len() as u64)
+            .is_none_or(|end| end > held.pin.bytes)
+        {
+            return Err(invalid(format!(
+                "a read of {} bytes at {offset} escapes the {}-byte plain copy of MFT record {}",
+                output.len(),
+                held.pin.bytes,
+                key.record_number
+            )));
+        }
+        let mut file = &held.file;
+        file.seek(SeekFrom::Start(offset))?;
+        file.read_exact(output)
+    }
+
     /// Reads one copy from its start, for the shadow to be supplied from.
     pub fn reader(&self, key: &PlainCopyKey) -> io::Result<impl Read + '_> {
-        let held = self
-            .copies
-            .iter()
-            .find(|held| {
-                held.pin.record_number == key.record_number
-                    && held.pin.sequence_number == key.sequence_number
-                    && held.pin.stream_name_utf16 == key.stream_name_utf16
-            })
-            .ok_or_else(|| {
-                invalid(format!(
-                    "MFT record {} has no plain copy of that stream",
-                    key.record_number
-                ))
-            })?;
+        let held = self.find(key).ok_or_else(|| {
+            invalid(format!(
+                "MFT record {} has no plain copy of that stream",
+                key.record_number
+            ))
+        })?;
         let mut file = &held.file;
         file.seek(SeekFrom::Start(0))?;
         Ok(file.take(held.pin.bytes))
@@ -271,6 +302,223 @@ impl PlainCopyStore {
         }
         std::fs::remove_dir(&directory)
     }
+}
+
+/// The directory of a run's plain copies, in the run's directory.
+pub const DIRECTORY: &str = "plain-copies";
+
+/// One stream to copy when the frozen source is observed: its identity and
+/// the length the raw source gives it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlainCopyRequest {
+    pub key: PlainCopyKey,
+    pub bytes: u64,
+}
+
+enum Lifecycle {
+    Idle,
+    /// What to copy, and where, at the next read-only observation.
+    Armed {
+        directory: PathBuf,
+        requests: Vec<PlainCopyRequest>,
+    },
+    /// The copies, held, until the run is finalized, cancelled or rolled back.
+    Taken(PlainCopyStore),
+}
+
+static LIFECYCLE: std::sync::Mutex<Lifecycle> = std::sync::Mutex::new(Lifecycle::Idle);
+
+fn lifecycle() -> std::sync::MutexGuard<'static, Lifecycle> {
+    LIFECYCLE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Names the streams this run copies at its read-only observation of the
+/// frozen source, into `directory` (made then; it must not exist).
+pub fn arm(directory: &Path, requests: Vec<PlainCopyRequest>) -> io::Result<()> {
+    let mut state = lifecycle();
+    if !matches!(*state, Lifecycle::Idle) {
+        return Err(invalid(
+            "this process already has plain copies to take or held".into(),
+        ));
+    }
+    if !requests.is_empty() {
+        *state = Lifecycle::Armed {
+            directory: directory.to_owned(),
+            requests,
+        };
+    }
+    Ok(())
+}
+
+/// Takes the armed copies, each read by `open` (a read through the filter
+/// that owns the object, on the frozen source mounted read-only). Nothing
+/// to do when nothing is armed. A copy that fails leaves the store's
+/// directory for the way back, and the copies are not taken.
+pub fn take_armed_with<R: Read>(
+    mut open: impl FnMut(&PlainCopyKey) -> io::Result<R>,
+) -> io::Result<()> {
+    let mut state = lifecycle();
+    let Lifecycle::Armed {
+        directory,
+        requests,
+    } = &*state
+    else {
+        return Ok(());
+    };
+    let mut store = PlainCopyStore::create(directory)?;
+    for request in requests {
+        let mut source = open(&request.key).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "opening MFT record {} for its plain copy: {error}",
+                    request.key.record_number
+                ),
+            )
+        })?;
+        store.copy(request.key.clone(), &mut source, request.bytes)?;
+    }
+    *state = Lifecycle::Taken(store);
+    Ok(())
+}
+
+/// [`take_armed_with`] on the volume `volume` (`\\?\Volume{...}\`), each
+/// object opened by its file reference, without FILE_FLAG_OPEN_REPARSE_POINT:
+/// the reference names the record and its sequence number, so a reused
+/// record is not opened.
+#[cfg(windows)]
+pub fn take_armed(volume: &str) -> io::Result<()> {
+    if !matches!(*lifecycle(), Lifecycle::Armed { .. }) {
+        return Ok(());
+    }
+    let volume = open_volume(volume.trim_end_matches('\\'))?;
+    take_armed_with(|key| {
+        if !key.stream_name_utf16.is_empty() {
+            return Err(invalid("a named stream is not copied plain".into()));
+        }
+        open_plain_by_id(&volume, key.record_number, key.sequence_number)
+    })
+}
+
+/// Fails when copies were armed and never taken: the observation that
+/// takes them did not run (a reopened source cache, say).
+pub fn require_taken() -> io::Result<()> {
+    match &*lifecycle() {
+        Lifecycle::Armed { requests, .. } => Err(invalid(format!(
+            "{} plain cop(ies) were to be taken at the read-only observation of the frozen source, which did not take them",
+            requests.len()
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// The copy of a stream, where this process holds one.
+pub fn taken_pin(key: &PlainCopyKey) -> Option<PlainCopyPin> {
+    match &*lifecycle() {
+        Lifecycle::Taken(store) => store.find(key).map(|held| held.pin.clone()),
+        _ => None,
+    }
+}
+
+/// Reads `output.len()` bytes of a held copy from `offset`.
+pub fn read_taken(key: &PlainCopyKey, offset: u64, output: &mut [u8]) -> io::Result<()> {
+    match &*lifecycle() {
+        Lifecycle::Taken(store) => store.read_at(key, offset, output),
+        _ => Err(invalid(format!(
+            "MFT record {} has no plain copy in this process",
+            key.record_number
+        ))),
+    }
+}
+
+/// [`PlainCopyStore::reverify`] of the held copies, at the gate before the
+/// first write to the source. How many there are.
+pub fn reverify_taken() -> io::Result<usize> {
+    match &*lifecycle() {
+        Lifecycle::Taken(store) => {
+            store.reverify()?;
+            Ok(store.copies.len())
+        }
+        Lifecycle::Armed { .. } => Err(invalid(
+            "plain copies were armed and never taken before the gate".into(),
+        )),
+        Lifecycle::Idle => Ok(0),
+    }
+}
+
+/// Deletes the held copies and their directory, when the run is finalized,
+/// cancelled or rolled back. A process that holds none deletes what a run
+/// left in `run` instead (a recovery, or a cancellation, of a run made by
+/// another process). Whether there was anything.
+pub fn remove(run: &Path) -> io::Result<bool> {
+    let held = std::mem::replace(&mut *lifecycle(), Lifecycle::Idle);
+    match held {
+        Lifecycle::Taken(store) => store.remove().map(|()| true),
+        _ => {
+            let directory = run.join(DIRECTORY);
+            if !directory.exists() {
+                return Ok(false);
+            }
+            std::fs::remove_dir_all(&directory).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "the plain copies at {} could not be deleted: {error}",
+                        directory.display()
+                    ),
+                )
+            })?;
+            Ok(true)
+        }
+    }
+}
+
+#[cfg(windows)]
+fn open_volume(volume: &str) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    // FILE_FLAG_BACKUP_SEMANTICS: the volume's root, for OpenFileById.
+    OpenOptions::new()
+        .read(true)
+        .share_mode(7)
+        .custom_flags(0x0200_0000)
+        .open(format!("{volume}\\"))
+}
+
+/// Opens one object of the volume by its file reference for a plain read.
+#[cfg(windows)]
+pub fn open_plain_by_id(volume: &File, record: u64, sequence: u16) -> io::Result<File> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use windows_sys::Win32::{
+        Foundation::INVALID_HANDLE_VALUE,
+        Storage::FileSystem::{FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FileIdType, OpenFileById},
+    };
+    let descriptor = FILE_ID_DESCRIPTOR {
+        dwSize: std::mem::size_of::<FILE_ID_DESCRIPTOR>() as u32,
+        Type: FileIdType,
+        Anonymous: FILE_ID_DESCRIPTOR_0 {
+            FileId: (record | (u64::from(sequence) << 48)) as i64,
+        },
+    };
+    // SAFETY: a live volume handle, a complete descriptor; FILE_READ_DATA |
+    // FILE_READ_ATTRIBUTES | SYNCHRONIZE, shared, and PLAIN_READ_FLAGS (no
+    // reparse point opened, nothing recalled).
+    let handle = unsafe {
+        OpenFileById(
+            volume.as_raw_handle(),
+            &descriptor,
+            0x0010_0081,
+            7,
+            std::ptr::null(),
+            PLAIN_READ_FLAGS,
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the handle was just opened and is owned here alone.
+    Ok(unsafe { File::from_raw_handle(handle) })
 }
 
 /// Opens a written copy for reading only, with nobody else allowed to
@@ -409,6 +657,47 @@ mod tests {
         assert!(error.contains("stranger.txt"), "{error}");
         assert!(directory.join("stranger.txt").exists());
         assert!(!directory.join(key(80, "").file_name()).exists());
+    }
+
+    #[test]
+    fn copies_are_armed_taken_read_reverified_and_removed_once() {
+        let run = tempfile::tempdir().unwrap();
+        let directory = run.path().join(DIRECTORY);
+        let data: Vec<u8> = (0..70_000u32).map(|i| (i % 7) as u8).collect();
+        // Nothing armed: nothing taken, nothing held, nothing to remove.
+        take_armed_with(|_| Ok(&b""[..])).unwrap();
+        assert_eq!(reverify_taken().unwrap(), 0);
+        assert!(!remove(run.path()).unwrap());
+        arm(
+            &directory,
+            vec![PlainCopyRequest {
+                key: key(41, ""),
+                bytes: data.len() as u64,
+            }],
+        )
+        .unwrap();
+        assert!(require_taken().is_err());
+        assert!(reverify_taken().is_err());
+        assert!(arm(&directory, Vec::new()).is_err());
+        take_armed_with(|_| Ok(data.as_slice())).unwrap();
+        require_taken().unwrap();
+        let pin = taken_pin(&key(41, "")).unwrap();
+        assert_eq!(pin.content_digest, crate::content_digest::of(&data));
+        assert!(taken_pin(&key(42, "")).is_none());
+        let mut middle = [0u8; 100];
+        read_taken(&key(41, ""), 1000, &mut middle).unwrap();
+        assert_eq!(&middle[..], &data[1000..1100]);
+        assert!(read_taken(&key(41, ""), data.len() as u64 - 50, &mut middle).is_err());
+        assert_eq!(reverify_taken().unwrap(), 1);
+        assert!(remove(run.path()).unwrap());
+        assert!(!directory.exists());
+        assert!(taken_pin(&key(41, "")).is_none());
+
+        // What another process left is removed by its path.
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("x.plain"), b"x").unwrap();
+        assert!(remove(run.path()).unwrap());
+        assert!(!directory.exists());
     }
 
     #[cfg(windows)]

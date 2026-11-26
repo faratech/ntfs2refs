@@ -3335,7 +3335,13 @@ impl GeneralFrozenPartition {
                 "general read-only volume was not published within 15 seconds",
             ));
         }
-        let collected = collector(request);
+        // The plain copies a conversion to plain files takes (`plain_copy`):
+        // read through Windows' filters, inside the same read-only window as
+        // every other observation of the frozen source, and kept before it
+        // closes.
+        let collected = collector(request).and_then(|collected| {
+            crate::plain_copy::take_armed(&request.volume).map(|()| collected)
+        });
         let (txf, txf_error) = match crate::txf_native::observe_general(self.binding.clone()) {
             Ok(observation) => (Some(observation), None),
             Err(error) => (None, Some(error.to_string())),

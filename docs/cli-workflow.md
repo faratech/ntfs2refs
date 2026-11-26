@@ -69,7 +69,7 @@ seconds on one of 23,000 files. It prints:
 
 - **Every reason a conversion would refuse the volume** that those decide,
   each as the conversion would give it, with the file and what to do: 8.3
-  short names; encrypted, temporary, offline or `compact /exe` files; reparse
+  short names (with `--short-names refuse`); encrypted, temporary, offline or `compact /exe` files; reparse
   points, streams and names the converter does not carry over; quotas in use;
   two names in a directory that differ only by case; shadow copies, and a
   shadow-copy provider of backup software that holds one or does not
@@ -328,7 +328,7 @@ Not carried over, and said so by the run:
 | Object IDs of files and directories | Windows gives one to the target of a shortcut; ReFS has none | Each is matched with the volume's object-ID index and kept in the run's records (`internal-indexes\object-ids-not-carried-over`); the run prints their number. A shortcut still finds its target by path |
 | NTFS compression | ReFS stores the data uncompressed | The data is the same; the volume needs room for it |
 | The change journal | It describes the NTFS volume | The converted volume starts a new one |
-| 8.3 short names, with `--short-names drop` | ReFS has no short names | Every file and directory is created under its long name; each short name is kept in the run's records (`source-short-names-not-carried.json`). A program that stored a path in its short form no longer finds it. Without the option the volume is refused, see below |
+| 8.3 short names (the default; `--short-names drop` says the same) | ReFS has no short names | `--check` and the lines before the conversion's question say how many there are, one of them, and where the run lists them; the conversion goes ahead only once that is agreed (`--yes` with `--volume-serial`). Every file and directory is created under its long name; each short name is kept in the run's records (`source-short-names-not-carried.json` in the run's working directory). A program that stored a path in its short form no longer finds it. With `--short-names refuse` the volume is refused instead, see below |
 | The case-sensitive mark of a directory, except on Windows Server 2025 | WSL and Git set it on the directories they make. The converter sets it on the new volume only for a data volume converted on Windows Server 2025 (build 26100), where Windows was shown to keep such a directory on ReFS. The lab's Windows 11 (build 26300, an Insider build) stopped with a bugcheck both times a ReFS volume with such a directory was taken offline, which a conversion does with the volume it builds; so it is not set there, on any other Windows, in a recovery environment, on a volume that holds a Windows, on a partition converted through a restart, or on a volume whose root directory is itself marked (the new root is never empty when its mark could be set) | Where no two names in the directory differ only by case, every name stays reachable. The directories are listed in the run's records (`case-sensitive-directories`, `source-case-sensitive-directories.json`), and the run and `--check` say before the prompt how many there are, whether the mark is set and, where it is not, why. On Windows Server 2025 every directory of the new volume is made with the mark its source directory has, the mark is read back, and a directory whose mark differs afterwards fails the run. Windows lets a directory on ReFS be marked again with `fsutil file setCaseSensitiveInfo`; because of that bugcheck, try it where a restart costs nothing |
 
 Backup software, and the tools of some hypervisors, install a shadow-copy
@@ -342,7 +342,7 @@ Refused before anything is written, each with what was found and what to do:
 
 | Found | Do |
 |---|---|
-| 8.3 short names (their number and one of them are given) | `fsutil 8dot3name strip /s /f E:\`, then `fsutil 8dot3name set E: 1`; or convert with `--short-names drop`, which leaves them behind and lists them |
+| 8.3 short names, with `--short-names refuse` (their number and one of them are given) | `fsutil 8dot3name strip /s /f E:\`, then `fsutil 8dot3name set E: 1`; or convert without `--short-names refuse`, which leaves them behind and lists them |
 | BitLocker | Decrypt the volume: `manage-bde -off E:`; suspending is not enough |
 | Shadow copies of the volume, or snapshot storage kept on it | `vssadmin delete shadows /for=E:` |
 | A shadow-copy provider of backup software (any but Windows' own, Hyper-V's and Windows Server's for remote file shares) that holds a shadow copy on the machine, or does not answer when Windows asks it | The provider is named, and the shadow copy. Delete its shadow copies or let the backup that made them finish; a provider that does not answer has to be repaired or removed |
@@ -741,7 +741,7 @@ differences it accepts.
 | `--diagnose` `[--diagnose-limit N]` | Goes through the whole preparation without converting |
 | `--target-cluster-bytes 4096\|65536` | ReFS cluster size |
 | `--target-format dev-drive\|standard` | How Windows formats the new file system; standard is the default on Windows Server, dev-drive elsewhere |
-| `--short-names refuse\|drop` | What to do with a data volume's 8.3 short names: refuse the volume (the default), or convert without them and keep a list |
+| `--short-names refuse\|drop` | What to do with a data volume's 8.3 short names: convert without them and keep a list (the default; said before the question), or refuse the volume |
 | `--windows-boot-volume` | The volume is an installed Windows that is not running |
 | `--restart-media <dir>` | Windows installation media, for a partition on the disk of the running Windows: it is converted through a restart |
 | `--recover <dir> --recovery-sha256 <sum>` `[--rollback]` | Finishes, or undoes, an interrupted run |

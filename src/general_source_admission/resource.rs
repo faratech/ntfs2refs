@@ -2018,12 +2018,12 @@ impl ResourceSourceContext {
                 );
                 save(
                     output,
-                    "source-short-names-not-carried.json",
+                    crate::short_name_disposition::RECORDS_FILE,
                     &serde_json::json!({
                         "kind":"short-names-not-carried-over-v1",
                         "source_inspection_sha256":inspection_sha,
                         "objects":short_names_left, "records":&short_names_pin,
-                        "requested_with":"--short-names drop",
+                        "requested_with":"the default for a data volume (or --short-names drop), agreed to at the conversion's question",
                         "target_has_short_names":false,
                         "policy":"every object is created under its long name; its 8.3 short names are listed in the records and not carried over",
                     }),

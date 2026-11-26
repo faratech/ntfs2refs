@@ -98,9 +98,10 @@ pub struct DriveArgs {
     #[arg(long, requires = "drive", value_parser = ["dev-drive", "standard"])]
     pub target_format: Option<String>,
     /// What to do with the 8.3 short names of a data volume, which ReFS
-    /// does not have: `refuse` the volume (the default), with the commands
-    /// that remove them; or `drop` them, converting with every object under
-    /// its long name and the short names kept in the run's records. A
+    /// does not have: `drop` them (the default), converting with every
+    /// object under its long name and the short names kept in the run's
+    /// records, after the check and the question have said how many there
+    /// are; or `refuse` the volume, with the commands that remove them. A
     /// program that stored a path in its short form no longer finds it.
     #[arg(long, requires = "drive", value_parser = ["refuse", "drop"], conflicts_with_all = ["windows_boot_volume", "recover", "list"])]
     pub short_names: Option<String>,
@@ -803,6 +804,8 @@ mod windows {
             args.short_names.is_none(),
             "--short-names is for a data volume; the running Windows keeps its short names as links, as a Windows boot volume does. Nothing was changed."
         );
+        // Not a data volume: its short names are not dropped in this process.
+        crate::short_name_disposition::choose_for_this_run(None, false);
         ensure!(
             !args.minimize_scratch,
             "--minimize-scratch is for a data volume; the running Windows is converted with its full working storage. Nothing was changed."
@@ -1014,10 +1017,14 @@ The machine restarts, possibly more than once. Do not switch it off while the co
         if args.unattended()? {
             crate::confirmation::assume_yes();
         }
-        if args.short_names.as_deref() == Some("drop") {
-            // Read where the volume is checked and where it is admitted.
-            crate::short_name_disposition::drop_for_this_run();
-        }
+        // Read where the volume is checked and where it is admitted. A data
+        // volume's short names are left behind (said before the question)
+        // unless the run is asked to refuse them; a volume converted through
+        // a restart keeps the refusal.
+        crate::short_name_disposition::choose_for_this_run(
+            args.short_names.as_deref(),
+            !args.windows_boot_volume && args.offline_recovery_media.is_none(),
+        );
         if let Some(mib) = args.memory_limit {
             // Before anything reads how much memory is free.
             n2r_win32::resource_native::limit_memory(mib << 20)?;
@@ -2805,9 +2812,10 @@ mod tests {
     }
 
     #[test]
-    fn short_names_are_refused_unless_the_run_is_asked_to_drop_them() {
-        // Nothing given: the volume's short names refuse it.
+    fn short_names_are_dropped_unless_the_run_is_asked_to_refuse_them() {
+        // Nothing given: a data volume's short names are dropped.
         assert_eq!(parse(&[]).unwrap().short_names, None);
+        assert!(crate::short_name_disposition::drops(None, true));
         assert_eq!(
             parse(&["--short-names", "refuse"])
                 .unwrap()
@@ -2828,6 +2836,7 @@ mod tests {
         assert!(parse(&["--short-names", "drop", "--windows-boot-volume"]).is_err());
         // A check takes it, to say what a run with it would do.
         assert!(parse(&["--short-names", "drop", "--check"]).is_ok());
+        assert!(parse(&["--short-names", "refuse", "--check"]).is_ok());
     }
 
     #[test]

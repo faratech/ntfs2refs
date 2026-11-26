@@ -53,12 +53,19 @@ fn capabilities_report_what_the_executable_enforces() {
             .unwrap()
             .starts_with("object IDs")
     );
-    // Short names: refused with the remedy, or left behind when asked.
+    // Short names: left behind by default, refused with the remedy when asked.
     assert!(
         data_volume["refused_by_name"][0]["or"]
             .as_str()
             .unwrap()
-            .starts_with("--short-names drop")
+            .starts_with("without --short-names refuse")
+    );
+    assert!(
+        data_volume["not_carried_over"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["what"].as_str().unwrap().starts_with("8.3 short names"))
     );
     assert!(ntfs2refs::ntfs_admission::SHORT_NAME_REMEDY.contains("--short-names drop"));
     assert!(

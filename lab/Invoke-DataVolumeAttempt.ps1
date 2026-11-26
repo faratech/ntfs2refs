@@ -77,7 +77,8 @@ param(
     # NTFS features to add after the content, made by guest\Add-VolumeFeatures.ps1:
     # objectids, security, ea, links, longpath, deep, bigdir, bigfile, full,
     # copy, usn, casemark, manyfiles (all of which convert; -Content lived-in
-    # adds them except bigfile, full, casemark and manyfiles), and shortnames, temporary, offline,
+    # adds them except bigfile, full, casemark and manyfiles), shortnames (dropped
+    # by default; refused with -RefuseShortNames), and temporary, offline,
     # efs, wof, quota, casesensitive, snapshot, bitlocker, dirstream (which
     # are refused).
     [string[]]$Features = @(),
@@ -232,12 +233,17 @@ param(
     # copy, 'dump' names it as the place Windows writes its crash dump to.
     # Each is undone when the attempt ends.
     [ValidateSet('', 'busy', 'snapshot', 'dump')][string]$SiblingState = '',
-    # Run the converter (and the check before it) with --short-names drop:
-    # a volume with 8.3 short names (-Features shortnames) then converts.
-    # The comparison is the one made for such a run: a short name that is
-    # gone is counted, nothing else is let through, and the converted
-    # volume must list no short name at all.
+    # Run the converter (and the check before it) with --short-names drop,
+    # which is also what a data volume gets without the option: a volume
+    # with 8.3 short names (-Features shortnames) then converts. The
+    # comparison is the one made for such a run: a short name that is gone
+    # is counted, nothing else is let through, and the converted volume
+    # must list no short name at all.
     [switch]$DropShortNames,
+    # Run the converter (and the check before it) with --short-names
+    # refuse: a volume with 8.3 short names is then refused, and the
+    # listings are compared without counting a short name that is gone.
+    [switch]$RefuseShortNames,
     # A shadow-copy (VSS) provider that the converter does not know.
     # 'answering' is one of Windows Server's own, the iSCSI target storage
     # provider (the Windows feature iSCSITarget-VSS-VDS, so the VM has to run
@@ -1047,7 +1053,11 @@ public static class SiblingRaw {
     if ($Review) { $arguments += '--review' }
     if ($Verify) { $arguments += @('--verify', $Verify) }
     if ($CompareListing) { $arguments += '--compare-listing' }
+    if ($DropShortNames -and $RefuseShortNames) { throw '-DropShortNames and -RefuseShortNames ask for opposite things' }
+    # Short names are dropped unless the run is asked to refuse them.
+    $shortNamesDropped = -not $RefuseShortNames
     if ($DropShortNames) { $arguments += @('--short-names', 'drop') }
+    if ($RefuseShortNames) { $arguments += @('--short-names', 'refuse') }
     # What --list says of the volume, as an elevated user sees it: whether a
     # conversion would take it, its serial number, and BitLocker.
     $listed = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
@@ -1106,6 +1116,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         if ($TargetFormat -ne 'default') { $checkArguments += @('--target-format', $TargetFormat) }
         if ($TargetClusterBytes) { $checkArguments += @('--target-cluster-bytes', "$TargetClusterBytes") }
         if ($DropShortNames) { $checkArguments += @('--short-names', 'drop') }
+        if ($RefuseShortNames) { $checkArguments += @('--short-names', 'refuse') }
         $checked = Invoke-Command -Session $session -ArgumentList $guestRoot, $checkArguments, ([bool]$WriteLoad) -ScriptBlock {
             param($root, $arguments, $load)
             $writer = $null
@@ -1144,9 +1155,10 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         if ($FreshFile) {
             # The check's count of short names against Windows' own: the
             # listing made a moment before it, which has the fresh file.
-            $counted = @($checkRefusals | ForEach-Object { if ($_ -match '^(\d+) file\(s\) and directories on this volume have an 8\.3 short name') { [int]$Matches[1] } })
+            # A refusal (--short-names refuse) or the note of a run that drops them.
+            $counted = @($checked.text | ForEach-Object { if ("$_" -match '^(?:A conversion would refuse this volume: |\s+\d+\.\s+|Note: )?(\d+) file\(s\) and directories (?:on this volume )?have an 8\.3 short name') { [int]$Matches[1] } } | Select-Object -Unique)
             $listedShort = @(Get-Content -LiteralPath (Join-Path $records 'manifest-before.jsonl') -Encoding UTF8 | Where-Object { $_ -match '"short_name":"' }).Count
-            if ($counted.Count -ne 1) { $verdict.outcome = 'fresh-file-not-countable'; throw '-FreshFile needs a volume whose refusal counts its short names (-Features shortnames)' }
+            if ($counted.Count -ne 1) { $verdict.outcome = 'fresh-file-not-countable'; throw '-FreshFile needs a volume whose check counts its short names (-Features shortnames)' }
             $verdict.check.short_names_counted = $counted[0]; $verdict.check.short_names_listed = $listedShort
             Say "check counted $($counted[0]) short name(s); Windows lists $listedShort"
             if ($counted[0] -ne $listedShort) { $verdict.outcome = 'check-missed-what-was-just-written'; throw "the check counted $($counted[0]) short names where Windows lists $($listedShort): it did not read what was written a moment before" }
@@ -1441,7 +1453,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         if ($Unattended) { foreach ($direction in 'commit', 'rollback') { $commands[$direction] = @($commands[$direction]) + '--yes' } }
         # What the stop left: the disk online and read-only, V: mounted as
         # ReFS, a write to it refused, and everything on it listed as before.
-        $state = Invoke-Command -Session $session -ArgumentList $stopRoot, $sourceDisk, $sourceOffset, ([bool]$DropShortNames) -ScriptBlock {
+        $state = Invoke-Command -Session $session -ArgumentList $stopRoot, $sourceDisk, $sourceOffset, $shortNamesDropped -ScriptBlock {
             param($root, $number, $offset, $dropped)
             $disk = Get-Disk -Number $number
             $partition = Get-Partition -DiskNumber $number -ErrorAction SilentlyContinue | Where-Object { $_.Offset -eq $offset } | Select-Object -First 1
@@ -1643,7 +1655,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         # said it before it was stopped.)
         $marksLeft = [bool](@($stdout, (Join-Path $records 'interrupted-stdout.log')) | Where-Object { Test-Path -LiteralPath $_ } |
             Where-Object { Select-String -LiteralPath $_ -SimpleMatch -Pattern 'The converter does not set the mark on the new volume' -Quiet } | Select-Object -First 1)
-        $compared = Invoke-Command -Session $session -ArgumentList $guestRoot, (-not $converted), ([bool]$DropShortNames), $marksLeft -ScriptBlock {
+        $compared = Invoke-Command -Session $session -ArgumentList $guestRoot, (-not $converted), $shortNamesDropped, $marksLeft -ScriptBlock {
             param($root, $exact, $dropped, $marksLeft)
             $listed = & "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-after.jsonl" 2>&1
             if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ stage = 'capture-after'; exit = $LASTEXITCODE; differences = $null; listed = ($listed -join ' '); summary = '' } }
@@ -1680,7 +1692,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
             $compared.kinds['unreadable before'] -gt 0 -and $compared.kinds['unreadable before'] -eq $compared.kinds['unreadable afterwards']) {
             $listing = 'unreadable-both-times'
         }
-        if ($DropShortNames -and $converted) {
+        if ($shortNamesDropped -and $converted) {
             # A run that drops short names leaves none, and the comparison counted every one that was listed.
             $verdict.short_names = [ordered]@{ listed_before = $compared.short_before; listed_after = $compared.short_after; counted_as_dropped = $compared.short_dropped }
             Say "short names: $($compared.short_before) listed before, $($compared.short_after) after; $($compared.short_dropped) counted as dropped"

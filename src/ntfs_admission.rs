@@ -1627,7 +1627,7 @@ pub(crate) fn user_issues_with_context(
 
 /// What to do about 8.3 short names on a data volume. ReFS has none, and
 /// Windows has the tool that removes them.
-pub const SHORT_NAME_REMEDY: &str = "remove the volume's short names with `fsutil 8dot3name strip /s /f <drive>:\\` and turn their creation off with `fsutil 8dot3name set <drive>: 1`, then convert (a program that stored a path in its short form will no longer find it). Or convert with `--short-names drop`, which leaves the short names behind and keeps a list of them";
+pub const SHORT_NAME_REMEDY: &str = "remove the volume's short names with `fsutil 8dot3name strip /s /f <drive>:\\` and turn their creation off with `fsutil 8dot3name set <drive>: 1`, then convert (a program that stored a path in its short form will no longer find it). Or convert without `--short-names refuse` (the default, or `--short-names drop`), which leaves the short names behind and keeps a list of them";
 
 /// The names of Win32 file-attribute bits, for a refusal.
 pub fn file_attribute_names(bits: u32) -> String {

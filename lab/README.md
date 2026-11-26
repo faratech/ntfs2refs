@@ -392,8 +392,11 @@ before. Where the run carries the mark over, the comparison is the ordinary
 one: a directory that lost its mark, or gained one, differs, and as many
 must be marked afterwards as before (`case_marks` in the verdict).
 
-`-DropShortNames` runs the converter, and the check before it, with
-`--short-names drop`. The listings are then compared with
+A data volume's short names are dropped by default, as with
+`-DropShortNames`, which runs the converter, and the check before it, with
+`--short-names drop`; `-RefuseShortNames` runs both with `--short-names
+refuse`, and the volume is then refused. Unless refused, the listings are
+compared with
 `lab-volume-manifest compare --short-names-dropped`, which counts a short
 name that is gone and allows nothing else that the ordinary comparison does
 not; the converted volume must list no short name, and as many must have
@@ -477,7 +480,7 @@ When `-SampleStacks` is used on an interrupted run, the last profile written
 before the cut is collected as `interrupted-stacks.txt` when available.
 The recovery writes its own `stacks.txt`.
 
-These are refused, each by name: `shortnames`, `temporary`, `offline`, `efs`,
+These are refused, each by name: `shortnames` with `-RefuseShortNames`, `temporary`, `offline`, `efs`,
 `wof` (a `compact /exe` file), `quota`, `casesensitive` (two names in one
 directory that differ only by case), `snapshot`,
 `bitlocker` and `dirstream`. A feature that cannot be made ends the attempt as

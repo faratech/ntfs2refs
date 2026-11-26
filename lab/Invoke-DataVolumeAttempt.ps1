@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
 Converts one NTFS data volume of a chosen geometry in a lab VM's control OS
 and compares the volume's listing before and after.
@@ -1966,9 +1966,11 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
             # A run that downloaded cloud placeholders before the freeze
             # changed the volume then, and listed it itself afterwards
             # (--compare-listing): that listing is the one the new volume is
-            # held to; the harness's own, from before the downloads, is kept.
+            # held to, and a rolled-back one too (the downloads are not undone);
+            # the harness's own, from before the downloads, is kept.
             $before = "$root\manifest-before.jsonl"
-            $run = if ($ledger) { Split-Path -Parent $ledger }
+            $run = Get-ChildItem -LiteralPath $working -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending |
+                Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'plain-prefreeze-after.json') } | Select-Object -First 1 -ExpandProperty FullName
             if ($run -and (Test-Path -LiteralPath "$run\plain-prefreeze-after.json") -and (Test-Path -LiteralPath "$run\listing-before.jsonl")) {
                 Copy-Item -LiteralPath "$run\listing-before.jsonl" -Destination "$root\manifest-before-downloaded.jsonl" -Force
                 $before = "$root\manifest-before-downloaded.jsonl"

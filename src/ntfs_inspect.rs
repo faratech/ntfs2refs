@@ -2518,6 +2518,16 @@ fn checked_plain_attribute<R: Read + Seek>(
     )
 }
 
+/// Whether `file` is a base record whose DATA stream `name` the source may
+/// supply: any stream of a file, and a named stream of a directory
+/// (`ntfs_admission::DIRECTORY_STREAMS_CARRIED`; admission decides whether
+/// such a stream is carried). A directory has no unnamed DATA stream. The
+/// checked readers once took files only, and the lab's dirstream run was
+/// refused in payload supply planning with "plain standalone file required".
+pub(crate) fn supplies_data_stream(file: &FileInventory, name: &[u16]) -> bool {
+    file.base_file_reference == 0 && (!file.is_directory || !name.is_empty())
+}
+
 /// Shared metadata/identity checks. LZNT1 DATA is decoded into logical bytes;
 /// sparse support remains explicit and neither path grants source admission.
 fn checked_data_attribute<R: Read + Seek>(
@@ -2538,8 +2548,9 @@ fn checked_data_attribute<R: Read + Seek>(
         .find(|f| f.record_number == record_number)
         .context("source file missing from inventory")?;
     ensure!(
-        !file.is_directory && file.base_file_reference == 0,
-        "plain standalone file required"
+        supplies_data_stream(file, stream_name_utf16),
+        "FILE {record_number} stream {:?}: plain standalone file, or a directory's named stream, required",
+        String::from_utf16_lossy(stream_name_utf16)
     );
     let stream = file
         .streams

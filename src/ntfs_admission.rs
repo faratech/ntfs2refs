@@ -1013,6 +1013,28 @@ mod refusal_tests {
         (resource_counts, replacement, case)
     }
 
+    /// The checked source readers take a directory's named stream: the lab's
+    /// dirstream run was refused in payload supply planning with "plain
+    /// standalone file required".
+    #[test]
+    fn the_source_supplies_a_directorys_named_stream() {
+        let note: Vec<u16> = "note".encode_utf16().collect();
+        let directory = directory_with_stream("note", 0);
+        assert!(ntfs::supplies_data_stream(&directory, &note));
+        // A directory has no unnamed stream to supply.
+        assert!(!ntfs::supplies_data_stream(&directory, &[]));
+        let mut file = directory_with_stream("", 0);
+        file.is_directory = false;
+        assert!(ntfs::supplies_data_stream(&file, &[]));
+        assert!(ntfs::supplies_data_stream(&file, &note));
+        // An extension record supplies nothing itself, file or directory.
+        let mut extension = directory_with_stream("note", 0);
+        extension.base_file_reference = 40;
+        assert!(!ntfs::supplies_data_stream(&extension, &note));
+        file.base_file_reference = 40;
+        assert!(!ntfs::supplies_data_stream(&file, &[]));
+    }
+
     #[test]
     fn a_directorys_named_streams_are_counted_with_the_tree() {
         let counts = count(&dirstream_tree());

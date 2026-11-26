@@ -516,7 +516,11 @@ run `cloud` with `-RunAs administrator`. A provider connected in one logon sessi
 another, so the harness stops the feature step's provider and starts one in
 the converter's own worker session, which has to download `probe.bin` (a
 small placeholder of `cloud`) before the converter starts
-(`cloud-provider-not-serving` otherwise). The provider's status is shown
+(`cloud-provider-not-serving` otherwise). A connected provider holds its sync
+root open, so the volume cannot be locked while it runs: the harness stops it
+as soon as the converter prints its `cloud-downloads-done-v1` line, as a user
+closes OneDrive when the run asks (an unattended run waits up to 5 minutes
+for the lock, naming the holders). The provider's status is shown
 (the check, and `lab-cloud-provider report` before the run), never a gate.
 The listing descends into placeholder folders, so it lists a sync root's
 contents whether its provider runs or not. The harness checks that the

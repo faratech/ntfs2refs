@@ -436,7 +436,32 @@ pub(crate) fn settle(
         bail!("this volume is refused, and nothing on it was changed: {first}");
     }
     set_plan(plan_for(findings, agreed, &left_out));
+    *PLACEHOLDERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = findings
+        .iter()
+        .filter(|finding| !left(&finding.path, &left_out))
+        .map(|finding| finding.path.clone())
+        .collect();
     Ok(())
+}
+
+/// The volume's cloud placeholders this run makes plain, as a listing names
+/// them: what a provider that is still connected holds, and what the lock
+/// of the source names when it cannot be taken.
+static PLACEHOLDERS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// How long the lock of the source waits for a provider the user was asked
+/// to close, on an unattended run.
+pub(crate) const PROVIDER_CLOSE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Pure: what a run says once its downloads are done and these providers
+/// are still connected, holding the volume.
+pub(crate) fn close_provider_note(providers: &[String]) -> String {
+    format!(
+        "The downloads are done. Close {} (quit OneDrive, say) so that the volume can be taken offline: a connected cloud provider holds its sync root open. The conversion does not close it.",
+        providers.join(", ")
+    )
 }
 
 /// The SHA-256 of the list of placeholders this run could have left out,
@@ -525,6 +550,22 @@ fn write_new(path: &Path, record: &Record) -> Result<()> {
 /// volume; every one that is not is named, and the run stops before the
 /// freeze. What was downloaded stays.
 pub(crate) fn run(run: &Path, root: &str, mode: ExecutionMode) -> Result<()> {
+    let at =
+        |path: &str| std::path::PathBuf::from(format!("{root}{}", path.trim_start_matches('\\')));
+    // The lock of the source names what holds it, among the placeholders.
+    let placeholders: Vec<std::path::PathBuf> = PLACEHOLDERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .map(|path| at(path))
+        .collect();
+    if !placeholders.is_empty() {
+        n2r_win32::lock_holders::set(n2r_win32::lock_holders::LockHints {
+            paths: placeholders.clone(),
+            placeholders: placeholders.clone(),
+            patience: std::time::Duration::ZERO,
+        });
+    }
     let planned = take_plan();
     if planned.is_empty() {
         return Ok(());
@@ -533,10 +574,62 @@ pub(crate) fn run(run: &Path, root: &str, mode: ExecutionMode) -> Result<()> {
         "downloading cloud placeholders onto the volume before it is frozen",
     )?;
     download(run, root, planned, &authority, |download| {
-        let at =
-            std::path::PathBuf::from(format!("{root}{}", download.path.trim_start_matches('\\')));
-        hydrate_within(at, timeout_for(download.missing_bytes))
-    })
+        hydrate_within(at(&download.path), timeout_for(download.missing_bytes))
+    })?;
+    // A provider that served the downloads is still connected, and holds
+    // its sync root open: the volume cannot be locked until it is closed.
+    // Asked to close it, interactively until it is; unattended, the lock
+    // waits for it a while, naming it. Never closed by the conversion.
+    let connected = connected_providers(&placeholders);
+    if connected.is_empty() {
+        return Ok(());
+    }
+    println!("{}", close_provider_note(&connected));
+    if crate::confirmation::assumed() {
+        println!(
+            "Unattended: the volume is taken offline once it is closed, within {} s.",
+            PROVIDER_CLOSE_PATIENCE.as_secs()
+        );
+        n2r_win32::lock_holders::set(n2r_win32::lock_holders::LockHints {
+            paths: placeholders.clone(),
+            placeholders,
+            patience: PROVIDER_CLOSE_PATIENCE,
+        });
+        return Ok(());
+    }
+    loop {
+        println!("Is it closed now? [y/N]");
+        print!("> ");
+        if !crate::confirmation::answer()? {
+            bail!(
+                "stopped before the volume was frozen, as {} was not closed: nothing was converted. The downloads stay on the volume, as announced",
+                connected.join(", ")
+            );
+        }
+        let still = connected_providers(&placeholders);
+        if still.is_empty() {
+            return Ok(());
+        }
+        println!("{} is still connected.", still.join(", "));
+    }
+}
+
+/// The cloud providers of `placeholders` that the Cloud Files API reports
+/// connected, each once.
+fn connected_providers(placeholders: &[std::path::PathBuf]) -> Vec<String> {
+    let mut providers: Vec<String> = Vec::new();
+    #[cfg(windows)]
+    for placeholder in placeholders {
+        if let Ok(root) = n2r_win32::cloud_native::sync_root(placeholder)
+            && root.running()
+            && !providers.contains(&root.provider)
+        {
+            providers.push(root.provider);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = placeholders;
+    providers
 }
 
 /// How long a download of `missing` bytes may take before the run gives up
@@ -652,6 +745,11 @@ fn download(
     println!(
         "Downloaded {} cloud placeholder(s) before the freeze; they stay on the volume whatever happens to the conversion.",
         downloaded.len()
+    );
+    // A line a watcher can wait for (the lab stops its provider on it).
+    println!(
+        "{}",
+        serde_json::json!({"kind": "cloud-downloads-done-v1", "downloaded": downloaded.len()})
     );
     Ok(())
 }
@@ -833,6 +931,18 @@ mod tests {
         assert!(parse_leave_out(&"AB".repeat(32)).is_ok() && parse_leave_out("ab").is_err());
         let asked = leave_out_question(&list);
         assert!(asked.contains("stay in the cloud") && asked.contains("downloaded"));
+    }
+
+    #[test]
+    fn a_provider_still_connected_is_named_and_left_to_the_user() {
+        let note = close_provider_note(&["ntfs2refs lab provider".into()]);
+        assert!(
+            note.starts_with("The downloads are done. Close ntfs2refs lab provider")
+                && note.contains("taken offline")
+                && note.contains("does not close it"),
+            "{note}"
+        );
+        assert_eq!(PROVIDER_CLOSE_PATIENCE.as_secs(), 300);
     }
 
     #[test]

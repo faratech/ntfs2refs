@@ -1001,6 +1001,10 @@ public static class SiblingRaw {
                     $verdict.outcome = 'cloud-provider-not-serving'
                     throw "the lab cloud provider does not serve the converter's session: $($probe.hydrated)"
                 }
+                # Stopped as soon as the converter says its downloads are
+                # done: a connected provider holds its sync root open, and the
+                # volume cannot be locked until it is closed (Wait-Worker).
+                $script:cloudStopOnDownloads = $c.stop
             }
             $null = Invoke-Command -Session $script:worker -ArgumentList $Root -AsJob -ScriptBlock {
                 param($root) $null = & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$root\worker.ps1" -Root $root 2>&1 }
@@ -1031,6 +1035,16 @@ public static class SiblingRaw {
         $turnOff = [bool]($StopInPhase -and $PowerOffDuringPreparation)
         do {
             if (-not $StopInPhase -or $stopped) { Start-Sleep -Seconds 2 }
+            if ($script:cloudStopOnDownloads) {
+                # The converter's line once its downloads before the freeze
+                # are done: the provider is closed then, as a user closes it.
+                $closed = Invoke-Command -Session $session -ArgumentList $Root, $script:cloudStopOnDownloads -ScriptBlock {
+                    param($root, $stop)
+                    if ((Test-Path "$root\stdout.log") -and (Select-String -LiteralPath "$root\stdout.log" -SimpleMatch -Pattern '"kind":"cloud-downloads-done-v1"' -Quiet)) {
+                        Set-Content -LiteralPath $stop -Value 'stop'; $true
+                    } else { $false } }
+                if ($closed) { Say 'cloud: the converter''s downloads are done; the provider is stopped, so that the volume can be taken offline'; $script:cloudStopOnDownloads = $null }
+            }
             $state = Invoke-Command -Session $session -ArgumentList $Root, ([bool]$HoldAt -and -not $held), $(if ($stopped) { '' } else { $StopInPhase }), $turnOff, $TakeMemoryMB, $TakeMemoryAt, $measureScaling -ScriptBlock {
                 param($root, $watchHold, $phase, $turnOff, $takeMB, $takeAt, $measureScaling)
                 $ended = (Test-Path "$root\native-terminal.json") -or (Test-Path "$root\worker-error.txt")

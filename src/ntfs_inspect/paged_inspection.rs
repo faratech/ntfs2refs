@@ -1314,7 +1314,7 @@ fn inspect_paged_internal<R: Read + Seek>(
                             &mut report,
                             &mut row_budget,
                             "unsupported_ntfs_version",
-                            "Only NTFS 3.0 and 3.1 are read by the converter",
+                            "Only NTFS 1.2, 3.0 and 3.1 are read by the converter",
                             Some(number),
                         )?;
                     }

@@ -37,14 +37,10 @@ fn an_ntfs_12_volume_is_read_as_nt4_laid_it_out() {
         .into_iter()
         .filter(|(code, _)| LAYOUT_BLOCKERS.contains(&code.as_str()))
         .collect();
-    // $BadClus's $Bad is the one stream not hashed, as on every volume; and
-    // version 1.2 itself is not yet admitted.
+    // $BadClus's $Bad is the one stream not hashed, as on every volume.
     assert_eq!(
         blocked,
-        [
-            ("unsupported_ntfs_version".to_owned(), Some(3)),
-            ("logical_stream_hash_unavailable".to_owned(), Some(8))
-        ],
+        [("logical_stream_hash_unavailable".to_owned(), Some(8))],
         "{:#?}",
         report.blockers
     );

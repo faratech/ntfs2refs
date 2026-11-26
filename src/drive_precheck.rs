@@ -476,28 +476,14 @@ fn read(
 
     // The volume as a whole.
     let header = raw.header();
-    // NTFS 3.0 and 3.1 are read as they are. NTFS 1.2 is mounted read-write
-    // by Windows before the freeze, with the conversion's own question, in
-    // case that upgrades it; said here, not refused.
-    let version = header
-        .volume_version
-        .as_deref()
-        .and_then(crate::ntfs_version::parse);
-    let upgrade = version.filter(|&version| {
-        crate::ntfs_version::disposition(version)
-            == crate::ntfs_version::Disposition::WindowsUpgrades
-    });
+    // NTFS 1.2, 3.0 and 3.1 are read as they are.
     let not_dirty =
         header.dirty == Some(false) && header.volume_flags.is_some_and(|flags| flags & 1 == 0);
-    let clean = not_dirty && (version.is_some_and(crate::ntfs_version::reads) || upgrade.is_some());
+    let clean = not_dirty && crate::ntfs_version::reads_text(header.volume_version.as_deref());
     if !clean {
         report
             .refusals
             .push(ntfs_admission::CLEAN_VOLUME_REQUIREMENT.to_owned());
-    } else if let Some(version) = upgrade {
-        report
-            .notes
-            .push(crate::ntfs_version::upgrade_note(version));
     }
     // 0x80 is how NTFS records that short names are not made on the volume;
     // a conversion takes it with Windows' own word for the same.

@@ -1,0 +1,360 @@
+//! The user's consent to converting objects to plain files.
+//!
+//! Nothing is made plain silently. A data-volume run (a check, a diagnose
+//! run, a conversion) is *offered* plain conversions: its check before the
+//! freeze counts the objects instead of refusing them, and writes the list
+//! of them to a file. A check stops there and exits
+//! [`crate::drive_cli::EXIT_CHECK_PLAIN`]. A run then asks its own
+//! question, apart from the one that starts the conversion, naming the
+//! list's SHA-256; an unattended run (`--yes`) answers it only with
+//! `--accept-plain` and that same SHA-256. Once the source is frozen, the
+//! objects it holds that are converted to plain must all be in the agreed
+//! list ([`bind`]): a file that gained such an attribute meanwhile stops
+//! the run before anything is built.
+//!
+//! Every other route (a Windows boot volume, the running Windows) is never
+//! offered, and refuses such objects as before.
+use crate::plain_projection::PlainList;
+use anyhow::{Result, bail};
+use std::{
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
+
+enum State {
+    /// Objects that would be made plain are refused.
+    Refused,
+    /// They are counted and listed, not refused: nothing is agreed yet.
+    Offered,
+    /// The user agreed to this list.
+    Agreed(PlainList),
+}
+
+static STATE: Mutex<State> = Mutex::new(State::Refused);
+
+fn state() -> std::sync::MutexGuard<'static, State> {
+    STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// A data-volume run: objects that would be made plain are counted and
+/// listed instead of refused, until the user answers.
+pub(crate) fn offer_for_this_run() {
+    let mut state = state();
+    if matches!(*state, State::Refused) {
+        *state = State::Offered;
+    }
+}
+
+/// Whether this run takes objects to plain (offered or agreed) rather than
+/// refusing them.
+pub(crate) fn takes_plain() -> bool {
+    !matches!(*state(), State::Refused)
+}
+
+/// The user agreed to `list`.
+pub(crate) fn agree(list: PlainList) {
+    *state() = State::Agreed(list);
+}
+
+/// What the frozen source would make plain, held to what was agreed. The
+/// SHA-256 of the agreed list, when every object of `frozen` is in it.
+pub(crate) fn bind(frozen: &PlainList, agreed: Option<&PlainList>) -> Result<String> {
+    let Some(agreed) = agreed else {
+        if frozen.is_empty() {
+            return Ok(PlainList::default().sha256());
+        }
+        bail!(
+            "{} object(s) of the frozen source would be converted to plain files (for example {}), and no list of them was agreed before the volume was frozen. Nothing was changed: run again, and answer the question about them",
+            frozen.len(),
+            frozen.entries()[0].path
+        );
+    };
+    let missing = frozen.not_in(agreed);
+    if let Some(first) = missing.first() {
+        bail!(
+            "{} object(s) of the frozen source would be converted to plain files that are not in the list agreed before the volume was frozen (for example {}, {}). The volume changed after the question was answered. Nothing was changed: run again, and answer the question for the list as it is then",
+            missing.len(),
+            first.path,
+            first.kind
+        );
+    }
+    Ok(agreed.sha256())
+}
+
+/// [`bind`] against what this run agreed to.
+pub(crate) fn bind_frozen(frozen: &PlainList) -> Result<String> {
+    match &*state() {
+        State::Agreed(list) => bind(frozen, Some(list)),
+        _ => bind(frozen, None),
+    }
+}
+
+/// Reads `--accept-plain`: a SHA-256 as a check prints it.
+pub(crate) fn parse_accept(text: &str) -> std::result::Result<String, String> {
+    if text.len() == 64 && text.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(text.to_ascii_lowercase())
+    } else {
+        Err(format!(
+            "--accept-plain takes the SHA-256 of a plain-conversions list as `--check` prints it (64 hexadecimal digits), not {text:?}"
+        ))
+    }
+}
+
+/// How a run reaches its answer for a list.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Decision {
+    /// Nothing is made plain: there is nothing to ask.
+    Nothing,
+    /// The user is asked.
+    Ask,
+    /// Answered yes by `--yes --accept-plain` naming this list.
+    Accepted,
+}
+
+/// Pure: what a run does with `list`, given `--accept-plain` and whether
+/// `--yes` answers its questions.
+pub(crate) fn decide(list: &PlainList, accept: Option<&str>, unattended: bool) -> Result<Decision> {
+    if list.is_empty() {
+        return Ok(Decision::Nothing);
+    }
+    let sha = list.sha256();
+    match accept {
+        Some(named) if named == sha => Ok(if unattended {
+            Decision::Accepted
+        } else {
+            Decision::Ask
+        }),
+        Some(named) => bail!(
+            "--accept-plain names the list {named}, and the list of objects this run would convert to plain files is {sha}: the volume is not as it was when that list was made. Nothing was changed. Read the list again (--check) and agree to it as it is"
+        ),
+        None if unattended => bail!(
+            "{} object(s) would be converted to plain files (list sha256 {sha}). --yes does not agree to that by itself: add --accept-plain {sha} after reading the list. Nothing was changed",
+            list.len()
+        ),
+        None => Ok(Decision::Ask),
+    }
+}
+
+fn mib(bytes: u64) -> String {
+    format!("{} MiB", bytes.div_ceil(1 << 20))
+}
+
+/// The "Converted to plain" section a check and a run print.
+pub(crate) fn section(list: &PlainList, list_file: Option<&Path>) -> Vec<String> {
+    let mut lines = vec![format!(
+        "Converted to plain: {} object(s) have a feature ReFS does not have. A conversion makes each a plain file, and only after you agree to the list:",
+        list.len()
+    )];
+    let (mut volume, mut working, mut download) = (0u64, 0u64, 0u64);
+    for (kind, total) in list.totals() {
+        lines.push(format!(
+            "  {kind}: {} object(s), {} of data; {}.",
+            total.objects,
+            mib(total.bytes),
+            kind.describe()
+        ));
+        volume = volume.saturating_add(total.volume_extra_bytes);
+        working = working.saturating_add(total.working_extra_bytes);
+        download = download.saturating_add(total.download_bytes);
+    }
+    lines.push(format!(
+        "  Extra space: {} on the new volume, {} in the working storage; {} to download before the volume is frozen.",
+        mib(volume),
+        mib(working),
+        mib(download)
+    ));
+    for entry in list.entries().iter().take(5) {
+        lines.push(format!("  {} ({})", entry.path, entry.kind));
+    }
+    if list.len() > 5 {
+        lines.push(format!("  and {} more.", list.len() - 5));
+    }
+    match list_file {
+        Some(file) => lines.push(format!(
+            "  The full list: {} (sha256 {}).",
+            file.display(),
+            list.sha256()
+        )),
+        None => lines.push(format!("  The list's sha256: {}.", list.sha256())),
+    }
+    lines
+}
+
+/// The question a run asks, apart from the one that starts it.
+pub(crate) fn question(list: &PlainList) -> String {
+    format!(
+        "Convert these {} object(s) to plain files (list sha256 {})? [y/N]",
+        list.len(),
+        list.sha256()
+    )
+}
+
+/// Writes the list where the user can read it, under `directory`, and says
+/// where. The name carries the start of its checksum, so that two lists
+/// never share a file.
+pub(crate) fn write_list(directory: &Path, list: &PlainList) -> Result<PathBuf> {
+    let path = directory.join(format!("plain-conversions-{}.txt", &list.sha256()[..16]));
+    std::fs::write(&path, list.text())
+        .map_err(|error| anyhow::anyhow!("writing the list to {}: {error}", path.display()))?;
+    Ok(path)
+}
+
+/// Says what would be made plain, and asks. `Ok(true)` when the user
+/// agreed (or there is nothing to agree to); the list is then this run's.
+pub(crate) fn ask(
+    list: &PlainList,
+    accept: Option<&str>,
+    list_file: Option<&Path>,
+) -> Result<bool> {
+    let decision = decide(list, accept, crate::confirmation::assumed())?;
+    if decision == Decision::Nothing {
+        agree(PlainList::default());
+        return Ok(true);
+    }
+    for line in section(list, list_file) {
+        println!("{line}");
+    }
+    println!("{}", question(list));
+    let yes = if decision == Decision::Accepted {
+        println!("yes (--yes --accept-plain {})", list.sha256());
+        true
+    } else {
+        print!("> ");
+        crate::confirmation::answer()?
+    };
+    if yes {
+        agree(list.clone());
+    }
+    Ok(yes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plain_projection::{PlainEntry, PlainKind};
+
+    fn list(paths: &[(&str, u32)]) -> PlainList {
+        PlainList::new(
+            paths
+                .iter()
+                .map(|(path, cleared)| PlainEntry {
+                    kind: PlainKind::AttributesCleared,
+                    path: (*path).to_owned(),
+                    cleared_attributes: *cleared,
+                    bytes: 3000,
+                    volume_extra_bytes: 0,
+                    working_extra_bytes: 0,
+                    download_bytes: 0,
+                })
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn yes_alone_never_agrees_to_a_list() {
+        let found = list(&[("\\t.tmp", 0x100)]);
+        let sha = found.sha256();
+        assert_eq!(decide(&found, None, false).unwrap(), Decision::Ask);
+        let refused = decide(&found, None, true).unwrap_err().to_string();
+        assert!(
+            refused.contains(&format!("--accept-plain {sha}")),
+            "{refused}"
+        );
+        assert_eq!(
+            decide(&found, Some(&sha), true).unwrap(),
+            Decision::Accepted
+        );
+        // Named without --yes, the user is still asked.
+        assert_eq!(decide(&found, Some(&sha), false).unwrap(), Decision::Ask);
+        // Another list is refused, asked or not.
+        let other = "0".repeat(64);
+        for unattended in [false, true] {
+            let refused = decide(&found, Some(&other), unattended)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                refused.contains(&sha) && refused.contains("Nothing was changed"),
+                "{refused}"
+            );
+        }
+        // Nothing to make plain: nothing to ask, with or without --yes.
+        assert_eq!(
+            decide(&PlainList::default(), None, true).unwrap(),
+            Decision::Nothing
+        );
+    }
+
+    #[test]
+    fn the_frozen_list_must_be_a_subset_of_the_agreed_one() {
+        let agreed = list(&[("\\a", 0x100), ("\\b", 0x1000)]);
+        let sha = agreed.sha256();
+        assert_eq!(bind(&list(&[("\\b", 0x1000)]), Some(&agreed)).unwrap(), sha);
+        assert_eq!(bind(&agreed, Some(&agreed)).unwrap(), sha);
+        assert_eq!(bind(&PlainList::default(), Some(&agreed)).unwrap(), sha);
+        let grown = bind(&list(&[("\\a", 0x100), ("\\c", 0x100)]), Some(&agreed))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            grown.contains("\\c") && grown.contains("1 object(s)"),
+            "{grown}"
+        );
+        // A run that agreed to nothing (its check could not read the volume).
+        assert!(bind(&PlainList::default(), None).is_ok());
+        let unasked = bind(&agreed, None).unwrap_err().to_string();
+        assert!(unasked.contains("no list of them was agreed"), "{unasked}");
+    }
+
+    #[test]
+    fn an_accepted_checksum_is_sixty_four_hex_digits() {
+        let sha = "AB".repeat(32);
+        assert_eq!(parse_accept(&sha), Ok("ab".repeat(32)));
+        assert!(parse_accept("ab").is_err());
+        assert!(parse_accept(&"g".repeat(64)).is_err());
+    }
+
+    #[test]
+    fn the_section_names_each_kind_the_space_and_the_list() {
+        let found = list(&[("\\a\\t.tmp", 0x100), ("\\b\\o.dat", 0x1000)]);
+        let text = section(&found, Some(Path::new("S:\\runs\\plain.txt"))).join("\n");
+        assert!(
+            text.starts_with("Converted to plain: 2 object(s)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("attributes_cleared: 2 object(s), 1 MiB of data"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Extra space: 0 MiB on the new volume"),
+            "{text}"
+        );
+        assert!(text.contains("\\a\\t.tmp (attributes_cleared)"), "{text}");
+        assert!(
+            text.contains(&format!("S:\\runs\\plain.txt (sha256 {})", found.sha256())),
+            "{text}"
+        );
+        let asked = question(&found);
+        assert!(
+            asked.starts_with("Convert these 2 object(s) to plain files (list sha256 ")
+                && asked.ends_with("[y/N]"),
+            "{asked}"
+        );
+    }
+
+    #[test]
+    fn the_list_file_holds_the_text_its_checksum_names() {
+        let directory = tempfile::tempdir().unwrap();
+        let found = list(&[("\\a", 0x100)]);
+        let path = write_list(directory.path(), &found).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text, found.text());
+        use sha2::Digest;
+        assert_eq!(
+            hex::encode(sha2::Sha256::digest(text.as_bytes())),
+            found.sha256()
+        );
+    }
+}

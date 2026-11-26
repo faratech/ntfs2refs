@@ -1998,7 +1998,15 @@ pub(crate) fn user_issues_with_context_alias_scope(
             0
         }
         | if has_verified_eas { 0x40000 } else { 0 }
-        | if ordinary { 0x800 } else { 0 };
+        | if ordinary { 0x800 } else { 0 }
+        // TEMPORARY and OFFLINE, which a data-volume run takes off the
+        // object once the user agrees to the list that names it
+        // (`plain_projection`, `plain_consent`). Refused everywhere else.
+        | if ordinary {
+            crate::plain_projection::admitted_attributes(reparse.is_some())
+        } else {
+            0
+        };
     match crate::ntfs_file_attributes::project_user(f) {
         Ok(attributes) if attributes.source_attributes & !carried_attributes == 0 => {}
         Ok(attributes) => issues.push(format!(

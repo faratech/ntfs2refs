@@ -894,7 +894,7 @@ fn declared_after(row: &LedgerRow, before: &Record) -> Result<Record, String> {
         PlainKind::ProjfsPlaceholderPlain => {
             placeholder(&mut after, tag == PROJFS_TAG, "ProjFS placeholder")?
         }
-        PlainKind::CloudLeftOut => {
+        PlainKind::CloudLeftOut | PlainKind::SystemVolumeInformationNotCarried => {
             return Err("an object left out has no record afterwards".into());
         }
     }
@@ -951,8 +951,15 @@ pub fn compare_with_plain(
     let after_paths: BTreeSet<&str> = after.iter().map(|record| record.path.as_str()).collect();
     // The names the ledger takes out of the listing comparison, and the
     // short-name links of those names, which belong with them.
+    // (System Volume Information's objects not carried over are not taken
+    // out: the listing comparison holds that folder's content to its own
+    // rule, for every run alike.)
     let mut taken: BTreeSet<&str> = BTreeSet::new();
-    for row in &ledger.rows {
+    for row in ledger
+        .rows
+        .iter()
+        .filter(|row| row.kind != PlainKind::SystemVolumeInformationNotCarried)
+    {
         taken.extend(row.paths.iter().map(String::as_str));
     }
     let mut links: BTreeSet<String> = BTreeSet::new();
@@ -1027,6 +1034,23 @@ pub fn compare_with_plain(
         })
         .collect();
     for row in &ledger.rows {
+        // An object of System Volume Information not carried over: below
+        // its folders, which the listing comparison holds to their own rule.
+        if row.kind == PlainKind::SystemVolumeInformationNotCarried {
+            for path in row
+                .paths
+                .iter()
+                .filter(|path| !crate::plain_ledger::below_system_folders(path))
+            {
+                fail(
+                    path,
+                    "declared feature not shown before",
+                    "declared not carried as System Volume Information's, and not below its folders"
+                        .into(),
+                );
+            }
+            continue;
+        }
         for path in &row.paths {
             let Some(was) = before_by_path.get(path.as_str()) else {
                 fail(
@@ -1952,6 +1976,50 @@ mod tests {
         }
     }
 
+    /// System Volume Information below its own folders, not carried over:
+    /// held to the listing comparison's own rule for that folder, and taken
+    /// out of nothing. Declared anywhere else, the row fails.
+    #[test]
+    fn what_system_volume_information_does_not_carry_is_held_to_its_rule() {
+        let not_carried = |path: &str| LedgerRow {
+            kind: PlainKind::SystemVolumeInformationNotCarried,
+            left_out: Some(crate::plain_ledger::LedgerLeftOut {
+                directory: false,
+                streams: 1,
+                bytes: 5,
+            }),
+            ..cleared_row(&[path], 0x20, 0x20)
+        };
+        let system = "\\System Volume Information";
+        let log = "\\System Volume Information\\Chkdsk\\x.log";
+        let folders = || {
+            vec![
+                directory("\\"),
+                directory(system),
+                directory("\\System Volume Information\\Chkdsk"),
+                file("\\a", "1"),
+            ]
+        };
+        let mut before = folders();
+        before.push(file(log, "33"));
+        let verdict = compare_with_plain(
+            &before,
+            &folders(),
+            Declared::default(),
+            &ledger(vec![not_carried(log)]),
+        );
+        assert!(verdict.identical(), "{verdict:?}");
+        // Outside it: not what the row declares, and the listing still
+        // holds the object to being there.
+        let outside = compare_with_plain(
+            &folders(),
+            &[directory("\\"), directory(system)],
+            Declared::default(),
+            &ledger(vec![not_carried("\\a")]),
+        );
+        assert!(!outside.identical(), "{outside:?}");
+    }
+
     fn ledger(rows: Vec<LedgerRow>) -> PlainLedger {
         PlainLedger {
             kind: crate::plain_ledger::LEDGER_KIND.to_owned(),
@@ -1981,6 +2049,7 @@ mod tests {
             cloud: None,
             left_out: None,
             dropped_streams: Vec::new(),
+            recorded_streams: Vec::new(),
         }
     }
     /// A volume with an ordinary file and a TEMPORARY one, before and after

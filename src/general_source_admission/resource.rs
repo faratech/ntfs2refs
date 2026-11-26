@@ -1247,9 +1247,11 @@ impl ResourceSourceContext {
             // list the user agreed to before it was frozen: the subset rule
             // (`plain_consent::bind`). The ledger is kept with the run's
             // records below. A Windows boot volume is never offered them.
+            // (A data volume's System Volume Information below its immediate
+            // folders is not carried over, and is in the ledger, whether or
+            // not the run takes objects to plain.)
             let mut plain = if binding.layout_profile
                 != n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
-                && crate::plain_consent::takes_plain()
             {
                 let census = crate::plain_projection::census(&raw)?;
                 let agreed = crate::plain_consent::bind_frozen(&census.list)?;
@@ -1262,7 +1264,8 @@ impl ResourceSourceContext {
                         raw.header()
                             .free_clusters
                             .unwrap_or(0)
-                            .saturating_mul(u64::from(raw.header().geometry.cluster_size)),
+                            .saturating_mul(u64::from(raw.header().geometry.cluster_size))
+                            .saturating_add(census.not_carried_allocated),
                     )?;
                 }
                 // Their plain bytes are copied through WOF at the read-only
@@ -2084,15 +2087,30 @@ impl ResourceSourceContext {
                 // copy below, among the source's working files, is a
                 // temporary file of the run's arena and is retired with it.
                 let kept = crate::plain_consent::write_ledger(ledger)?;
-                println!(
-                    "{} object(s) are converted to plain files, as agreed (list sha256 {}); each is kept in the run's records ({}).",
-                    ledger.rows.len(),
-                    ledger.agreed_list_sha256,
-                    kept.as_deref().map_or_else(
-                        || n2r_win32::plain_ledger::LEDGER_FILE.to_owned(),
-                        |path| path.display().to_string()
-                    )
+                let kept = kept.as_deref().map_or_else(
+                    || n2r_win32::plain_ledger::LEDGER_FILE.to_owned(),
+                    |path| path.display().to_string(),
                 );
+                let not_carried = ledger
+                    .rows
+                    .iter()
+                    .filter(|row| {
+                        row.kind
+                            == n2r_win32::plain_ledger::PlainKind::SystemVolumeInformationNotCarried
+                    })
+                    .count();
+                if ledger.rows.len() > not_carried {
+                    println!(
+                        "{} object(s) are converted to plain files, as agreed (list sha256 {}); each is kept in the run's records ({kept}).",
+                        ledger.rows.len() - not_carried,
+                        ledger.agreed_list_sha256,
+                    );
+                }
+                if not_carried != 0 {
+                    println!(
+                        "{not_carried} object(s) below the folders of System Volume Information are Windows' own and are not carried over; each is kept in the run's records ({kept})."
+                    );
+                }
                 save(
                     output,
                     n2r_win32::plain_ledger::LEDGER_FILE,

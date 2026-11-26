@@ -635,6 +635,16 @@ pub(crate) fn blocker_is_unresolved(
     {
         return Ok(false);
     }
+    // What the inspection reports of an object of a data volume that is
+    // not carried over (below System Volume Information's folders), about
+    // that object alone.
+    if !source.is_windows_conversion()
+        && let Some(number) = blocker.file_record_number
+        && let Some(file) = source.find_record(number, None)?
+        && blocker_of_object_not_carried(source, &file, &blocker.code)
+    {
+        return Ok(false);
+    }
     if blocker.code == "logical_stream_hash_unavailable"
         && blocker.file_record_number == Some(8)
         && blocker.message
@@ -688,7 +698,9 @@ pub(crate) fn ordinary_user_issues(
     file: &FileInventory,
     resources: n2r_win32::tree_resources::SourceResourceAdmission,
 ) -> Result<Vec<String>> {
-    ordinary_user_issues_scoped(source, file, resources, None, None, false)
+    // A volume that shares its disk is not given what a dedicated one's
+    // admission leaves out of System Volume Information.
+    ordinary_user_issues_scoped(source, file, resources, None, None, false, false)
 }
 
 /// The policy for a data volume whose object IDs have been matched and
@@ -699,7 +711,7 @@ pub(crate) fn ordinary_user_issues_data(
     resources: n2r_win32::tree_resources::SourceResourceAdmission,
     object_ids: Option<&crate::object_id_disposition::DataObjectIds>,
 ) -> Result<Vec<String>> {
-    ordinary_user_issues_scoped(source, file, resources, None, object_ids, false)
+    ordinary_user_issues_scoped(source, file, resources, None, object_ids, false, true)
 }
 
 /// The data-volume policy applied to the inspection of a volume that is
@@ -718,7 +730,7 @@ pub(crate) fn ordinary_user_issues_before_freeze(
         source.is_preparation_only(),
         "the policy before the freeze applies to the inspection of a volume in use"
     );
-    ordinary_user_issues_scoped(source, file, resources, None, object_ids, true)
+    ordinary_user_issues_scoped(source, file, resources, None, object_ids, true, true)
 }
 
 pub(crate) fn ordinary_user_issues_windows(
@@ -727,7 +739,7 @@ pub(crate) fn ordinary_user_issues_windows(
     resources: n2r_win32::tree_resources::SourceResourceAdmission,
     aliases: &crate::boot_alias::WindowsAliasDomain,
 ) -> Result<Vec<String>> {
-    ordinary_user_issues_scoped(source, file, resources, Some(aliases), None, false)
+    ordinary_user_issues_scoped(source, file, resources, Some(aliases), None, false, false)
 }
 
 fn ordinary_user_issues_scoped(
@@ -738,6 +750,9 @@ fn ordinary_user_issues_scoped(
     object_ids: Option<&crate::object_id_disposition::DataObjectIds>,
     // The inspection was made before the freeze: no stream has been read yet.
     before_freeze: bool,
+    // A data volume's System Volume Information below its immediate folders
+    // is not carried over (`system_volume_information_not_carried`).
+    leaves_system_out: bool,
 ) -> Result<Vec<String>> {
     resources.validate()?;
     let budget = source.budget();
@@ -763,6 +778,34 @@ fn ordinary_user_issues_scoped(
     } else {
         user_paths(source, file).ok()
     };
+    // What a data volume carries of System Volume Information, decided
+    // here, where the check before the freeze and the admission at it both
+    // see it, and not first by the native construction after the freeze.
+    // An object below its immediate folders is not carried over: what it
+    // holds is not asked about, only whether Data Deduplication's files
+    // still need it. (A Windows volume's system folders are the boot
+    // route's own.)
+    let mut split_system_names = None;
+    if let Some(paths) = paths.as_deref().filter(|_| aliases.is_none()) {
+        match super::system_not_carried(paths, file) {
+            Ok(false) => {}
+            Ok(true) if leaves_system_out => {
+                return Ok(super::chunk_store_issue(paths, file, || {
+                    deduplicated_files_remain(source)
+                })?
+                .into_iter()
+                .collect());
+            }
+            Ok(true) => {
+                return Ok(vec![format!(
+                    "it is \\{} (MFT record {}), below the folders of System Volume Information, which the conversion of a volume that shares its disk carries no object of",
+                    paths[0].join("\\"),
+                    file.record_number
+                )]);
+            }
+            Err(split) => split_system_names = Some(split),
+        }
+    }
     let names_supported = paths.is_some();
     let system_volume_information = paths.as_ref().is_some_and(|paths| {
         paths.iter().any(|path| {
@@ -847,20 +890,64 @@ fn ordinary_user_issues_scoped(
         },
         |stream| evidence.get(&stream.name_utf16).copied().unwrap_or(false),
     );
-    // What the shadow's system payloads take of System Volume Information
-    // (its own files and empty folders), decided here, where the check
-    // before the freeze and the admission at it both see it, and not first
-    // by the native construction after the freeze.
-    // (A data volume's: a Windows volume's system folders are the boot
-    // route's own.)
-    if let Some(issue) = paths
-        .as_deref()
-        .filter(|_| aliases.is_none())
-        .and_then(|paths| super::system_namespace_issue(paths, file))
-    {
-        issues.push(issue);
-    }
+    issues.extend(split_system_names);
     Ok(issues)
+}
+
+/// Whether `code`, a condition the inspection reports of `file` alone (its
+/// contents unread, its encryption or compression, an attribute the
+/// converter does not carry), is settled because a data volume's
+/// conversion does not carry the object over: it is below System Volume
+/// Information's folders. Conditions of the volume, or of how the object's
+/// record is assembled, are not.
+pub(crate) fn blocker_of_object_not_carried(
+    source: &impl RootFileDomain,
+    file: &FileInventory,
+    code: &str,
+) -> bool {
+    matches!(
+        code,
+        "logical_stream_hash_unavailable"
+            | "unsupported_attribute"
+            | "ntfs_encryption"
+            | "encrypted_file_attribute"
+            | "ntfs_compression"
+            | "compressed_file_attribute"
+    ) && user_paths(source, file)
+        .is_ok_and(|paths| super::system_not_carried(&paths, file) == Ok(true))
+}
+
+/// Whether a file Data Deduplication has optimized, which this run does not
+/// make plain, is on the volume: what its chunk store is kept for. Found
+/// once for a source, and asked only where the chunk store is met.
+fn deduplicated_files_remain(source: &crate::ntfs_inspect::PagedInspection) -> Result<bool> {
+    static FOUND: std::sync::Mutex<Option<(String, bool, bool)>> = std::sync::Mutex::new(None);
+    let source_sha256 = source.canonical_sha256()?;
+    let taking = crate::plain_consent::takes_plain();
+    if let Some((sha, took, remain)) = FOUND
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        && *sha == source_sha256
+        && *took == taking
+    {
+        return Ok(*remain);
+    }
+    let mut remain = false;
+    for ordinal in 0..source.file_count() {
+        if source.with_file(ordinal, |file| {
+            Ok(file.reparse.as_ref().is_some_and(|point| {
+                point.tag() == n2r_win32::reparse_layout::IO_REPARSE_TAG_DEDUP
+            }) && !crate::plain_projection::dedup_taken(file))
+        })? {
+            remain = true;
+            break;
+        }
+    }
+    *FOUND
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((source_sha256, taking, remain));
+    Ok(remain)
 }
 
 #[cfg(test)]

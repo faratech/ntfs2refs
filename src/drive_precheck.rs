@@ -197,6 +197,13 @@ fn condition(
         {
             Condition::Settled
         }
+        // Of an object not carried over (below System Volume Information's
+        // folders), about that object alone.
+        (code, Some(file))
+            if ntfs_admission::paged::blocker_of_object_not_carried(raw, file, code) =>
+        {
+            Condition::Settled
+        }
         ("object_id", _) if blocker.file_record_number == Some(3) => {
             if indexes.covers_volume_object_id_domain(raw, 3) {
                 Condition::Settled
@@ -683,11 +690,51 @@ fn read(
             // Cloud placeholders, asked of the Cloud Files API below.
             let mut cloud = Vec::new();
             let (mut stays, mut copied) = (0u64, 0u64);
+            // System Volume Information below its immediate folders: not
+            // carried over, as the conversion's admission decides it.
+            let mut system = crate::plain_projection::SystemFolders::new(&raw);
+            let (mut not_carried, mut not_carried_bytes, mut not_carried_allocated) =
+                (0u64, 0u64, 0u64);
+            let mut not_carried_example = None;
             for ordinal in 0..raw.file_count() {
                 let file = raw.file(ordinal)?;
                 if ntfs_admission::paged::internal_role(&raw, &file)?.is_some()
                     || is_deleted_while_open(&file, deleted_directory)
                 {
+                    continue;
+                }
+                let below = match system.not_carried(&file) {
+                    Ok(paths) => paths,
+                    // Refused by the admission below, by name.
+                    Err(_) => None,
+                };
+                if let Some(paths) = below {
+                    // Only Data Deduplication's chunk store, where files
+                    // still need it, is refused.
+                    let issues = ntfs_admission::paged::ordinary_user_issues_before_freeze(
+                        &raw,
+                        &file,
+                        admission,
+                        object_ids.as_deref(),
+                    )?;
+                    if !issues.is_empty() {
+                        refused.note(file.record_number, paths.first().map(Vec::as_slice), &issues);
+                        continue;
+                    }
+                    not_carried += 1;
+                    not_carried_bytes = file
+                        .streams
+                        .iter()
+                        .fold(not_carried_bytes, |sum, stream| {
+                            sum.saturating_add(stream.logical_size)
+                        });
+                    not_carried_allocated = not_carried_allocated
+                        .saturating_add(crate::plain_projection::allocated(&file));
+                    if not_carried_example.is_none() {
+                        not_carried_example = paths
+                            .first()
+                            .map(|path| crate::plain_projection::listing_path(path));
+                    }
                     continue;
                 }
                 if let Ok(Some(file)) = crate::plain_projection::wof_file(&file) {
@@ -744,6 +791,12 @@ fn read(
             if let Some(outside) = refused.outside_policy("") {
                 report.refusals.push(outside);
             }
+            if let Some(example) = not_carried_example {
+                report.notes.push(format!(
+                    "{not_carried} object(s) below the folders of System Volume Information ({not_carried_bytes} bytes; for example {example}) are Windows' own and are not carried over: each is kept in the run's records ({}).",
+                    n2r_win32::plain_ledger::LEDGER_FILE
+                ));
+            }
             // What of each cloud placeholder is on the volume, as the Cloud
             // Files API says; it downloads nothing to say it.
             report.cloud = crate::drive_plain_prefreeze::find(&root, &cloud);
@@ -780,7 +833,8 @@ fn read(
                 let free = header
                     .free_clusters
                     .unwrap_or(0)
-                    .saturating_mul(u64::from(header.geometry.cluster_size));
+                    .saturating_mul(u64::from(header.geometry.cluster_size))
+                    .saturating_add(not_carried_allocated);
                 let cluster = n2r_win32::target_cluster::bytes();
                 match crate::plain_projection::require_wof_room(&wof, cluster, free) {
                     Err(refusal)

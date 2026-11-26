@@ -88,6 +88,12 @@ pub enum PlainKind {
     /// left out of the conversion, as the user agreed: it stays in the
     /// cloud and is not on the new volume.
     CloudLeftOut,
+    /// An object of a data volume's System Volume Information below its
+    /// immediate folders (Windows' own: a chkdsk log, Data Deduplication's
+    /// chunk store) is not carried over. It is not a conversion and never on
+    /// a list to agree: it is recorded in the ledger, and left out of the
+    /// new tree as `cloud_left_out` is. Not in [`PlainKind::ALL`].
+    SystemVolumeInformationNotCarried,
 }
 
 impl PlainKind {
@@ -113,6 +119,7 @@ impl PlainKind {
             PlainKind::ProjfsPlaceholderPlain => "projfs_placeholder_plain",
             PlainKind::SisExpanded => "sis_expanded",
             PlainKind::CloudLeftOut => "cloud_left_out",
+            PlainKind::SystemVolumeInformationNotCarried => "system_volume_information_not_carried",
         }
     }
 
@@ -142,6 +149,9 @@ impl PlainKind {
             PlainKind::SisExpanded => "the single-instance link becomes the file's own copy",
             PlainKind::CloudLeftOut => {
                 "not on the volume and could not be brought there: it is left out and stays in the cloud"
+            }
+            PlainKind::SystemVolumeInformationNotCarried => {
+                "Windows' own, below the folders of System Volume Information: not carried over, and kept in the run's records"
             }
         }
     }
@@ -368,6 +378,39 @@ pub struct LedgerRow {
     /// directory is made without.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dropped_streams: Vec<LedgerStream>,
+    /// For an object of System Volume Information not carried over
+    /// (`system_volume_information_not_carried`): each of its data streams
+    /// as the frozen source held it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recorded_streams: Vec<LedgerRecordedStream>,
+}
+
+/// A data stream of an object not carried over, as the frozen source held
+/// it: its name (empty for the unnamed one), its length and, where the
+/// inspection read it, the SHA-256 of its contents.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LedgerRecordedStream {
+    pub name: String,
+    pub bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+/// The folder of a volume that holds Windows' own files.
+pub const SYSTEM_VOLUME_INFORMATION: &str = "System Volume Information";
+
+/// Whether `path` (as a listing names it) is below the immediate folders of
+/// System Volume Information: what a data volume's conversion does not
+/// carry over (`system_volume_information_not_carried`). The folder, its
+/// own files and its immediate folders are not.
+pub fn below_system_folders(path: &str) -> bool {
+    let mut parts = path.strip_prefix('\\').unwrap_or(path).split('\\');
+    parts
+        .next()
+        .is_some_and(|first| first.eq_ignore_ascii_case(SYSTEM_VOLUME_INFORMATION))
+        && parts.next().is_some_and(|folder| !folder.is_empty())
+        && parts.next().is_some_and(|name| !name.is_empty())
 }
 
 /// A named stream a row declares left off its object.
@@ -557,8 +600,19 @@ impl DeclaredDrops {
                 }
                 continue;
             }
+            if row.kind == PlainKind::SystemVolumeInformationNotCarried
+                && let Some(path) = row.paths.iter().find(|path| !below_system_folders(path))
+            {
+                return Err(format!(
+                    "MFT record {} is declared not carried as System Volume Information's, and {path} is not below its folders",
+                    row.record_number
+                ));
+            }
             match (row.kind, row.left_out) {
-                (PlainKind::CloudLeftOut, Some(counted)) => {
+                (
+                    PlainKind::CloudLeftOut | PlainKind::SystemVolumeInformationNotCarried,
+                    Some(counted),
+                ) => {
                     if left_out.insert(key, counted).is_some() {
                         return Err(format!(
                             "MFT record {} is left out in more than one row of the plain-conversions ledger",
@@ -567,7 +621,7 @@ impl DeclaredDrops {
                     }
                     continue;
                 }
-                (PlainKind::CloudLeftOut, None) => {
+                (PlainKind::CloudLeftOut | PlainKind::SystemVolumeInformationNotCarried, None) => {
                     return Err(format!(
                         "MFT record {} is left out, and its ledger row does not say what the admission counted of it",
                         row.record_number
@@ -575,7 +629,7 @@ impl DeclaredDrops {
                 }
                 (_, Some(_)) => {
                     return Err(format!(
-                        "MFT record {} is {} and declares what it left out, which only cloud_left_out does",
+                        "MFT record {} is {} and declares what it left out, which only cloud_left_out and system_volume_information_not_carried do",
                         row.record_number, row.kind
                     ));
                 }
@@ -799,6 +853,7 @@ mod tests {
             cloud: None,
             left_out: None,
             dropped_streams: Vec::new(),
+            recorded_streams: Vec::new(),
         }
     }
 
@@ -1101,6 +1156,58 @@ mod tests {
         }
     }
 
+    /// The lab (dd1, n12-chkdsk-7): what System Volume Information holds
+    /// below its own folders is left out as an object agreed to be left out
+    /// is, by its own row, and only there; it is never on a list.
+    #[test]
+    fn system_volume_information_below_its_folders_is_left_out_and_nothing_else() {
+        assert!(below_system_folders(
+            "\\System Volume Information\\Dedup\\x"
+        ));
+        assert!(below_system_folders("\\system volume information\\a\\b\\c"));
+        assert!(!below_system_folders("\\System Volume Information\\Dedup"));
+        assert!(!below_system_folders("\\System Volume Information"));
+        assert!(!below_system_folders("\\System Volume Informationx\\a\\b"));
+        assert!(!below_system_folders(
+            "\\a\\System Volume Information\\b\\c"
+        ));
+        let row = |path: &str, left_out| LedgerRow {
+            kind: PlainKind::SystemVolumeInformationNotCarried,
+            paths: vec![path.into()],
+            left_out,
+            ..wof_row(60, PlainKind::CloudLeftOut)
+        };
+        let counted = Some(LedgerLeftOut {
+            directory: false,
+            streams: 1,
+            bytes: 7,
+        });
+        let log = "\\System Volume Information\\Chkdsk\\x.log";
+        let drops = DeclaredDrops::from_ledger(&ledger_of(vec![row(log, counted)])).unwrap();
+        assert!(drops.is_left_out(60, 1) && !drops.is_left_out(60, 2));
+        assert_eq!(drops.left_out_totals().bytes, 7);
+        assert_eq!(drops.total(), 0);
+        // Directly in the folder, or with nothing counted: not such a row.
+        assert!(
+            DeclaredDrops::from_ledger(&ledger_of(vec![row(
+                "\\System Volume Information\\x.log",
+                counted
+            )]))
+            .is_err()
+        );
+        assert!(DeclaredDrops::from_ledger(&ledger_of(vec![row(log, None)])).is_err());
+        // Never on a list to agree.
+        assert!(!PlainKind::ALL.contains(&PlainKind::SystemVolumeInformationNotCarried));
+        assert_eq!(
+            PlainKind::parse("system_volume_information_not_carried"),
+            None
+        );
+        assert_eq!(
+            serde_json::to_string(&PlainKind::SystemVolumeInformationNotCarried).unwrap(),
+            "\"system_volume_information_not_carried\""
+        );
+    }
+
     #[test]
     fn left_out_objects_are_taken_off_the_counts_and_nothing_else() {
         let left = |record: u64, directory: bool, streams: u64, bytes: u64| LedgerRow {
@@ -1194,6 +1301,7 @@ mod tests {
             cloud: None,
             left_out: None,
             dropped_streams: Vec::new(),
+            recorded_streams: Vec::new(),
         };
         let mut ledger = PlainLedger {
             kind: LEDGER_KIND.into(),

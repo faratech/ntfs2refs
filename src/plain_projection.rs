@@ -805,6 +805,183 @@ pub(crate) struct Census {
     pub rows: Vec<LedgerRow>,
     pub copies: Vec<n2r_win32::plain_copy::PlainCopyRequest>,
     pub wof: Vec<WofFile>,
+    /// What the objects of System Volume Information not carried over take
+    /// on the source: room the new volume does not have to give them.
+    pub not_carried_allocated: u64,
+}
+
+/// Where a directory of a source is, from System Volume Information.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SystemDepth {
+    /// The volume's root.
+    Root,
+    /// Not in System Volume Information.
+    Outside,
+    /// System Volume Information itself.
+    Folder,
+    /// A folder directly in it.
+    Immediate,
+    /// Below one of those.
+    Below,
+}
+
+/// Finds the objects of a source below System Volume Information's
+/// immediate folders (what a data volume's conversion does not carry over,
+/// `system_volume_information_not_carried`) without deriving each object's
+/// path: each directory's place is found once, walking up to the first
+/// directory already placed.
+pub(crate) struct SystemFolders<'a, D: RootFileDomain> {
+    files: &'a D,
+    known: std::collections::HashMap<u64, SystemDepth>,
+}
+
+impl<'a, D: RootFileDomain> SystemFolders<'a, D> {
+    pub(crate) fn new(files: &'a D) -> Self {
+        Self {
+            files,
+            known: Default::default(),
+        }
+    }
+
+    /// The place of the directory `reference` (its record number, with its
+    /// sequence number in the top 16 bits). A directory that cannot be
+    /// found is outside: the admission refuses an object whose path it
+    /// cannot derive, whatever this says.
+    fn depth(&mut self, reference: u64) -> Result<SystemDepth> {
+        let mut chain: Vec<(u64, bool)> = Vec::new();
+        let mut current = reference;
+        let mut depth = loop {
+            if current & 0x0000_ffff_ffff_ffff == 5 {
+                break SystemDepth::Root;
+            }
+            if let Some(&known) = self.known.get(&current) {
+                break known;
+            }
+            anyhow::ensure!(
+                chain.len() < 4096,
+                "the directories above MFT record {} do not reach the root",
+                reference & 0x0000_ffff_ffff_ffff
+            );
+            let Some(directory) = self.files.find_record(
+                current & 0x0000_ffff_ffff_ffff,
+                Some((current >> 48) as u16),
+            )?
+            else {
+                break SystemDepth::Outside;
+            };
+            let Some(name) = directory.names.iter().find(|name| name.namespace != 2) else {
+                break SystemDepth::Outside;
+            };
+            chain.push((
+                current,
+                String::from_utf16_lossy(&name.name_utf16)
+                    .eq_ignore_ascii_case(n2r_win32::plain_ledger::SYSTEM_VOLUME_INFORMATION),
+            ));
+            current = name.parent_record_number | (u64::from(name.parent_sequence_number) << 48);
+        };
+        for (directory, system_name) in chain.into_iter().rev() {
+            depth = match depth {
+                SystemDepth::Root if system_name => SystemDepth::Folder,
+                SystemDepth::Root | SystemDepth::Outside => SystemDepth::Outside,
+                SystemDepth::Folder => SystemDepth::Immediate,
+                SystemDepth::Immediate | SystemDepth::Below => SystemDepth::Below,
+            };
+            self.known.insert(directory, depth);
+        }
+        Ok(depth)
+    }
+
+    /// Whether `file` may be below System Volume Information's immediate
+    /// folders: one of its names is. Whether it is not carried over is
+    /// [`ntfs_admission::system_not_carried`] of its paths.
+    pub(crate) fn may_be_below(&mut self, file: &FileInventory) -> Result<bool> {
+        for name in file.names.iter().filter(|name| name.namespace != 2) {
+            let parent = name.parent_record_number | (u64::from(name.parent_sequence_number) << 48);
+            if matches!(
+                self.depth(parent)?,
+                SystemDepth::Immediate | SystemDepth::Below
+            ) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The paths of `file`, where it is below System Volume Information's
+    /// immediate folders and so not carried over. An object with names
+    /// there and elsewhere is refused by name.
+    pub(crate) fn not_carried(&mut self, file: &FileInventory) -> Result<Option<Vec<Vec<String>>>> {
+        if !self.may_be_below(file)? {
+            return Ok(None);
+        }
+        let paths = ntfs_admission::paged::user_paths(self.files, file).with_context(|| {
+            format!(
+                "the names of MFT record {}, below the folders of System Volume Information",
+                file.record_number
+            )
+        })?;
+        Ok(ntfs_admission::system_not_carried(&paths, file)
+            .map_err(anyhow::Error::msg)?
+            .then_some(paths))
+    }
+}
+
+/// What an object of System Volume Information not carried over takes on
+/// the source: its streams' clusters.
+pub(crate) fn allocated(file: &FileInventory) -> u64 {
+    file.streams
+        .iter()
+        .filter(|stream| !stream.resident)
+        .fold(0u64, |sum, stream| {
+            sum.saturating_add(stream.allocated_size)
+        })
+}
+
+/// The ledger row of an object of System Volume Information not carried
+/// over (`system_volume_information_not_carried`): its names, what the
+/// admission counted of it, and each of its data streams' length and, where
+/// the inspection read it, SHA-256.
+fn not_carried_row(file: &FileInventory, paths: Vec<String>) -> LedgerRow {
+    let (streams, bytes) = counted_streams(file);
+    LedgerRow {
+        kind: PlainKind::SystemVolumeInformationNotCarried,
+        paths,
+        record_number: file.record_number,
+        sequence_number: file.sequence_number,
+        before: LedgerState {
+            attributes: file
+                .standard_information
+                .as_ref()
+                .map_or(0, |information| information.file_attributes),
+            reparse_tag: file.reparse.as_ref().map(|point| point.tag()),
+        },
+        after: LedgerState::default(),
+        witness: format!(
+            "MFT record {} on the frozen source, below the folders of System Volume Information: Windows' own, not carried over",
+            file.record_number
+        ),
+        plain_copy: None,
+        efs: None,
+        cloud: None,
+        left_out: Some(n2r_win32::plain_ledger::LedgerLeftOut {
+            directory: file.is_directory,
+            streams,
+            bytes,
+        }),
+        dropped_streams: Vec::new(),
+        recorded_streams: file
+            .streams
+            .iter()
+            .map(|stream| n2r_win32::plain_ledger::LedgerRecordedStream {
+                name: String::from_utf16_lossy(&stream.name_utf16),
+                bytes: stream.logical_size,
+                sha256: stream
+                    .logical_sha256
+                    .clone()
+                    .or_else(|| stream.resident_sha256.clone()),
+            })
+            .collect(),
+    }
 }
 
 /// Fills each row of a file made plain from a copy with that copy's
@@ -922,6 +1099,7 @@ fn left_out_row(file: &FileInventory, paths: Vec<String>) -> Result<(PlainEntry,
                 bytes,
             }),
             dropped_streams: Vec::new(),
+            recorded_streams: Vec::new(),
         },
     ))
 }
@@ -938,12 +1116,18 @@ fn counted_streams(file: &FileInventory) -> (u64, u64) {
     )
 }
 
-/// The objects of a frozen source that are converted to plain: the list,
-/// and the ledger's rows with every name of each object. NTFS-internal
-/// objects are never converted.
+/// The objects of a frozen data volume that are converted to plain: the
+/// list, and the ledger's rows with every name of each object; and those of
+/// System Volume Information not carried over, each with a row of its own
+/// and on no list. NTFS-internal objects are never converted. A run that
+/// does not take objects to plain converts none, and still leaves out what
+/// System Volume Information does not carry.
 pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
     let (mut entries, mut rows, mut copies, mut wofs) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let takes_plain = crate::plain_consent::takes_plain();
+    let mut system = SystemFolders::new(files);
+    let mut not_carried_allocated = 0u64;
     let mut not_present: Vec<String> = Vec::new();
     // What the user agreed to leave out: those paths, and everything below
     // a folder among them. Each object is found and declared by its own
@@ -952,6 +1136,17 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
     for ordinal in 0..files.file_count() {
         let file = files.file(ordinal)?;
         if ntfs_admission::paged::internal_role(files, &file)?.is_some() {
+            continue;
+        }
+        if let Some(paths) = system.not_carried(&file)? {
+            not_carried_allocated = not_carried_allocated.saturating_add(allocated(&file));
+            rows.push(not_carried_row(
+                &file,
+                paths.iter().map(|path| listing_path(path)).collect(),
+            ));
+            continue;
+        }
+        if !takes_plain {
             continue;
         }
         if !left_out.is_empty() {
@@ -1107,6 +1302,7 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
             } else {
                 Vec::new()
             },
+            recorded_streams: Vec::new(),
         });
     }
     if let Some(first) = not_present.first() {
@@ -1122,6 +1318,7 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
         rows,
         copies,
         wof: wofs,
+        not_carried_allocated,
     })
 }
 

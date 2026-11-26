@@ -937,3 +937,48 @@ fn bad_cluster_exception_never_relaxes_ordinary_holes_or_parser_bounds() {
     let error = inspect(&mut Cursor::new(bytes), length).unwrap_err();
     assert!(format!("{error:#}").contains("data run outside volume"));
 }
+
+/// $Volume's version is read on its own, before a run asks, for every
+/// version a volume can state; the full inspection still blocks all but 3.1.
+#[test]
+fn the_volume_version_is_read_raw_for_every_record_size() {
+    for record in [1024usize, 2048, 4096] {
+        for version in [(3u8, 1u8), (3, 0), (1, 2)] {
+            let mut bytes = support::image_geometry(512, record);
+            let mut vi = [0u8; 12];
+            vi[8] = version.0;
+            vi[9] = version.1;
+            let volume =
+                support::record_sized(&[support::resident(0x70, "", &vi, 0)], 1, 1, record);
+            let at = 4 * 4096 + 3 * record;
+            bytes[at..at + record].copy_from_slice(&volume);
+            let length = bytes.len() as u64;
+            let geometry = inspect_boot_sector(&bytes[..512], length).unwrap();
+            let read =
+                ntfs2refs::ntfs_inspect::read_volume_version(&mut Cursor::new(&bytes), &geometry)
+                    .unwrap_or_else(|error| panic!("{record}/{version:?}: {error:#}"));
+            assert_eq!(read, version);
+            let report = inspect(&mut Cursor::new(bytes), length).unwrap();
+            assert_eq!(
+                report.volume_version,
+                Some(format!("{}.{}", version.0, version.1))
+            );
+            assert_eq!(
+                report
+                    .blockers
+                    .iter()
+                    .any(|blocker| blocker.code == "unsupported_ntfs_version"),
+                version != (3, 1),
+                "{record}/{version:?}"
+            );
+        }
+    }
+    // A torn $Volume record is not read.
+    let mut bytes = support::image();
+    let at = 4 * 4096 + 3 * 1024 + 510;
+    bytes[at] ^= 1;
+    let geometry = inspect_boot_sector(&bytes[..512], bytes.len() as u64).unwrap();
+    assert!(
+        ntfs2refs::ntfs_inspect::read_volume_version(&mut Cursor::new(&bytes), &geometry).is_err()
+    );
+}

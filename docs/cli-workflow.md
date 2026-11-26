@@ -81,6 +81,13 @@ seconds on one of 23,000 files. It prints:
   the NTFS log closes cleanly, the backup boot sector and the MFT mirror, an
   open transaction, whether quota management is switched on, and that Windows
   shows every file as the raw volume holds it.
+- **What a conversion changes before the freeze and does not undo:** a
+  volume of NTFS 1.2 or 3.0 is not refused. The check says "Windows will
+  upgrade this volume to NTFS 3.1 before conversion; this is not undone",
+  and so does a conversion before its question. After the question Windows
+  mounts the volume read-write, which upgrades it; the converter reads
+  `$Volume` again and stops, with nothing else changed, if it does not read
+  3.1. `--diagnose` does not run on such a volume.
 - **What a conversion would take:** the number of files, directories and
   streams; how much data stays where it is and how much is copied, for the
   cluster size asked for (`--target-cluster-bytes`); the working storage and

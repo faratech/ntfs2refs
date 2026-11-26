@@ -693,6 +693,10 @@ fn read(
                 if let Ok(Some(file)) = crate::plain_projection::wof_file(&file) {
                     wof.push(file);
                 }
+                // A deduplicated file grows the volume as a WOF file does.
+                if let Ok(Some(file)) = crate::plain_projection::dedup_file(&file) {
+                    wof.push(file.growing());
+                }
                 let mut issues = ntfs_admission::paged::ordinary_user_issues_before_freeze(
                     &raw,
                     &file,

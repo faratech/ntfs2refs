@@ -26,6 +26,25 @@ pub fn is_wsl_tag(tag: u32) -> bool {
 const HEADER_BYTES: usize = 8;
 /// A file WOF keeps compressed (`compact /exe`, CompactOS).
 pub const IO_REPARSE_TAG_WOF: u32 = 0x8000_0017;
+/// A file Data Deduplication has optimized: its data is in the volume's
+/// chunk store, which the dedup filter reads it back from.
+pub const IO_REPARSE_TAG_DEDUP: u32 = 0x8000_0013;
+
+/// Whether `buffer` is a Data Deduplication reparse point, read as far as
+/// its common header goes: the tag, no reserved bits, and data of the
+/// length the header gives, which is the dedup filter's own (its stream map
+/// reference; nothing here reads it). A file that holds one is made plain
+/// from what the filter reads (`dedup_rehydrated`), never recreated.
+pub fn is_dedup_point(buffer: &[u8]) -> bool {
+    buffer.len() > HEADER_BYTES
+        && buffer.len() <= MAX_REPARSE_BYTES
+        && dword(buffer, 0).ok() == Some(IO_REPARSE_TAG_DEDUP)
+        && word(buffer, 6).ok() == Some(0)
+        && word(buffer, 4)
+            .ok()
+            .is_some_and(|data| HEADER_BYTES + usize::from(data) == buffer.len())
+}
+
 /// The named stream in which WOF's file provider keeps the compressed data.
 pub const WOF_COMPRESSED_DATA: &str = "WofCompressedData";
 /// WOF's file-provider algorithms: XPRESS4K, LZX, XPRESS8K, XPRESS16K.
@@ -272,6 +291,11 @@ impl Point {
         if is_cloud_tag(self.tag()) {
             return Ok(());
         }
+        // A deduplicated file, likewise: made plain once agreed
+        // (`dedup_rehydrated`), and refused otherwise by admission.
+        if self.tag() == IO_REPARSE_TAG_DEDUP && is_dedup_point(bytes) {
+            return Ok(());
+        }
         if LX_SPECIAL_TAGS.contains(&self.tag()) {
             if bytes.len() != HEADER_BYTES {
                 return Err(invalid(
@@ -371,6 +395,25 @@ mod refusal_tests {
         odd[4..6].copy_from_slice(&20u16.to_le_bytes());
         odd[24..28].copy_from_slice(&1u32.to_le_bytes());
         assert!(parse(&odd).is_err());
+    }
+
+    #[test]
+    fn a_dedup_point_is_read_by_its_header_and_not_refused() {
+        let mut point = Vec::new();
+        point.extend_from_slice(&IO_REPARSE_TAG_DEDUP.to_le_bytes());
+        point.extend_from_slice(&80u16.to_le_bytes());
+        point.extend_from_slice(&0u16.to_le_bytes());
+        point.extend_from_slice(&[0x5a; 80]);
+        assert!(is_dedup_point(&point));
+        parse(&point).unwrap();
+        // Reserved bits, a length the header does not give, no data at all.
+        let mut reserved = point.clone();
+        reserved[6] = 1;
+        assert!(!is_dedup_point(&reserved));
+        assert!(!is_dedup_point(&point[..40]));
+        assert!(!is_dedup_point(&point[..8]));
+        let refusal = parse(&reserved).unwrap_err().to_string();
+        assert!(refusal.contains("Data Deduplication"), "{refusal}");
     }
 
     #[test]

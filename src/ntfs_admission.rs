@@ -2385,6 +2385,33 @@ pub(crate) fn user_issues_with_context_alias_scope(
                 n2r_win32::reparse_layout::unsupported_tag_meaning(point.tag())
             ));
         }
+    } else if let Some(point) = reparse
+        .as_ref()
+        .filter(|point| point.tag() == n2r_win32::reparse_layout::IO_REPARSE_TAG_DEDUP)
+    {
+        // A deduplicated file is never recreated as such: a data volume's is
+        // made a plain file from what the dedup filter reads, once its list is
+        // agreed (`dedup_rehydrated`), where this Windows has the filter.
+        if !(ordinary && crate::plain_projection::dedup_taken(f)) {
+            issues.push(
+                if crate::plain_projection::dedup_file(f)
+                    .ok()
+                    .flatten()
+                    .is_some()
+                    && !crate::plain_projection::dedup_readable()
+                {
+                    format!(
+                        "it is a file Data Deduplication has optimized, and {}",
+                        crate::plain_projection::DEDUP_FILTER_REMEDY
+                    )
+                } else {
+                    format!(
+                        "it is a file Data Deduplication has optimized{}",
+                        n2r_win32::reparse_layout::unsupported_tag_meaning(point.tag())
+                    )
+                },
+            );
+        }
     } else if let Some(point) = &reparse {
         if (point.tag() == 0xa0000003 && !f.is_directory)
             || (!f.is_directory && (f.streams.len() != 1 || f.streams[0].logical_size != 0))

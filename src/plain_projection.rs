@@ -67,6 +67,9 @@ impl PlainTransform {
             // Its reparse point, the provider's pin and recall marks, and
             // the OFFLINE and sparse marks a placeholder has.
             PlainKind::CloudPlaceholderPlain => CLOUD_CLEARED,
+            PlainKind::DedupRehydrated => {
+                n2r_win32::plain_ledger::REPARSE_POINT | n2r_win32::plain_ledger::SPARSE_FILE
+            }
             _ => self.cleared_attributes,
         }
     }
@@ -155,7 +158,7 @@ pub(crate) fn require_wof_room(files: &[WofFile], target_cluster: u64, free: u64
     let needed = grows.saturating_sub(frees);
     anyhow::ensure!(
         needed <= free,
-        "the {} file(s) WOF keeps compressed take {grows} bytes made plain (in {target_cluster}-byte clusters), {frees} bytes of their compressed data are freed, so the volume needs {needed} more bytes, and {free} are free. Free {} bytes, or expand some of the files with `compact /u /exe <file>` and convert then. Nothing was changed",
+        "the {} file(s) WOF keeps compressed or Data Deduplication optimized take {grows} bytes made plain (in {target_cluster}-byte clusters), {frees} bytes of their compressed data are freed, so the volume needs {needed} more bytes, and {free} are free. Free {} bytes, or expand some of the files first (`compact /u /exe <file>`; `Start-DedupJob -Type Unoptimization -Volume <drive>:`) and convert then. Nothing was changed",
         files.len(),
         needed - free
     );
@@ -437,6 +440,7 @@ pub(crate) fn plain_copy_pin(
     file: &FileInventory,
 ) -> Result<Option<n2r_win32::plain_copy::PlainCopyPin>> {
     let copied = wof_taken(file)
+        || dedup_taken(file)
         || (efs_taken(file) && matches!(efs_object(file)?, Some(EfsObject::File(_))))
         || cloud_copied(file);
     if !copied {
@@ -456,6 +460,8 @@ pub(crate) fn plain_copy_pin(
 /// run makes it plain from its copy: the raw source as the filter that owns
 /// it shows it to Windows, and nothing else changed.
 ///
+/// - The dedup filter hides nothing of the file: its reparse point and
+///   attributes are compared as the raw record holds them.
 /// - WOF hides its reparse point, the REPARSE_POINT and SPARSE_FILE
 ///   attributes and its WofCompressedData stream (the lab's listing of a
 ///   `compact /exe` file shows attributes 0x20, one stream, the full length).
@@ -593,6 +599,74 @@ pub(crate) fn allocation_held_by_copy(
 #[cfg(test)]
 pub(crate) static COPY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// A file Data Deduplication has optimized, as the raw source shows it: its
+/// dedup reparse point and exactly one, unnamed, stream of the file's plain
+/// length, whose data is in the chunk store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DedupFile {
+    pub plain_bytes: u64,
+    /// What the stream itself takes on the source (the ranges not yet
+    /// optimized), freed when the file is made plain.
+    pub allocated: u64,
+}
+
+impl DedupFile {
+    /// As the capacity gate counts it: its plain length on the new volume,
+    /// less what its own stream took.
+    pub(crate) fn growing(self) -> WofFile {
+        WofFile {
+            algorithm: 0,
+            plain_bytes: self.plain_bytes,
+            compressed_allocated: self.allocated,
+        }
+    }
+}
+
+/// The deduplicated file `file` is, if it is one this build makes plain.
+pub(crate) fn dedup_file(file: &FileInventory) -> Result<Option<DedupFile>> {
+    let Some(point) = crate::ntfs_reparse::file_point(file)? else {
+        return Ok(None);
+    };
+    if !n2r_win32::reparse_layout::is_dedup_point(&point.buffer) || file.is_directory {
+        return Ok(None);
+    }
+    let [stream] = file.streams.as_slice() else {
+        return Ok(None);
+    };
+    Ok(
+        (stream.name_utf16.is_empty() && stream.flags & !0x8000 == 0).then_some(DedupFile {
+            plain_bytes: stream.logical_size,
+            allocated: stream.allocated_size,
+        }),
+    )
+}
+
+/// Said where a deduplicated file cannot be read through this Windows.
+pub(crate) const DEDUP_FILTER_REMEDY: &str = "this Windows has no Data Deduplication filter to read it through: convert the volume from a Windows Server with the Data Deduplication feature, or rehydrate its files first with `Start-DedupJob -Type Unoptimization -Volume <drive>:`";
+
+/// Whether this Windows reads deduplicated files through its filter.
+pub(crate) fn dedup_readable() -> bool {
+    #[cfg(windows)]
+    {
+        static PRESENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *PRESENT.get_or_init(n2r_win32::plain_copy::dedup_filter_present)
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Whether this run makes `file` a plain file from what the dedup filter
+/// reads (where `dedup_rehydrated` is enabled and this Windows has the
+/// filter).
+pub(crate) fn dedup_taken(file: &FileInventory) -> bool {
+    PlainKind::DedupRehydrated.implemented()
+        && crate::plain_consent::takes_plain()
+        && dedup_file(file).ok().flatten().is_some()
+        && dedup_readable()
+}
+
 /// The transform of one file or directory, from its raw record.
 pub(crate) fn of_file(file: &FileInventory) -> Result<Option<PlainTransform>> {
     // An EFS object of another shape is refused by admission, by name.
@@ -608,6 +682,14 @@ pub(crate) fn of_file(file: &FileInventory) -> Result<Option<PlainTransform>> {
     {
         return Ok(Some(PlainTransform {
             kind: PlainKind::CloudPlaceholderPlain,
+            cleared_attributes: 0,
+        }));
+    }
+    // A deduplicated file; one this Windows cannot read through its filter
+    // is refused by admission, by name, with the remedy.
+    if PlainKind::DedupRehydrated.implemented() && dedup_file(file).ok().flatten().is_some() {
+        return Ok(Some(PlainTransform {
+            kind: PlainKind::DedupRehydrated,
             cleared_attributes: 0,
         }));
     }
@@ -649,7 +731,10 @@ pub(crate) fn listing_path(components: &[String]) -> String {
 
 /// The list entry for one object.
 pub(crate) fn entry(path: String, file: &FileInventory, transform: PlainTransform) -> PlainEntry {
-    let wof = wof_file(file).ok().flatten();
+    let wof = wof_file(file)
+        .ok()
+        .flatten()
+        .or_else(|| dedup_file(file).ok().flatten().map(DedupFile::growing));
     // An EFS file's plain text, kept in the working storage until the run
     // ends; on the new volume it takes what its ciphertext took.
     if let Some(efs) = (transform.kind == PlainKind::EfsDecrypted)
@@ -917,6 +1002,18 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
             });
             wofs.push(wof);
         }
+        let dedup = (transform.kind == PlainKind::DedupRehydrated)
+            .then(|| dedup_file(&file))
+            .transpose()?
+            .flatten();
+        if let Some(dedup) = dedup {
+            copies.push(n2r_win32::plain_copy::PlainCopyRequest {
+                key: copy_key(&file),
+                bytes: dedup.plain_bytes,
+                through: n2r_win32::plain_copy::PlainRead::Filter,
+            });
+            wofs.push(dedup.growing());
+        }
         let efs = (transform.kind == PlainKind::EfsDecrypted)
             .then(|| efs_object(&file))
             .transpose()?
@@ -962,7 +1059,8 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
                 attributes: before,
                 reparse_tag: wof
                     .map(|_| n2r_win32::reparse_layout::IO_REPARSE_TAG_WOF)
-                    .or(cloud.map(|placeholder| placeholder.tag)),
+                    .or(cloud.map(|placeholder| placeholder.tag))
+                    .or(dedup.map(|_| n2r_win32::reparse_layout::IO_REPARSE_TAG_DEDUP)),
             },
             after: LedgerState {
                 attributes: transform.target_attributes(before),
@@ -1371,6 +1469,25 @@ mod tests {
         let split = left_out_by(&paths(&["\\c\\folder\\x", "\\d\\x"]), &left).unwrap_err();
         assert!(split.contains("cannot be left out in part"), "{split}");
         assert!(within("\\c", "\\c") && !within("\\c", "\\c\\d"));
+    }
+
+    #[test]
+    fn a_deduplicated_file_grows_the_volume_by_its_plain_length() {
+        let file = DedupFile {
+            plain_bytes: 5000,
+            allocated: 4096,
+        };
+        // Counted as a WOF file is: its plain length rounded to the target
+        // cluster, less what its own stream took.
+        assert_eq!(wof_growth(&[file.growing()], 4096), (8192, 4096));
+        let refused = require_wof_room(&[file.growing()], 4096, 0)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("Start-DedupJob -Type Unoptimization"),
+            "{refused}"
+        );
+        assert!(DEDUP_FILTER_REMEDY.contains("Windows Server"));
     }
 
     #[test]

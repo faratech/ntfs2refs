@@ -542,6 +542,45 @@ pub fn probe_decryption(path: &Path) -> io::Result<()> {
         .map(drop)
 }
 
+/// Whether this Windows has the Data Deduplication filter, through which a
+/// deduplicated file reads as its whole contents: its driver's service is
+/// registered and not disabled.
+#[cfg(windows)]
+pub fn dedup_filter_present() -> bool {
+    use windows_sys::Win32::System::Registry::{
+        HKEY, HKEY_LOCAL_MACHINE, KEY_READ, RRF_RT_REG_DWORD, RegCloseKey, RegGetValueW,
+        RegOpenKeyExW,
+    };
+    let path: Vec<u16> = "SYSTEM\\CurrentControlSet\\Services\\Dedup"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let mut key: HKEY = std::ptr::null_mut();
+    // SAFETY: a terminated path and an out pointer that lives across the call.
+    if unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, path.as_ptr(), 0, KEY_READ, &mut key) } != 0 {
+        return false;
+    }
+    let name: Vec<u16> = "Start".encode_utf16().chain(Some(0)).collect();
+    let mut start = 0u32;
+    let mut size = 4u32;
+    // SAFETY: the key just opened, a terminated name and a DWORD of room.
+    let read = unsafe {
+        RegGetValueW(
+            key,
+            std::ptr::null(),
+            name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            (&mut start as *mut u32).cast(),
+            &mut size,
+        )
+    };
+    // SAFETY: closes the key opened above, once.
+    unsafe { RegCloseKey(key) };
+    // SERVICE_DISABLED is 4.
+    read == 0 && start != 4
+}
+
 /// Opens one object of the volume by its file reference for a plain read.
 #[cfg(windows)]
 pub fn open_plain_by_id(volume: &File, record: u64, sequence: u16) -> io::Result<File> {

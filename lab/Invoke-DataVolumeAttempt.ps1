@@ -2363,7 +2363,9 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         }
         if ($cloudFeatures) {
             # The lab provider: stopped, and its sync roots unregistered.
-            $stopped = Invoke-Command -Session $session -ArgumentList $guestRoot, $cloudFeatures -ScriptBlock {
+            # (The provider was copied to the attempt's own folder; a recovery
+            # stages its converter in a folder below it.)
+            $stopped = Invoke-Command -Session $session -ArgumentList "C:\n2r\datalab\$Name", $cloudFeatures -ScriptBlock {
                 param($root, $features)
                 foreach ($feature in $features) {
                     Set-Content -LiteralPath "C:\n2r-cloud-backing\$feature.stop" -Value 'stop' -ErrorAction SilentlyContinue

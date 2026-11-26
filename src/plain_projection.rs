@@ -686,7 +686,8 @@ pub(crate) fn plain_copy_pin(
 ///   which the plain copy holds: Windows' read of it is held to the copy's
 ///   content digest, and never left unread as a plain stream would be.
 ///
-/// `None` for every other object, which is compared as it is.
+/// PrjFlt hides the reparse point even on a placeholder being left out.
+/// `None` for objects whose raw view is compared directly.
 pub(crate) fn observed_view(file: &FileInventory) -> Result<Option<FileInventory>> {
     // A sync root's folder: the Cloud Files filter hides the API's own
     // stream from Windows (the lab: its stream enumeration ends at once,
@@ -701,10 +702,59 @@ pub(crate) fn observed_view(file: &FileInventory) -> Result<Option<FileInventory
     if sis_taken(file) {
         return Ok(None);
     }
+    // A ProjFS placeholder, made plain or left out: PrjFlt hides its
+    // reparse point from Windows, even from an open of the point itself.
+    let projfs = projfs_taken(file);
     let Some(pin) = plain_copy_pin(file)? else {
-        return Ok(None);
+        return projfs.then(|| projfs_view(file)).transpose();
     };
+    if projfs {
+        return filter_view(&projfs_view(file)?, false, &pin.content_digest).map(Some);
+    }
     filter_view(file, wof_taken(file), &pin.content_digest).map(Some)
+}
+
+/// Whether this run makes `file`, a ProjFS placeholder (a file, a folder,
+/// the virtualization root), plain or leaves it out.
+fn projfs_taken(file: &FileInventory) -> bool {
+    crate::plain_consent::takes_plain()
+        && placeholder_of(file)
+            .ok()
+            .flatten()
+            .is_some_and(|placeholder| placeholder.family == PlaceholderFamily::Projfs)
+}
+
+/// A ProjFS placeholder as Windows sees it with PrjFlt attached: without
+/// its reparse point, the REPARSE_POINT attribute and the sparse mark (the
+/// lab, s321-projfs-leave on Windows Server 2025: FileAttributeTagInfo gives
+/// tag 0 and attributes 0x400020 for a placeholder not on the volume, 0x20
+/// for one hydrated, 0x10 for the virtualization root). Its RECALL_ON_DATA_ACCESS
+/// mark, which Windows shows, stays.
+fn projfs_view(file: &FileInventory) -> Result<FileInventory> {
+    let mut view = file.clone();
+    view.reparse = None;
+    view.attributes
+        .retain(|attribute| attribute.type_code != 0xc0);
+    if let Some(information) = view.standard_information.as_mut() {
+        information.file_attributes &=
+            !(n2r_win32::plain_ledger::REPARSE_POINT | n2r_win32::plain_ledger::SPARSE_FILE);
+    }
+    for stream in &mut view.streams {
+        if stream.name_utf16.is_empty() && stream.flags & 0x8000 != 0 {
+            // Windows hides the sparse flag but reports the physical size.
+            // Keep the raw runs for the separate retrieval-pointer check.
+            stream.flags &= !0x8000;
+            stream.allocated_size = stream
+                .extents
+                .iter()
+                .filter(|extent| extent.physical_offset.is_some())
+                .try_fold(0u64, |sum, extent| {
+                    sum.checked_add(extent.length)
+                        .context("ProjFS physical allocation overflow")
+                })?;
+        }
+    }
+    Ok(view)
 }
 
 /// A sync root's folder as Windows sees it: without the Cloud Files API's
@@ -2045,6 +2095,40 @@ mod tests {
         assert_eq!(
             view.streams[0].logical_sha256.as_deref(),
             Some(copy.as_str())
+        );
+    }
+
+    #[test]
+    fn projfs_hides_the_reparse_point_and_reports_physical_allocation() {
+        let mut raw = wof_file();
+        raw.streams.retain(|stream| stream.name_utf16.is_empty());
+        raw.streams[0].flags = 0x8000;
+        raw.streams[0].allocated_size = 8192;
+        raw.streams[0].extents = vec![
+            crate::ntfs_inspect::Extent {
+                logical_offset: 0,
+                physical_offset: Some(4096),
+                length: 4096,
+            },
+            crate::ntfs_inspect::Extent {
+                logical_offset: 4096,
+                physical_offset: None,
+                length: 4096,
+            },
+        ];
+        raw.attributes = vec![attribute(0x80, "", 0x8000), attribute(0xc0, "", 0)];
+        raw.standard_information.as_mut().unwrap().file_attributes = 0x40_0620;
+
+        let view = projfs_view(&raw).unwrap();
+        assert!(view.reparse.is_none());
+        assert_eq!(view.attributes.len(), 1);
+        assert_eq!(view.attributes[0].flags, 0x8000);
+        assert_eq!(view.streams[0].flags, 0);
+        assert_eq!(view.streams[0].allocated_size, 4096);
+        assert_eq!(view.streams[0].extents, raw.streams[0].extents);
+        assert_eq!(
+            view.standard_information.unwrap().file_attributes,
+            0x40_0020
         );
     }
 

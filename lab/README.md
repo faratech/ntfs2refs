@@ -526,6 +526,26 @@ The listing descends into placeholder folders, so it lists a sync root's
 contents whether its provider runs or not. The harness checks that the
 provider is still serving before it starts the converter. Both are still to be run.
 
+`dedup` (Windows Server only: ntfs2refs-server2025, with its `-VmId` and
+`-CredentialPath`) installs Data Deduplication if it is missing, turns it on
+for V: with files of any age, plants four identical files and runs an
+optimization job to its end; each has to hold a 0x80000013 reparse point. With
+`-AcceptPlain` they are made plain from what the filter reads, as is every
+other file the job optimized (the content's own, found afterwards by their
+tag: the ledger has to name exactly those), and the
+chunk store below `System Volume Information\Dedup` is not carried over: the
+ledger has to record at least one object below it.
+
+`svi-deep` (any Windows) has a scheduled task running as SYSTEM, which alone
+may write there, put a folder `n2r-lab` directly in `System Volume
+Information`, holding a file and a folder with a file. Those three are not
+carried over: the task lists them as SYSTEM and leaves its result in the
+Windows temporary folder (the harness's session never opens the folder,
+which it may not); the ledger has to record each as
+`system_volume_information_not_carried`, and the folder `n2r-lab` is made,
+empty. Rows of that kind that no feature planted (Windows' own) are not
+held against the run; they are counted apart from the plain conversions.
+
 `temporary`, `offline` and `wof` (four `compact /exe` files, one per WOF
 algorithm, listed before the run in `wof-listed-before.jsonl`) convert with
 `-AcceptPlain`; without it a run stops before it changes anything. So does

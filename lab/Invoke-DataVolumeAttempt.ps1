@@ -2258,15 +2258,29 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
             $made = if ($verdict.source.Contains('features')) { $verdict.source.features } else { $null }
             $planted = @($made | Where-Object { $_ } | ForEach-Object { $_.PSObject.Properties } | ForEach-Object { $_.Value } |
                 Where-Object { $_ -is [psobject] -and $_.PSObject.Properties['plain'] } | ForEach-Object { $_.plain } | ForEach-Object { "$($_.kind)`t$($_.path)" } | Sort-Object)
-            $ledgered = @($compared.plain_rows | Sort-Object)
+            # System Volume Information below its own folders is not carried
+            # over, whatever planted it (Windows itself, mostly): its rows are
+            # held apart, and have to record what the features put there.
+            $notCarriedKind = "system_volume_information_not_carried`t"
+            $ledgered = @($compared.plain_rows | Where-Object { -not $_.StartsWith($notCarriedKind) } | Sort-Object)
+            $systemRows = @($compared.plain_rows | Where-Object { $_.StartsWith($notCarriedKind) } | ForEach-Object { $_.Substring($notCarriedKind.Length) } | Sort-Object)
+            $featureValues = @($made | Where-Object { $_ } | ForEach-Object { $_.PSObject.Properties } | ForEach-Object { $_.Value } | Where-Object { $_ -is [psobject] })
+            $notCarried = @($featureValues | Where-Object { $_.PSObject.Properties['not_carried'] } | ForEach-Object { $_.not_carried })
+            $notCarriedUnder = @($featureValues | Where-Object { $_.PSObject.Properties['not_carried_under'] } | ForEach-Object { $_.not_carried_under })
+            $unrecorded = @($notCarried | Where-Object { $_ -notin $systemRows }) + @($notCarriedUnder | Where-Object {
+                    $under = "$_\"; -not @($systemRows | Where-Object { $_.StartsWith($under, [StringComparison]::OrdinalIgnoreCase) }).Count })
             $failures = if ($compared.plain) { [int]$compared.plain.failure_count } else { 0 }
             $verdict.plain = [ordered]@{ ledger = $compared.plain_ledger; planted = $planted; ledger_rows = $ledgered
                 conversions = $(if ($compared.plain) { $compared.plain.conversions } else { $null }); failures = $failures
-                ledger_is_what_was_planted = ((@($planted) -join "`n") -eq (@($ledgered) -join "`n")) }
+                ledger_is_what_was_planted = ((@($planted) -join "`n") -eq (@($ledgered) -join "`n"))
+                system_not_carried = [ordered]@{ rows = $systemRows.Count; planted = $notCarried; planted_under = $notCarriedUnder; unrecorded = $unrecorded } }
             if ($planted.Count -or $ledgered.Count -or $compared.plain_ledger) {
                 Say "plain conversions: $($ledgered.Count) in the ledger, $($planted.Count) planted; content verdict failures: $failures"
             }
-            if ($listing -eq 'identical' -and ($failures -ne 0 -or -not $verdict.plain.ledger_is_what_was_planted)) { $listing = 'differs' }
+            if ($systemRows.Count -or $notCarried.Count -or $notCarriedUnder.Count) {
+                Say "System Volume Information not carried over: $($systemRows.Count) in the ledger; planted and not recorded: $(if ($unrecorded.Count) { $unrecorded -join ', ' } else { 'none' })"
+            }
+            if ($listing -eq 'identical' -and ($failures -ne 0 -or -not $verdict.plain.ledger_is_what_was_planted -or $unrecorded.Count)) { $listing = 'differs' }
         }
         $verdict.manifest = [ordered]@{ result = $listing; exact = (-not $converted); stage = $compared.stage; exit = $compared.exit; differences = $compared.differences; listed = $compared.listed; summary = $compared.summary }
         Say "listing after the run: $($compared.listed)"

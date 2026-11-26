@@ -721,6 +721,7 @@ mod tests {
                     cloud: None,
                     left_out: None,
                     dropped_streams: Vec::new(),
+                    recorded_streams: Vec::new(),
                 }],
             })
             .unwrap(),

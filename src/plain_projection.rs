@@ -67,6 +67,9 @@ impl PlainTransform {
             // Its reparse point, the provider's pin and recall marks, and
             // the OFFLINE and sparse marks a placeholder has.
             PlainKind::CloudPlaceholderPlain => CLOUD_CLEARED,
+            PlainKind::DedupRehydrated => {
+                n2r_win32::plain_ledger::REPARSE_POINT | n2r_win32::plain_ledger::SPARSE_FILE
+            }
             _ => self.cleared_attributes,
         }
     }
@@ -155,7 +158,7 @@ pub(crate) fn require_wof_room(files: &[WofFile], target_cluster: u64, free: u64
     let needed = grows.saturating_sub(frees);
     anyhow::ensure!(
         needed <= free,
-        "the {} file(s) WOF keeps compressed take {grows} bytes made plain (in {target_cluster}-byte clusters), {frees} bytes of their compressed data are freed, so the volume needs {needed} more bytes, and {free} are free. Free {} bytes, or expand some of the files with `compact /u /exe <file>` and convert then. Nothing was changed",
+        "the {} file(s) WOF keeps compressed or Data Deduplication optimized take {grows} bytes made plain (in {target_cluster}-byte clusters), {frees} bytes of their compressed data are freed, so the volume needs {needed} more bytes, and {free} are free. Free {} bytes, or expand some of the files first (`compact /u /exe <file>`; `Start-DedupJob -Type Unoptimization -Volume <drive>:`) and convert then. Nothing was changed",
         files.len(),
         needed - free
     );
@@ -437,6 +440,7 @@ pub(crate) fn plain_copy_pin(
     file: &FileInventory,
 ) -> Result<Option<n2r_win32::plain_copy::PlainCopyPin>> {
     let copied = wof_taken(file)
+        || dedup_taken(file)
         || (efs_taken(file) && matches!(efs_object(file)?, Some(EfsObject::File(_))))
         || cloud_copied(file);
     if !copied {
@@ -456,6 +460,8 @@ pub(crate) fn plain_copy_pin(
 /// run makes it plain from its copy: the raw source as the filter that owns
 /// it shows it to Windows, and nothing else changed.
 ///
+/// - The dedup filter hides nothing of the file: its reparse point and
+///   attributes are compared as the raw record holds them.
 /// - WOF hides its reparse point, the REPARSE_POINT and SPARSE_FILE
 ///   attributes and its WofCompressedData stream (the lab's listing of a
 ///   `compact /exe` file shows attributes 0x20, one stream, the full length).
@@ -593,6 +599,74 @@ pub(crate) fn allocation_held_by_copy(
 #[cfg(test)]
 pub(crate) static COPY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// A file Data Deduplication has optimized, as the raw source shows it: its
+/// dedup reparse point and exactly one, unnamed, stream of the file's plain
+/// length, whose data is in the chunk store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DedupFile {
+    pub plain_bytes: u64,
+    /// What the stream itself takes on the source (the ranges not yet
+    /// optimized), freed when the file is made plain.
+    pub allocated: u64,
+}
+
+impl DedupFile {
+    /// As the capacity gate counts it: its plain length on the new volume,
+    /// less what its own stream took.
+    pub(crate) fn growing(self) -> WofFile {
+        WofFile {
+            algorithm: 0,
+            plain_bytes: self.plain_bytes,
+            compressed_allocated: self.allocated,
+        }
+    }
+}
+
+/// The deduplicated file `file` is, if it is one this build makes plain.
+pub(crate) fn dedup_file(file: &FileInventory) -> Result<Option<DedupFile>> {
+    let Some(point) = crate::ntfs_reparse::file_point(file)? else {
+        return Ok(None);
+    };
+    if !n2r_win32::reparse_layout::is_dedup_point(&point.buffer) || file.is_directory {
+        return Ok(None);
+    }
+    let [stream] = file.streams.as_slice() else {
+        return Ok(None);
+    };
+    Ok(
+        (stream.name_utf16.is_empty() && stream.flags & !0x8000 == 0).then_some(DedupFile {
+            plain_bytes: stream.logical_size,
+            allocated: stream.allocated_size,
+        }),
+    )
+}
+
+/// Said where a deduplicated file cannot be read through this Windows.
+pub(crate) const DEDUP_FILTER_REMEDY: &str = "this Windows has no Data Deduplication filter to read it through: convert the volume from a Windows Server with the Data Deduplication feature, or rehydrate its files first with `Start-DedupJob -Type Unoptimization -Volume <drive>:`";
+
+/// Whether this Windows reads deduplicated files through its filter.
+pub(crate) fn dedup_readable() -> bool {
+    #[cfg(windows)]
+    {
+        static PRESENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *PRESENT.get_or_init(n2r_win32::plain_copy::dedup_filter_present)
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Whether this run makes `file` a plain file from what the dedup filter
+/// reads (where `dedup_rehydrated` is enabled and this Windows has the
+/// filter).
+pub(crate) fn dedup_taken(file: &FileInventory) -> bool {
+    PlainKind::DedupRehydrated.implemented()
+        && crate::plain_consent::takes_plain()
+        && dedup_file(file).ok().flatten().is_some()
+        && dedup_readable()
+}
+
 /// The transform of one file or directory, from its raw record.
 pub(crate) fn of_file(file: &FileInventory) -> Result<Option<PlainTransform>> {
     // An EFS object of another shape is refused by admission, by name.
@@ -608,6 +682,14 @@ pub(crate) fn of_file(file: &FileInventory) -> Result<Option<PlainTransform>> {
     {
         return Ok(Some(PlainTransform {
             kind: PlainKind::CloudPlaceholderPlain,
+            cleared_attributes: 0,
+        }));
+    }
+    // A deduplicated file; one this Windows cannot read through its filter
+    // is refused by admission, by name, with the remedy.
+    if PlainKind::DedupRehydrated.implemented() && dedup_file(file).ok().flatten().is_some() {
+        return Ok(Some(PlainTransform {
+            kind: PlainKind::DedupRehydrated,
             cleared_attributes: 0,
         }));
     }
@@ -649,7 +731,10 @@ pub(crate) fn listing_path(components: &[String]) -> String {
 
 /// The list entry for one object.
 pub(crate) fn entry(path: String, file: &FileInventory, transform: PlainTransform) -> PlainEntry {
-    let wof = wof_file(file).ok().flatten();
+    let wof = wof_file(file)
+        .ok()
+        .flatten()
+        .or_else(|| dedup_file(file).ok().flatten().map(DedupFile::growing));
     // An EFS file's plain text, kept in the working storage until the run
     // ends; on the new volume it takes what its ciphertext took.
     if let Some(efs) = (transform.kind == PlainKind::EfsDecrypted)
@@ -720,6 +805,183 @@ pub(crate) struct Census {
     pub rows: Vec<LedgerRow>,
     pub copies: Vec<n2r_win32::plain_copy::PlainCopyRequest>,
     pub wof: Vec<WofFile>,
+    /// What the objects of System Volume Information not carried over take
+    /// on the source: room the new volume does not have to give them.
+    pub not_carried_allocated: u64,
+}
+
+/// Where a directory of a source is, from System Volume Information.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SystemDepth {
+    /// The volume's root.
+    Root,
+    /// Not in System Volume Information.
+    Outside,
+    /// System Volume Information itself.
+    Folder,
+    /// A folder directly in it.
+    Immediate,
+    /// Below one of those.
+    Below,
+}
+
+/// Finds the objects of a source below System Volume Information's
+/// immediate folders (what a data volume's conversion does not carry over,
+/// `system_volume_information_not_carried`) without deriving each object's
+/// path: each directory's place is found once, walking up to the first
+/// directory already placed.
+pub(crate) struct SystemFolders<'a, D: RootFileDomain> {
+    files: &'a D,
+    known: std::collections::HashMap<u64, SystemDepth>,
+}
+
+impl<'a, D: RootFileDomain> SystemFolders<'a, D> {
+    pub(crate) fn new(files: &'a D) -> Self {
+        Self {
+            files,
+            known: Default::default(),
+        }
+    }
+
+    /// The place of the directory `reference` (its record number, with its
+    /// sequence number in the top 16 bits). A directory that cannot be
+    /// found is outside: the admission refuses an object whose path it
+    /// cannot derive, whatever this says.
+    fn depth(&mut self, reference: u64) -> Result<SystemDepth> {
+        let mut chain: Vec<(u64, bool)> = Vec::new();
+        let mut current = reference;
+        let mut depth = loop {
+            if current & 0x0000_ffff_ffff_ffff == 5 {
+                break SystemDepth::Root;
+            }
+            if let Some(&known) = self.known.get(&current) {
+                break known;
+            }
+            anyhow::ensure!(
+                chain.len() < 4096,
+                "the directories above MFT record {} do not reach the root",
+                reference & 0x0000_ffff_ffff_ffff
+            );
+            let Some(directory) = self.files.find_record(
+                current & 0x0000_ffff_ffff_ffff,
+                Some((current >> 48) as u16),
+            )?
+            else {
+                break SystemDepth::Outside;
+            };
+            let Some(name) = directory.names.iter().find(|name| name.namespace != 2) else {
+                break SystemDepth::Outside;
+            };
+            chain.push((
+                current,
+                String::from_utf16_lossy(&name.name_utf16)
+                    .eq_ignore_ascii_case(n2r_win32::plain_ledger::SYSTEM_VOLUME_INFORMATION),
+            ));
+            current = name.parent_record_number | (u64::from(name.parent_sequence_number) << 48);
+        };
+        for (directory, system_name) in chain.into_iter().rev() {
+            depth = match depth {
+                SystemDepth::Root if system_name => SystemDepth::Folder,
+                SystemDepth::Root | SystemDepth::Outside => SystemDepth::Outside,
+                SystemDepth::Folder => SystemDepth::Immediate,
+                SystemDepth::Immediate | SystemDepth::Below => SystemDepth::Below,
+            };
+            self.known.insert(directory, depth);
+        }
+        Ok(depth)
+    }
+
+    /// Whether `file` may be below System Volume Information's immediate
+    /// folders: one of its names is. Whether it is not carried over is
+    /// [`ntfs_admission::system_not_carried`] of its paths.
+    pub(crate) fn may_be_below(&mut self, file: &FileInventory) -> Result<bool> {
+        for name in file.names.iter().filter(|name| name.namespace != 2) {
+            let parent = name.parent_record_number | (u64::from(name.parent_sequence_number) << 48);
+            if matches!(
+                self.depth(parent)?,
+                SystemDepth::Immediate | SystemDepth::Below
+            ) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The paths of `file`, where it is below System Volume Information's
+    /// immediate folders and so not carried over. An object with names
+    /// there and elsewhere is refused by name.
+    pub(crate) fn not_carried(&mut self, file: &FileInventory) -> Result<Option<Vec<Vec<String>>>> {
+        if !self.may_be_below(file)? {
+            return Ok(None);
+        }
+        let paths = ntfs_admission::paged::user_paths(self.files, file).with_context(|| {
+            format!(
+                "the names of MFT record {}, below the folders of System Volume Information",
+                file.record_number
+            )
+        })?;
+        Ok(ntfs_admission::system_not_carried(&paths, file)
+            .map_err(anyhow::Error::msg)?
+            .then_some(paths))
+    }
+}
+
+/// What an object of System Volume Information not carried over takes on
+/// the source: its streams' clusters.
+pub(crate) fn allocated(file: &FileInventory) -> u64 {
+    file.streams
+        .iter()
+        .filter(|stream| !stream.resident)
+        .fold(0u64, |sum, stream| {
+            sum.saturating_add(stream.allocated_size)
+        })
+}
+
+/// The ledger row of an object of System Volume Information not carried
+/// over (`system_volume_information_not_carried`): its names, what the
+/// admission counted of it, and each of its data streams' length and, where
+/// the inspection read it, SHA-256.
+fn not_carried_row(file: &FileInventory, paths: Vec<String>) -> LedgerRow {
+    let (streams, bytes) = counted_streams(file);
+    LedgerRow {
+        kind: PlainKind::SystemVolumeInformationNotCarried,
+        paths,
+        record_number: file.record_number,
+        sequence_number: file.sequence_number,
+        before: LedgerState {
+            attributes: file
+                .standard_information
+                .as_ref()
+                .map_or(0, |information| information.file_attributes),
+            reparse_tag: file.reparse.as_ref().map(|point| point.tag()),
+        },
+        after: LedgerState::default(),
+        witness: format!(
+            "MFT record {} on the frozen source, below the folders of System Volume Information: Windows' own, not carried over",
+            file.record_number
+        ),
+        plain_copy: None,
+        efs: None,
+        cloud: None,
+        left_out: Some(n2r_win32::plain_ledger::LedgerLeftOut {
+            directory: file.is_directory,
+            streams,
+            bytes,
+        }),
+        dropped_streams: Vec::new(),
+        recorded_streams: file
+            .streams
+            .iter()
+            .map(|stream| n2r_win32::plain_ledger::LedgerRecordedStream {
+                name: String::from_utf16_lossy(&stream.name_utf16),
+                bytes: stream.logical_size,
+                sha256: stream
+                    .logical_sha256
+                    .clone()
+                    .or_else(|| stream.resident_sha256.clone()),
+            })
+            .collect(),
+    }
 }
 
 /// Fills each row of a file made plain from a copy with that copy's
@@ -837,6 +1099,7 @@ fn left_out_row(file: &FileInventory, paths: Vec<String>) -> Result<(PlainEntry,
                 bytes,
             }),
             dropped_streams: Vec::new(),
+            recorded_streams: Vec::new(),
         },
     ))
 }
@@ -853,12 +1116,18 @@ fn counted_streams(file: &FileInventory) -> (u64, u64) {
     )
 }
 
-/// The objects of a frozen source that are converted to plain: the list,
-/// and the ledger's rows with every name of each object. NTFS-internal
-/// objects are never converted.
+/// The objects of a frozen data volume that are converted to plain: the
+/// list, and the ledger's rows with every name of each object; and those of
+/// System Volume Information not carried over, each with a row of its own
+/// and on no list. NTFS-internal objects are never converted. A run that
+/// does not take objects to plain converts none, and still leaves out what
+/// System Volume Information does not carry.
 pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
     let (mut entries, mut rows, mut copies, mut wofs) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let takes_plain = crate::plain_consent::takes_plain();
+    let mut system = SystemFolders::new(files);
+    let mut not_carried_allocated = 0u64;
     let mut not_present: Vec<String> = Vec::new();
     // What the user agreed to leave out: those paths, and everything below
     // a folder among them. Each object is found and declared by its own
@@ -867,6 +1136,17 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
     for ordinal in 0..files.file_count() {
         let file = files.file(ordinal)?;
         if ntfs_admission::paged::internal_role(files, &file)?.is_some() {
+            continue;
+        }
+        if let Some(paths) = system.not_carried(&file)? {
+            not_carried_allocated = not_carried_allocated.saturating_add(allocated(&file));
+            rows.push(not_carried_row(
+                &file,
+                paths.iter().map(|path| listing_path(path)).collect(),
+            ));
+            continue;
+        }
+        if !takes_plain {
             continue;
         }
         if !left_out.is_empty() {
@@ -917,6 +1197,18 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
             });
             wofs.push(wof);
         }
+        let dedup = (transform.kind == PlainKind::DedupRehydrated)
+            .then(|| dedup_file(&file))
+            .transpose()?
+            .flatten();
+        if let Some(dedup) = dedup {
+            copies.push(n2r_win32::plain_copy::PlainCopyRequest {
+                key: copy_key(&file),
+                bytes: dedup.plain_bytes,
+                through: n2r_win32::plain_copy::PlainRead::Filter,
+            });
+            wofs.push(dedup.growing());
+        }
         let efs = (transform.kind == PlainKind::EfsDecrypted)
             .then(|| efs_object(&file))
             .transpose()?
@@ -962,7 +1254,8 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
                 attributes: before,
                 reparse_tag: wof
                     .map(|_| n2r_win32::reparse_layout::IO_REPARSE_TAG_WOF)
-                    .or(cloud.map(|placeholder| placeholder.tag)),
+                    .or(cloud.map(|placeholder| placeholder.tag))
+                    .or(dedup.map(|_| n2r_win32::reparse_layout::IO_REPARSE_TAG_DEDUP)),
             },
             after: LedgerState {
                 attributes: transform.target_attributes(before),
@@ -1009,6 +1302,7 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
             } else {
                 Vec::new()
             },
+            recorded_streams: Vec::new(),
         });
     }
     if let Some(first) = not_present.first() {
@@ -1024,6 +1318,7 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
         rows,
         copies,
         wof: wofs,
+        not_carried_allocated,
     })
 }
 
@@ -1371,6 +1666,25 @@ mod tests {
         let split = left_out_by(&paths(&["\\c\\folder\\x", "\\d\\x"]), &left).unwrap_err();
         assert!(split.contains("cannot be left out in part"), "{split}");
         assert!(within("\\c", "\\c") && !within("\\c", "\\c\\d"));
+    }
+
+    #[test]
+    fn a_deduplicated_file_grows_the_volume_by_its_plain_length() {
+        let file = DedupFile {
+            plain_bytes: 5000,
+            allocated: 4096,
+        };
+        // Counted as a WOF file is: its plain length rounded to the target
+        // cluster, less what its own stream took.
+        assert_eq!(wof_growth(&[file.growing()], 4096), (8192, 4096));
+        let refused = require_wof_room(&[file.growing()], 4096, 0)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("Start-DedupJob -Type Unoptimization"),
+            "{refused}"
+        );
+        assert!(DEDUP_FILTER_REMEDY.contains("Windows Server"));
     }
 
     #[test]

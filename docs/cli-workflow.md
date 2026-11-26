@@ -430,9 +430,35 @@ plain silently. This version converts:
   every count the new volume is checked against (objects, streams and
   bytes) is the source's less exactly those objects.
 
-The other kinds a list can name (`dedup_rehydrated`,
-`projfs_placeholder_plain`, `sis_expanded`) are still refused as listed
-above.
+- a file Data Deduplication has optimized (`dedup_rehydrated`): it is read
+  through the deduplication filter on the frozen volume into a copy, as a
+  WOF file is, and the new file is made from that copy, whole; its reparse
+  point is not carried over, and the capacity check counts its plain length.
+  Only a Windows that has the filter can read it: on one without (Windows
+  11), such a file is refused by name with what to do, converting from a
+  Windows Server with Data Deduplication or running
+  `Start-DedupJob -Type Unoptimization -Volume <drive>:` first. Its chunk
+  store, under `System Volume Information\Dedup`, is then not carried over
+  (below): no file on the new volume needs it. Where a deduplicated file is
+  not made plain, the chunk store is refused by name with the same remedies.
+
+What a data volume keeps in `System Volume Information` below that folder's
+own folders (a chkdsk log, Data Deduplication's chunk store) is Windows' own,
+and is not carried over: the folder, its own files and the folders directly
+in it are made, those folders empty. It is not a conversion and needs no
+answer. The check says how many such objects there are, and their bytes; the
+conversion records each in `plain-conversions.json`
+(`system_volume_information_not_carried`: its names, what it counted, and
+each stream's length and, where it was read, SHA-256), leaves it out of the
+new volume, and checks every count against the source's less exactly those
+objects. The room they take on the source counts as free for the capacity
+check. An object with a name there and another elsewhere is refused by name.
+Nothing outside `System Volume Information` is affected. A volume that shares
+its disk with another is converted without this, and such objects are refused
+by name.
+
+The other kinds a list can name (`projfs_placeholder_plain`,
+`sis_expanded`) are still refused as listed above.
 
 `--check` prints a "Converted to plain" section: how many objects of each
 kind, their bytes, the extra space on the new volume and in the working
@@ -1037,7 +1063,7 @@ either way.
 
 It costs two full reads of the volume. What a conversion is meant to change
 is accepted and counted (the NTFS compression flag, what Windows keeps in
-`System Volume Information`, and on a Windows volume each 8.3 name as a link).
+`System Volume Information`, whether carried over or not, and on a Windows volume each 8.3 name as a link).
 A program that writes to the volume between the first listing and the start
 of the conversion shows as a difference, so close what uses the volume first.
 

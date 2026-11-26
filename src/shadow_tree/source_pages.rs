@@ -1204,7 +1204,11 @@ fn build_object(
                 Some(hex::decode(views.api_descriptor_hex)?)
             },
             extended_attributes: Some(extended_attributes),
-            reparse: if wof || cloud { None } else { reparse },
+            reparse: if wof || cloud || crate::plain_projection::dedup_taken(file) {
+                None
+            } else {
+                reparse
+            },
             case_sensitive,
             source_offset,
             source_extents,

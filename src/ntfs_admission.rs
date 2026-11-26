@@ -1180,6 +1180,7 @@ mod refusal_tests {
                             bytes: 5,
                         }),
                         dropped_streams: Vec::new(),
+                        recorded_streams: Vec::new(),
                     }],
                 },
             )
@@ -1232,6 +1233,132 @@ mod refusal_tests {
         let not_taken = crate::plain_projection::copy_is_the_raw_stream(&file, &file.streams[0]);
         n2r_win32::plain_copy::remove(run.path()).unwrap();
         assert!(same && !differs && !not_taken);
+    }
+
+    /// The lab (dd1, n12-chkdsk-7): below System Volume Information's
+    /// folders lie Data Deduplication's chunk store and chkdsk's logs. Such
+    /// an object is not carried over; the folder, its files and its
+    /// immediate folders are, and a hard link out of it is refused. The
+    /// chunk store is not carried only where no deduplicated file needs it.
+    #[test]
+    fn what_is_below_the_folders_of_system_volume_information_is_not_carried() {
+        let mut file = directory_with_stream("x", 0);
+        file.record_number = 77;
+        let path = |parts: &[&str]| {
+            parts
+                .iter()
+                .map(|part| (*part).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let system = "System Volume Information";
+        for carried in [
+            path(&["a.txt"]),
+            path(&[system]),
+            path(&[system, "IndexerVolumeGuid"]),
+            path(&[system, "Chkdsk"]),
+        ] {
+            assert_eq!(system_not_carried(&[carried], &file), Ok(false));
+        }
+        let log = path(&["system volume information", "Chkdsk", "Chkdsk20261126.log"]);
+        assert_eq!(system_not_carried(&[log.clone()], &file), Ok(true));
+        let split = system_not_carried(&[log.clone(), path(&["x", "log"])], &file).unwrap_err();
+        assert!(split.contains("cannot be carried in part"), "{split}");
+        // Not the chunk store: never asked about deduplicated files.
+        assert_eq!(
+            chunk_store_issue(&[log], &file, || unreachable!()).unwrap(),
+            None
+        );
+        let chunk = path(&[system, "Dedup", "ChunkStore", "x.ccc"]);
+        assert_eq!(
+            chunk_store_issue(&[chunk.clone()], &file, || Ok(false)).unwrap(),
+            None
+        );
+        let issue = chunk_store_issue(&[chunk], &file, || Ok(true))
+            .unwrap()
+            .unwrap();
+        assert!(
+            issue.contains("chunk store")
+                && issue.contains("Start-DedupJob -Type Unoptimization")
+                && issue.contains("MFT record 77"),
+            "{issue}"
+        );
+    }
+
+    /// Which objects may be below System Volume Information's folders is
+    /// found from their parents' places, each directory placed once.
+    #[test]
+    fn the_objects_below_the_folders_of_system_volume_information_are_found_by_their_parents() {
+        struct Files(Vec<FileInventory>);
+        impl crate::ntfs_inspect::RootFileDomain for Files {
+            fn header(&self) -> &crate::ntfs_inspect::SourceHeader {
+                unreachable!("not asked")
+            }
+            fn file_count(&self) -> u64 {
+                self.0.len() as u64
+            }
+            fn file(&self, ordinal: u64) -> Result<FileInventory> {
+                Ok(self.0[ordinal as usize].clone())
+            }
+            fn find_record(
+                &self,
+                number: u64,
+                sequence: Option<u16>,
+            ) -> Result<Option<FileInventory>> {
+                Ok(self
+                    .0
+                    .iter()
+                    .find(|file| {
+                        file.record_number == number
+                            && sequence.is_none_or(|wanted| wanted == file.sequence_number)
+                    })
+                    .cloned())
+            }
+            fn allocated_record(&self, _number: u64) -> Result<bool> {
+                Ok(true)
+            }
+            fn extension_record(&self, _number: u64) -> Result<bool> {
+                Ok(false)
+            }
+            fn revalidate(&self) -> Result<()> {
+                Ok(())
+            }
+        }
+        let object = |record: u64, parent: u64, name: &str, directory: bool| {
+            let mut file = directory_with_stream("", 0);
+            file.record_number = record;
+            file.is_directory = directory;
+            file.names = vec![ntfs::NameInventory {
+                name: name.to_owned(),
+                name_utf16: name.encode_utf16().collect(),
+                namespace: 1,
+                parent_record_number: parent,
+                parent_sequence_number: 1,
+            }];
+            file
+        };
+        let files = Files(vec![
+            object(30, 5, "System Volume Information", true),
+            object(31, 30, "Chkdsk", true),
+            object(32, 31, "Chkdsk20261126.log", false),
+            object(33, 31, "deep", true),
+            object(34, 33, "note.txt", false),
+            object(35, 5, "docs", true),
+            object(36, 35, "a.txt", false),
+            object(37, 30, "tracking.log", false),
+            object(38, 35, "System Volume Information", true),
+            object(39, 38, "x", true),
+            object(40, 39, "y", false),
+        ]);
+        let mut system = crate::plain_projection::SystemFolders::new(&files);
+        let below: Vec<u64> = files
+            .0
+            .iter()
+            .filter(|file| system.may_be_below(file).unwrap())
+            .map(|file| file.record_number)
+            .collect();
+        // The folder, its own file and its folder are not; nothing outside
+        // it is, whatever a folder there is called.
+        assert_eq!(below, [32, 33, 34]);
     }
 
     /// The checked source readers take a directory's named stream: the lab's
@@ -2243,6 +2370,75 @@ pub(crate) fn user_issues_with_context(
 /// Windows has the tool that removes them.
 pub const SHORT_NAME_REMEDY: &str = "remove the volume's short names with `fsutil 8dot3name strip /s /f <drive>:\\` and turn their creation off with `fsutil 8dot3name set <drive>: 1`, then convert (a program that stored a path in its short form will no longer find it). Or convert without `--short-names refuse` (the default, or `--short-names drop`), which leaves the short names behind and keeps a list of them";
 
+/// Whether `path` is below the immediate folders of System Volume
+/// Information.
+fn below_system_folders(path: &[String]) -> bool {
+    path.len() > 2
+        && path[0].eq_ignore_ascii_case(n2r_win32::plain_ledger::SYSTEM_VOLUME_INFORMATION)
+}
+
+/// Whether a data volume's conversion carries an object with these names
+/// over. Of System Volume Information it makes that folder, its own files
+/// and the folders directly below it
+/// (`shadow_native::private_tree::system_payloads`); an object below those
+/// folders (a chkdsk log, Data Deduplication's chunk store) is Windows' own
+/// and is not carried over (`system_volume_information_not_carried`): it is
+/// recorded in the run's records and left out of the new tree. Nothing
+/// outside that folder is affected.
+///
+/// `Ok(true)`: every name is below those folders, and the object is not
+/// carried. `Ok(false)`: none is. An object with names on both sides (a
+/// hard link out of them) cannot be half carried, and is refused by name.
+pub(crate) fn system_not_carried(
+    paths: &[Vec<String>],
+    file: &FileInventory,
+) -> std::result::Result<bool, String> {
+    let below = paths
+        .iter()
+        .filter(|path| below_system_folders(path))
+        .count();
+    match below {
+        0 => Ok(false),
+        n if n == paths.len() => Ok(true),
+        _ => Err(format!(
+            "it has names below the folders of System Volume Information, which are not carried over, and names elsewhere (MFT record {}: {}): it cannot be carried in part. Remove the hard links that leave that folder, and convert then",
+            file.record_number,
+            paths
+                .iter()
+                .map(|path| format!("\\{}", path.join("\\")))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// Data Deduplication's chunk store, below System Volume Information\Dedup,
+/// is not carried over only where no file of the volume needs it: where
+/// every deduplicated file is made plain (`dedup_rehydrated`). Otherwise
+/// such an object is refused by name, with the remedy. `deduplicated_remain`
+/// says whether a deduplicated file that is not made plain is on the
+/// volume; it is asked only of an object of the chunk store.
+pub(crate) fn chunk_store_issue(
+    paths: &[Vec<String>],
+    file: &FileInventory,
+    deduplicated_remain: impl FnOnce() -> Result<bool>,
+) -> Result<Option<String>> {
+    let Some(store) = paths
+        .iter()
+        .find(|path| below_system_folders(path) && path[1].eq_ignore_ascii_case("Dedup"))
+    else {
+        return Ok(None);
+    };
+    if !deduplicated_remain()? {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "it is \\{} (MFT record {}), in Data Deduplication's chunk store, which files of this volume that are not made plain still need. Convert from a Windows Server that has Data Deduplication and agree to their list, or rehydrate the volume first with `Start-DedupJob -Type Unoptimization -Volume <drive>:`, then `Disable-DedupVolume -Volume <drive>:`, and convert then",
+        store.join("\\"),
+        file.record_number,
+    )))
+}
+
 /// The names of Win32 file-attribute bits, for a refusal.
 pub fn file_attribute_names(bits: u32) -> String {
     const NAMES: [(u32, &str); 14] = [
@@ -2424,6 +2620,33 @@ pub(crate) fn user_issues_with_context_alias_scope(
                 "it is a cloud placeholder{}",
                 n2r_win32::reparse_layout::unsupported_tag_meaning(point.tag())
             ));
+        }
+    } else if let Some(point) = reparse
+        .as_ref()
+        .filter(|point| point.tag() == n2r_win32::reparse_layout::IO_REPARSE_TAG_DEDUP)
+    {
+        // A deduplicated file is never recreated as such: a data volume's is
+        // made a plain file from what the dedup filter reads, once its list is
+        // agreed (`dedup_rehydrated`), where this Windows has the filter.
+        if !(ordinary && crate::plain_projection::dedup_taken(f)) {
+            issues.push(
+                if crate::plain_projection::dedup_file(f)
+                    .ok()
+                    .flatten()
+                    .is_some()
+                    && !crate::plain_projection::dedup_readable()
+                {
+                    format!(
+                        "it is a file Data Deduplication has optimized, and {}",
+                        crate::plain_projection::DEDUP_FILTER_REMEDY
+                    )
+                } else {
+                    format!(
+                        "it is a file Data Deduplication has optimized{}",
+                        n2r_win32::reparse_layout::unsupported_tag_meaning(point.tag())
+                    )
+                },
+            );
         }
     } else if let Some(point) = &reparse {
         if (point.tag() == 0xa0000003 && !f.is_directory)

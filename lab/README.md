@@ -501,7 +501,9 @@ The recovery writes its own `stacks.txt`.
 before it changes anything. These are refused, each by name: `shortnames` with
 `-RefuseShortNames`, `efs`, `wof` (a `compact /exe` file), `casesensitive` (two names in one
 directory that differ only by case), `snapshot`,
-`bitlocker` and `dirstream`. A feature that cannot be made ends the attempt as
+and `bitlocker`. `dirstream` (named streams on two directories, one of about
+1 MiB) converts since `ds3-dirstream-minimal` and `ds3-dirstream-lived-in`
+showed it. A feature that cannot be made ends the attempt as
 `feature-not-made`: it is never skipped silently. A volume with shadow copies
 or BitLocker holds files of Windows' own that nothing may open; when those are
 the only differences of a refused volume, as many before as after, the attempt
@@ -576,8 +578,8 @@ before it is listed, to give it objects a fresh Windows does not have:
 `Add-NamedStreams.ps1` (the lab volumes have no named streams),
 `Add-UsedWindowsObjects.ps1` (a tree 25 directories deep, 320 object IDs and
 two shortcuts: the installed Windows has no directory deeper than 16 and an
-object-ID index of one block), and `Add-DirectoryStream.ps1`, which the
-converter must refuse by name at admission.
+object-ID index of one block), and `Add-DirectoryStream.ps1` (a directory
+with a named stream, which converts as the same directory's named stream).
 
 `verdict.json` lists every piece of evidence an attempt retains with its size
 and SHA-256, or the reason it is missing. A success without its required

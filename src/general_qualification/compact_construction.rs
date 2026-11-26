@@ -116,12 +116,12 @@ fn construct_domain(
         .objects
         .iter()
         .enumerate()
+        // A directory's data streams are its named ones, if any.
         .filter(|(_, object)| {
-            !object.directory
-                && !object
-                    .path
-                    .first()
-                    .is_some_and(|s| s == "System Volume Information")
+            !object
+                .path
+                .first()
+                .is_some_and(|s| s == "System Volume Information")
         })
         .flat_map(|(index, object)| {
             object

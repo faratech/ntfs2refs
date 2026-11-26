@@ -80,8 +80,9 @@ param(
     # adds them except bigfile, full, casemark and manyfiles), shortnames (dropped
     # by default; refused with -RefuseShortNames), temporary and offline (which
     # convert with -AcceptPlain; without it a run stops before it changes
-    # anything), and efs, wof, casesensitive, snapshot, bitlocker, dirstream
-    # (which are refused). quota converts: the quotas are recorded, not carried over.
+    # anything), and efs, wof, casesensitive, snapshot, bitlocker (which are
+    # refused). dirstream converts (named streams on directories). quota
+    # converts: the quotas are recorded, not carried over.
     # Two are not made through Windows but on the disk itself,
     # by guest\Use-RawNtfs.ps1, with the disk offline just before the run:
     # lfs2 (the control OS's NtfsDisableLfsDowngrade is 1 from before the

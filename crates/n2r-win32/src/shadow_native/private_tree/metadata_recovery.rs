@@ -119,10 +119,9 @@ pub fn classify_payloads_domain(
                 )
                 .with_pass(20),
             );
-            if object.directory {
-                continue;
-            }
-            if object.logical_length() % cluster == 0
+            // A directory has no unnamed stream; its named ones are probed
+            // as a file's.
+            if (object.directory || object.logical_length() % cluster == 0)
                 && object
                     .named_streams
                     .iter()
@@ -142,7 +141,7 @@ pub fn classify_payloads_domain(
             let before = identity(&file)?;
             let raw = stream_info(&file)?;
             let (actual, _) = stream_layout::parse_streams(&raw)?;
-            for position in 0..=object.named_streams.len() {
+            for position in usize::from(object.directory)..=object.named_streams.len() {
                 let name = if position == 0 {
                     &[][..]
                 } else {
@@ -791,7 +790,8 @@ pub fn adopt_domain(
             ));
         }
         identities.insert(index, id);
-        if !item.directory {
+        // A directory lists its named streams, if it has any.
+        if !item.directory || !item.named_streams.is_empty() {
             super::super::streams::exact_list(&stream_info(file)?, &item)?;
         }
         input.progress(
@@ -1052,10 +1052,9 @@ impl PendingMetadataRecovery {
         for index in 0..input.len() {
             let owner = input.object(index)?;
             let object = owner.input();
-            if object.directory {
-                continue;
-            }
-            for position in 0..=object.named_streams.len() {
+            // A directory has no unnamed stream; its named ones are read
+            // back as a file's.
+            for position in usize::from(object.directory)..=object.named_streams.len() {
                 let name = if position == 0 {
                     &[][..]
                 } else {

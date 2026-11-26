@@ -49,6 +49,20 @@ fn system(object: &Object) -> bool {
         .is_some_and(|s| s == "System Volume Information")
 }
 
+/// The data streams a user supply pass takes of an object: a file's, and a
+/// directory's named ones (`ntfs_admission::DIRECTORY_STREAMS_CARRIED`);
+/// none of a System Volume Information object, which the system pass
+/// supplies. Every supply pass takes its streams here: the routed passes
+/// once passed directories over whole, so a directory's named streams were
+/// made but never supplied, and the metadata step refused them with
+/// "private storage-valid stream completion required".
+fn supplied_streams(object: &Object) -> impl Iterator<Item = StreamRef<'_>> {
+    (!system(object))
+        .then(|| object.data_streams())
+        .into_iter()
+        .flatten()
+}
+
 fn identity<'a>(object: &Object, stream: StreamRef<'a>) -> PagedStreamIdentity<'a> {
     PagedStreamIdentity {
         record_number: object.record_number,
@@ -147,11 +161,7 @@ fn user_plan(
     let (mut logical, mut materialized, mut referenced, mut holes) = (0u64, 0u64, 0u64, 0u64);
     for index in 0..expected.len() {
         let object = expected.object_leased(index)?;
-        // A directory's data streams are its named ones, if any.
-        if system(&object) {
-            continue;
-        }
-        for stream in object.data_streams() {
+        for stream in supplied_streams(&object) {
             let summary = observe_stream(template, index, &object, stream)?;
             frame(&mut hash, &summary)?;
             logical = logical
@@ -214,11 +224,7 @@ pub fn materialize_private_supply_plan_domain(
     hash.update(b"n2r-paged-private-materialization-v1\0");
     for index in 0..expected.len() {
         let object = expected.object_leased(index)?;
-        // A directory's data streams are its named ones, if any.
-        if system(&object) {
-            continue;
-        }
-        for stream in object.data_streams() {
+        for stream in supplied_streams(&object) {
             if stream.sparse.is_none() {
                 let prefix = n2r_win32::target_cluster::floor(stream.length);
                 if prefix != 0 {
@@ -319,11 +325,7 @@ pub fn verify_private_hybrid_contents_domain(
     let mut target_buffer = vec![0; WINDOW];
     for index in 0..expected.len() {
         let object = expected.object_leased(index)?;
-        // A directory's data streams are its named ones, if any.
-        if system(&object) {
-            continue;
-        }
-        for stream in object.data_streams() {
+        for stream in supplied_streams(&object) {
             ensure!(
                 stream.sha256.is_some() || (policy.is_fast() && stream.source_evidence.is_some()),
                 "full-content verification requires an actual complete content baseline"
@@ -565,3 +567,73 @@ pub fn materialize_private_system_payloads_paged_domain(
     ))
 }
 pub(crate) mod routed;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shadow_tree::NamedStream;
+
+    fn object(path: &[&str], directory: bool, named: &[(&str, u64)]) -> Object {
+        Object {
+            record_number: 40,
+            sequence_number: 1,
+            path: path.iter().map(|&part| part.to_owned()).collect(),
+            additional_names: Vec::new(),
+            directory,
+            stored_times: [1; 4],
+            attributes: if directory { 0x10 } else { 0x20 },
+            ntfs_compression_normalized: false,
+            security: Vec::new(),
+            api_security: None,
+            extended_attributes: None,
+            reparse: None,
+            case_sensitive: None,
+            source_offset: None,
+            source_extents: Vec::new(),
+            length: if directory { 0 } else { 10 },
+            sha256: (!directory).then(|| "0".repeat(32)),
+            source_evidence: None,
+            named_streams: named
+                .iter()
+                .map(|&(name, length)| NamedStream {
+                    name_utf16: name.encode_utf16().collect(),
+                    source_offset: None,
+                    source_extents: Vec::new(),
+                    length,
+                    sha256: Some("0".repeat(32)),
+                    source_evidence: None,
+                    sparse: None,
+                })
+                .collect(),
+            sparse: None,
+        }
+    }
+
+    fn names(object: &Object) -> Vec<(String, u64)> {
+        supplied_streams(object)
+            .map(|stream| (String::from_utf16_lossy(stream.name_utf16), stream.length))
+            .collect()
+    }
+
+    /// The lab's `dirstream` run made a directory's named streams and then
+    /// supplied none of them: the routed passes passed directories over
+    /// whole, and metadata completion refused the streams as not
+    /// storage-valid.
+    #[test]
+    fn a_directorys_named_streams_are_supplied_as_a_files() {
+        let directory = object(
+            &["feature-dirstream", "directory with a large stream"],
+            true,
+            &[("large", 1_115_200)],
+        );
+        assert_eq!(names(&directory), [("large".to_owned(), 1_115_200)]);
+        // A directory without streams has none; a file its unnamed one first.
+        assert!(names(&object(&["plain"], true, &[])).is_empty());
+        assert_eq!(
+            names(&object(&["one.bin"], false, &[("note", 31)])),
+            [(String::new(), 10), ("note".to_owned(), 31)]
+        );
+        // The system pass supplies System Volume Information, never this one.
+        assert!(names(&object(&["System Volume Information", "x"], false, &[])).is_empty());
+    }
+}

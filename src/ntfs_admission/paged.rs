@@ -822,7 +822,7 @@ fn ordinary_user_issues_scoped(
         resources.budget.max_row_bytes
             / std::mem::size_of::<crate::ntfs_inspect::StreamInventory>() as u64,
     )?;
-    Ok(super::user_issues_with_context_alias_scope(
+    let mut issues = super::user_issues_with_context_alias_scope(
         file,
         true,
         &source.header().geometry,
@@ -846,7 +846,21 @@ fn ordinary_user_issues_scoped(
             false
         },
         |stream| evidence.get(&stream.name_utf16).copied().unwrap_or(false),
-    ))
+    );
+    // What the shadow's system payloads take of System Volume Information
+    // (its own files and empty folders), decided here, where the check
+    // before the freeze and the admission at it both see it, and not first
+    // by the native construction after the freeze.
+    // (A data volume's: a Windows volume's system folders are the boot
+    // route's own.)
+    if let Some(issue) = paths
+        .as_deref()
+        .filter(|_| aliases.is_none())
+        .and_then(|paths| super::system_namespace_issue(paths, file))
+    {
+        issues.push(issue);
+    }
+    Ok(issues)
 }
 
 #[cfg(test)]

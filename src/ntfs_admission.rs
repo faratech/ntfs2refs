@@ -1238,6 +1238,32 @@ mod refusal_tests {
     /// dirstream run was refused in payload supply planning with "plain
     /// standalone file required".
     #[test]
+    fn only_what_system_volume_information_carries_passes() {
+        let file = directory_with_stream("x", 0);
+        let path = |parts: &[&str]| parts.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>();
+        // The folder itself and what lies directly in it: carried.
+        for carried in [
+            path(&["System Volume Information"]),
+            path(&["System Volume Information", "tracking.log"]),
+            path(&["docs", "a", "b", "c"]),
+        ] {
+            assert_eq!(system_namespace_issue(&[carried], &file), None);
+        }
+        // Deeper: refused by name, the chunk store with its remedy.
+        let chunk = path(&["System Volume Information", "Dedup", "ChunkStore", "x.ccc"]);
+        let issue = system_namespace_issue(&[chunk], &file).unwrap();
+        assert!(
+            issue.contains("\\System Volume Information\\Dedup\\ChunkStore\\x.ccc")
+                && issue.contains("Start-DedupJob -Type Unoptimization")
+                && issue.contains("MFT record 40"),
+            "{issue}"
+        );
+        let other = path(&["system volume information", "SPP", "x"]);
+        let issue = system_namespace_issue(&[other], &file).unwrap();
+        assert!(!issue.contains("Dedup"), "{issue}");
+    }
+
+    #[test]
     fn the_source_supplies_a_directorys_named_stream() {
         let note: Vec<u16> = "note".encode_utf16().collect();
         let directory = directory_with_stream("note", 0);
@@ -2204,6 +2230,35 @@ pub(crate) fn user_issues_with_context(
 pub const SHORT_NAME_REMEDY: &str = "remove the volume's short names with `fsutil 8dot3name strip /s /f <drive>:\\` and turn their creation off with `fsutil 8dot3name set <drive>: 1`, then convert (a program that stored a path in its short form will no longer find it). Or convert without `--short-names refuse` (the default, or `--short-names drop`), which leaves the short names behind and keeps a list of them";
 
 /// The names of Win32 file-attribute bits, for a refusal.
+/// What a conversion cannot carry of System Volume Information: it makes
+/// only that folder's own files and empty folders directly below it
+/// (`shadow_native::private_tree::system_payloads`). A deeper object, such
+/// as the chunk store Data Deduplication keeps there, is refused by name;
+/// none of a volume's other objects is affected.
+pub(crate) fn system_namespace_issue(
+    paths: &[Vec<String>],
+    file: &FileInventory,
+) -> Option<String> {
+    let deep = paths.iter().find(|path| {
+        path.first()
+            .is_some_and(|name| name.eq_ignore_ascii_case("System Volume Information"))
+            && path.len() > 2
+    })?;
+    let dedup = deep
+        .get(1)
+        .is_some_and(|name| name.eq_ignore_ascii_case("Dedup"));
+    Some(format!(
+        "it is \\{} (MFT record {}), below the folders of System Volume Information the converter makes{}",
+        deep.join("\\"),
+        file.record_number,
+        if dedup {
+            ": this is Data Deduplication's chunk store. Rehydrate the volume first with `Start-DedupJob -Type Unoptimization -Volume <drive>:`, then `Disable-DedupVolume -Volume <drive>:`, and convert then"
+        } else {
+            ""
+        }
+    ))
+}
+
 pub fn file_attribute_names(bits: u32) -> String {
     const NAMES: [(u32, &str); 14] = [
         (0x40, "DEVICE"),

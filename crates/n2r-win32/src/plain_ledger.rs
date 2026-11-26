@@ -31,10 +31,10 @@ pub const LIST_HEADER: &str = "ntfs2refs plain-conversions list v1";
 
 /// The start of the name of the named DATA stream in which the Cloud Files
 /// API keeps a sync root's registration on the sync root's own folder
-/// (`{3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity`, as the lab
-/// found it). Private to the API, and of no use on ReFS, where the sync
-/// root cannot run.
-pub const CLOUD_SYNC_ROOT_STREAM_PREFIX: &str = "{3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.";
+/// (`${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity`, as the lab
+/// read it from the raw record: the name begins with `$`). Private to the
+/// API, and of no use on ReFS, where the sync root cannot run.
+pub const CLOUD_SYNC_ROOT_STREAM_PREFIX: &str = "${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.";
 
 /// Whether a stream name is one of the Cloud Files API's own on a sync
 /// root's folder ([`CLOUD_SYNC_ROOT_STREAM_PREFIX`], any case).
@@ -513,10 +513,6 @@ pub struct DeclaredDrops {
     /// The objects left out of the new tree altogether (`cloud_left_out`),
     /// each declared by its own row.
     left_out: BTreeMap<(u64, u16), LedgerLeftOut>,
-    /// The Cloud Files API's own streams on a sync root's folder made
-    /// plain. The source's admission does not count a directory's named
-    /// streams, so neither does this: they are only held to being gone.
-    uncounted: BTreeMap<(u64, u16), Vec<Vec<u16>>>,
 }
 
 impl DeclaredDrops {
@@ -526,7 +522,6 @@ impl DeclaredDrops {
         ledger.validate()?;
         let mut by_object: BTreeMap<(u64, u16), Vec<Vec<u16>>> = BTreeMap::new();
         let mut left_out: BTreeMap<(u64, u16), LedgerLeftOut> = BTreeMap::new();
-        let mut uncounted: BTreeMap<(u64, u16), Vec<Vec<u16>>> = BTreeMap::new();
         for row in &ledger.rows {
             let key = (row.record_number, row.sequence_number);
             if !row.dropped_streams.is_empty() {
@@ -542,13 +537,24 @@ impl DeclaredDrops {
                         row.record_number, stream.name
                     ));
                 }
-                uncounted.insert(
-                    key,
-                    row.dropped_streams
-                        .iter()
-                        .map(|stream| stream.name.encode_utf16().collect())
-                        .collect(),
-                );
+                // Counted as the admission counts a directory's named
+                // streams (#313), and held to being gone, as any drop.
+                if by_object
+                    .insert(
+                        key,
+                        row.dropped_streams
+                            .iter()
+                            .map(|stream| stream.name.encode_utf16().collect())
+                            .collect(),
+                    )
+                    .is_some()
+                {
+                    return Err(format!(
+                        "MFT record {} has more than one row in the plain-conversions ledger",
+                        row.record_number
+                    ));
+                }
+                continue;
             }
             match (row.kind, row.left_out) {
                 (PlainKind::CloudLeftOut, Some(counted)) => {
@@ -601,7 +607,6 @@ impl DeclaredDrops {
         Ok(Self {
             by_object,
             left_out,
-            uncounted,
         })
     }
 
@@ -721,19 +726,16 @@ impl DeclaredDrops {
         sequence_number: u16,
         named_streams: impl Iterator<Item = &'a [u16]>,
     ) -> Result<u64, String> {
-        let counted = self.by_object.get(&(record_number, sequence_number));
-        let uncounted = self.uncounted.get(&(record_number, sequence_number));
-        if counted.is_none() && uncounted.is_none() {
+        let Some(names) = self.by_object.get(&(record_number, sequence_number)) else {
             return Ok(0);
-        }
-        let gone: Vec<&Vec<u16>> = counted.into_iter().chain(uncounted).flatten().collect();
+        };
         let mut named_streams = named_streams;
-        if named_streams.any(|name| gone.iter().any(|dropped| dropped.as_slice() == name)) {
+        if named_streams.any(|name| names.iter().any(|dropped| dropped.as_slice() == name)) {
             return Err(format!(
                 "MFT record {record_number} keeps a stream its plain-conversions ledger row declares dropped"
             ));
         }
-        Ok(counted.map_or(0, |names| names.len() as u64))
+        Ok(names.len() as u64)
     }
 
     /// Every object a drop was declared for has to have been met in the new
@@ -1046,12 +1048,14 @@ mod tests {
     }
 
     #[test]
-    fn a_sync_roots_own_stream_is_dropped_from_its_folder_alone_and_not_counted() {
-        let identity = "{3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity";
+    fn a_sync_roots_own_stream_is_dropped_from_its_folder_alone_and_counted() {
+        let identity = "${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity";
+        // Without its `$`, as the name does not read on the raw record: not it.
+        assert!(!is_cloud_private_stream(&identity[1..]));
         assert!(is_cloud_private_stream(identity));
         assert!(is_cloud_private_stream(&identity.to_ascii_lowercase()));
         assert!(!is_cloud_private_stream(
-            "{3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}."
+            "${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}."
         ));
         assert!(!is_cloud_private_stream("Zone.Identifier"));
         let folder = |kind, directory, name: &str| LedgerRow {
@@ -1074,7 +1078,7 @@ mod tests {
             identity,
         )]))
         .unwrap();
-        // Held to being gone, and not counted: the admission does not count
+        // Held to being gone, and counted as the admission counts (#313)
         // a directory's named streams.
         let kept: Vec<u16> = identity.encode_utf16().collect();
         assert!(
@@ -1082,9 +1086,9 @@ mod tests {
                 .for_object(40, 1, [kept.as_slice()].into_iter())
                 .is_err()
         );
-        assert_eq!(drops.for_object(40, 1, std::iter::empty()), Ok(0));
-        assert_eq!(drops.total(), 0);
-        assert_eq!(drops.admitted_from_new(1, 1, 1), Ok((1, 1, 1)));
+        assert_eq!(drops.for_object(40, 1, std::iter::empty()), Ok(1));
+        assert_eq!(drops.total(), 1);
+        assert_eq!(drops.admitted_from_new(1, 1, 1), Ok((1, 1, 2)));
         // Only that stream, only on a cloud folder made plain.
         for row in [
             folder(PlainKind::CloudPlaceholderPlain, true, "Zone.Identifier"),

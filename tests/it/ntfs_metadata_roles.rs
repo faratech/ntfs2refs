@@ -216,6 +216,66 @@ fn the_reading_keeps_a_cloud_placeholder_for_the_plain_census() {
     }
 }
 
+/// The lab's sync root folder (reference-b, MFT record 38): a directory
+/// with a cloud reparse point and the Cloud Files API's own named stream,
+/// `${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity`.
+fn sync_root_record() -> Vec<u8> {
+    let mut information = vec![0u8; 72];
+    // DIRECTORY | ARCHIVE | REPARSE_POINT.
+    information[32..36].copy_from_slice(&0x430u32.to_le_bytes());
+    let mut point = Vec::new();
+    point.extend_from_slice(&0x9000_701au32.to_le_bytes());
+    point.extend_from_slice(&8u16.to_le_bytes());
+    point.extend_from_slice(&0u16.to_le_bytes());
+    point.extend_from_slice(b"provider");
+    support::record(
+        &[
+            support::resident(0x10, "", &information, 3),
+            filename("synced", 5, 1, 1, 0),
+            support::resident(
+                0x80,
+                "${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity",
+                b"registration of the sync root",
+                1,
+            ),
+            support::resident(0xc0, "", &point, 2),
+        ],
+        3,
+        1,
+    )
+}
+
+/// The reading `--check` and a conversion's check before its question begin
+/// with keeps a sync root's folder for the plain census: its cloud point
+/// and the API's own stream, with the `$` its name begins with; nothing it
+/// reports of the folder names the tag, and the stream's name is the one
+/// `plain_ledger::is_cloud_private_stream` recognises, so the census takes
+/// the folder plain and declares the stream dropped.
+#[test]
+fn the_reading_keeps_a_sync_root_folder_for_the_plain_census() {
+    let report = inspect_records(&[(38, sync_root_record())]);
+    let folder = file(&report, 38);
+    assert!(folder.is_directory);
+    assert_eq!(folder.reparse.as_ref().unwrap().tag(), 0x9000_701a);
+    let names: Vec<String> = folder
+        .streams
+        .iter()
+        .map(|stream| String::from_utf16_lossy(&stream.name_utf16))
+        .collect();
+    assert_eq!(
+        names,
+        ["${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity"]
+    );
+    assert!(n2r_win32::plain_ledger::is_cloud_private_stream(&names[0]));
+    assert!(
+        !report.blockers.iter().any(|blocker| {
+            blocker.file_record_number == Some(38) && blocker.message.contains("0x9000701a")
+        }),
+        "{:?}",
+        report.blockers
+    );
+}
+
 /// An EFS-encrypted file as the raw reading sees it: the encrypted mark in
 /// its standard information, an encrypted unnamed stream and its $EFS.
 fn efs_record() -> Vec<u8> {

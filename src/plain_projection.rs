@@ -360,7 +360,7 @@ pub(crate) fn cloud_placeholder(file: &FileInventory) -> Result<Option<CloudPlac
     }
     if file.is_directory {
         // A sync root's folder holds the Cloud Files API's own stream
-        // (`{3D0CE612-...}.SyncRootIdentity`), which is left off it; any
+        // (`${3D0CE612-...}.SyncRootIdentity`), which is left off it; any
         // other named stream on a cloud folder is refused by admission.
         return Ok(file
             .streams
@@ -731,13 +731,7 @@ fn left_out_row(file: &FileInventory, paths: Vec<String>) -> Result<(PlainEntry,
         .first()
         .cloned()
         .with_context(|| format!("MFT record {} has no name", file.record_number))?;
-    let bytes = if file.is_directory {
-        0
-    } else {
-        file.streams
-            .iter()
-            .fold(0u64, |sum, stream| sum.saturating_add(stream.logical_size))
-    };
+    let (streams, bytes) = counted_streams(file);
     let before = crate::ntfs_file_attributes::project_user(file)?.win32_attributes;
     let placeholder = cloud_placeholder(file)?;
     Ok((
@@ -779,16 +773,24 @@ fn left_out_row(file: &FileInventory, paths: Vec<String>) -> Result<(PlainEntry,
             }),
             left_out: Some(n2r_win32::plain_ledger::LedgerLeftOut {
                 directory: file.is_directory,
-                streams: if file.is_directory {
-                    0
-                } else {
-                    file.streams.len() as u64
-                },
+                streams,
                 bytes,
             }),
             dropped_streams: Vec::new(),
         },
     ))
+}
+
+/// The data streams the source's admission counts of an object, and their
+/// bytes: every stream of a file or a directory (a directory's named
+/// streams are counted, as they are carried).
+fn counted_streams(file: &FileInventory) -> (u64, u64) {
+    (
+        file.streams.len() as u64,
+        file.streams
+            .iter()
+            .fold(0u64, |sum, stream| sum.saturating_add(stream.logical_size)),
+    )
 }
 
 /// The objects of a frozen source that are converted to plain: the list,
@@ -1241,7 +1243,7 @@ mod tests {
             stream
         };
         assert!(sync_root_stream(&named(
-            "{3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity"
+            "${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity"
         )));
         assert!(!sync_root_stream(&named("Zone.Identifier")));
         assert!(!sync_root_stream(&named("")));

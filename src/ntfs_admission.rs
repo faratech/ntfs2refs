@@ -1013,6 +1013,138 @@ mod refusal_tests {
         (resource_counts, replacement, case)
     }
 
+    /// A cloud folder as the lab's `cloud` volume has it: a directory with a
+    /// cloud reparse point and the given named streams.
+    fn cloud_folder(streams: &[&str]) -> FileInventory {
+        let mut point = 0x9000_701au32.to_le_bytes().to_vec();
+        point.extend_from_slice(&8u16.to_le_bytes());
+        point.extend_from_slice(&0u16.to_le_bytes());
+        point.extend_from_slice(b"provider");
+        let attribute = |type_code: u32, name: &str, value: &[u8]| ntfs::AttributeInventory {
+            type_code,
+            instance: 0,
+            name_utf16: name.encode_utf16().collect(),
+            flags: 0,
+            resident: true,
+            logical_size: value.len() as u64,
+            initialized_size: value.len() as u64,
+            allocated_size: value.len().next_multiple_of(8) as u64,
+            lowest_vcn: 0,
+            compression_unit: 0,
+            total_allocated_size: None,
+            extents: vec![],
+            resident_sha256: Some(n2r_win32::content_digest::of(value)),
+            resident_metadata_hex: (type_code == 0xc0).then(|| hex::encode(value)),
+        };
+        let mut folder = directory_with_stream("x", 0);
+        folder.record_number = 38;
+        folder.streams = streams
+            .iter()
+            .map(|name| {
+                let mut stream = directory_with_stream(name, 0).streams.remove(0);
+                stream.logical_size = 29;
+                stream.initialized_size = 29;
+                stream
+            })
+            .collect();
+        folder.attributes = std::iter::once(attribute(0xc0, "", &point))
+            .chain(streams.iter().map(|name| attribute(0x80, name, &[7; 29])))
+            .collect();
+        folder.standard_information = Some(ntfs::StandardInformation {
+            creation_time: 1,
+            modification_time: 2,
+            mft_change_time: 3,
+            access_time: 4,
+            // ARCHIVE | REPARSE_POINT; NTFS keeps no DIRECTORY bit here.
+            file_attributes: 0x420,
+            security_id: None,
+        });
+        folder.reparse = Some(n2r_win32::reparse_layout::Point { buffer: point });
+        folder
+    }
+
+    /// What admission says of an object, less the SACL condition a test
+    /// object without a descriptor always has.
+    fn admission_issues(f: &FileInventory) -> Vec<String> {
+        let geometry = ntfs::NtfsGeometry {
+            bytes_per_sector: 512,
+            sectors_per_cluster: 8,
+            cluster_size: 4096,
+            total_sectors: 1 << 20,
+            volume_size: 512 << 20,
+            total_clusters: 1 << 17,
+            mft_lcn: 4,
+            mftmirr_lcn: 8,
+            file_record_size: 1024,
+            index_record_size: 4096,
+            serial_number: 1,
+        };
+        user_issues_with_context_alias_scope(
+            f,
+            true,
+            &geometry,
+            true,
+            false,
+            None,
+            None,
+            16,
+            false,
+            false,
+            false,
+            false,
+            |_| true,
+        )
+        .into_iter()
+        .filter(|issue| !issue.contains("SACL"))
+        .collect()
+    }
+
+    /// The lab (reference-b, MFT records 38 and 41): a sync root's folder,
+    /// with the Cloud Files API's own stream, and a folder placeholder in
+    /// it. A run that takes them plain settles every condition admission
+    /// reports of them (the cloud point, the stream's attribute, the
+    /// directory stream); one that does not refuses them by name.
+    #[test]
+    fn a_cloud_folder_made_plain_settles_its_point_and_the_apis_own_stream() {
+        let identity = "${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity";
+        let sync_root = cloud_folder(&[identity]);
+        let folder = cloud_folder(&[]);
+        let other = cloud_folder(&["note"]);
+        crate::plain_consent::take_plain_on_this_thread(true);
+        let taken = (
+            admission_issues(&sync_root),
+            admission_issues(&folder),
+            admission_issues(&other),
+            crate::plain_projection::cloud_placeholder(&sync_root)
+                .unwrap()
+                .is_some_and(|placeholder| placeholder.directory),
+        );
+        crate::plain_consent::take_plain_on_this_thread(false);
+        assert!(taken.0.is_empty(), "{:?}", taken.0);
+        assert!(taken.1.is_empty(), "{:?}", taken.1);
+        assert!(taken.3);
+        // Any other named stream on a cloud folder is not the API's: refused.
+        assert!(
+            taken
+                .2
+                .iter()
+                .any(|issue| issue.contains("cloud placeholder")),
+            "{:?}",
+            taken.2
+        );
+        // Not taken plain (a Windows boot volume, say): refused by name.
+        let refused = admission_issues(&sync_root);
+        assert!(
+            refused
+                .iter()
+                .any(|issue| issue.contains("cloud placeholder"))
+                && refused
+                    .iter()
+                    .any(|issue| issue.contains("named data stream")),
+            "{refused:?}"
+        );
+    }
+
     /// The checked source readers take a directory's named stream: the lab's
     /// dirstream run was refused in payload supply planning with "plain
     /// standalone file required".
@@ -2389,8 +2521,11 @@ pub(crate) fn user_issues_with_context_alias_scope(
             );
         }
     }
-    if f.is_directory && !cloud_folder {
-        if let Some(issue) = directory_stream_issue(
+    if f.is_directory {
+        // A cloud folder made plain has no named stream but the Cloud Files
+        // API's own, which is left off it (a declared drop), not carried.
+        if cloud_folder {
+        } else if let Some(issue) = directory_stream_issue(
             f,
             ordinary,
             reparse.is_some(),

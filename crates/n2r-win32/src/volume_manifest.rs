@@ -2271,7 +2271,7 @@ mod tests {
         );
         // A sync root's folder made plain: its point and marks go, and the
         // Cloud Files API's own stream on it, as declared, and only that.
-        let identity = "{3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity";
+        let identity = "${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity";
         let stream = |name: &str| Stream {
             name: format!(":{name}:$DATA"),
             bytes: 120,

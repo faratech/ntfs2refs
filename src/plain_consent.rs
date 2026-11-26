@@ -47,9 +47,25 @@ pub(crate) fn offer_for_this_run() {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static TAKES_PLAIN_ON_THIS_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// For a test of admission: this thread's admission takes objects to plain,
+/// whatever the process's state (which other tests share) says.
+#[cfg(test)]
+pub(crate) fn take_plain_on_this_thread(on: bool) {
+    TAKES_PLAIN_ON_THIS_THREAD.with(|cell| cell.set(on));
+}
+
 /// Whether this run takes objects to plain (offered or agreed) rather than
 /// refusing them.
 pub(crate) fn takes_plain() -> bool {
+    #[cfg(test)]
+    if TAKES_PLAIN_ON_THIS_THREAD.with(|cell| cell.get()) {
+        return true;
+    }
     !matches!(*state(), State::Refused)
 }
 

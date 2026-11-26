@@ -1389,6 +1389,30 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                 if ($result.v_back) {
                     $text = & "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-before.jsonl" 2>&1
                     $result.listed_exit = $LASTEXITCODE; $result.listed = ($text -join ' ')
+                    if ($ntfs12 -or $ntfs12Version) {
+                        # Windows goes on writing to an NTFS 1.2 volume it has just
+                        # mounted ($Extend, $RmMetadata, the TxF log): the listing
+                        # the run is held to is taken once two listings five
+                        # seconds apart agree, for up to two minutes.
+                        $settleUntil = (Get-Date).AddSeconds(120)
+                        $previous = (Get-FileHash -LiteralPath "$root\manifest-before.jsonl").Hash
+                        $result.listings_taken = 1; $result.settled = $false
+                        while ($result.listed_exit -eq 0 -and (Get-Date) -lt $settleUntil) {
+                            Start-Sleep -Seconds 5
+                            $text = & "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-before.jsonl" 2>&1
+                            $result.listed_exit = $LASTEXITCODE; $result.listed = ($text -join ' ')
+                            $result.listings_taken++
+                            $now = (Get-FileHash -LiteralPath "$root\manifest-before.jsonl").Hash
+                            if ($now -eq $previous) { $result.settled = $true; break }
+                            $previous = $now
+                        }
+                        # What Windows says of the volume once it has settled.
+                        $mounted = Get-Volume -DriveLetter V -ErrorAction SilentlyContinue
+                        $result.health = if ($mounted) { "$($mounted.HealthStatus)" } else { $null }
+                        $result.operational = if ($mounted) { "$(@($mounted.OperationalStatus) -join ',')" } else { $null }
+                        $result.dirty_query = (& fsutil dirty query V: 2>&1) -join ' '
+                        $result.dirty = $result.dirty_query -match 'is Dirty'
+                    }
                 }
                 # What the disk says when the run starts, read raw (whether or
                 # not Windows mounted the volume): Windows has had it for as
@@ -1441,7 +1465,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         $onDisk = ($rawJson | Select-Object -Last 1) | ConvertFrom-Json
         # The guest sets only what applied; under strict mode a field it left
         # out would throw when read, so each is present, null when absent.
-        foreach ($field in 'ntfs30', 'ntfs12', 'ntfs12_as_written', 'lfs2', 'version_when_the_run_starts', 'headers_when_the_run_starts', 'diagnostics', 'made_error', 'v_back', 'listed_exit', 'listed') {
+        foreach ($field in 'ntfs30', 'ntfs12', 'ntfs12_as_written', 'settled', 'listings_taken', 'health', 'operational', 'dirty', 'dirty_query', 'lfs2', 'version_when_the_run_starts', 'headers_when_the_run_starts', 'diagnostics', 'made_error', 'v_back', 'listed_exit', 'listed') {
             if (-not $onDisk.PSObject.Properties[$field]) { $onDisk | Add-Member -NotePropertyName $field -NotePropertyValue $null }
         }
         # Kept before anything is decided: what was written, what the disk
@@ -1496,7 +1520,19 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                 file_system = $(if ($onDisk.diagnostics -and $onDisk.diagnostics.volume) { $onDisk.diagnostics.volume.file_system })
                 in_use_by_array_offset = $(if ($onDisk.headers_when_the_run_starts) { $onDisk.headers_when_the_run_starts.in_use_by_array_offset } else { $null })
                 ntfs_events = @($onDisk.diagnostics.events | Where-Object { $_.provider -match 'Ntfs' -or $_.id -in 55, 98, 130, 137 } | ForEach-Object { "$($_.id)" } | Select-Object -Unique) }
-            Say "ntfs12: Windows mounted the volume ($($verdict.ntfs12.made)); `$Volume reads $(if ($startsAt) { "NTFS $($startsAt.mft.version) when the run starts (mirror $($startsAt.mirror.version))" } else { 'unread' })$(if ($ntfs12) { "; in-use records by update sequence array offset: $(($verdict.ntfs12.in_use_by_array_offset | ConvertTo-Json -Compress))" })"
+            $verdict.ntfs12.settled = $onDisk.settled; $verdict.ntfs12.listings_taken = $onDisk.listings_taken
+            $verdict.ntfs12.health = $onDisk.health; $verdict.ntfs12.operational = $onDisk.operational; $verdict.ntfs12.dirty = $onDisk.dirty
+            Say "ntfs12: Windows mounted the volume ($($verdict.ntfs12.made)); `$Volume reads $(if ($startsAt) { "NTFS $($startsAt.mft.version) when the run starts (mirror $($startsAt.mirror.version))" } else { 'unread' })$(if ($ntfs12) { "; in-use records by update sequence array offset: $(($verdict.ntfs12.in_use_by_array_offset | ConvertTo-Json -Compress))" }); listing $(if ($onDisk.settled) { 'settled' } else { 'NOT settled' }) after $($onDisk.listings_taken) listing(s); health $($onDisk.health) ($($onDisk.operational)), $($onDisk.dirty_query)"
+            # A volume Windows leaves dirty or unhealthy, or still changing, is
+            # the fixture's failure, not the converter's: the run is not made.
+            if ($onDisk.dirty -or ($onDisk.health -and $onDisk.health -ne 'Healthy')) {
+                $verdict.outcome = 'ntfs12-fixture-unhealthy-after-mount'
+                throw "Windows left the NTFS 1.2 volume $(if ($onDisk.dirty) { 'dirty' } else { 'unhealthy' }) when it mounted it (health $($onDisk.health), $($onDisk.operational)): the fixture, not the converter, is at fault; records: ntfs12.json and raw-feature-diagnostics.json"
+            }
+            if (-not $onDisk.settled) {
+                $verdict.outcome = 'ntfs12-volume-did-not-settle'
+                throw "the NTFS 1.2 volume's listing kept changing for two minutes after Windows mounted it ($($onDisk.listings_taken) listings): there is no listing to hold the run to"
+            }
         }
         if ($lfs2) {
             $log = $onDisk.lfs2

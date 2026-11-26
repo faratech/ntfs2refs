@@ -594,9 +594,20 @@ and 5 whole, so that a synthetic volume's can be set beside those of one
 Windows made), and
 `raw-feature-diagnostics.json` what Windows made of it (the volume's file
 system and letter, `fsutil fsinfo ntfsinfo`, NTFS's event-log entries). If
-V: is not back within 60 s the attempt ends `ntfs12-volume-not-mounted`;
-otherwise the verdict's `ntfs12` says in what version Windows left it, and
-the run goes on to convert it. None of the five is for
+V: is not back within 60 s the attempt ends `ntfs12-volume-not-mounted`.
+Windows goes on writing to an NTFS 1.2 volume it has mounted (it makes
+`$Extend`, `$RmMetadata` and the TxF log in it, leaving `$Volume` at 1.2),
+so the listing before the run is taken once two listings five seconds
+apart agree (up to two minutes, else `ntfs12-volume-did-not-settle`), and
+the volume's health and dirty bit are then read: a volume Windows leaves
+dirty or unhealthy ends the attempt `ntfs12-fixture-unhealthy-after-mount`,
+the fixture's failure rather than the converter's. Otherwise the verdict's
+`ntfs12` says in what version and state Windows left it, and the run goes
+on to convert it. The image carries the `$AttrDef` Windows writes (with
+`$OBJECT_ID`, `$REPARSE_POINT` and `$LOGGED_UTILITY_STREAM`, which Windows
+then uses on it); `$env:N2R_NTFS12_ATTRDEF = 'nt4'` makes it NT 4.0's
+fifteen definitions instead, with which Windows 11 left the volume dirty
+(`n12-image-2`). None of the five is for
 `-NativeRefsControl` or `-CheckOnly`, and only one of `ntfs30`,
 `ntfs30-headers`, `ntfs12` and `ntfs12-version` is given at a time.
 

@@ -594,7 +594,8 @@ try {
             Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
             $served = $null
             if ($feature -eq 'projfs') {
-                # A ProjFS provider serves every process, whatever its session.
+                # Start the feature step's provider. The worker starts a
+                # replacement in its own session before conversion.
                 $served = Start-Process -FilePath $ProjfsProvider -PassThru -WindowStyle Hidden -ArgumentList @(
                     'serve', '--root', "`"$projected`"", '--backing', "`"$backing`"", '--stop-file', "`"$stop`"")
                 Start-Sleep -Seconds 2

@@ -270,7 +270,7 @@ $dataCases = @(
     # with it running, the one not on the volume is read through it before
     # the freeze and all are made plain; with it stopped, refused by name, or
     # converted without it once leaving it out is agreed.
-    'projfs-plain|-Content minimal -Features projfs -Check -AcceptPlain -Unattended'
+    'projfs-plain|-Content minimal -Features projfs -Check -AcceptPlain -Unattended -RunAs administrator'
     'projfs-down|-Content minimal -Features projfs-down -Check -AcceptPlain -Unattended -ExpectRefusal leave-out-cloud'
     'projfs-down-leave-out|-Content minimal -Features projfs-down -Check -AcceptPlain -Unattended -LeaveOutCloud'
     'names|-Content minimal -Features names -Check'

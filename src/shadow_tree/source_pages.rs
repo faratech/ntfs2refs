@@ -1084,6 +1084,11 @@ fn build_object(
                         n2r_win32::plain_ledger::ENCRYPTED
                     } else {
                         0
+                    }
+                    | if crate::plain_projection::cloud_taken(file) {
+                        crate::plain_projection::CLOUD_CLEARED
+                    } else {
+                        0
                     })
                 == 0,
         "unsupported basic metadata"
@@ -1101,6 +1106,10 @@ fn build_object(
     // is not a stream to carry.
     let wof_copy = crate::plain_projection::plain_copy_pin(file)?;
     let wof = crate::plain_projection::wof_taken(file);
+    // A cloud placeholder made plain (`cloud_placeholder_plain`): its
+    // unnamed stream is its plain copy, as a WOF file's; its reparse point
+    // is not carried over.
+    let cloud = crate::plain_projection::cloud_taken(file);
     let classify = |stream: &ntfs::StreamInventory| {
         reads.classify(file, stream, admission, extent_paths_eligible)
     };
@@ -1192,7 +1201,7 @@ fn build_object(
                 Some(hex::decode(views.api_descriptor_hex)?)
             },
             extended_attributes: Some(extended_attributes),
-            reparse: if wof { None } else { reparse },
+            reparse: if wof || cloud { None } else { reparse },
             case_sensitive,
             source_offset,
             source_extents,

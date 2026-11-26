@@ -716,6 +716,7 @@ mod tests {
                     witness: "raw".into(),
                     plain_copy: None,
                     efs: None,
+                    cloud: None,
                 }],
             })
             .unwrap(),

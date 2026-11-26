@@ -136,7 +136,10 @@ impl PlainKind {
     pub fn implemented(self) -> bool {
         matches!(
             self,
-            PlainKind::AttributesCleared | PlainKind::WofExpanded | PlainKind::EfsDecrypted
+            PlainKind::AttributesCleared
+                | PlainKind::WofExpanded
+                | PlainKind::EfsDecrypted
+                | PlainKind::CloudPlaceholderPlain
         )
     }
 }
@@ -318,6 +321,24 @@ pub struct LedgerRow {
     /// For an EFS file decrypted: what the raw source held of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub efs: Option<LedgerEfs>,
+    /// For a cloud placeholder made plain or left out: what the raw source
+    /// held of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud: Option<LedgerCloud>,
+}
+
+/// What the raw source held of a cloud placeholder.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LedgerCloud {
+    /// Its reparse tag (0x9000x01A).
+    pub tag: u32,
+    pub directory: bool,
+    /// Its length as a program reads it.
+    pub plain_bytes: u64,
+    /// The bytes below its length that the frozen source held no clusters
+    /// for: 0 for one made plain, which has to be wholly on the volume.
+    pub raw_missing_bytes: u64,
 }
 
 /// What the raw source held of an EFS file made plain, to tie its plain
@@ -552,6 +573,7 @@ mod tests {
             witness: "raw".into(),
             plain_copy: None,
             efs: None,
+            cloud: None,
         }
     }
 
@@ -681,7 +703,8 @@ mod tests {
             [
                 &PlainKind::AttributesCleared,
                 &PlainKind::EfsDecrypted,
-                &PlainKind::WofExpanded
+                &PlainKind::WofExpanded,
+                &PlainKind::CloudPlaceholderPlain
             ]
         );
     }
@@ -811,6 +834,7 @@ mod tests {
             witness: "raw".into(),
             plain_copy: None,
             efs: None,
+            cloud: None,
         };
         let mut ledger = PlainLedger {
             kind: LEDGER_KIND.into(),

@@ -766,13 +766,17 @@ fn declared_after(row: &LedgerRow, before: &Record) -> Result<Record, String> {
                 before.reparse_tag
             ));
         }
-        let Some(plain) = before.plain_sha256.clone() else {
-            return Err(format!(
-                "the listing before could not read the {what} as a program does: {}",
-                before.plain_read_error.as_deref().unwrap_or("not read")
-            ));
-        };
-        after.sha256 = Some(plain);
+        // A directory placeholder has no contents to read; it loses its
+        // reparse point and its marks alone.
+        if !before.directory {
+            let Some(plain) = before.plain_sha256.clone() else {
+                return Err(format!(
+                    "the listing before could not read the {what} as a program does: {}",
+                    before.plain_read_error.as_deref().unwrap_or("not read")
+                ));
+            };
+            after.sha256 = Some(plain);
+        }
         after.plain_sha256 = None;
         after.plain_read_error = None;
         after.reparse_tag = None;
@@ -1893,6 +1897,7 @@ mod tests {
             witness: "test".into(),
             plain_copy: None,
             efs: None,
+            cloud: None,
         }
     }
     /// A volume with an ordinary file and a TEMPORARY one, before and after
@@ -2221,6 +2226,35 @@ mod tests {
         assert_eq!(
             there.plain.failure_kinds["left out, and there afterwards"],
             1
+        );
+        // A directory placeholder: its point and marks go, and nothing is
+        // read of it.
+        let mut folder = directory("\\d");
+        folder.attributes |= 0x400 | 0x8_0000;
+        folder.reparse_tag = Some(0x9000_001a);
+        folder.reparse_sha256 = Some("r".into());
+        let verdict = compare_with_plain(
+            &[folder.clone()],
+            &[directory("\\d")],
+            Declared::default(),
+            &ledger(vec![LedgerRow {
+                paths: vec!["\\d".into()],
+                ..row(PlainKind::CloudPlaceholderPlain)
+            }]),
+        );
+        assert!(verdict.identical(), "{verdict:?}");
+        // A file whose contents the listing could not read was not shown.
+        let mut unread = cloud.clone();
+        unread.plain_sha256 = None;
+        unread.plain_read_error = Some("not on this device".into());
+        assert!(
+            !compare_with_plain(
+                &[unread],
+                &[file("\\f", "bytes")],
+                Declared::default(),
+                &ledger(vec![row(PlainKind::CloudPlaceholderPlain)])
+            )
+            .identical()
         );
     }
 

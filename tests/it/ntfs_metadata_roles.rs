@@ -168,6 +168,54 @@ fn the_reading_keeps_a_wof_file_for_the_plain_census() {
     }
 }
 
+/// A cloud provider's placeholder that is wholly on the volume, as the
+/// Cloud Files API leaves it: a cloud reparse point (tag 0x9000x01A) with
+/// the provider's own bytes, its pinned mark, and its data.
+fn cloud_record(tag: u32) -> Vec<u8> {
+    let mut information = vec![0u8; 72];
+    // ARCHIVE | REPARSE_POINT | PINNED.
+    information[32..36].copy_from_slice(&0x8_0420u32.to_le_bytes());
+    let mut point = Vec::new();
+    point.extend_from_slice(&tag.to_le_bytes());
+    point.extend_from_slice(&12u16.to_le_bytes());
+    point.extend_from_slice(&0u16.to_le_bytes());
+    point.extend_from_slice(b"provider-own");
+    support::record(
+        &[
+            support::resident(0x10, "", &information, 3),
+            filename("synced.txt", 5, 1, 1, 0),
+            support::resident(0x80, "", b"the file's contents", 1),
+            support::resident(0xc0, "", &point, 2),
+        ],
+        1,
+        1,
+    )
+}
+
+/// The reading `--check`, a conversion's check before its question and its
+/// admission of the frozen source begin with: a cloud placeholder comes out
+/// of it with its point retained, every byte of it, for the plain census to
+/// classify, and nothing the reading reports of it refuses it by its tag.
+#[test]
+fn the_reading_keeps_a_cloud_placeholder_for_the_plain_census() {
+    for tag in [0x9000_001au32, 0x9000_601a] {
+        let report = inspect_records(&[(20, cloud_record(tag))]);
+        let cloud = file(&report, 20);
+        let point = cloud.reparse.as_ref().expect("the cloud point is retained");
+        assert_eq!(point.tag(), tag);
+        assert!(point.buffer.ends_with(b"provider-own"));
+        assert_eq!(cloud.streams.len(), 1);
+        assert!(
+            !report.blockers.iter().any(|blocker| {
+                blocker.file_record_number == Some(20)
+                    && blocker.message.contains(&format!("{tag:#010x}"))
+            }),
+            "{:?}",
+            report.blockers
+        );
+    }
+}
+
 /// An EFS-encrypted file as the raw reading sees it: the encrypted mark in
 /// its standard information, an encrypted unnamed stream and its $EFS.
 fn efs_record() -> Vec<u8> {

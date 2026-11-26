@@ -235,6 +235,18 @@ pub(crate) fn section(list: &PlainList, list_file: Option<&Path>) -> Vec<String>
                 .map(|warning| format!("  Warning: {warning}")),
         );
     }
+    if list.entries().iter().any(|entry| {
+        matches!(
+            entry.kind,
+            n2r_win32::plain_ledger::PlainKind::CloudPlaceholderPlain
+                | n2r_win32::plain_ledger::PlainKind::CloudLeftOut
+        )
+    }) {
+        lines.push(format!(
+            "  Warning: {}.",
+            crate::plain_projection::CLOUD_WARNING
+        ));
+    }
     for entry in list.entries().iter().take(5) {
         lines.push(format!("  {} ({})", entry.path, entry.kind));
     }
@@ -431,6 +443,25 @@ mod tests {
         assert!(text.contains("\\a\\t.tmp (attributes_cleared)"), "{text}");
         assert!(
             text.contains(&format!("S:\\runs\\plain.txt (sha256 {})", found.sha256())),
+            "{text}"
+        );
+        assert!(!text.contains("do not run on ReFS"), "{text}");
+        // A cloud placeholder: the sync stops, and the user is told so.
+        let cloud = PlainList::new(vec![PlainEntry {
+            kind: PlainKind::CloudPlaceholderPlain,
+            path: "\\OneDrive\\a.txt".into(),
+            cleared_attributes: 0,
+            bytes: 10,
+            volume_extra_bytes: 0,
+            working_extra_bytes: 10,
+            download_bytes: 3 << 20,
+        }])
+        .unwrap();
+        let text = section(&cloud, None).join("\n");
+        assert!(
+            text.contains(
+                "Warning: OneDrive and other Cloud Files API providers do not run on ReFS"
+            ) && text.contains("3 MiB to download before the volume is frozen"),
             "{text}"
         );
         let asked = question(&found);

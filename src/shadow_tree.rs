@@ -998,8 +998,10 @@ fn derive_profile(
         let plain_cleared = crate::plain_projection::cleared_on_target(f)?;
         // A WOF file is made plain from its copy on the paged route only.
         ensure!(
-            !crate::plain_projection::wof_taken(f) && !crate::plain_projection::efs_taken(f),
-            "MFT record {}: a file WOF keeps compressed is made plain only on the paged data-volume route",
+            !crate::plain_projection::wof_taken(f)
+                && !crate::plain_projection::efs_taken(f)
+                && !crate::plain_projection::cloud_taken(f),
+            "MFT record {}: an object made plain from its copy (a WOF, EFS or cloud-placeholder file) is made only on the paged data-volume route",
             f.record_number
         );
         let (source_offset, source_extents, length, sha256, source_evidence, sparse) =

@@ -2150,6 +2150,20 @@ pub(crate) fn user_issues_with_context_alias_scope(
                 n2r_win32::reparse_layout::unsupported_tag_meaning(point.tag())
             ));
         }
+    } else if let Some(point) = reparse
+        .as_ref()
+        .filter(|point| n2r_win32::reparse_layout::is_cloud_tag(point.tag()))
+    {
+        // A cloud provider's placeholder is never recreated as such. A data
+        // volume's is made a plain file once its list is agreed
+        // (`cloud_placeholder_plain`); anywhere else, or of another shape,
+        // it is refused by name, with the remedy.
+        if !(ordinary && crate::plain_projection::cloud_taken(f)) {
+            issues.push(format!(
+                "it is a cloud placeholder{}",
+                n2r_win32::reparse_layout::unsupported_tag_meaning(point.tag())
+            ));
+        }
     } else if let Some(point) = &reparse {
         if (point.tag() == 0xa0000003 && !f.is_directory)
             || (!f.is_directory && (f.streams.len() != 1 || f.streams[0].logical_size != 0))
@@ -2315,7 +2329,14 @@ pub(crate) fn user_issues_with_context_alias_scope(
         } else {
             0
         }
-        | if efs_plain { n2r_win32::plain_ledger::ENCRYPTED } else { 0 };
+        | if efs_plain { n2r_win32::plain_ledger::ENCRYPTED } else { 0 }
+        // A cloud placeholder made plain: the provider's pin and recall
+        // marks and OFFLINE, which the new object is made without.
+        | if ordinary && crate::plain_projection::cloud_taken(f) {
+            crate::plain_projection::CLOUD_CLEARED
+        } else {
+            0
+        };
     match crate::ntfs_file_attributes::project_user(f) {
         Ok(attributes) if attributes.source_attributes & !carried_attributes == 0 => {}
         Ok(attributes) => issues.push(format!(

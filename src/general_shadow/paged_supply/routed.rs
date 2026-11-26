@@ -408,7 +408,8 @@ fn observes_at_once(
 /// The objects a pass takes next, from `first` on: one, or with `at_once`
 /// as many as have [`SUPPLY_BATCH_STREAMS`] streams to supply between them
 /// and the ledger has spare room for, and never more objects than that
-/// (directories have no stream to count). What the first object fails with
+/// (a directory's streams are its named ones, supplied as a file's; one
+/// without any has none to count). What the first object fails with
 /// is the pass's error, as it is for an object taken by itself.
 fn objects_from(
     expected: &PagedExpectedTree,
@@ -421,9 +422,7 @@ fn objects_from(
     let (mut objects, mut streams) = (0usize, 0usize);
     expected.objects_leased_at_once(first, |object| {
         objects += 1;
-        if !(object.directory || system(object)) {
-            streams += object.data_streams().count();
-        }
+        streams += supplied_streams(object).count();
         objects < SUPPLY_BATCH_STREAMS && streams < SUPPLY_BATCH_STREAMS
     })
 }
@@ -476,14 +475,9 @@ impl<'a> StreamsAtOnce<'a> {
         let Some(arena) = arena else {
             return batch;
         };
-        let supplied = || {
-            objects
-                .iter()
-                .enumerate()
-                .filter(|(_, object)| !(object.directory || system(object)))
-        };
+        let supplied = || objects.iter().enumerate();
         let count: usize = supplied()
-            .map(|(_, object)| object.data_streams().count())
+            .map(|(_, object)| supplied_streams(&object).count())
             .sum();
         let entry =
             std::mem::size_of::<SupplyStreamRequest<'_>>() + std::mem::size_of::<StreamRef<'_>>();
@@ -496,7 +490,7 @@ impl<'a> StreamsAtOnce<'a> {
             return batch;
         }
         for (offset, object) in supplied() {
-            for stream in object.data_streams() {
+            for stream in supplied_streams(&object) {
                 batch.requests.push(SupplyStreamRequest {
                     object_index: first + offset,
                     name_utf16: stream.name_utf16,
@@ -595,8 +589,7 @@ impl<'scope> ObservedAhead<'scope> {
     ) -> Self {
         let supplied = objects
             .iter()
-            .filter(|object| !(object.directory || system(object)))
-            .map(|object| object.data_streams().count())
+            .map(|object| supplied_streams(&object).count())
             .sum::<usize>()
             .min(SUPPLY_BATCH_STREAMS);
         let entry =
@@ -619,10 +612,7 @@ impl<'scope> ObservedAhead<'scope> {
             };
         }
         'objects: for (offset, object) in objects.iter().enumerate() {
-            if object.directory || system(object) {
-                continue;
-            }
-            for stream in object.data_streams() {
+            for stream in supplied_streams(&object) {
                 if requests.len() == SUPPLY_BATCH_STREAMS {
                     break 'objects;
                 }
@@ -710,10 +700,7 @@ pub(crate) fn preflight_source_references(
     let _working = bytes.lease_working_ram(65536)?;
     for index in 0..expected.len() {
         let object = expected.object_leased(index)?;
-        if object.directory || system(&object) {
-            continue;
-        }
-        for stream in object.data_streams() {
+        for stream in supplied_streams(&object) {
             let prefix = n2r_win32::target_cluster::floor(stream.length);
             if prefix == 0 || (stream.source_offset.is_none() && stream.source_extents.is_empty()) {
                 continue;
@@ -1021,10 +1008,7 @@ fn scan_plan(
                     if index > first {
                         announce(index);
                     }
-                    if object.directory || system(object) {
-                        continue;
-                    }
-                    for (stream_ordinal, stream) in object.data_streams().enumerate() {
+                    for (stream_ordinal, stream) in supplied_streams(&object).enumerate() {
                         let mut seen = batch.next(template, row_window);
                         require_policy_evidence(policy, stream)?;
                         // The verification's own check of the stream's evidence,
@@ -1330,10 +1314,7 @@ impl TailBatchReads {
         let mut slots = Vec::new();
         let mut asked_bytes = 0u64;
         for (index, object) in (first..).zip(held) {
-            if object.directory || system(object) {
-                continue;
-            }
-            for (stream_ordinal, stream) in object.data_streams().enumerate() {
+            for (stream_ordinal, stream) in supplied_streams(&object).enumerate() {
                 let offset = stream.length / cluster * cluster;
                 let count = stream.length - offset;
                 if count == 0
@@ -1546,10 +1527,7 @@ fn pending_need(
         return need;
     }
     for (index, object) in (first..).zip(held) {
-        if object.directory || system(object) {
-            continue;
-        }
-        for (ordinal, stream) in object.data_streams().enumerate() {
+        for (ordinal, stream) in supplied_streams(&object).enumerate() {
             let Some((_, intervals)) = planned.get(&(index, ordinal)) else {
                 continue;
             };
@@ -1991,11 +1969,8 @@ pub(crate) fn prepare_recording_tails<'a, 'source, 'scope>(
                     bytes.logical_bytes_read() - before_reads,
                     Some(written),
                 );
-                if object.directory || system(object) {
-                    continue;
-                }
                 let mut tail_ordinal = 0u64;
-                for (stream_ordinal, stream) in object.data_streams().enumerate() {
+                for (stream_ordinal, stream) in supplied_streams(&object).enumerate() {
                     let needs_tail = stream.tail_requires_materialization();
                     let this_tail_ordinal = if needs_tail {
                         let o = tail_ordinal;
@@ -2509,10 +2484,7 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                     failing_object.set(index);
                     supply_progress(&self.progress,Phase::PayloadVerification,0,index,self.expected.len(),self.bytes.logical_bytes_read()-before_reads,None);
                 }
-                if object.directory || system(object) {
-                    continue;
-                }
-                for stream in object.data_streams() {
+                for stream in supplied_streams(&object) {
                     let mut seen = batch.next(self.template, self.row_window);
                     ensure!(
                         stream.sha256.is_some() || stream.source_evidence.is_some(),

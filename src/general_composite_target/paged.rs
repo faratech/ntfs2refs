@@ -316,7 +316,8 @@ impl SourceTailProvider {
             if let Some(reads) = ahead.as_mut() {
                 let mut asks = Vec::new();
                 let mut asked_bytes = 0u64;
-                for object in held.iter().filter(|object| !object.directory) {
+                // A directory's data streams are its named ones, if any.
+                for object in &held {
                     // The tails in the order they are taken below.
                     let mut tails: Vec<_> = object
                         .data_streams()
@@ -343,7 +344,9 @@ impl SourceTailProvider {
                 }
             }
             for (index, object) in (first..).zip(&held) {
-                if object.directory {
+                // A directory's tails are those of its named streams, as a
+                // file's are; one without named streams has none.
+                if object.directory && object.named_streams.is_empty() {
                     continue;
                 }
                 // Pay for this actual object's reference vector before allocating

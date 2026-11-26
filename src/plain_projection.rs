@@ -55,6 +55,93 @@ pub(crate) fn transform_for(source_attributes: u32, reparse_point: bool) -> Opti
     )
 }
 
+/// A file WOF's file provider keeps compressed, as the raw source shows it:
+/// its reparse point of tag 0x80000017 read exactly, an unnamed stream of
+/// the file's plain length, and the `WofCompressedData` stream that holds
+/// the compressed data. Nothing else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WofFile {
+    pub algorithm: u32,
+    /// The file's length as a program reads it.
+    pub plain_bytes: u64,
+    /// What `WofCompressedData` takes on the source, freed when the file is
+    /// made plain.
+    pub compressed_allocated: u64,
+}
+
+/// The WOF file `file` is, if it is one.
+pub(crate) fn wof_file(file: &FileInventory) -> Result<Option<WofFile>> {
+    let Some(point) = crate::ntfs_reparse::file_point(file)? else {
+        return Ok(None);
+    };
+    let Some(algorithm) = n2r_win32::reparse_layout::wof_file_algorithm(&point.buffer) else {
+        return Ok(None);
+    };
+    let compressed: Vec<u16> = n2r_win32::reparse_layout::WOF_COMPRESSED_DATA
+        .encode_utf16()
+        .collect();
+    let unnamed = file.streams.iter().filter(|s| s.name_utf16.is_empty());
+    let data = file.streams.iter().filter(|s| s.name_utf16 == compressed);
+    let (unnamed, data): (Vec<_>, Vec<_>) = (unnamed.collect(), data.collect());
+    anyhow::ensure!(
+        !file.is_directory && file.streams.len() == 2 && unnamed.len() == 1 && data.len() == 1,
+        "MFT record {}: a WOF reparse point without exactly its unnamed stream and {}",
+        file.record_number,
+        n2r_win32::reparse_layout::WOF_COMPRESSED_DATA
+    );
+    Ok(Some(WofFile {
+        algorithm,
+        plain_bytes: unnamed[0].logical_size,
+        compressed_allocated: data[0].allocated_size,
+    }))
+}
+
+/// What making `files` plain does to the volume: the bytes it grows by
+/// (each plain length, rounded up to the target's cluster) and the bytes it
+/// frees (each `WofCompressedData` allocation).
+pub(crate) fn wof_growth(files: &[WofFile], target_cluster: u64) -> (u64, u64) {
+    files.iter().fold((0u64, 0u64), |(grows, frees), file| {
+        (
+            grows.saturating_add(file.plain_bytes.div_ceil(target_cluster) * target_cluster),
+            frees.saturating_add(file.compressed_allocated),
+        )
+    })
+}
+
+/// Refuses, with the numbers, a volume whose WOF files made plain would not
+/// fit in its free space.
+pub(crate) fn require_wof_room(files: &[WofFile], target_cluster: u64, free: u64) -> Result<()> {
+    let (grows, frees) = wof_growth(files, target_cluster);
+    let needed = grows.saturating_sub(frees);
+    anyhow::ensure!(
+        needed <= free,
+        "the {} file(s) WOF keeps compressed take {grows} bytes made plain (in {target_cluster}-byte clusters), {frees} bytes of their compressed data are freed, so the volume needs {needed} more bytes, and {free} are free. Free {} bytes, or expand some of the files with `compact /u /exe <file>` and convert then. Nothing was changed",
+        files.len(),
+        needed - free
+    );
+    Ok(())
+}
+
+/// What a check says of the files WOF keeps compressed, which this build
+/// refuses: what making them plain would take, and whether it fits.
+pub(crate) fn wof_note(files: &[WofFile], target_cluster: u64, free: u64) -> String {
+    let (grows, frees) = wof_growth(files, target_cluster);
+    format!(
+        "{} file(s) are kept compressed by WOF. Made plain they would take {grows} bytes and free {frees}: {}.",
+        files.len(),
+        match require_wof_room(files, target_cluster, free) {
+            Ok(()) => format!(
+                "{} more bytes, and {free} are free",
+                grows.saturating_sub(frees)
+            ),
+            Err(_) => format!(
+                "{} more bytes, and only {free} are free",
+                grows.saturating_sub(frees)
+            ),
+        }
+    )
+}
+
 /// The transform of one file or directory, from its raw record.
 pub(crate) fn of_file(file: &FileInventory) -> Result<Option<PlainTransform>> {
     let projected = crate::ntfs_file_attributes::project_user(file)?;
@@ -181,6 +268,38 @@ mod tests {
         assert_eq!(transform_for(TEMPORARY, true), None);
         // EFS is refused by name; clearing TEMPORARY would hide that.
         assert_eq!(transform_for(TEMPORARY | ENCRYPTED, false), None);
+    }
+
+    #[test]
+    fn wof_files_made_plain_are_held_to_the_free_space() {
+        let file = |plain_bytes, compressed_allocated| WofFile {
+            algorithm: 1,
+            plain_bytes,
+            compressed_allocated,
+        };
+        // Rounded up to the target's cluster; the compressed data freed.
+        let files = [file(5000, 4096), file(1, 0)];
+        assert_eq!(wof_growth(&files, 4096), (8192 + 4096, 4096));
+        assert_eq!(wof_growth(&files, 65536), (2 * 65536, 4096));
+        assert!(require_wof_room(&files, 4096, 8192).is_ok());
+        let refused = require_wof_room(&files, 4096, 8191)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("needs 8192 more bytes, and 8191 are free")
+                && refused.contains("Free 1 bytes")
+                && refused.contains("compact /u /exe"),
+            "{refused}"
+        );
+        let note = wof_note(&files, 4096, 8191);
+        assert!(
+            note.starts_with("2 file(s) are kept compressed by WOF")
+                && note.contains("8192 more bytes, and only 8191 are free"),
+            "{note}"
+        );
+        // Freed more than it grows: nothing needed.
+        assert!(require_wof_room(&[file(10, 1 << 20)], 4096, 0).is_ok());
+        assert!(require_wof_room(&[], 4096, 0).is_ok());
     }
 
     #[test]

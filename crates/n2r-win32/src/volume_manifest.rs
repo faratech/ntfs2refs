@@ -799,15 +799,25 @@ fn declared_after(row: &LedgerRow, before: &Record) -> Result<Record, String> {
             after.attributes &= !cleared;
         }
         PlainKind::EfsDecrypted => {
-            if !before.efs || before.attributes & ENCRYPTED == 0 || before.raw_efs_sha256.is_none()
-            {
-                return Err(
-                    "the listing before does not show it EFS-encrypted, with its raw export read"
-                        .into(),
-                );
+            if !before.efs || before.attributes & ENCRYPTED == 0 {
+                return Err("the listing before does not show it EFS-encrypted".into());
+            }
+            // A file: its raw export read, and its plain text read through
+            // Windows, which is what it has to hold afterwards. A directory
+            // has only its mark taken off.
+            if !before.directory {
+                let (Some(_), Some(plain)) = (&before.raw_efs_sha256, &before.plain_sha256) else {
+                    return Err(format!(
+                        "the listing before did not read both its raw EFS export and its plain text: {}",
+                        before.plain_read_error.as_deref().unwrap_or("not read")
+                    ));
+                };
+                after.sha256 = Some(plain.clone());
             }
             after.efs = false;
             after.raw_efs_sha256 = None;
+            after.plain_sha256 = None;
+            after.plain_read_error = None;
             after.attributes &= !ENCRYPTED;
         }
         PlainKind::WofExpanded => {
@@ -1713,6 +1723,12 @@ mod capture {
                     Ok(sha256) => record.raw_efs_sha256 = Some(sha256),
                     Err(error) => note(&mut record, "raw EFS export", &error),
                 }
+                // The plain text as the listing's account reads it, which a
+                // file made plain has to hold afterwards.
+                match plain_sha256(prefix, &record.path, buffer) {
+                    Ok(sha256) => record.plain_sha256 = Some(sha256),
+                    Err(error) => record.plain_read_error = Some(error.to_string()),
+                }
             }
         }
         if !directory {
@@ -1863,6 +1879,7 @@ mod tests {
             },
             witness: "test".into(),
             plain_copy: None,
+            efs: None,
         }
     }
     /// A volume with an ordinary file and a TEMPORARY one, before and after
@@ -2071,6 +2088,7 @@ mod tests {
         efs.attributes = 0x4020;
         efs.efs = true;
         efs.raw_efs_sha256 = Some("cipher".into());
+        efs.plain_sha256 = Some("plain-text".into());
         let mut decrypted = file("\\f", "plain-text");
         decrypted.attributes = 0x20;
         let verdict = compare_with_plain(
@@ -2078,6 +2096,32 @@ mod tests {
             &[decrypted.clone()],
             Declared::default(),
             &ledger(vec![row(PlainKind::EfsDecrypted)]),
+        );
+        assert!(verdict.identical(), "{verdict:?}");
+        // The content afterwards is the plain text read before.
+        let mut other = decrypted.clone();
+        other.sha256 = Some("other".into());
+        assert!(
+            !compare_with_plain(
+                &[efs.clone()],
+                &[other],
+                Declared::default(),
+                &ledger(vec![row(PlainKind::EfsDecrypted)])
+            )
+            .identical()
+        );
+        // A directory has only its mark taken off.
+        let mut marked = directory("\\d");
+        marked.attributes |= 0x4000;
+        marked.efs = true;
+        let verdict = compare_with_plain(
+            &[marked],
+            &[directory("\\d")],
+            Declared::default(),
+            &ledger(vec![LedgerRow {
+                paths: vec!["\\d".into()],
+                ..row(PlainKind::EfsDecrypted)
+            }]),
         );
         assert!(verdict.identical(), "{verdict:?}");
         // Without its raw export read, it was not shown encrypted.

@@ -625,6 +625,16 @@ pub(crate) fn blocker_is_unresolved(
             }
         }
     }
+    // What the raw inspection reports of an EFS object this run makes
+    // plain: its encryption, its $EFS attribute and its stream without a
+    // raw logical hash. The plain copy stands for all three.
+    if let Some(number) = blocker.file_record_number
+        && crate::plain_projection::efs_blocker(&blocker.code, &blocker.message)
+        && let Some(file) = source.find_record(number, None)?
+        && crate::plain_projection::efs_taken(&file)
+    {
+        return Ok(false);
+    }
     if blocker.code == "logical_stream_hash_unavailable"
         && blocker.file_record_number == Some(8)
         && blocker.message

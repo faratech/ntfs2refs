@@ -53,6 +53,7 @@ impl PlainTransform {
             PlainKind::WofExpanded => {
                 n2r_win32::plain_ledger::REPARSE_POINT | n2r_win32::plain_ledger::SPARSE_FILE
             }
+            PlainKind::EfsDecrypted => ENCRYPTED,
             _ => self.cleared_attributes,
         }
     }
@@ -189,19 +190,128 @@ pub(crate) fn wof_taken(file: &FileInventory) -> bool {
         && wof_file(file).ok().flatten().is_some()
 }
 
-/// The plain copy `file`'s new unnamed stream is made from, where this run
-/// makes a WOF file plain. Its copy has to have been taken.
-pub(crate) fn wof_copy_pin(
+/// The name of the logged utility stream in which EFS keeps a file's keys.
+const EFS_ATTRIBUTE_NAME: &str = "$EFS";
+/// Said wherever a run cannot read an EFS-encrypted file it would make plain.
+pub(crate) const EFS_KEY_REMEDY: &str = "this account holds no EFS key for it. Run the conversion as the user who encrypted the file, import that user's EFS certificate and key (certmgr.msc, or cipher /x on the machine it came from), or run it as the volume's data recovery agent; or decrypt it first with `cipher /d <file>`";
+
+/// What EFS has made of an object, as the raw source shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum EfsObject {
+    /// A directory marked encrypted: new files in it are encrypted. Only
+    /// the mark is taken off.
+    Directory,
+    /// An encrypted file: exactly one, unnamed, encrypted DATA stream and
+    /// its `$EFS` attribute.
+    File(EfsFile),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct EfsFile {
+    /// The plain text's length, as the owner reads it.
+    pub plain_bytes: u64,
+    /// The raw `$EFS` attribute: its resident digest, or a SHA-256 of where
+    /// it lies.
+    pub efs_attribute_digest: String,
+    /// A SHA-256 of where the ciphertext lies (its extents and sizes).
+    pub ciphertext_extents_sha256: String,
+}
+
+fn is_efs_attribute(attribute: &crate::ntfs_inspect::AttributeInventory) -> bool {
+    attribute.type_code == 0x100
+        && attribute
+            .name_utf16
+            .iter()
+            .copied()
+            .eq(EFS_ATTRIBUTE_NAME.encode_utf16())
+}
+
+/// Whether `attribute` is one an EFS object made plain leaves behind or
+/// has decrypted: its `$EFS` attribute, or its encrypted DATA.
+pub(crate) fn efs_attribute(attribute: &crate::ntfs_inspect::AttributeInventory) -> bool {
+    is_efs_attribute(attribute) || (attribute.type_code == 0x80 && attribute.flags == 0x4000)
+}
+
+fn sha256_json(value: &impl serde::Serialize) -> Result<String> {
+    use sha2::Digest;
+    Ok(hex::encode(sha2::Sha256::digest(serde_json::to_vec(
+        value,
+    )?)))
+}
+
+/// The EFS object `file` is, if it is one this build makes plain. An
+/// encrypted file of another shape (named streams, compressed or sparse
+/// and encrypted, a reparse point) is none, and is refused by name.
+pub(crate) fn efs_object(file: &FileInventory) -> Result<Option<EfsObject>> {
+    let attributes = crate::ntfs_file_attributes::project_user(file)?.source_attributes;
+    if attributes & ENCRYPTED == 0 || crate::ntfs_reparse::file_point(file)?.is_some() {
+        return Ok(None);
+    }
+    let efs: Vec<_> = file
+        .attributes
+        .iter()
+        .filter(|a| is_efs_attribute(a))
+        .collect();
+    if file.is_directory {
+        return Ok((efs.len() <= 1 && file.streams.is_empty()).then_some(EfsObject::Directory));
+    }
+    let [stream] = file.streams.as_slice() else {
+        return Ok(None);
+    };
+    let [efs] = efs.as_slice() else {
+        return Ok(None);
+    };
+    if !stream.name_utf16.is_empty() || stream.flags != 0x4000 || stream.resident {
+        return Ok(None);
+    }
+    Ok(Some(EfsObject::File(EfsFile {
+        plain_bytes: stream.logical_size,
+        efs_attribute_digest: match &efs.resident_sha256 {
+            Some(digest) if efs.resident => digest.clone(),
+            _ => sha256_json(&(&efs.extents, efs.logical_size, efs.allocated_size))?,
+        },
+        ciphertext_extents_sha256: sha256_json(&(
+            &stream.extents,
+            stream.logical_size,
+            stream.initialized_size,
+            stream.allocated_size,
+        ))?,
+    })))
+}
+
+/// Whether a blocker of the raw inspection is one an EFS object raises: its
+/// encryption, its $EFS attribute, its stream that has no raw logical hash.
+pub(crate) fn efs_blocker(code: &str, message: &str) -> bool {
+    code == "ntfs_encryption"
+        || (code == "unsupported_attribute"
+            && message == "Attribute type 0x100 needs a preservation policy")
+        || (code == "logical_stream_hash_unavailable"
+            && message.ends_with(": UnsupportedEncryption"))
+}
+
+/// Whether this run makes `file` a plain object from EFS (where
+/// `efs_decrypted` is enabled, `PlainKind::implemented`).
+pub(crate) fn efs_taken(file: &FileInventory) -> bool {
+    PlainKind::EfsDecrypted.implemented()
+        && crate::plain_consent::takes_plain()
+        && efs_object(file).ok().flatten().is_some()
+}
+
+/// The plain copy `file`'s new unnamed stream is made from: a WOF file's,
+/// read through WOF, or an EFS file's, decrypted. It has to have been taken.
+pub(crate) fn plain_copy_pin(
     file: &FileInventory,
 ) -> Result<Option<n2r_win32::plain_copy::PlainCopyPin>> {
-    if !wof_taken(file) {
+    let copied = wof_taken(file)
+        || (efs_taken(file) && matches!(efs_object(file)?, Some(EfsObject::File(_))));
+    if !copied {
         return Ok(None);
     }
     n2r_win32::plain_copy::taken_pin(&copy_key(file))
         .map(Some)
         .with_context(|| {
             format!(
-                "MFT record {} is made plain from its WOF copy, which was not taken",
+                "MFT record {} is made plain from its copy, which was not taken",
                 file.record_number
             )
         })
@@ -220,7 +330,7 @@ pub(crate) fn wof_copy_pin(
 ///
 /// `None` for every other object, which is compared as it is.
 pub(crate) fn observed_view(file: &FileInventory) -> Result<Option<FileInventory>> {
-    let Some(pin) = wof_copy_pin(file)? else {
+    let Some(pin) = plain_copy_pin(file)? else {
         return Ok(None);
     };
     filter_view(file, wof_taken(file), &pin.content_digest).map(Some)
@@ -296,6 +406,13 @@ pub(crate) fn allocation_held_by_copy(
 
 /// The transform of one file or directory, from its raw record.
 pub(crate) fn of_file(file: &FileInventory) -> Result<Option<PlainTransform>> {
+    // An EFS object of another shape is refused by admission, by name.
+    if PlainKind::EfsDecrypted.implemented() && efs_object(file).ok().flatten().is_some() {
+        return Ok(Some(PlainTransform {
+            kind: PlainKind::EfsDecrypted,
+            cleared_attributes: 0,
+        }));
+    }
     // A WOF point of another shape is refused by admission, by name, and
     // every WOF file while `wof_expanded` is not enabled.
     if PlainKind::WofExpanded.implemented() && wof_file(file).ok().flatten().is_some() {
@@ -335,6 +452,26 @@ pub(crate) fn listing_path(components: &[String]) -> String {
 /// The list entry for one object.
 pub(crate) fn entry(path: String, file: &FileInventory, transform: PlainTransform) -> PlainEntry {
     let wof = wof_file(file).ok().flatten();
+    // An EFS file's plain text, kept in the working storage until the run
+    // ends; on the new volume it takes what its ciphertext took.
+    if let Some(efs) = (transform.kind == PlainKind::EfsDecrypted)
+        .then(|| efs_object(file).ok().flatten())
+        .flatten()
+    {
+        let plain = match efs {
+            EfsObject::File(file) => file.plain_bytes,
+            EfsObject::Directory => 0,
+        };
+        return PlainEntry {
+            kind: transform.kind,
+            path,
+            cleared_attributes: transform.cleared_attributes,
+            bytes: plain,
+            volume_extra_bytes: 0,
+            working_extra_bytes: plain,
+            download_bytes: 0,
+        };
+    }
     let cluster = n2r_win32::target_cluster::bytes();
     PlainEntry {
         kind: transform.kind,
@@ -373,10 +510,10 @@ pub(crate) struct Census {
 /// Fills each row of a file made plain from a copy with that copy's
 /// digests: the ledger ties what the new file holds to what was read.
 pub(crate) fn attach_copies(rows: &mut [LedgerRow]) -> Result<()> {
-    for row in rows
-        .iter_mut()
-        .filter(|row| row.kind == PlainKind::WofExpanded)
-    {
+    for row in rows.iter_mut().filter(|row| {
+        row.kind == PlainKind::WofExpanded
+            || (row.kind == PlainKind::EfsDecrypted && row.efs.is_some())
+    }) {
         let pin = n2r_win32::plain_copy::taken_pin(&n2r_win32::plain_copy::PlainCopyKey {
             record_number: row.record_number,
             sequence_number: row.sequence_number,
@@ -434,8 +571,20 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
             copies.push(n2r_win32::plain_copy::PlainCopyRequest {
                 key: copy_key(&file),
                 bytes: wof.plain_bytes,
+                through: n2r_win32::plain_copy::PlainRead::Filter,
             });
             wofs.push(wof);
+        }
+        let efs = (transform.kind == PlainKind::EfsDecrypted)
+            .then(|| efs_object(&file))
+            .transpose()?
+            .flatten();
+        if let Some(EfsObject::File(encrypted)) = &efs {
+            copies.push(n2r_win32::plain_copy::PlainCopyRequest {
+                key: copy_key(&file),
+                bytes: encrypted.plain_bytes,
+                through: n2r_win32::plain_copy::PlainRead::Decrypted,
+            });
         }
         entries.push(entry(first, &file, transform));
         rows.push(LedgerRow {
@@ -461,6 +610,13 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
                 }
             ),
             plain_copy: None,
+            efs: match efs {
+                Some(EfsObject::File(encrypted)) => Some(n2r_win32::plain_ledger::LedgerEfs {
+                    efs_attribute_digest: encrypted.efs_attribute_digest,
+                    ciphertext_extents_sha256: encrypted.ciphertext_extents_sha256,
+                }),
+                _ => None,
+            },
         });
     }
     let list = PlainList::new(entries).map_err(anyhow::Error::msg)?;
@@ -654,6 +810,7 @@ mod tests {
                     stream_name_utf16: Vec::new(),
                 },
                 bytes: 4,
+                through: n2r_win32::plain_copy::PlainRead::Filter,
             }],
         )
         .unwrap();

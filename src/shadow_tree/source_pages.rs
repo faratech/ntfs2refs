@@ -1079,7 +1079,12 @@ fn build_object(
                     }
                     | if eas { 0x40000 } else { 0 }
                     | if normalized { 0x800 } else { 0 }
-                    | crate::plain_projection::admitted_attributes(reparse.is_some()))
+                    | crate::plain_projection::admitted_attributes(reparse.is_some())
+                    | if crate::plain_projection::efs_taken(file) {
+                        n2r_win32::plain_ledger::ENCRYPTED
+                    } else {
+                        0
+                    })
                 == 0,
         "unsupported basic metadata"
     );
@@ -1091,7 +1096,11 @@ fn build_object(
     // that copy's length and content digest, supplied from the copy and
     // never from the source's clusters; its WofCompressedData stream and
     // its reparse point are not carried over.
-    let wof_copy = crate::plain_projection::wof_copy_pin(file)?;
+    // An EFS file made plain (`efs_decrypted`) is made the same way from
+    // its decrypted copy; it has no other stream, and its $EFS attribute
+    // is not a stream to carry.
+    let wof_copy = crate::plain_projection::plain_copy_pin(file)?;
+    let wof = crate::plain_projection::wof_taken(file);
     let classify = |stream: &ntfs::StreamInventory| {
         reads.classify(file, stream, admission, extent_paths_eligible)
     };
@@ -1127,7 +1136,7 @@ fn build_object(
         .streams
         .iter()
         .filter(|s| !s.name_utf16.is_empty())
-        .filter(|s| wof_copy.is_none() || !crate::plain_projection::is_wof_compressed_data(s))
+        .filter(|s| !wof || !crate::plain_projection::is_wof_compressed_data(s))
     {
         // A directory's named streams are planned as a file's are, where
         // admission carries them over (`DIRECTORY_STREAMS_CARRIED`).
@@ -1183,7 +1192,7 @@ fn build_object(
                 Some(hex::decode(views.api_descriptor_hex)?)
             },
             extended_attributes: Some(extended_attributes),
-            reparse: if wof_copy.is_some() { None } else { reparse },
+            reparse: if wof { None } else { reparse },
             case_sensitive,
             source_offset,
             source_extents,

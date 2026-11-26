@@ -14,6 +14,25 @@ impl fmt::Debug for KnownContentMemory {
     }
 }
 
+/// Whether an object has a data stream to read: a file always (its unnamed
+/// one), a directory only where it has named streams. A directory's named
+/// streams are read and counted as a file's; it was once passed over whole,
+/// and its streams were then neither hashed nor counted.
+fn has_data_streams(item: &Input<'_>) -> bool {
+    !item.directory || !item.named_streams.is_empty()
+}
+
+/// How many of an object's streams have an original digest: a file's
+/// unnamed one, and the named ones of a file or a directory.
+fn known_streams(item: &Input<'_>) -> u64 {
+    u64::from(!item.directory && item.logical_sha256().is_some())
+        + item
+            .named_streams
+            .iter()
+            .filter(|stream| stream.expected_sha256.is_some())
+            .count() as u64
+}
+
 fn add(a: u64, b: u64) -> io::Result<u64> {
     a.checked_add(b)
         .ok_or_else(|| invalid("known-content RAM arithmetic overflow"))
@@ -240,11 +259,14 @@ impl Check<'_> {
         index: usize,
         item: &Input<'_>,
     ) -> io::Result<()> {
-        if item.directory {
+        if !has_data_streams(item) {
             return Ok(());
         }
         let maximum = self.maximum;
-        if let Some(expected) = item.logical_sha256() {
+        // A directory has no unnamed stream: its named ones, below, as a
+        // file's (neither hashed nor skipped here).
+        let unnamed = (!item.directory).then(|| item.logical_sha256());
+        if let Some(Some(expected)) = unnamed {
             let _query = self.reserve_in_turn(
                 helpers,
                 add(
@@ -266,7 +288,7 @@ impl Check<'_> {
                 Ok(actual)
             })?;
             tally.hashed(rows, index, None, actual, item.logical_length())?;
-        } else {
+        } else if unnamed.is_some() {
             tally.skip()?;
         }
         let named_streams = rows.with(index, |object| Ok(object.named_streams.len()))?;
@@ -325,7 +347,7 @@ impl Check<'_> {
         Vec<NamedWork>,
         Option<Box<dyn report_memory::ReportMemoryLease>>,
     )> {
-        if item.directory {
+        if !has_data_streams(item) {
             return Some((Vec::new(), None));
         }
         let named = rows
@@ -404,11 +426,11 @@ impl Check<'_> {
     /// or cannot be paid for: the object is then taken in turn.
     fn ahead(&self, work: &Work<'_>) -> Option<Ahead> {
         let item = &work.item;
-        if item.directory {
+        if !has_data_streams(item) {
             return None;
         }
         let maximum = self.maximum;
-        let unnamed = if item.logical_sha256().is_some() {
+        let unnamed = if !item.directory && item.logical_sha256().is_some() {
             Some(self.stream_ahead(
                 self.open_unnamed(item).ok()?,
                 item.logical_length(),
@@ -458,7 +480,7 @@ impl Check<'_> {
         ahead: Ahead,
     ) -> io::Result<bool> {
         let item = &work.item;
-        let expected = item.logical_sha256();
+        let expected = item.logical_sha256().filter(|_| !item.directory);
         // For every named stream of the row, in its order: the length of one
         // that was held to its digest, nothing for one that has none.
         let lengths = rows.with(index, |object| {
@@ -513,6 +535,8 @@ impl Check<'_> {
         };
         match ahead.unnamed {
             Some(seen) => tally.hashed(rows, index, None, seen.digest, item.logical_length())?,
+            // A directory has no unnamed stream to skip.
+            None if item.directory => {}
             None => tally.skip()?,
         }
         for (ordinal, (seen, length)) in ahead.named.into_iter().zip(lengths).enumerate() {
@@ -649,12 +673,7 @@ fn verify_known_contents_in_accounted_report_with_aliases(
     }
     let mut known = 0u64;
     input.for_each(|_, item| {
-        if !item.directory {
-            known = add(known, u64::from(item.logical_sha256().is_some()))?;
-            for stream in &item.named_streams {
-                known = add(known, u64::from(stream.expected_sha256.is_some()))?;
-            }
-        }
+        known = add(known, known_streams(item))?;
         Ok(())
     })?;
     // At most one fixed hexadecimal digest is added for each actual known
@@ -779,7 +798,7 @@ fn verify_known_contents_in_accounted_report_with_aliases(
                 Some(seen) => check.take_ahead(rows, &mut tally, index, work, seen)?,
                 None => false,
             };
-            if !taken && !work.item.directory {
+            if !taken && has_data_streams(&work.item) {
                 let _timed = crate::perf::scope(crate::perf::Point::InTurn);
                 check.in_turn(rows, &mut tally, &mut helpers, index, &work.item)?;
             }
@@ -835,4 +854,67 @@ fn verify_known_contents_in_accounted_report_with_aliases(
     observation.admitted_payload_bytes_read = bytes;
     input.require_resource_metadata(admission)?;
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item<'a>(
+        components: &'a [String],
+        directory: bool,
+        named: Vec<NamedStreamInput<'a>>,
+    ) -> Input<'a> {
+        Input {
+            components,
+            additional_names: &[],
+            directory,
+            times: [1; 4],
+            attributes: if directory { 0x10 } else { 0x20 },
+            security: &[],
+            expected_api_security: None,
+            extended_attributes: None,
+            reparse: None,
+            case_sensitive: None,
+            payload: &[],
+            expected_length: (!directory).then_some(10),
+            expected_sha256: (!directory).then_some("00000000000000000000000000000000"),
+            source_offset: None,
+            source_runs: vec![],
+            named_streams: named,
+            sparse: None,
+        }
+    }
+
+    fn note(name: &[u16]) -> NamedStreamInput<'_> {
+        NamedStreamInput {
+            name_utf16: name,
+            expected_length: 31,
+            expected_sha256: Some("00000000000000000000000000000000"),
+            source_offset: None,
+            source_runs: vec![],
+            sparse: None,
+        }
+    }
+
+    /// A directory's named streams are read and counted as a file's: the
+    /// known-content pass once passed directories over whole, so the
+    /// streams it hashed fell short of the admission's stream count, which
+    /// the apply holds them to.
+    #[test]
+    fn a_directorys_named_streams_are_known_content() {
+        let name: Vec<u16> = "note".encode_utf16().collect();
+        let components = ["folder".to_owned()];
+        let directory = item(&components, true, vec![note(&name)]);
+        assert!(has_data_streams(&directory));
+        // Its named stream only: no unnamed one, although an empty payload
+        // has a digest of its own.
+        assert_eq!(known_streams(&directory), 1);
+        let plain = item(&components, true, vec![]);
+        assert!(!has_data_streams(&plain));
+        assert_eq!(known_streams(&plain), 0);
+        let file = item(&components, false, vec![note(&name)]);
+        assert!(has_data_streams(&file));
+        assert_eq!(known_streams(&file), 2);
+    }
 }

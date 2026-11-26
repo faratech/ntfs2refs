@@ -72,6 +72,8 @@ pub mod stack_sampler;
 pub use native::recovery_boot;
 #[cfg(windows)]
 pub use native::recovery_image;
+pub mod plain_copy;
+pub mod plain_ledger;
 pub mod reference_file;
 pub mod refs_security_descriptor;
 pub mod refusal;

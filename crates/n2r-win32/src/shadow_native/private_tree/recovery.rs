@@ -321,11 +321,17 @@ fn exact_children(
 fn exact_streams(file: &File, item: &Input<'_>) -> io::Result<()> {
     let raw = stream_info(file)?;
     let (entries, _) = stream_layout::parse_streams(&raw)?;
-    if entries.len() != 1 + item.named_streams.len() {
+    // A directory lists its named streams only; a file its unnamed one too.
+    if entries.len() != usize::from(!item.directory) + item.named_streams.len() {
         return Err(invalid("recovered stream set count differs"));
     }
     for e in entries {
         let (length, carrier_target) = if e.name.is_empty() {
+            if item.directory {
+                return Err(invalid(
+                    "a recovered directory lists an unnamed data stream",
+                ));
+            }
             (item.logical_length(), item.sparse.is_some())
         } else {
             let n = item
@@ -619,7 +625,7 @@ fn adopt_recovery_domain(
                 system_directory_indices.push(index);
             }
             objects.push(|| serde_json::json!({"object_index":index,"disposition":"fresh-recovered-system-metadata-pending"}));
-        } else if item.directory {
+        } else if item.directory && item.named_streams.is_empty() {
             let handle = open(&format!("{root}{}", item.components.join("\\")), true, true)?;
             require_private_security(&handle, true)?;
             remember(
@@ -632,7 +638,22 @@ fn adopt_recovery_domain(
             metadata_targets.insert(index, handle);
             objects.push(|| serde_json::json!({"object_index":index,"disposition":"fresh-recovered-private-directory"}));
         } else {
-            for position in 0..=item.named_streams.len() {
+            if item.directory {
+                // A directory with named streams: the directory as above,
+                // then each of its streams as a file's named one.
+                let handle = open(&format!("{root}{}", item.components.join("\\")), true, true)?;
+                require_private_security(&handle, true)?;
+                remember(
+                    &mut namespace,
+                    item.components,
+                    &handle,
+                    true,
+                    &root_id[..8],
+                )?;
+                exact_streams(&handle, &item)?;
+                metadata_targets.insert(index, handle);
+            }
+            for position in usize::from(item.directory)..=item.named_streams.len() {
                 let (name, length, sparse) = if position == 0 {
                     (&[][..], item.logical_length(), item.sparse)
                 } else {

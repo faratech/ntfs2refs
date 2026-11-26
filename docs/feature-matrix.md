@@ -18,6 +18,7 @@ converter prints.
 |---|---|
 | Files of every size around the resident, cluster and megabyte boundaries; nested and empty directories; names outside ASCII; a 200-character name | `mixed` (every data-volume case that is not `minimal`) |
 | Named data streams on files, small and larger than the file | `mixed` |
+| Named data streams on directories, as the same directory's named streams on ReFS: one of 31 bytes, and one of 1,115,200 bytes that ends inside a cluster. Converted with identical listings and passed acceptance alone (`ds3-dirstream-minimal`) and with a lived-in volume (`ds3-dirstream-lived-in`), each with `-Check -Acceptance`. One on the root directory, on a reparse-point directory, or one that is encrypted, compressed or sparse is still refused, by name | `dirstream` |
 | Hard links, in one directory and across two | `mixed` |
 | Sparse files, up to 70,000 separately allocated islands | `mixed`, `many` |
 | Fragmented files | `mixed` |
@@ -49,6 +50,7 @@ converter prints.
 | NTFS (LZNT1) compression | The data is stored uncompressed; the listing accepts the missing flag | "NTFS-compressed streams ... are decoded into ordinary ReFS data" | `mixed` on clusters up to 4 KiB |
 | The change journal | The converted volume starts a new one | nothing | `usn` |
 | Disk quotas (quota management, limits, entries for users) | Not carried over: ReFS has no NTFS quotas. Both quota indexes are read in full and every entry is kept in the run's records; the listing has no quotas in it, so it compares as ever. Not yet shown: the case is in the gate round and has not been run | "Disk quotas are set on this volume ... not carried over", before the prompt | `quota` (to be run) |
+| Converted to plain, once its list is agreed: the TEMPORARY or OFFLINE attribute of a file or directory without a reparse point | The attribute is cleared; contents and every other attribute stay. Each object is kept in the run's records (`plain-conversions.json`) | "Converted to plain: N object(s) ..." and its own question before the prompt; `--check` exits 7 | `temporary`, `offline` (to be run: before this version they were refused) |
 | A partition whose length is not a multiple of 64 MiB | The NTFS driver shrinks it to one first, by less than 64 MiB; not undone if the run stops | the sizes, before the prompt | `odd-size` |
 | 8.3 short names on a Windows boot volume | Each becomes a link beside its long name | the boot profile line | the Windows fixtures |
 | The 8.3 short names of a data volume (the default, or `--short-names drop`) | Not carried over: `--check` and the lines before the question say how many and where they are listed, every object is created under its long name, and each short name is kept in the run's records. On nested directories, a hard-linked file, a file with a named stream and names outside ASCII; the listing is compared with the comparison made for such a run, which counts a short name that is gone and lets nothing else through | "N file(s) and directories have an 8.3 short name ... not carried over" | `shortnames` (the default), `shortnames-drop`, `wide-drop` and its variants (`-DropShortNames`) |
@@ -71,9 +73,7 @@ check and the run have to give the same refusal.
 | Shadow copies of the volume | `vssadmin delete shadows /for=<drive>:` | `snapshot` |
 | A shadow-copy provider of backup software (any but Windows' own, Hyper-V's and Windows Server's for remote file shares) that does not answer when Windows asks it | Repair or remove the provider, which is named: whether it holds shadow copies cannot be known | `vss-silent` (a provider registered without its class) |
 | EFS-encrypted files | `cipher /d` | `efs` |
-| A file with the TEMPORARY or OFFLINE attribute | the attribute is named | `temporary`, `offline` |
 | A file compressed with `compact /exe` | `compact /u /exe <file>` | `wof` |
-| A named data stream on a directory | remove the stream. The converter can carry such streams as the same directory's named streams on ReFS (Windows' ReFS takes them); that is turned on once `dirstream` has converted with an identical listing | `dirstream` |
 | Two names in one directory that differ only by case | rename one of them, then `fsutil file setCaseSensitiveInfo <directory> disable` | `casesensitive` |
 | Beside the volume, on its disk: a volume with shadow copies | `vssadmin delete shadows /for=<drive>:` for that volume | `shared-snapshot`; the shadow copy is still there afterwards |
 | On the volume's disk: the crash-dump file of the running Windows | move the dump file (System Properties, Advanced, Startup and Recovery) | `shared-dump` |
@@ -87,6 +87,7 @@ These take the same paths as rows above, or are checked by tests only.
 |---|---|
 | Cloud placeholders, Data Deduplication | Refused by their reparse tag, like `compact /exe`; the lab has no sync provider or deduplication. The words for each tag are covered by a test |
 | A shadow-copy provider of backup software that holds a shadow copy on the machine | The lab has no backup product that makes one. The decision and its words are covered by a test |
+| A named data stream on the root directory or on a reparse-point directory, or one on a directory that is encrypted, compressed or sparse | The lab's `dirstream` makes plain streams on ordinary directories, which convert. The refusals and their words are covered by a test |
 | A dirty volume, an NTFS log that was not closed, an open transaction | The lab dismounts its volumes cleanly |
 | A program holding a file on the volume open | Not arranged in the lab; the lock is retried for 20 seconds and then refused by name |
 | A volume with no file on it | An empty volume is formatted, not converted |

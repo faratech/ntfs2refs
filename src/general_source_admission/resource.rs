@@ -1243,6 +1243,26 @@ impl ResourceSourceContext {
                 refuse_short_names(&raw)?;
             }
             let inspection_sha = raw.canonical_sha256()?;
+            // What the frozen source makes plain files of has to be in the
+            // list the user agreed to before it was frozen: the subset rule
+            // (`plain_consent::bind`). The ledger is kept with the run's
+            // records below. A Windows boot volume is never offered them.
+            let plain = if binding.layout_profile
+                != n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+                && crate::plain_consent::takes_plain()
+            {
+                let (frozen, rows) = crate::plain_projection::census(&raw)?;
+                let agreed = crate::plain_consent::bind_frozen(&frozen)?;
+                Some(n2r_win32::plain_ledger::PlainLedger {
+                    kind: n2r_win32::plain_ledger::LEDGER_KIND.to_owned(),
+                    agreed_list_sha256: agreed,
+                    frozen_list_sha256: frozen.sha256(),
+                    source_inspection_sha256: inspection_sha.clone(),
+                    rows,
+                })
+            } else {
+                None
+            };
             // Every object's paths are derived several times below (the
             // short-name plan, the selector's count, the comparison and the
             // admission policy), each through every directory above it. A
@@ -1746,8 +1766,8 @@ impl ResourceSourceContext {
             let mut policy_rejections = 0u64;
             let mut refused = ntfs_admission::RefusedObjects::default();
             let mut no_dos = true;
-            let (mut files, mut directories, mut streams, mut logical_bytes) =
-                (0u64, 0u64, 0u64, 0u64);
+            // Counted as the admission the observation pinned counts them.
+            let mut counts = ntfs_admission::TreeCounts::default();
             let (mut raw_directories, mut user_case_matched, mut internal_directories) =
                 (0u64, 0u64, 0u64);
             // Short names that are left behind: counted and all archived.
@@ -1897,21 +1917,7 @@ impl ResourceSourceContext {
                         )?;
                         Vec::new()
                     } else {
-                        if file.is_directory {
-                            directories = directories
-                                .checked_add(1)
-                                .context("directory count overflow")?;
-                        } else {
-                            files = files.checked_add(1).context("file count overflow")?;
-                            streams = streams
-                                .checked_add(file.streams.len() as u64)
-                                .context("stream count overflow")?;
-                            for stream in &file.streams {
-                                logical_bytes = logical_bytes
-                                    .checked_add(stream.logical_size)
-                                    .context("logical total overflow")?;
-                            }
-                        }
+                        counts.add(&file)?;
                         if let Some(aliases) = &windows_aliases {
                             ntfs_admission::paged::ordinary_user_issues_windows(
                                 &raw, &file, admission, aliases,
@@ -2030,6 +2036,30 @@ impl ResourceSourceContext {
                         "target_has_short_names":false,
                         "policy":"every object is created under its long name; its 8.3 short names are listed in the records and not carried over",
                     }),
+                    &scratch,
+                    &mut metadata,
+                    &mut reservations,
+                )?;
+            }
+            if let Some(ledger) = plain.as_ref().filter(|ledger| !ledger.rows.is_empty()) {
+                ledger.validate().map_err(anyhow::Error::msg)?;
+                // In the run's own directory, which outlives the run: the
+                // copy below, among the source's working files, is a
+                // temporary file of the run's arena and is retired with it.
+                let kept = crate::plain_consent::write_ledger(ledger)?;
+                println!(
+                    "{} object(s) are converted to plain files, as agreed (list sha256 {}); each is kept in the run's records ({}).",
+                    ledger.rows.len(),
+                    ledger.agreed_list_sha256,
+                    kept.as_deref().map_or_else(
+                        || n2r_win32::plain_ledger::LEDGER_FILE.to_owned(),
+                        |path| path.display().to_string()
+                    )
+                );
+                save(
+                    output,
+                    n2r_win32::plain_ledger::LEDGER_FILE,
+                    ledger,
                     &scratch,
                     &mut metadata,
                     &mut reservations,
@@ -2247,9 +2277,9 @@ impl ResourceSourceContext {
                     .is_some_and(|flags| flags & 1 == 0)
                 && crate::ntfs_version::reads_text(raw.header().volume_version.as_deref());
             let policy_flags = raw.header().volume_flags == Some(0) || short_policy;
-            let resource_counts = admission.validate_tree(files, directories, streams).is_ok()
-                && files > 0
-                && logical_bytes <= i64::MAX as u64;
+            let resource_counts = counts.fit(admission);
+            let limits_detail = counts.limits_detail(admission);
+            let directories = counts.directories;
             let source_objects =
                 comparison.all_supported_user_views_compatible && policy_rejections == 0;
             let objects_detail = refused.detail(
@@ -2340,11 +2370,7 @@ impl ResourceSourceContext {
                     "compare_domain checked both complete native bitmap summaries against frozen allocation",
                 ),
                 ("objects", source_objects, objects_detail.as_str()),
-                (
-                    "resource_limits",
-                    resource_counts,
-                    "the volume holds no file at all (an empty volume is formatted, not converted), or its counts of files, directories and streams do not fit what was reserved for this run",
-                ),
+                ("resource_limits", resource_counts, limits_detail.as_str()),
                 (
                     "source_backups",
                     backups.binds_domain(&raw),
@@ -2386,12 +2412,19 @@ impl ResourceSourceContext {
             ] {
                 gate(&mut gates, code, satisfied, detail);
             }
-            let replacement_ready = internal_bound
-                && clean
-                && policy_flags
-                && source_objects
-                && resource_counts
-                && unresolved_count == 0;
+            let (replacement_ready, case_matched) =
+                ntfs_admission::dependent_gates(ntfs_admission::DependentGateInputs {
+                    internal_bound,
+                    clean,
+                    policy_flags,
+                    source_objects,
+                    resource_counts,
+                    unresolved: unresolved_count,
+                    directories,
+                    raw_directories,
+                    internal_directories,
+                    user_case_matched,
+                });
             gate(
                 &mut gates,
                 "internal_replacement_state",
@@ -2401,10 +2434,7 @@ impl ResourceSourceContext {
             gate(
                 &mut gates,
                 "native_directory_case_sensitivity",
-                directories > 0
-                    && user_case_matched == directories
-                    && (internal_directories == 0 || replacement_ready)
-                    && raw_directories == directories + internal_directories,
+                case_matched,
                 case_detail.as_str(),
             );
             gate(

@@ -731,8 +731,9 @@ pub(super) fn checked_data_attribute_domain<R: Read + Seek>(
         .find_record_shared(number, None)?
         .context("source file absent from complete inventory")?;
     ensure!(
-        !file.is_directory && file.base_file_reference == 0,
-        "plain standalone file required"
+        super::supplies_data_stream(&file, name),
+        "FILE {number} stream {:?}: plain standalone file, or a directory's named stream, required",
+        String::from_utf16_lossy(name)
     );
     let stream = file
         .streams

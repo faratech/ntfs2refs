@@ -6,6 +6,10 @@
 //! read through whichever file system is mounted, and security is the SDDL
 //! text Windows itself produces. Capturing is read only.
 
+use crate::plain_ledger::{
+    CLEARABLE_ATTRIBUTES, CLOUD_ATTRIBUTES, ENCRYPTED, LedgerRow, OFFLINE, PlainKind, PlainLedger,
+    REPARSE_POINT, SPARSE_FILE,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -61,6 +65,33 @@ pub struct Record {
     /// shows it). Asked of every directory; a failed query is in `errors`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub case_sensitive: bool,
+    /// The object is EFS-encrypted (FILE_ATTRIBUTE_ENCRYPTED, as Windows
+    /// reports it). `sha256` is then the plain text the reading account
+    /// sees, and `raw_efs_sha256` what is on the disk.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub efs: bool,
+    /// SHA-256 of an encrypted file's raw EFS export (ReadEncryptedFileRaw):
+    /// its ciphertext and EFS metadata, which no key is needed to read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_efs_sha256: Option<String>,
+    /// For a file WOF keeps compressed (compact /exe, CompactOS), WOF's
+    /// algorithm as FSCTL_GET_EXTERNAL_BACKING reports it (WOF hides its
+    /// reparse point from every other query); [`WOF_WIM_BACKED`] for a file
+    /// backed by a WIM image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wof_algorithm: Option<u32>,
+    /// For a placeholder (cloud files, ProjFS, Data Deduplication, single
+    /// instance storage): SHA-256 of the unnamed stream read as a program
+    /// reads it, through the filter that owns the reparse point and with
+    /// nothing recalled (FILE_FLAG_OPEN_NO_RECALL). `sha256` is read with
+    /// the reparse point opened, as for every other file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plain_sha256: Option<String>,
+    /// Why `plain_sha256` could not be read (a placeholder whose data is
+    /// not on the volume). Not an error of the listing: such an object is
+    /// refused, or left out with the user's agreement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plain_read_error: Option<String>,
     pub links: u32,
     /// Identifies the file behind several hard links. Only meaningful within
     /// one listing; never compared across listings.
@@ -69,6 +100,24 @@ pub struct Record {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
 }
+
+/// [`Record::wof_algorithm`] of a file backed by a WIM image rather than
+/// compressed in place.
+pub const WOF_WIM_BACKED: u32 = 0x100;
+
+/// Whether `tag` is that of a placeholder whose contents a program reads
+/// through the filter that owns it, and the listing reads as
+/// [`Record::plain_sha256`].
+pub fn is_placeholder_tag(tag: u32) -> bool {
+    is_cloud_tag(tag) || matches!(tag, PROJFS_TAG | DEDUP_TAG | SIS_TAG)
+}
+/// IO_REPARSE_TAG_CLOUD and its sixteen variants.
+pub fn is_cloud_tag(tag: u32) -> bool {
+    tag & 0xffff_0fff == 0x9000_001a
+}
+pub const PROJFS_TAG: u32 = 0x9000_001c;
+pub const DEDUP_TAG: u32 = 0x8000_0013;
+pub const SIS_TAG: u32 = 0x8000_0007;
 
 fn is_zero(value: &u32) -> bool {
     *value == 0
@@ -370,6 +419,9 @@ pub fn compare_declared(before: &[Record], after: &[Record], declared: Declared)
                 "extended attributes differ".to_owned(),
             );
         }
+        if let Some(what) = feature_view_differs(record, now) {
+            differ("feature view differs", what);
+        }
         match (record.case_sensitive, now.case_sensitive) {
             (true, false) if declared.case_marks_not_carried => result.case_marks_not_carried += 1,
             (true, false) => differ(
@@ -451,6 +503,27 @@ pub fn compare_declared(before: &[Record], after: &[Record], declared: Declared)
     differences.truncate(DIFFERENCE_LIMIT);
     result.differences = differences;
     result
+}
+
+/// What the listing records of a feature ReFS does not have (EFS, WOF, a
+/// placeholder's plain view), compared as every other field is: equal, or
+/// a difference. Only the content verdict of a plain conversion
+/// ([`compare_with_plain`]) expects one to change, and only for an object
+/// the run's ledger names.
+fn feature_view_differs(was: &Record, is: &Record) -> Option<String> {
+    if was.efs != is.efs || was.raw_efs_sha256 != is.raw_efs_sha256 {
+        return Some(format!("EFS encryption {} became {}", was.efs, is.efs));
+    }
+    if was.wof_algorithm != is.wof_algorithm {
+        return Some(format!(
+            "WOF compression {:?} became {:?}",
+            was.wof_algorithm, is.wof_algorithm
+        ));
+    }
+    if was.plain_sha256 != is.plain_sha256 || was.plain_read_error != is.plain_read_error {
+        return Some("the contents a program reads through the placeholder differ".to_owned());
+    }
+    None
 }
 
 /// Compares two listings of a volume that must not have changed at all: the
@@ -561,6 +634,9 @@ pub fn compare_exact(before: &[Record], after: &[Record]) -> Comparison {
                 "extended attributes differ".to_owned(),
             );
         }
+        if let Some(what) = feature_view_differs(record, now) {
+            differ("feature view differs", what);
+        }
         if record.case_sensitive != now.case_sensitive {
             differ(
                 "case-sensitive mark changed",
@@ -634,6 +710,331 @@ pub fn compare_exact(before: &[Record], after: &[Record]) -> Comparison {
     differences.truncate(DIFFERENCE_LIMIT);
     result.differences = differences;
     result
+}
+
+/// What the content verdict found for the objects a run converted to plain
+/// files (`plain_ledger`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlainVerdict {
+    /// Ledger rows of which every name passed, by kind.
+    pub conversions: BTreeMap<String, usize>,
+    pub failure_count: usize,
+    /// Every failure, counted by its fixed kind.
+    pub failure_kinds: BTreeMap<String, usize>,
+    /// The first failures, in path order.
+    pub failures: Vec<Difference>,
+}
+
+/// The verdict on a run that converted objects to plain files: the listing
+/// comparison and the content verdict, reported apart.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Verdict {
+    /// [`compare_declared`] of every object the ledger does not name,
+    /// exactly as for a run without plain conversions.
+    pub listing: Comparison,
+    pub plain: PlainVerdict,
+}
+
+impl Verdict {
+    /// Both: no difference in the listing, and no failed plain conversion.
+    pub fn identical(&self) -> bool {
+        self.listing.identical() && self.plain.failure_count == 0
+    }
+}
+
+/// The record an object should have after the conversion its ledger row
+/// declares: `before` with the declared feature taken off and nothing else.
+/// An error when `before` does not show that feature, or when the row
+/// declares more than its kind may take off.
+fn declared_after(row: &LedgerRow, before: &Record) -> Result<Record, String> {
+    let mut after = before.clone();
+    // A placeholder of any kind becomes the bytes a program read through it.
+    // (Not converted by this build: see `PlainKind::implemented`.)
+    let placeholder = |after: &mut Record, shown: bool, what: &str| -> Result<(), String> {
+        if !shown {
+            return Err(format!(
+                "the listing before shows no {what} (reparse tag {:?})",
+                before.reparse_tag
+            ));
+        }
+        let Some(plain) = before.plain_sha256.clone() else {
+            return Err(format!(
+                "the listing before could not read the {what} as a program does: {}",
+                before.plain_read_error.as_deref().unwrap_or("not read")
+            ));
+        };
+        after.sha256 = Some(plain);
+        after.plain_sha256 = None;
+        after.plain_read_error = None;
+        after.reparse_tag = None;
+        after.reparse_sha256 = None;
+        after.relative_link_target = None;
+        after.attributes &= !(REPARSE_POINT | CLOUD_ATTRIBUTES | OFFLINE | SPARSE_FILE);
+        Ok(())
+    };
+    let tag = before.reparse_tag.unwrap_or(0);
+    match row.kind {
+        PlainKind::AttributesCleared => {
+            let cleared = row.before.attributes & !row.after.attributes;
+            if cleared == 0
+                || cleared & !CLEARABLE_ATTRIBUTES != 0
+                || row.after.attributes & !row.before.attributes != 0
+            {
+                return Err(format!(
+                    "the ledger declares attributes {:#x} becoming {:#x}, which is not TEMPORARY or OFFLINE taken off and nothing else",
+                    row.before.attributes, row.after.attributes
+                ));
+            }
+            if before.attributes & cleared != cleared {
+                return Err(format!(
+                    "the listing before shows attributes {:#x}, without the {cleared:#x} the ledger declares taken off",
+                    before.attributes
+                ));
+            }
+            if before.reparse_tag.is_some() || before.attributes & REPARSE_POINT != 0 {
+                return Err(
+                    "it has a reparse point, which clearing attributes does not cover".into(),
+                );
+            }
+            after.attributes &= !cleared;
+        }
+        PlainKind::EfsDecrypted => {
+            if !before.efs || before.attributes & ENCRYPTED == 0 || before.raw_efs_sha256.is_none()
+            {
+                return Err(
+                    "the listing before does not show it EFS-encrypted, with its raw export read"
+                        .into(),
+                );
+            }
+            after.efs = false;
+            after.raw_efs_sha256 = None;
+            after.attributes &= !ENCRYPTED;
+        }
+        PlainKind::WofExpanded => {
+            if before.wof_algorithm.is_none() {
+                return Err("the listing before does not show it WOF-compressed".into());
+            }
+            after.wof_algorithm = None;
+        }
+        PlainKind::DedupRehydrated => {
+            placeholder(&mut after, tag == DEDUP_TAG, "deduplicated file")?
+        }
+        PlainKind::SisExpanded => placeholder(&mut after, tag == SIS_TAG, "single-instance link")?,
+        PlainKind::CloudPlaceholderPlain => {
+            placeholder(&mut after, is_cloud_tag(tag), "cloud placeholder")?
+        }
+        PlainKind::ProjfsPlaceholderPlain => {
+            placeholder(&mut after, tag == PROJFS_TAG, "ProjFS placeholder")?
+        }
+        PlainKind::CloudLeftOut => {
+            return Err("an object left out has no record afterwards".into());
+        }
+    }
+    Ok(after)
+}
+
+/// The verdict on a run whose ledger says which objects it converted to
+/// plain files.
+///
+/// Why this is as strict as the listing comparison, and no wider:
+///
+/// - Every object the ledger does not name is compared by
+///   [`compare_declared`] itself, unchanged, and its result is reported as
+///   `listing`. Nothing about those objects is accepted that a run without
+///   plain conversions would not accept, and the comparison gains no
+///   per-object exception.
+/// - An object leaves that comparison only by being named in the ledger,
+///   which the run wrote from the frozen source and which the list the user
+///   agreed to bounds. Each such object is then held by the very same
+///   [`compare_declared`] to its record before with exactly the feature its
+///   row declares taken off (`declared_after`). Its contents (every
+///   stream), times, security, names, links, extended attributes and every
+///   other attribute must be equal, as in the listing.
+/// - A row whose object the listing before does not show with the declared
+///   feature is a failure, so the ledger cannot excuse a difference the
+///   feature does not explain. So is a name in the ledger that the listing
+///   before does not have, a hard-link set split between the ledger and the
+///   rest, and an object left out (`cloud_left_out`) that is on the volume
+///   afterwards.
+/// - The two results are reported apart (`differences`, and
+///   `plain_conversions` with `plain_failures`), and [`Verdict::identical`]
+///   needs both clean.
+pub fn compare_with_plain(
+    before: &[Record],
+    after: &[Record],
+    declared: Declared,
+    ledger: &PlainLedger,
+) -> Verdict {
+    let mut failures: Vec<Difference> = Vec::new();
+    let mut fail = |path: &str, kind: &str, what: String| {
+        failures.push(Difference {
+            path: path.to_owned(),
+            kind: kind.to_owned(),
+            what,
+        })
+    };
+    if let Err(why) = ledger.validate() {
+        fail("\\", "ledger not valid", why);
+    }
+    let before_by_path: BTreeMap<&str, &Record> = before
+        .iter()
+        .map(|record| (record.path.as_str(), record))
+        .collect();
+    let after_paths: BTreeSet<&str> = after.iter().map(|record| record.path.as_str()).collect();
+    // The names the ledger takes out of the listing comparison, and the
+    // short-name links of those names, which belong with them.
+    let mut taken: BTreeSet<&str> = BTreeSet::new();
+    for row in &ledger.rows {
+        taken.extend(row.paths.iter().map(String::as_str));
+    }
+    let mut links: BTreeSet<String> = BTreeSet::new();
+    for path in &taken {
+        if let Some(short) = before_by_path
+            .get(path)
+            .and_then(|record| record.short_name.as_ref())
+        {
+            let (parent, leaf) = parent_and_leaf(path);
+            let alias = join(parent, short);
+            if short != leaf && !before_by_path.contains_key(alias.as_str()) {
+                links.insert(alias);
+            }
+        }
+    }
+    let rest_before: Vec<Record> = before
+        .iter()
+        .filter(|record| !taken.contains(record.path.as_str()))
+        .cloned()
+        .collect();
+    let rest_after: Vec<Record> = after
+        .iter()
+        .filter(|record| !taken.contains(record.path.as_str()) && !links.contains(&record.path))
+        .cloned()
+        .collect();
+    let listing = compare_declared(&rest_before, &rest_after, declared);
+
+    // A hard-link set is either wholly in the ledger or wholly outside it.
+    for (side, records) in [("before", before), ("afterwards", after)] {
+        let mut groups: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+        for record in records {
+            if let Some(group) = &record.link_group {
+                let counts = groups.entry(group).or_default();
+                counts.0 += 1;
+                counts.1 += usize::from(taken.contains(record.path.as_str()));
+            }
+        }
+        for record in records {
+            if let Some((all, in_ledger)) = record
+                .link_group
+                .as_deref()
+                .and_then(|group| groups.get(group))
+                && in_ledger != all
+                && taken.contains(record.path.as_str())
+            {
+                fail(
+                    &record.path,
+                    "hard-link set split by the ledger",
+                    format!(
+                        "{in_ledger} of the {all} names of this file {side} are in the plain-conversions ledger"
+                    ),
+                );
+            }
+        }
+    }
+
+    // Each row: the feature it declares, shown before; then the records
+    // that makes, held to what is there afterwards.
+    let mut expected: Vec<Record> = Vec::new();
+    let mut compared: BTreeSet<&str> = BTreeSet::new();
+    for row in &ledger.rows {
+        for path in &row.paths {
+            let Some(was) = before_by_path.get(path.as_str()) else {
+                fail(
+                    path,
+                    "ledger names what was not there before",
+                    format!(
+                        "the ledger names it as {}, and the listing before has no such object",
+                        row.kind
+                    ),
+                );
+                continue;
+            };
+            if row.kind == PlainKind::CloudLeftOut {
+                if !was.reparse_tag.is_some_and(is_cloud_tag) {
+                    fail(
+                        path,
+                        "declared feature not shown before",
+                        format!(
+                            "left out as a cloud placeholder, and the listing before shows reparse tag {:?}",
+                            was.reparse_tag
+                        ),
+                    );
+                }
+                if after_paths.contains(path.as_str()) {
+                    fail(
+                        path,
+                        "left out, and there afterwards",
+                        "the ledger says it was left out, and it is on the volume afterwards"
+                            .into(),
+                    );
+                }
+                continue;
+            }
+            match declared_after(row, was) {
+                Ok(record) => {
+                    expected.push(record);
+                    compared.insert(path.as_str());
+                }
+                Err(why) => fail(path, "declared feature not shown before", why),
+            }
+        }
+    }
+    let plain_after: Vec<Record> = after
+        .iter()
+        .filter(|record| compared.contains(record.path.as_str()) || links.contains(&record.path))
+        .cloned()
+        .collect();
+    // The listing comparison itself, on what the declared transforms make.
+    let held = compare_declared(&expected, &plain_after, declared);
+
+    let mut verdict = PlainVerdict {
+        failure_count: failures.len() + held.difference_count,
+        ..PlainVerdict::default()
+    };
+    for failure in &failures {
+        *verdict
+            .failure_kinds
+            .entry(failure.kind.clone())
+            .or_default() += 1;
+    }
+    for (kind, count) in &held.difference_kinds {
+        *verdict.failure_kinds.entry(kind.clone()).or_default() += count;
+    }
+    // Rows are counted as converted only while every failure is known by
+    // its path: the held comparison keeps its first differences only.
+    let complete = held.differences.len() == held.difference_count;
+    failures.extend(held.differences);
+    let failing: BTreeSet<&str> = failures.iter().map(|f| f.path.as_str()).collect();
+    if complete {
+        for row in &ledger.rows {
+            if row
+                .paths
+                .iter()
+                .all(|path| !failing.contains(path.as_str()))
+            {
+                *verdict
+                    .conversions
+                    .entry(row.kind.name().to_owned())
+                    .or_default() += 1;
+            }
+        }
+    }
+    failures.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.what.cmp(&b.what)));
+    failures.truncate(DIFFERENCE_LIMIT);
+    verdict.failures = failures;
+    Verdict {
+        listing,
+        plain: verdict,
+    }
 }
 
 /// Runs `work` over every item on up to `threads` threads, each with its own
@@ -771,7 +1172,11 @@ mod capture {
             Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW,
             GetKernelObjectSecurity,
         },
-        Storage::FileSystem::GetFileInformationByHandleEx,
+        Storage::FileSystem::{
+            CloseEncryptedFileRaw, GetFileInformationByHandleEx, OpenEncryptedFileRawW,
+            ReadEncryptedFileRaw,
+        },
+        System::IO::DeviceIoControl,
     };
 
     // FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES | READ_CONTROL | ACCESS_SYSTEM_SECURITY
@@ -780,6 +1185,103 @@ mod capture {
     const OPEN_FLAGS: u32 = 0x0a20_0000;
     const REPARSE: u32 = 0x400;
     const DIRECTORY: u32 = 0x10;
+    const ENCRYPTED: u32 = 0x4000;
+    // FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_SEQUENTIAL_SCAN |
+    // FILE_FLAG_OPEN_NO_RECALL: read through the filter that owns a
+    // placeholder, as a program does, and never have it recall anything.
+    const PLAIN_FLAGS: u32 = 0x0a10_0000;
+    const FSCTL_GET_EXTERNAL_BACKING: u32 = 0x0009_0310;
+
+    /// WOF's algorithm for a file it backs: FSCTL_GET_EXTERNAL_BACKING
+    /// answers WOF_EXTERNAL_INFO (version, provider) and, for the file
+    /// provider, FILE_PROVIDER_EXTERNAL_INFO_V1 (version, algorithm, flags).
+    fn wof_algorithm(file: &File) -> io::Result<Option<u32>> {
+        let mut answer = [0u32; 16];
+        let mut returned = 0u32;
+        // SAFETY: a live handle, no input, and aligned output of the stated size.
+        let ok = unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                FSCTL_GET_EXTERNAL_BACKING,
+                ptr::null(),
+                0,
+                answer.as_mut_ptr().cast(),
+                std::mem::size_of_val(&answer) as u32,
+                &mut returned,
+                ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            let error = io::Error::last_os_error();
+            // ERROR_OBJECT_NOT_EXTERNALLY_BACKED, and a file system or a
+            // file that WOF does not attach to: not backed.
+            return match error.raw_os_error() {
+                Some(342 | 1 | 50 | 87) => Ok(None),
+                _ => Err(error),
+            };
+        }
+        Ok(Some(match answer[1] {
+            // WOF_PROVIDER_FILE
+            2 if returned >= 20 => answer[3],
+            // WOF_PROVIDER_WIM
+            1 => super::WOF_WIM_BACKED,
+            provider => {
+                return Err(io::Error::other(format!(
+                    "WOF provider {provider} answered in {returned} bytes"
+                )));
+            }
+        }))
+    }
+
+    /// SHA-256 of an encrypted file's raw EFS export: what is on the disk,
+    /// read without its key.
+    fn raw_efs_sha256(prefix: &str, path: &str) -> io::Result<String> {
+        unsafe extern "system" fn export(
+            data: *const u8,
+            context: *const std::ffi::c_void,
+            length: u32,
+        ) -> u32 {
+            // SAFETY: the context is the hasher passed below, and Windows
+            // hands `length` readable bytes at `data`.
+            unsafe {
+                let hasher = &mut *(context as *mut Sha256);
+                hasher.update(std::slice::from_raw_parts(data, length as usize));
+            }
+            0
+        }
+        let name: Vec<u16> = format!("{prefix}{path}")
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let mut context = ptr::null_mut();
+        // SAFETY: a terminated name; flags 0 open the file for export.
+        let opened = unsafe { OpenEncryptedFileRawW(name.as_ptr(), 0, &mut context) };
+        if opened != 0 {
+            return Err(io::Error::from_raw_os_error(opened as i32));
+        }
+        let mut hasher = Sha256::new();
+        // SAFETY: the context Windows just opened, and a hasher that lives
+        // across the call.
+        let read = unsafe {
+            ReadEncryptedFileRaw(Some(export), (&mut hasher as *mut Sha256).cast(), context)
+        };
+        // SAFETY: closes the context opened above, once.
+        unsafe { CloseEncryptedFileRaw(context) };
+        if read != 0 {
+            return Err(io::Error::from_raw_os_error(read as i32));
+        }
+        Ok(hex::encode(hasher.finalize()))
+    }
+
+    /// SHA-256 of a placeholder's unnamed stream, read as a program reads it.
+    fn plain_sha256(prefix: &str, path: &str, buffer: &mut [u8]) -> io::Result<String> {
+        let mut file = File::options()
+            .access_mode(0x0000_0081)
+            .share_mode(7)
+            .custom_flags(PLAIN_FLAGS)
+            .open(format!("{prefix}{path}"))?;
+        hash(&mut file, buffer).map(|(_, sha256)| sha256)
+    }
 
     struct Pending {
         path: String,
@@ -1131,12 +1633,26 @@ mod capture {
                 Err(error) => note(&mut record, "file identity", &error),
             }
         }
+        // Extended attributes are read of an object without a reparse
+        // point, as always, and of a placeholder (cloud files, ProjFS, Data
+        // Deduplication, single instance storage), which a conversion to
+        // plain carries over as a plain file: its record before has to hold
+        // them for the content verdict. Other reparse points (links,
+        // junctions, WSL files) are listed as they always were.
+        let mut read_extended_attributes = record.attributes & REPARSE == 0;
         if record.attributes & REPARSE != 0 {
             match crate::reparse_native::capture(&file) {
                 Ok(Some(point)) => {
+                    read_extended_attributes = super::is_placeholder_tag(point.tag());
                     record.reparse_tag = Some(point.tag());
                     record.reparse_sha256 = Some(hex::encode(Sha256::digest(&point.buffer)));
                     record.relative_link_target = relative_target(&point.buffer);
+                    if !directory && super::is_placeholder_tag(point.tag()) {
+                        match plain_sha256(prefix, &record.path, buffer) {
+                            Ok(sha256) => record.plain_sha256 = Some(sha256),
+                            Err(error) => record.plain_read_error = Some(error.to_string()),
+                        }
+                    }
                 }
                 Ok(None) => note(
                     &mut record,
@@ -1145,7 +1661,8 @@ mod capture {
                 ),
                 Err(error) => note(&mut record, "reparse point", &error),
             }
-        } else {
+        }
+        if read_extended_attributes {
             // Asked of the object itself: the size a directory entry reports
             // for extended attributes can be stale.
             match crate::extended_attributes_native::capture(&file) {
@@ -1187,6 +1704,21 @@ mod capture {
                     &format!("unknown flags {flags:#x}"),
                 ),
                 Err(error) => note(&mut record, "case-sensitive mark", &error),
+            }
+        }
+        if record.attributes & ENCRYPTED != 0 {
+            record.efs = true;
+            if !directory {
+                match raw_efs_sha256(prefix, &record.path) {
+                    Ok(sha256) => record.raw_efs_sha256 = Some(sha256),
+                    Err(error) => note(&mut record, "raw EFS export", &error),
+                }
+            }
+        }
+        if !directory {
+            match wof_algorithm(&file) {
+                Ok(algorithm) => record.wof_algorithm = algorithm,
+                Err(error) => note(&mut record, "WOF backing", &error),
             }
         }
         match named_streams(prefix, &record.path, &file, buffer, streams) {
@@ -1304,6 +1836,329 @@ mod tests {
             links: 1,
             ..Record::default()
         }
+    }
+
+    fn ledger(rows: Vec<LedgerRow>) -> PlainLedger {
+        PlainLedger {
+            kind: crate::plain_ledger::LEDGER_KIND.to_owned(),
+            agreed_list_sha256: "a".repeat(64),
+            frozen_list_sha256: "b".repeat(64),
+            source_inspection_sha256: "c".repeat(64),
+            rows,
+        }
+    }
+    fn cleared_row(paths: &[&str], before: u32, after: u32) -> LedgerRow {
+        LedgerRow {
+            kind: PlainKind::AttributesCleared,
+            paths: paths.iter().map(|path| (*path).to_owned()).collect(),
+            record_number: 40,
+            sequence_number: 1,
+            before: crate::plain_ledger::LedgerState {
+                attributes: before,
+                reparse_tag: None,
+            },
+            after: crate::plain_ledger::LedgerState {
+                attributes: after,
+                reparse_tag: None,
+            },
+            witness: "test".into(),
+        }
+    }
+    /// A volume with an ordinary file and a TEMPORARY one, before and after
+    /// a run that cleared the attribute.
+    fn temporary_volume() -> (Vec<Record>, Vec<Record>) {
+        let mut temporary = file("\\t.tmp", "tt");
+        temporary.attributes = 0x120;
+        let before = vec![directory("\\"), file("\\a.txt", "aa"), temporary.clone()];
+        let mut cleared = temporary;
+        cleared.attributes = 0x20;
+        let after = vec![directory("\\"), file("\\a.txt", "aa"), cleared];
+        (before, after)
+    }
+
+    #[test]
+    fn the_listing_alone_reports_a_cleared_attribute_as_a_difference() {
+        // Without a ledger nothing changes: the attribute is a difference.
+        let (before, after) = temporary_volume();
+        let plain = compare(&before, &after);
+        assert_eq!(plain.difference_count, 1, "{plain:?}");
+        assert_eq!(plain.differences[0].kind, "attributes changed");
+    }
+
+    #[test]
+    fn a_plain_conversion_is_verified_apart_and_the_listing_stays_as_strict() {
+        let (before, after) = temporary_volume();
+        let verdict = compare_with_plain(
+            &before,
+            &after,
+            Declared::default(),
+            &ledger(vec![cleared_row(&["\\t.tmp"], 0x120, 0x20)]),
+        );
+        assert!(verdict.identical(), "{verdict:?}");
+        // The listing compared the two objects the ledger does not name.
+        assert_eq!(verdict.listing.before_objects, 2);
+        assert_eq!(verdict.listing.difference_count, 0);
+        assert_eq!(verdict.plain.conversions["attributes_cleared"], 1);
+        assert_eq!(verdict.plain.failure_count, 0);
+
+        // A difference outside the ledger is still the listing's.
+        let mut changed = after.clone();
+        changed[1].sha256 = Some("zz".into());
+        let verdict = compare_with_plain(
+            &before,
+            &changed,
+            Declared::default(),
+            &ledger(vec![cleared_row(&["\\t.tmp"], 0x120, 0x20)]),
+        );
+        assert!(!verdict.identical());
+        assert_eq!(verdict.listing.difference_count, 1);
+        assert_eq!(verdict.plain.failure_count, 0);
+    }
+
+    #[test]
+    fn a_plain_object_is_held_to_everything_but_its_declared_feature() {
+        let (before, after) = temporary_volume();
+        let row = || ledger(vec![cleared_row(&["\\t.tmp"], 0x120, 0x20)]);
+        // Its contents, times, security and other attributes, each.
+        type Change = (&'static str, fn(&mut Record));
+        let changes: [Change; 6] = [
+            ("content differs", |r| r.sha256 = Some("xx".into())),
+            ("last write time changed", |r| r.written += 1),
+            ("security changed", |r| r.security = Some("O:BA".into())),
+            ("attributes changed", |r| r.attributes |= 0x1),
+            ("named streams differ", |r| {
+                r.streams = vec![Stream {
+                    name: ":s:$DATA".into(),
+                    bytes: 1,
+                    sha256: "s".into(),
+                }]
+            }),
+            ("extended attributes differ", |r| {
+                r.extended_attributes = Some("e".into())
+            }),
+        ];
+        for (kind, change) in changes {
+            let mut after = after.clone();
+            change(&mut after[2]);
+            let verdict = compare_with_plain(&before, &after, Declared::default(), &row());
+            assert!(!verdict.identical(), "{kind}");
+            assert!(verdict.listing.identical(), "{kind}: {verdict:?}");
+            assert_eq!(verdict.plain.failure_count, 1, "{kind}: {verdict:?}");
+            assert_eq!(verdict.plain.failure_kinds[kind], 1, "{verdict:?}");
+            assert!(verdict.plain.conversions.is_empty(), "{kind}");
+        }
+        // Still TEMPORARY afterwards: not converted.
+        let mut kept = after.clone();
+        kept[2].attributes = 0x120;
+        let verdict = compare_with_plain(&before, &kept, Declared::default(), &row());
+        assert_eq!(verdict.plain.failure_kinds["attributes changed"], 1);
+        // Gone afterwards.
+        let verdict = compare_with_plain(&before, &after[..2], Declared::default(), &row());
+        assert_eq!(verdict.plain.failure_kinds["missing after conversion"], 1);
+    }
+
+    #[test]
+    fn a_ledger_row_must_show_its_feature_before_and_declare_nothing_more() {
+        let (before, after) = temporary_volume();
+        for (row, why) in [
+            // The listing shows no OFFLINE on the object.
+            (
+                cleared_row(&["\\t.tmp"], 0x1020, 0x20),
+                "without the 0x1000",
+            ),
+            // Anything but TEMPORARY and OFFLINE.
+            (
+                cleared_row(&["\\t.tmp"], 0x121, 0x20),
+                "not TEMPORARY or OFFLINE",
+            ),
+            // Nothing cleared at all.
+            (
+                cleared_row(&["\\t.tmp"], 0x20, 0x20),
+                "not TEMPORARY or OFFLINE",
+            ),
+            // Something added.
+            (
+                cleared_row(&["\\t.tmp"], 0x120, 0x22),
+                "not TEMPORARY or OFFLINE",
+            ),
+        ] {
+            let verdict =
+                compare_with_plain(&before, &after, Declared::default(), &ledger(vec![row]));
+            assert!(!verdict.identical());
+            assert!(
+                verdict.plain.failures.iter().any(|f| f.what.contains(why)),
+                "{why}: {verdict:?}"
+            );
+        }
+        // An object the ledger names that is not in the listing; one that
+        // has no such feature; one hiding a difference of the listing.
+        let verdict = compare_with_plain(
+            &before,
+            &after,
+            Declared::default(),
+            &ledger(vec![cleared_row(&["\\nowhere"], 0x120, 0x20)]),
+        );
+        assert_eq!(
+            verdict.plain.failure_kinds["ledger names what was not there before"],
+            1
+        );
+        let mut changed = after.clone();
+        changed[1].sha256 = Some("zz".into());
+        let verdict = compare_with_plain(
+            &before,
+            &changed,
+            Declared::default(),
+            &ledger(vec![cleared_row(&["\\a.txt"], 0x120, 0x20)]),
+        );
+        assert!(!verdict.identical());
+        assert_eq!(
+            verdict.plain.failure_kinds["declared feature not shown before"], 1,
+            "{verdict:?}"
+        );
+        // A ledger that names one object twice is not valid.
+        let verdict = compare_with_plain(
+            &before,
+            &after,
+            Declared::default(),
+            &ledger(vec![
+                cleared_row(&["\\t.tmp"], 0x120, 0x20),
+                cleared_row(&["\\t.tmp"], 0x120, 0x20),
+            ]),
+        );
+        assert_eq!(verdict.plain.failure_kinds["ledger not valid"], 1);
+    }
+
+    #[test]
+    fn a_hard_link_set_is_wholly_in_the_ledger_or_wholly_outside() {
+        let linked = |path: &str, attributes: u32| Record {
+            attributes,
+            links: 2,
+            link_group: Some("g".into()),
+            ..file(path, "ll")
+        };
+        let before = vec![directory("\\"), linked("\\a", 0x120), linked("\\b", 0x120)];
+        let after = vec![directory("\\"), linked("\\a", 0x20), linked("\\b", 0x20)];
+        let both = compare_with_plain(
+            &before,
+            &after,
+            Declared::default(),
+            &ledger(vec![cleared_row(&["\\a", "\\b"], 0x120, 0x20)]),
+        );
+        assert!(both.identical(), "{both:?}");
+        assert_eq!(both.plain.conversions["attributes_cleared"], 1);
+        let one = compare_with_plain(
+            &before,
+            &after,
+            Declared::default(),
+            &ledger(vec![cleared_row(&["\\a"], 0x120, 0x20)]),
+        );
+        assert!(!one.identical());
+        assert!(
+            one.plain.failure_kinds["hard-link set split by the ledger"] >= 1,
+            "{one:?}"
+        );
+    }
+
+    #[test]
+    fn each_modelled_kind_takes_off_its_own_feature_only() {
+        let row = |kind| LedgerRow {
+            kind,
+            ..cleared_row(&["\\f"], 0, 0)
+        };
+        // EFS: the plain text stays, the raw export and the bit go.
+        let mut efs = file("\\f", "plain-text");
+        efs.attributes = 0x4020;
+        efs.efs = true;
+        efs.raw_efs_sha256 = Some("cipher".into());
+        let mut decrypted = file("\\f", "plain-text");
+        decrypted.attributes = 0x20;
+        let verdict = compare_with_plain(
+            &[efs.clone()],
+            &[decrypted.clone()],
+            Declared::default(),
+            &ledger(vec![row(PlainKind::EfsDecrypted)]),
+        );
+        assert!(verdict.identical(), "{verdict:?}");
+        // Without its raw export read, it was not shown encrypted.
+        let mut unread = efs;
+        unread.raw_efs_sha256 = None;
+        assert!(
+            !compare_with_plain(
+                &[unread],
+                &[decrypted],
+                Declared::default(),
+                &ledger(vec![row(PlainKind::EfsDecrypted)])
+            )
+            .identical()
+        );
+
+        // WOF: the algorithm goes, the bytes stay.
+        let mut wof = file("\\f", "bytes");
+        wof.wof_algorithm = Some(1);
+        let verdict = compare_with_plain(
+            &[wof],
+            &[file("\\f", "bytes")],
+            Declared::default(),
+            &ledger(vec![row(PlainKind::WofExpanded)]),
+        );
+        assert!(verdict.identical(), "{verdict:?}");
+
+        // A cloud placeholder: the plain read becomes the contents.
+        let mut cloud = file("\\f", "stub");
+        cloud.attributes = 0x20 | 0x400 | 0x200 | 0x40_0000;
+        cloud.reparse_tag = Some(0x9000_301a);
+        cloud.reparse_sha256 = Some("r".into());
+        cloud.plain_sha256 = Some("bytes".into());
+        let verdict = compare_with_plain(
+            &[cloud.clone()],
+            &[file("\\f", "bytes")],
+            Declared::default(),
+            &ledger(vec![row(PlainKind::CloudPlaceholderPlain)]),
+        );
+        assert!(verdict.identical(), "{verdict:?}");
+        // The same declared as ProjFS's is not what the listing shows.
+        assert!(
+            !compare_with_plain(
+                &[cloud.clone()],
+                &[file("\\f", "bytes")],
+                Declared::default(),
+                &ledger(vec![row(PlainKind::ProjfsPlaceholderPlain)])
+            )
+            .identical()
+        );
+        // Left out: absent afterwards, and nowhere in the listing comparison.
+        let verdict = compare_with_plain(
+            &[directory("\\"), cloud.clone()],
+            &[directory("\\")],
+            Declared::default(),
+            &ledger(vec![row(PlainKind::CloudLeftOut)]),
+        );
+        assert!(verdict.identical(), "{verdict:?}");
+        assert_eq!(verdict.plain.conversions["cloud_left_out"], 1);
+        let there = compare_with_plain(
+            &[directory("\\"), cloud.clone()],
+            &[directory("\\"), file("\\f", "bytes")],
+            Declared::default(),
+            &ledger(vec![row(PlainKind::CloudLeftOut)]),
+        );
+        assert_eq!(
+            there.plain.failure_kinds["left out, and there afterwards"],
+            1
+        );
+    }
+
+    #[test]
+    fn the_feature_views_are_compared_by_the_listing_too() {
+        let mut wof = file("\\f", "bytes");
+        wof.wof_algorithm = Some(1);
+        let lost = compare(&[wof.clone()], &[file("\\f", "bytes")]);
+        assert_eq!(lost.difference_kinds["feature view differs"], 1);
+        let exact = compare_exact(&[wof], &[file("\\f", "bytes")]);
+        assert_eq!(exact.difference_kinds["feature view differs"], 1);
+        assert!(is_cloud_tag(0x9000_001a) && is_cloud_tag(0x9000_f01a));
+        assert!(!is_cloud_tag(0x9000_001c) && is_placeholder_tag(0x9000_001c));
+        assert!(is_placeholder_tag(DEDUP_TAG) && is_placeholder_tag(SIS_TAG));
+        assert!(!is_placeholder_tag(SYMLINK_TAG));
     }
 
     #[test]

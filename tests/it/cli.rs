@@ -53,6 +53,19 @@ fn capabilities_report_what_the_executable_enforces() {
             .unwrap()
             .starts_with("object IDs")
     );
+    // Converted to plain: one kind made plain, the rest modelled and still
+    // refused, and never without the list agreed.
+    let plain = &data_volume["converted_to_plain"];
+    assert_eq!(plain["converted"][0]["kind"], "attributes_cleared");
+    assert_eq!(plain["converted"].as_array().unwrap().len(), 1);
+    assert_eq!(plain["modelled_still_refused"].as_array().unwrap().len(), 7);
+    assert_eq!(plain["record"], "plain-conversions.json");
+    assert!(
+        plain["consent"]
+            .as_str()
+            .unwrap()
+            .contains("--accept-plain")
+    );
     // Short names: left behind by default, refused with the remedy when asked.
     assert!(
         data_volume["refused_by_name"][0]["or"]
@@ -198,7 +211,7 @@ fn capabilities_report_what_the_executable_enforces() {
         check["decided_only_when_frozen"],
         ntfs2refs::drive_cli::CHECK_DECIDED_WHEN_FROZEN
     );
-    for code in ["0", "1", "3", "5"] {
+    for code in ["0", "1", "3", "5", "7"] {
         assert!(check["exit_codes"][code].is_string(), "exit code {code}");
     }
     // Both target formats, with where each is the default.

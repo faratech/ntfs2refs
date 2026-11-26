@@ -64,10 +64,19 @@ fn every_remedy_the_document_quotes_is_one_the_converter_prints() {
             "{command:?} is not in {encrypted:?}"
         );
     }
-    // TEMPORARY and OFFLINE are named.
+    // TEMPORARY and OFFLINE are named where they are still refused, and
+    // are otherwise converted to plain once agreed.
     assert_eq!(ntfs_admission::file_attribute_names(0x100), "TEMPORARY");
     assert_eq!(ntfs_admission::file_attribute_names(0x1000), "OFFLINE");
-    assert!(row(&document, "A file with the TEMPORARY or OFFLINE attribute")[1].contains("named"));
+    let plain = row(&document, "Converted to plain, once its list is agreed")[1];
+    assert!(
+        plain.contains("cleared") && plain.contains("plain-conversions.json"),
+        "{plain:?}"
+    );
+    assert_eq!(
+        n2r_win32::plain_ledger::LEDGER_FILE,
+        "plain-conversions.json"
+    );
 
     // compact /exe: the meaning of its reparse tag.
     let wof = n2r_win32::reparse_layout::unsupported_tag_meaning(0x8000_0017);

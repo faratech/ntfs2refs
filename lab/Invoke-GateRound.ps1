@@ -236,6 +236,12 @@ $dataCases = @(
     # What the Windows Subsystem for Linux leaves on a volume, and names
     # that Win32 does not take and the file systems hold.
     'wsl|-Content minimal -Features wsl -Check'
+    # Converted to plain once their list is agreed: the TEMPORARY and
+    # OFFLINE attributes are cleared, each object is held by the content
+    # verdict, and the ledger names exactly what was planted. Unattended,
+    # with the checksum the check printed.
+    'temporary|-Content minimal -Features temporary -Check -AcceptPlain -Unattended'
+    'offline|-Content minimal -Features offline -Check -AcceptPlain'
     'names|-Content minimal -Features names -Check'
     # MBR disks: the volume alone on one, the working directory on one, both
     # with a run interrupted half way through the writes and resumed; and a

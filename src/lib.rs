@@ -70,6 +70,8 @@ pub(crate) mod panic_report;
 #[cfg(windows)]
 pub(crate) mod parallel_digest;
 pub(crate) mod payload_copy_plan;
+pub(crate) mod plain_consent;
+pub(crate) mod plain_projection;
 pub mod planner;
 pub(crate) mod preparation_progress;
 #[cfg(windows)]

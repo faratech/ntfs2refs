@@ -78,9 +78,11 @@ param(
     # objectids, security, ea, links, longpath, deep, bigdir, bigfile, full,
     # copy, usn, casemark, manyfiles (all of which convert; -Content lived-in
     # adds them except bigfile, full, casemark and manyfiles), shortnames (dropped
-    # by default; refused with -RefuseShortNames), and temporary, offline,
-    # efs, wof, casesensitive, snapshot, bitlocker, dirstream (which are
-    # refused). quota converts: the quotas are recorded, not carried over.
+    # by default; refused with -RefuseShortNames), temporary and offline (which
+    # convert with -AcceptPlain; without it a run stops before it changes
+    # anything), and efs, wof, casesensitive, snapshot, bitlocker (which are
+    # refused). dirstream converts (named streams on directories). quota
+    # converts: the quotas are recorded, not carried over.
     # Two are not made through Windows but on the disk itself,
     # by guest\Use-RawNtfs.ps1, with the disk offline just before the run:
     # lfs2 (the control OS's NtfsDisableLfsDowngrade is 1 from before the
@@ -269,6 +271,13 @@ param(
     # refuse: a volume with 8.3 short names is then refused, and the
     # listings are compared without counting a short name that is gone.
     [switch]$RefuseShortNames,
+    # Agree to the list of objects the converter makes plain files of
+    # (-Features temporary, offline). Unattended, it passes --accept-plain
+    # with the checksum the check printed, so it needs -Check; otherwise the
+    # worker answers the run's question about the list as well. After the
+    # run the comparison is given the run's ledger (--plain-ledger), and the
+    # ledger has to name exactly the (kind, path) pairs the features planted.
+    [switch]$AcceptPlain,
     # A shadow-copy (VSS) provider that the converter does not know.
     # 'answering' is one of Windows Server's own, the iSCSI target storage
     # provider (the Windows feature iSCSITarget-VSS-VDS, so the VM has to run
@@ -937,9 +946,15 @@ public static class SiblingRaw {
     # Starts the guest worker (the one the boot harness uses) in a guest
     # folder with these converter arguments: as SYSTEM from a scheduled task,
     # or as the elevated administrator in a session of its own.
-    function Start-Worker([string]$Root, [string[]]$Arguments, [string]$Task) {
-        Invoke-Command -Session $session -ArgumentList $Root, ($Arguments -join "`t"), (-not $Unattended) -ScriptBlock {
-            param($root, $joined, $answer) [IO.File]::WriteAllText("$root\run.json", (@{ arguments = @([string[]]$joined.Split("`t")); answer = [bool]$answer } | ConvertTo-Json), [Text.UTF8Encoding]::new($false)) }
+    function Start-Worker([string]$Root, [string[]]$Arguments, [string]$Task, [string[]]$Replies = @()) {
+        # A run that is asked about its plain conversions as well asks twice.
+        # $Replies, where given, are typed instead, in order.
+        $answers = if ($Unattended) { 0 } elseif ($AcceptPlain) { 2 } else { 1 }
+        Invoke-Command -Session $session -ArgumentList $Root, ($Arguments -join "`t"), (-not $Unattended), $answers, ($Replies -join "`t") -ScriptBlock {
+            param($root, $joined, $answer, $answers, $replies)
+            $run = @{ arguments = @([string[]]$joined.Split("`t")); answer = [bool]$answer; answers = [int]$answers }
+            if ($replies) { $run.replies = @([string[]]$replies.Split("`t")) }
+            [IO.File]::WriteAllText("$root\run.json", ($run | ConvertTo-Json), [Text.UTF8Encoding]::new($false)) }
         if ($RunAs -eq 'administrator') {
             if ($script:worker) { Remove-PSSession $script:worker -ErrorAction SilentlyContinue }
             $script:worker = New-PSSession -VMId $VmId -Credential $credential
@@ -1199,6 +1214,8 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         Copy-Item -FromSession $session -LiteralPath "$guestRoot\manifest-before.jsonl" -Destination $records -Force
         Say "a program holds a file open that it has deleted; listing without it: $($holding.text)"
     }
+    # The checksum of the list of objects to make plain files, as the check prints it.
+    $plainSha = ''
     if ($Check -or $CheckOnly) {
         $checkArguments = @('--drive', 'V', '--scratch-directory', $working, '--check')
         if ($TargetFormat -ne 'default') { $checkArguments += @('--target-format', $TargetFormat) }
@@ -1239,7 +1256,11 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         Say "check: exit $($checked.exit) after $($checked.seconds) s; $($checkRefusals.Count) refusal(s)$(if ($checked.left) { "; $($checked.left) working director(ies) left behind" })"
         foreach ($refusal in $checkRefusals) { Say ("check refusal: " + $refusal.Substring(0, [Math]::Min(400, $refusal.Length))) }
         foreach ($line in $verdict.check.takes) { Say "check: $($line.Trim())" }
-        if ($checked.exit -notin 0, 3, 5) { $verdict.outcome = 'check-failed'; throw "the check ended with exit $($checked.exit): $(($checked.text | Select-Object -Last 3) -join ' / ')" }
+        if ($checked.exit -notin 0, 3, 5, 7) { $verdict.outcome = 'check-failed'; throw "the check ended with exit $($checked.exit): $(($checked.text | Select-Object -Last 3) -join ' / ')" }
+        # Exit 7: nothing refused, and a list of objects to make plain files, with its checksum.
+        $plainSha = [string]($checked.text | ForEach-Object { if ($_ -match '--accept-plain ([0-9a-f]{64})') { $Matches[1] } } | Select-Object -Last 1)
+        if ($plainSha) { $verdict.check.plain_list_sha256 = $plainSha; Say "check: a list of objects to make plain files, sha256 $plainSha" }
+        if ($checked.exit -eq 7 -and -not $plainSha) { $verdict.outcome = 'check-plain-without-checksum'; throw 'the check exited 7 and printed no list checksum' }
         if ($FreshFile) {
             # The check's count of short names against Windows' own: the
             # listing made a moment before it, which has the fresh file.
@@ -1281,6 +1302,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
             $verdict.outcome = if (-not $verdict.check.source_as_before -or (-not $WriteLoad -and -not $after.identical)) { 'check-changed-the-source' }
                 elseif ($checked.exit -eq 0) { 'check-clean' }
                 elseif ($checked.exit -eq 5) { 'check-inconclusive' }
+                elseif ($checked.exit -eq 7) { 'check-plain-to-agree' }
                 elseif ($ExpectRefusal -and ($checkRefusals -join "`n") -match $ExpectRefusal) { 'check-refused-as-expected' }
                 else { 'check-found-refusals' }
             if ($VssProvider -eq 'answering') {
@@ -1301,6 +1323,10 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     if ($Unattended) {
         if (-not $listed.serial) { $verdict.outcome = 'list-did-not-show-serial'; throw "--list shows no serial number for V:: $($listed.row)" }
         $arguments += @('--yes', '--volume-serial', $(if ($WrongSerial) { '0000-0000' } else { $listed.serial }))
+        if ($AcceptPlain) {
+            if (-not $plainSha) { $verdict.outcome = 'accept-plain-without-a-list'; throw '-AcceptPlain -Unattended needs -Check, whose list checksum it passes, and the check printed none' }
+            $arguments += @('--accept-plain', $plainSha)
+        }
     }
     if ($lfs2 -or $ntfs30) {
         # Made on the disk itself, as late as can be: the disk is taken
@@ -1462,8 +1488,11 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         $resourceSamples = Join-Path $records $verdict.resource_samples
         [IO.File]::WriteAllText($resourceSamples, '', [Text.UTF8Encoding]::new($false))
     }
-    Start-Worker $guestRoot $arguments $task
-    Say "converter started: ntfs2refs $($arguments -join ' ')"
+    # Without -AcceptPlain, a run with objects to make plain (the check printed
+    # their list) is asked about them and declines: it has to stop there.
+    $declinePlain = -not $Unattended -and -not $AcceptPlain -and [bool]$plainSha
+    Start-Worker $guestRoot $arguments $task $(if ($declinePlain) { @('n') } else { @() })
+    Say "converter started: ntfs2refs $($arguments -join ' ')$(if ($declinePlain) { ' (its question about plain conversions answered no)' })"
     $waited = Wait-Worker $guestRoot $InterruptAt $StopDuringPreparation
     $verdict.resources = [ordered]@{ peak_working_set_bytes = $usage.peak_working_set; peak_private_bytes = $usage.private_bytes
         peak_working_storage_bytes = $usage.working_bytes; samples = $usage.samples; sampled_every_seconds = 2 }
@@ -1895,20 +1924,33 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         # said it before it was stopped.)
         $marksLeft = [bool](@($stdout, (Join-Path $records 'interrupted-stdout.log')) | Where-Object { Test-Path -LiteralPath $_ } |
             Where-Object { Select-String -LiteralPath $_ -SimpleMatch -Pattern 'The converter does not set the mark on the new volume' -Quiet } | Select-Object -First 1)
-        $compared = Invoke-Command -Session $session -ArgumentList $guestRoot, (-not $converted), $shortNamesDropped, $marksLeft -ScriptBlock {
-            param($root, $exact, $dropped, $marksLeft)
+        $compared = Invoke-Command -Session $session -ArgumentList $guestRoot, (-not $converted), $shortNamesDropped, $marksLeft, $working -ScriptBlock {
+            param($root, $exact, $dropped, $marksLeft, $working)
             $listed = & "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-after.jsonl" 2>&1
             if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ stage = 'capture-after'; exit = $LASTEXITCODE; differences = $null; listed = ($listed -join ' '); summary = '' } }
+            # The run's record of what it made plain files, if it made any:
+            # those objects are held by the content verdict, apart.
+            $ledger = if ($exact) { $null } else {
+                Get-ChildItem -LiteralPath $working -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending |
+                    ForEach-Object { Join-Path $_.FullName 'plain-conversions.json' } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1 }
+            if ($ledger) { Copy-Item -LiteralPath $ledger -Destination "$root\plain-conversions.json" -Force }
             $arguments = @('compare'); if ($exact) { $arguments += '--exact' } else { if ($dropped) { $arguments += '--short-names-dropped' }; if ($marksLeft) { $arguments += '--case-marks-not-carried' } }
+            if ($ledger) { $arguments += @('--plain-ledger', "$root\plain-conversions.json") }
             $arguments += @('--before', "$root\manifest-before.jsonl", '--after', "$root\manifest-after.jsonl", '--report', "$root\manifest-report.json")
             $summary = & "$root\lab-volume-manifest.exe" $arguments 2>&1
-            $exit = $LASTEXITCODE; $differences = $null; $kinds = @{}
+            $exit = $LASTEXITCODE; $differences = $null; $kinds = @{}; $plain = $null; $plainRows = @()
             if (Test-Path -LiteralPath "$root\manifest-report.json") {
                 try {
-                    $report = Get-Content -Raw -LiteralPath "$root\manifest-report.json" | ConvertFrom-Json
+                    $whole = Get-Content -Raw -LiteralPath "$root\manifest-report.json" | ConvertFrom-Json
+                    # With a ledger the report has the listing and the content verdict apart.
+                    $report = if ($whole.PSObject.Properties['listing']) { $whole.listing } else { $whole }
                     $differences = [int]$report.difference_count
                     foreach ($kind in $report.difference_kinds.PSObject.Properties) { $kinds[$kind.Name] = [int]$kind.Value }
+                    if ($whole.PSObject.Properties['plain']) { $plain = $whole.plain }
                 } catch { $differences = $null }
+            }
+            if ($ledger) {
+                $plainRows = @((Get-Content -Raw -LiteralPath "$root\plain-conversions.json" | ConvertFrom-Json).rows | ForEach-Object { $kind = $_.kind; $_.paths | ForEach-Object { "$kind`t$_" } })
             }
             $shortBefore = @(Select-String -LiteralPath "$root\manifest-before.jsonl" -Pattern '"short_name":"' -SimpleMatch).Count
             $shortAfter = @(Select-String -LiteralPath "$root\manifest-after.jsonl" -Pattern '"short_name":"' -SimpleMatch).Count
@@ -1916,9 +1958,10 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                 short_before = $shortBefore; short_after = $shortAfter; short_dropped = $(if ($report -and $report.PSObject.Properties['short_names_dropped']) { [int]$report.short_names_dropped } else { 0 })
                 marks_before = @(Select-String -LiteralPath "$root\manifest-before.jsonl" -Pattern '"case_sensitive":true' -SimpleMatch).Count
                 marks_after = @(Select-String -LiteralPath "$root\manifest-after.jsonl" -Pattern '"case_sensitive":true' -SimpleMatch).Count
-                marks_left = $(if ($report -and $report.PSObject.Properties['case_marks_not_carried']) { [int]$report.case_marks_not_carried } else { 0 }) }
+                marks_left = $(if ($report -and $report.PSObject.Properties['case_marks_not_carried']) { [int]$report.case_marks_not_carried } else { 0 })
+                plain_ledger = [bool]$ledger; plain = $plain; plain_rows = $plainRows }
         }
-        foreach ($leaf in 'manifest-after.jsonl', 'manifest-report.json') { try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\$leaf" -Destination $records } catch { } }
+        foreach ($leaf in 'manifest-after.jsonl', 'manifest-report.json', 'plain-conversions.json') { try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\$leaf" -Destination $records -ErrorAction Stop } catch { } }
         # Exit 0 with nothing counted is identical; exit 2 with a count is a
         # real difference; anything else is the listing tool failing.
         $listing = if ($compared.stage -eq 'compare' -and $compared.exit -eq 0 -and $compared.differences -eq 0) { 'identical' }
@@ -1945,10 +1988,29 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
             if ($listing -eq 'identical' -and $marksLeft -and ($compared.marks_after -ne 0 -or $compared.marks_left -ne $compared.marks_before)) { $listing = 'differs' }
             if ($listing -eq 'identical' -and -not $marksLeft -and $compared.marks_after -ne $compared.marks_before) { $listing = 'differs' }
         }
+        if ($converted -and $compared.stage -eq 'compare') {
+            # Objects made plain files: the content verdict has to pass for
+            # each, and the ledger has to name exactly what the features
+            # planted, no more and no fewer (kind and path).
+            $made = if ($verdict.source.Contains('features')) { $verdict.source.features } else { $null }
+            $planted = @($made | Where-Object { $_ } | ForEach-Object { $_.PSObject.Properties } | ForEach-Object { $_.Value } |
+                Where-Object { $_ -is [psobject] -and $_.PSObject.Properties['plain'] } | ForEach-Object { $_.plain } | ForEach-Object { "$($_.kind)`t$($_.path)" } | Sort-Object)
+            $ledgered = @($compared.plain_rows | Sort-Object)
+            $failures = if ($compared.plain) { [int]$compared.plain.failure_count } else { 0 }
+            $verdict.plain = [ordered]@{ ledger = $compared.plain_ledger; planted = $planted; ledger_rows = $ledgered
+                conversions = $(if ($compared.plain) { $compared.plain.conversions } else { $null }); failures = $failures
+                ledger_is_what_was_planted = ((@($planted) -join "`n") -eq (@($ledgered) -join "`n")) }
+            if ($planted.Count -or $ledgered.Count -or $compared.plain_ledger) {
+                Say "plain conversions: $($ledgered.Count) in the ledger, $($planted.Count) planted; content verdict failures: $failures"
+            }
+            if ($listing -eq 'identical' -and ($failures -ne 0 -or -not $verdict.plain.ledger_is_what_was_planted)) { $listing = 'differs' }
+        }
         $verdict.manifest = [ordered]@{ result = $listing; exact = (-not $converted); stage = $compared.stage; exit = $compared.exit; differences = $compared.differences; listed = $compared.listed; summary = $compared.summary }
         Say "listing after the run: $($compared.listed)"
         Say "before/after comparison$(if (-not $converted) { ', exact' }): $listing ($($compared.stage) exit $($compared.exit)): $($compared.summary)"
     }
+    # The run stopped at the question about its plain conversions, declined.
+    $plainDeclined = (Test-Path -LiteralPath $stdout) -and [bool](Select-String -LiteralPath $stdout -SimpleMatch -Pattern 'Cancelled: nothing is made plain without your agreement' -Quiet)
     $verdict.outcome = if ($StopDuringPreparation -and $PowerOffDuringPreparation) {
         # The same after the VM was turned off and started again: the NTFS volume must be back and list exactly as before.
         if ($run.exit -eq 0 -and $returned -and $listing -eq 'identical') { 'preparation-cancelled-after-power-off' }
@@ -1981,7 +2043,8 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         elseif ($run.exit -eq 0) { 'diagnose-clean' } else { 'diagnose-found-failures' }
     } elseif ($converted) {
         switch ($listing) { 'identical' { 'converted' } 'differs' { 'converted-but-listing-differs' } default { 'converted-listing-tool-failed' } }
-    } elseif ($run.exit -eq 0) { 'exit-0-but-not-refs' }
+    } elseif ($run.exit -eq 0 -and $plainDeclined -and $returned -and $listing -eq 'identical') { 'plain-declined' }
+    elseif ($run.exit -eq 0) { 'exit-0-but-not-refs' }
     elseif ($returned -and $listing -in 'identical', 'unreadable-both-times') { if ($ExpectRefusal -and $errorLine -match $ExpectRefusal) { 'refused-as-expected' } else { 'refused-source-unchanged' } }
     elseif ($returned) { "refused-source-listing-$listing" }
     elseif ($run.filesystem -eq 'ReFS') { 'failed-after-conversion' }
@@ -2070,7 +2133,8 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         $refusedNow = $verdict.outcome -match '^refused'
         $wholeError = if (Test-Path -LiteralPath $stderr) { (Get-Content -LiteralPath $stderr -Encoding UTF8) -join "`n" } else { '' }
         $same = @($verdict.check.refusals | Where-Object { $_ -and $wholeError.Contains($_.Substring(0, [Math]::Min(60, $_.Length))) }).Count -gt 0
-        $verdict.check.agrees = switch ($verdict.check.exit) { 0 { -not $refusedNow } 3 { $refusedNow } default { $null } }
+        # Exit 7: nothing refused, once the list of objects made plain is agreed.
+        $verdict.check.agrees = switch ($verdict.check.exit) { 0 { -not $refusedNow } 3 { $refusedNow } 7 { $(if ($AcceptPlain) { -not $refusedNow } else { $null }) } default { $null } }
         $verdict.check.named_the_same_refusal = if ($verdict.check.exit -eq 3 -and $refusedNow) { $same } else { $null }
         Say "check and run: $(if ($null -eq $verdict.check.agrees) { 'the check was inconclusive' } elseif ($verdict.check.agrees) { 'agree' } else { 'DISAGREE' })$(if ($null -ne $verdict.check.named_the_same_refusal) { "; the same refusal: $($verdict.check.named_the_same_refusal)" })"
         if ($verdict.check.agrees -eq $false) { $verdict.outcome = "$($verdict.outcome)-but-check-disagreed" }

@@ -19,10 +19,17 @@ read-headers and read-log only read.
 The two FILE record header forms: NTFS 3.1 (Windows XP and later) holds
 the record's own number at 0x2c and the update sequence array at 0x30; NTFS
 3.0 (Windows 2000) has no number and the array at 0x2a (ntfs-3g layout.h,
-MFT_RECORD and MFT_RECORD_OLD). A record is rewritten through its fixups:
-the array is moved to 0x2a with the record's own update sequence number,
-the bytes from 0x2a to the first attribute zeroed, and nothing else
-changed; each is read back and held to that.
+MFT_RECORD and MFT_RECORD_OLD). Microsoft documents the header with the
+array directly after the 16-bit field at 0x28, that is at 0x2a, "valid
+only for major version 3 and minor version 0 or 1"
+(learn.microsoft.com/windows/win32/devnotes/file-record-segment-header).
+A record is rewritten through its fixups: the array is moved to 0x2a with
+the record's own update sequence number, and with -Layout packed (the
+default, as Windows 2000 lays a record out) the attributes move down to
+the first 8-byte boundary after it, the first-attribute offset and bytes
+in use with them; with -Layout in-place they stay where they were. The
+bytes from 0x2a to the first attribute are the array and zeros, nothing
+else changes, and each record is read back and held to that.
 
 What is read is read as the converter reads it: the boot sector gives the
 sector, cluster and file-record sizes and the MFT and mirror positions
@@ -46,7 +53,17 @@ param(
     [int]$Major = -1,
     [int]$Minor = -1,
     # read-headers: the records set-headers-30 rewrote, each checked again.
-    [long[]]$Records = @()
+    [long[]]$Records = @(),
+    # set-headers-30: 'packed' lays a record out as Windows 2000 does (its
+    # attributes moved down to the first 8-byte boundary after the 3.0
+    # array, 0x30 for 1 KiB records); 'in-place' leaves them where the 3.1
+    # form put them (0x38).
+    [ValidateSet('packed', 'in-place')][string]$Layout = 'packed',
+    # set-headers-30: the first record number rewritten. 0 rewrites the
+    # system files too; 16 only ordinary files and directories (records 0
+    # to 15, $MFT to the reserved ones, keep the 3.1 form, and $MFTMirr with
+    # them).
+    [ValidateRange(0, 16)][int]$FromRecord = 0
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 if (-not ('N2RLabRawNtfs' -as [type])) {
@@ -224,21 +241,38 @@ public static class N2RLabRawNtfs {
     // NTFS 3.0 one (Windows 2000) has no number and the array at 0x2a
     // (ntfs-3g layout.h, MFT_RECORD and MFT_RECORD_OLD). Answers the record
     // as it is on the disk in the 3.0 form, or null if it already has it:
-    // the array moved to 0x2a with the record's own update sequence number,
-    // the bytes from 0x2a to the first attribute (the old number and array)
-    // zeroed, nothing else changed, and the fixups applied again.
-    public static byte[] ToHeader30(byte[] raw, string what) {
+    // the array moved to 0x2a with the record's own update sequence number
+    // and count, and the fixups applied again. Packed, as Windows 2000 lays
+    // a record out, the attributes move down to the first 8-byte boundary
+    // after the array (0x30 for 1 KiB records, where the 3.1 form has 0x38),
+    // with the first-attribute offset and bytes-in-use moved by as much and
+    // the bytes freed at the end zeroed; in place, they stay where they are.
+    // Either way the bytes from 0x2a to the first attribute are the array
+    // and zeros, and nothing else changes.
+    public static byte[] ToHeader30(byte[] raw, string what, bool packed) {
         byte[] b = (byte[])raw.Clone();
         int usn = Unfix(b, what);
         int usa = U16(b, 4), count = U16(b, 6), first = U16(b, 0x14);
+        long used = U32(b, 0x18), allocated = U32(b, 0x1c);
         if (usa == 0x2a) return null;
         if (usa != 0x30) throw new InvalidDataException(what + ": update sequence array at " + usa + ", neither the 3.1 form (48) nor the 3.0 form (42)");
         int end = 0x2a + 2 * count;
         if (first < 0x38 || first < 0x30 + 2 * count || first % 8 != 0 || first >= b.Length)
             throw new InvalidDataException(what + ": first attribute at " + first + ", inside the 3.1 header (an attribute cannot start before 0x38) or misaligned");
+        if (allocated != b.Length || used < first + 8 || used > b.Length || used % 8 != 0)
+            throw new InvalidDataException(what + ": " + used + " bytes in use of " + allocated + " allocated, first attribute at " + first);
         // As the converter checks it: the array ends before the first stride's last word and before the first attribute.
         if (end > Stride - 2 || end > first) throw new InvalidDataException(what + ": the 3.0 array would end at " + end);
-        for (int i = 0x2a; i < first; i++) b[i] = 0;
+        int target = packed ? (end + 7) / 8 * 8 : first;
+        int shift = first - target;
+        if (shift > 0) {
+            Array.Copy(b, first, b, target, (int)used - first);
+            for (int i = (int)used - shift; i < used; i++) b[i] = 0;
+            b[0x14] = (byte)target; b[0x15] = (byte)(target >> 8);
+            long now = used - shift;
+            b[0x18] = (byte)now; b[0x19] = (byte)(now >> 8); b[0x1a] = (byte)(now >> 16); b[0x1b] = (byte)(now >> 24);
+        }
+        for (int i = 0x2a; i < target; i++) b[i] = 0;
         b[4] = 0x2a; b[5] = 0;
         b[0x2a] = (byte)usn; b[0x2b] = (byte)(usn >> 8);
         Fix(b);
@@ -250,19 +284,31 @@ public static class N2RLabRawNtfs {
         return true;
     }
     // A record read back after ToHeader30 was written: with its fixups
-    // applied it has the 3.0 form, the sequence number it had, and differs
-    // from what it was only in the array's offset (bytes 4 and 5) and from
-    // 0x2a to its first attribute.
+    // applied it has the 3.0 form, the sequence number and count it had,
+    // its header fields (but for the array offset, first-attribute offset
+    // and bytes in use) as they were, its attributes byte for byte where the
+    // first-attribute offset now says (moved down by as much as bytes in
+    // use), zeros between the array and them and in what the move freed,
+    // and its slack after that as it was.
     public static void CheckHeader30(byte[] before, byte[] after, string what) {
         byte[] old = (byte[])before.Clone(), now = (byte[])after.Clone();
         int usnBefore = Unfix(old, what + " before"), usnAfter = Unfix(now, what + " read back");
-        int first = U16(old, 0x14);
-        if (U16(now, 4) != 0x2a) throw new InvalidDataException(what + " reads back with its update sequence array at " + U16(now, 4) + ", not 0x2a");
-        if (usnAfter != usnBefore) throw new InvalidDataException(what + " reads back with update sequence number " + usnAfter + ", not " + usnBefore);
-        for (int i = 0; i < old.Length; i++) {
-            if (old[i] == now[i] || i == 4 || i == 5 || (i >= 0x2a && i < first)) continue;
-            throw new InvalidDataException(what + " reads back changed at byte " + i + " (outside its header)");
+        int count = U16(old, 6), first = U16(old, 0x14), target = U16(now, 0x14);
+        long used = U32(old, 0x18), usedNow = U32(now, 0x18);
+        int shift = first - target;
+        Func<string, Exception> bad = why => new InvalidDataException(what + " reads back " + why);
+        if (U16(now, 4) != 0x2a) throw bad("with its update sequence array at " + U16(now, 4) + ", not 0x2a");
+        if (U16(now, 6) != count) throw bad("with " + U16(now, 6) + " update sequence entries, not " + count);
+        if (usnAfter != usnBefore) throw bad("with update sequence number " + usnAfter + ", not " + usnBefore);
+        if (shift < 0 || target % 8 != 0 || target < 0x2a + 2 * count || usedNow != used - shift) throw bad("with its first attribute at " + target + " and " + usedNow + " bytes in use (they were " + first + " and " + used + ")");
+        for (int i = 0; i < 0x2a; i++) {
+            if (i == 4 || i == 5 || i == 0x14 || i == 0x15 || (i >= 0x18 && i < 0x1c)) continue;
+            if (old[i] != now[i]) throw bad("changed at header byte " + i);
         }
+        for (int i = 0x2a + 2 * count; i < target; i++) if (now[i] != 0) throw bad("with byte " + i + ", between the array and the first attribute, not zero");
+        for (int i = first; i < used; i++) if (old[i] != now[i - shift]) throw bad("with its attributes changed (byte " + i + " now at " + (i - shift) + ")");
+        for (int i = (int)used - shift; i < used; i++) if (now[i] != 0) throw bad("with byte " + i + ", freed by the move, not zero");
+        for (int i = (int)used; i < old.Length; i++) if (old[i] != now[i]) throw bad("changed at byte " + i + ", after the bytes in use");
     }
     public static bool InUse(byte[] raw) { return (U16(raw, 0x16) & 1) != 0; }
 }
@@ -352,6 +398,8 @@ function Get-MftLayout {
     $highest = [BitConverter]::ToInt64($record.fixed, $attribute + 0x18)
     $allocated = [BitConverter]::ToInt64($record.fixed, $attribute + 0x28)
     $dataBytes = [BitConverter]::ToInt64($record.fixed, $attribute + 0x30)
+    # Records past the initialized length read as zeros to NTFS, whatever the disk holds there.
+    $initialized = [BitConverter]::ToInt64($record.fixed, $attribute + 0x38)
     $clusters = [long]($allocated / $cluster)
     if ($lowest -ne 0 -or $highest + 1 -ne $clusters) {
         throw "`$MFT's data maps clusters $lowest to $highest of $clusters in record 0: the rest of its mapping is in another record (an attribute list), which this tool does not follow"
@@ -364,7 +412,8 @@ function Get-MftLayout {
     }
     if ($mapped -ne $clusters) { throw "`$MFT's runs map $mapped clusters of $clusters" }
     if ($runs[1] -ne $mftLcn) { throw "`$MFT's first run starts at cluster $($runs[1]), the boot sector says $mftLcn" }
-    [pscustomobject]@{ runs = $runs; data_bytes = $dataBytes; records = [long]($dataBytes / $recordBytes); run_count = $runs.Count / 3 }
+    [pscustomobject]@{ runs = $runs; data_bytes = $dataBytes; initialized_bytes = $initialized
+        records = [long]([Math]::Min($dataBytes, $initialized) / $recordBytes); run_count = $runs.Count / 3 }
 }
 # $MFT's records in chunks of about a MiB, through its runs (a chunk may
 # span runs: ReadStream and WriteStream follow them).
@@ -394,7 +443,8 @@ switch ($Action) {
         $slots = [int]([Math]::Max($cluster, 4 * [long]$recordBytes) / $recordBytes)
         $primaryBefore = @{}
         $rewritten = [Collections.Generic.List[object]]::new()
-        $counts = [ordered]@{ records = $mft.records; in_use = 0; already_3_0_form = 0; not_in_use = 0; not_file = 0 }
+        $counts = [ordered]@{ records = $mft.records; in_use = 0; already_3_0_form = 0; not_in_use = 0; not_file = 0; left_below_from_record = 0 }
+        $rewrittenSet = [Collections.Generic.HashSet[long]]::new()
         foreach ($chunk in (Get-MftChunks $mft)) {
             $bytes = [N2RLabRawNtfs]::ReadStream($device, $PartitionOffset, $cluster, $mft.runs, $chunk.first * [long]$recordBytes, $chunk.count * $recordBytes)
             $written = [Collections.Generic.List[object]]::new()
@@ -406,7 +456,8 @@ switch ($Action) {
                 if ([Text.Encoding]::ASCII.GetString($raw, 0, 4) -ne 'FILE') { $counts.not_file++; continue }
                 if (-not [N2RLabRawNtfs]::InUse($raw)) { $counts.not_in_use++; continue }
                 $counts.in_use++
-                $new = [N2RLabRawNtfs]::ToHeader30($raw, "MFT record $number")
+                if ($number -lt $FromRecord) { $counts.left_below_from_record++; continue }
+                $new = [N2RLabRawNtfs]::ToHeader30($raw, "MFT record $number", ($Layout -eq 'packed'))
                 if ($null -eq $new) { $counts.already_3_0_form++; continue }
                 [Array]::Copy($new, 0, $bytes, $i * $recordBytes, $recordBytes)
                 $written.Add([pscustomobject]@{ number = $number; index = $i; before = $raw; after = $new })
@@ -421,10 +472,11 @@ switch ($Action) {
                 if (-not [N2RLabRawNtfs]::Same($back, $entry.after)) { throw "MFT record $($entry.number) does not read back as it was written" }
                 [N2RLabRawNtfs]::CheckHeader30($entry.before, $back, "MFT record $($entry.number)")
                 $rewritten.Add([ordered]@{ number = $entry.number; sha256_before = (Get-Sha256 $entry.before); sha256_after = (Get-Sha256 $back) })
+                $null = $rewrittenSet.Add([long]$entry.number)
             }
         }
-        # $MFTMirr: its first four slots, and any further slot that held the
-        # same bytes as its MFT record, rewritten so the two stay equal (the
+        # $MFTMirr: each slot whose MFT record was rewritten and that held the
+        # same bytes as it, rewritten the same way so the two stay equal (the
         # converter requires the first four equal and every other slot equal
         # or an inactive format template, which is left as it is).
         $mirror = [Collections.Generic.List[object]]::new()
@@ -435,8 +487,8 @@ switch ($Action) {
             $equal = $primaryBefore.ContainsKey([int]$slot) -and [N2RLabRawNtfs]::Same($raw, $primaryBefore[[int]$slot])
             if ($slot -ge 4 -and -not $equal) { $mirrorLeft.Add($slot); continue }
             if ($slot -lt 4 -and -not $equal) { throw "`$MFTMirr slot $slot does not hold the same bytes as MFT record $slot before the rewrite" }
-            if ([Text.Encoding]::ASCII.GetString($raw, 0, 4) -ne 'FILE' -or -not [N2RLabRawNtfs]::InUse($raw)) { continue }
-            $new = [N2RLabRawNtfs]::ToHeader30($raw, "`$MFTMirr slot $slot")
+            if (-not $rewrittenSet.Contains([long]$slot)) { continue }
+            $new = [N2RLabRawNtfs]::ToHeader30($raw, "`$MFTMirr slot $slot", ($Layout -eq 'packed'))
             if ($null -eq $new) { continue }
             [N2RLabRawNtfs]::Write($device, $at, $new)
             $back = [N2RLabRawNtfs]::Read($device, $at, $recordBytes)
@@ -447,7 +499,10 @@ switch ($Action) {
             $mirror.Add([ordered]@{ slot = $slot; sha256_before = (Get-Sha256 $raw); sha256_after = (Get-Sha256 $back) })
         }
         Set-VolumeVersion $result 3 0
+        $result.layout = $Layout
+        $result.from_record = $FromRecord
         $result.mft_runs = @($mft.runs)
+        $result.mft_data_bytes = $mft.data_bytes; $result.mft_initialized_bytes = $mft.initialized_bytes
         $result.headers = $counts
         $result.rewritten_count = $rewritten.Count
         $result.rewritten_records = @($rewritten | ForEach-Object { $_.number })
@@ -462,6 +517,10 @@ switch ($Action) {
         $forms = @{}
         $current = [Collections.Generic.List[long]]::new()
         $state = @{}
+        # Raw headers of the records NTFS needs to mount the volume and of the
+        # first few rewritten ones, as the disk holds them now.
+        $sampled = @(@(0, 1, 2, 3, 5) + @($Records | Select-Object -First 6) | ForEach-Object { [long]$_ } | Select-Object -Unique)
+        $sample = [Collections.Generic.List[object]]::new()
         foreach ($chunk in (Get-MftChunks $mft)) {
             $bytes = [N2RLabRawNtfs]::ReadStream($device, $PartitionOffset, $cluster, $mft.runs, $chunk.first * [long]$recordBytes, $chunk.count * $recordBytes)
             for ($i = 0; $i -lt $chunk.count; $i++) {
@@ -471,6 +530,12 @@ switch ($Action) {
                 $inUse = $file -and ([N2RLabRawNtfs]::U16($bytes, $at + 0x16) -band 1)
                 $usa = if ($file) { [N2RLabRawNtfs]::U16($bytes, $at + 4) } else { -1 }
                 $state[[long]$number] = [pscustomobject]@{ in_use = [bool]$inUse; usa = $usa }
+                if ([long]$number -in $sampled) {
+                    $raw = New-Object byte[] $recordBytes
+                    [Array]::Copy($bytes, $at, $raw, 0, $recordBytes)
+                    $sample.Add([ordered]@{ number = $number; sha256 = (Get-Sha256 $raw); header_hex = (Get-Hex $raw 0 0x40); usa = $usa
+                        first_attribute = [N2RLabRawNtfs]::U16($raw, 0x14); bytes_in_use = [N2RLabRawNtfs]::U32($raw, 0x18); in_use = [bool]$inUse })
+                }
                 if (-not $inUse) { continue }
                 $key = '0x{0:x}' -f $usa
                 $forms[$key] = 1 + $(if ($forms.ContainsKey($key)) { $forms[$key] } else { 0 })
@@ -480,6 +545,7 @@ switch ($Action) {
         $result.records = $mft.records
         $result.in_use_by_array_offset = $forms
         $result.in_use_in_3_1_form = @($current)
+        $result.sample = @($sample)
         if ($Records.Count) {
             $result.checked = $Records.Count
             $result.rewritten_now_3_1_form = @($Records | Where-Object { $state.ContainsKey([long]$_) -and $state[[long]$_].in_use -and $state[[long]$_].usa -eq 0x30 })

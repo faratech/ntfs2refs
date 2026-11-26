@@ -99,6 +99,14 @@ param(
     # is set (and again at the end, after it is put back), for an NTFS that
     # reads the value only when it starts.
     [switch]$RestartForLfs2,
+    # With -Features ntfs30-headers: 'packed' lays each rewritten record out
+    # as Windows 2000 does (attributes moved down to just after the 3.0
+    # update sequence array, 0x30 for 1 KiB records); 'in-place' leaves them
+    # at 0x38, where the 3.1 form put them.
+    [ValidateSet('packed', 'in-place')][string]$Ntfs30HeaderLayout = 'packed',
+    # With -Features ntfs30-headers: the first MFT record rewritten; 16
+    # leaves the system files ($MFT to the reserved records) in the 3.1 form.
+    [ValidateRange(0, 16)][int]$Ntfs30HeaderFrom = 0,
     [int]$DirectoryEntries = 20000,
     [int]$BigFileGB = 6,
     # Files of the 'manyfiles' feature: a volume for measuring how a run
@@ -1304,35 +1312,104 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         # brought back. The volume is then listed again: the listing before
         # the run is of the volume as the run gets it.
         try {
-            $rawJson = Invoke-Command -Session $session -ArgumentList $guestRoot, $sourceDisk, $sourceOffset, $lfs2, $ntfs30, $unlock, $ntfs30Headers -ScriptBlock {
-                param($root, $number, $offset, $lfs2, $ntfs30, $unlock, $ntfs30Headers)
+            $rawJson = Invoke-Command -Session $session -ArgumentList $guestRoot, $sourceDisk, $sourceOffset, $lfs2, $ntfs30, $unlock, $ntfs30Headers, $Ntfs30HeaderLayout, $Ntfs30HeaderFrom -ScriptBlock {
+                param($root, $number, $offset, $lfs2, $ntfs30, $unlock, $ntfs30Headers, $layout, $fromRecord)
                 $tool = [scriptblock]::Create((Get-Content -LiteralPath "$root\rawntfs.ps1" -Raw))
+                $last = { param($lines) (@($lines) | Select-Object -Last 1) | ConvertFrom-Json }
                 $result = [ordered]@{}
+                $offlineAt = Get-Date
                 Set-Disk -Number $number -IsOffline $true
                 try {
                     $disk = Get-Disk -Number $number
                     if (-not $disk.IsOffline) { throw "disk $number did not go offline" }
-                    if ($lfs2) { $result.lfs2 = (& $tool -DiskNumber $number -PartitionOffset $offset -Action read-log | Select-Object -Last 1) | ConvertFrom-Json }
-                    if ($ntfs30Headers) { $result.ntfs30 = (& $tool -DiskNumber $number -PartitionOffset $offset -Action set-headers-30 | Select-Object -Last 1) | ConvertFrom-Json }
-                    elseif ($ntfs30) { $result.ntfs30 = (& $tool -DiskNumber $number -PartitionOffset $offset -Action set-version -Major 3 -Minor 0 | Select-Object -Last 1) | ConvertFrom-Json }
+                    # (An error here is kept and the disk still brought back, so what was done is not lost.)
+                    try {
+                        if ($lfs2) { $result.lfs2 = & $last (& $tool -DiskNumber $number -PartitionOffset $offset -Action read-log) }
+                        if ($ntfs30Headers) { $result.ntfs30 = & $last (& $tool -DiskNumber $number -PartitionOffset $offset -Action set-headers-30 -Layout $layout -FromRecord $fromRecord) }
+                        elseif ($ntfs30) { $result.ntfs30 = & $last (& $tool -DiskNumber $number -PartitionOffset $offset -Action set-version -Major 3 -Minor 0) }
+                    } catch { $result.made_error = "$($_.Exception.Message)" }
                 } finally { Set-Disk -Number $number -IsOffline $false }
-                $until = (Get-Date).AddSeconds(60)
+                $onlineAt = Get-Date
+                $result.online_at = $onlineAt.ToString('o')
+                $until = $onlineAt.AddSeconds(60)
                 while (-not (Test-Path -LiteralPath 'V:\') -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 500 }
                 try { & ([scriptblock]::Create($unlock)) } catch { }
                 $result.v_back = [bool](Test-Path -LiteralPath 'V:\')
-                $text = & "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-before.jsonl" 2>&1
-                $result.listed_exit = $LASTEXITCODE; $result.listed = ($text -join ' ')
-                # What the disk says when the run starts: Windows has had the
-                # volume mounted again for as long as the listing took.
-                if ($ntfs30) { $result.version_when_the_run_starts = (& $tool -DiskNumber $number -PartitionOffset $offset -Action read-version | Select-Object -Last 1) | ConvertFrom-Json }
-                # Every in-use record read again, and each one rewritten held
-                # to the 3.0 form: Windows has had the volume mounted.
-                if ($ntfs30Headers) { $result.headers_when_the_run_starts = (& $tool -DiskNumber $number -PartitionOffset $offset -Action read-headers -Records ([long[]]@($result.ntfs30.rewritten_records)) | Select-Object -Last 1) | ConvertFrom-Json }
-                [pscustomobject]$result | ConvertTo-Json -Depth 8 -Compress
+                $result.seconds_to_come_back = [Math]::Round(((Get-Date) - $onlineAt).TotalSeconds, 1)
+                if ($result.v_back) {
+                    $text = & "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-before.jsonl" 2>&1
+                    $result.listed_exit = $LASTEXITCODE; $result.listed = ($text -join ' ')
+                }
+                # What the disk says when the run starts, read raw (whether or
+                # not Windows mounted the volume): Windows has had it for as
+                # long as the listing took.
+                if ($ntfs30 -and -not $result.Contains('made_error')) {
+                    try { $result.version_when_the_run_starts = & $last (& $tool -DiskNumber $number -PartitionOffset $offset -Action read-version) } catch { $result.version_read_error = "$($_.Exception.Message)" }
+                    # Every in-use record read again, each one rewritten held to
+                    # the 3.0 form, and the headers of a few of them kept.
+                    if ($ntfs30Headers) {
+                        try { $result.headers_when_the_run_starts = & $last (& $tool -DiskNumber $number -PartitionOffset $offset -Action read-headers -Records ([long[]]@($result.ntfs30.rewritten_records))) } catch { $result.headers_read_error = "$($_.Exception.Message)" }
+                    }
+                }
+                # What Windows made of the volume: its partition and volume,
+                # NTFS's own account of it where it mounted, and the System
+                # log's entries since the disk was taken offline.
+                if ($ntfs30Headers -or -not $result.v_back -or $result.Contains('made_error')) {
+                    $d = [ordered]@{ offline_at = $offlineAt.ToString('o'); online_at = $onlineAt.ToString('o') }
+                    $d.disk = Get-Disk -Number $number | ForEach-Object { [ordered]@{ is_offline = $_.IsOffline; is_read_only = $_.IsReadOnly; operational = "$($_.OperationalStatus)"; health = "$($_.HealthStatus)" } }
+                    $d.partitions = @(Get-Partition -DiskNumber $number -ErrorAction SilentlyContinue | ForEach-Object {
+                            [ordered]@{ number = $_.PartitionNumber; offset = $_.Offset; size = $_.Size; letter = "$($_.DriveLetter)"; type = "$($_.Type)"; access_paths = @($_.AccessPaths) } })
+                    $volume = Get-Partition -DiskNumber $number -ErrorAction SilentlyContinue | Where-Object Offset -EQ $offset | Get-Volume -ErrorAction SilentlyContinue
+                    $d.volume = if ($volume) { [ordered]@{ file_system = "$($volume.FileSystemType)"; file_system_name = "$($volume.FileSystem)"; label = "$($volume.FileSystemLabel)"; letter = "$($volume.DriveLetter)"
+                            health = "$($volume.HealthStatus)"; operational = "$(@($volume.OperationalStatus) -join ',')"; size = $volume.Size; remaining = $volume.SizeRemaining; path = "$($volume.Path)" } } else { $null }
+                    $target = if (Test-Path -LiteralPath 'V:\') { 'V:' } elseif ($volume -and $volume.Path) { "$($volume.Path)" } else { $null }
+                    $d.fsutil_target = $target
+                    if ($target) {
+                        $d.fsutil_ntfsinfo = (& fsutil fsinfo ntfsinfo $target 2>&1) -join "`n"
+                        $d.fsutil_dirty = (& fsutil dirty query $target 2>&1) -join "`n"
+                    }
+                    $events = { param($log) @(Get-WinEvent -FilterHashtable @{ LogName = $log; StartTime = $offlineAt } -ErrorAction SilentlyContinue |
+                                Where-Object { $_.ProviderName -match 'Ntfs|Chkdsk|partmgr|volmgr|mountmgr|disk|VDS|volsnap' -or $_.Id -in 55, 98, 130, 137 } |
+                                Select-Object -First 200 | ForEach-Object { [ordered]@{ time = $_.TimeCreated.ToString('o'); log = $log; provider = $_.ProviderName; id = $_.Id; level = "$($_.LevelDisplayName)"; message = "$($_.Message)" } }) }
+                    $d.events = @(& $events 'System') + @(& $events 'Microsoft-Windows-Ntfs/Operational')
+                    # Raw headers of the records NTFS reads to mount it, if read-headers was not reached.
+                    if (-not $result.Contains('headers_when_the_run_starts') -and $ntfs30Headers -and -not $result.Contains('made_error')) {
+                        try { $d.headers = & $last (& $tool -DiskNumber $number -PartitionOffset $offset -Action read-headers -Records ([long[]]@($result.ntfs30.rewritten_records))) } catch { $d.headers_error = "$($_.Exception.Message)" }
+                    }
+                    $d.v_back_after_diagnostics = [bool](Test-Path -LiteralPath 'V:\')
+                    $result.diagnostics = $d
+                }
+                [pscustomobject]$result | ConvertTo-Json -Depth 10 -Compress
             }
         } catch { $verdict.outcome = 'feature-not-made'; throw "lfs2 or ntfs30 could not be made on the disk: $($_.Exception.Message)" }
         $onDisk = ($rawJson | Select-Object -Last 1) | ConvertFrom-Json
-        if (-not $onDisk.v_back) { $verdict.outcome = 'feature-not-made'; throw 'V: did not come back after its disk was taken offline for lfs2 or ntfs30' }
+        # Kept before anything is decided: what was written, what the disk
+        # said once Windows had it back, and what Windows made of it.
+        $patch = $null
+        if ($ntfs30 -and $onDisk.ntfs30) {
+            $patch = $onDisk.ntfs30
+            $patch | Add-Member -NotePropertyName version_when_the_run_starts -NotePropertyValue $onDisk.version_when_the_run_starts
+            if ($ntfs30Headers) { $patch | Add-Member -NotePropertyName headers_when_the_run_starts -NotePropertyValue $onDisk.headers_when_the_run_starts }
+            [IO.File]::WriteAllText((Join-Path $records 'ntfs30.json'), ($patch | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+        }
+        if ($onDisk.diagnostics) {
+            [IO.File]::WriteAllText((Join-Path $records 'raw-feature-diagnostics.json'), ($onDisk.diagnostics | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+            $diag = $onDisk.diagnostics
+            $ntfsEvents = @($diag.events | Where-Object { $_.provider -match 'Ntfs' -or $_.id -in 55, 98, 130, 137 })
+            Say "after the disk came back: volume $(if ($diag.volume) { "file system '$($diag.volume.file_system)', letter '$($diag.volume.letter)', health $($diag.volume.health), $($diag.volume.operational)" } else { 'NOT FOUND' }); NTFS events $(if ($ntfsEvents.Count) { @($ntfsEvents | ForEach-Object { "$($_.id)" } | Select-Object -Unique) -join ', ' } else { 'none' }) (raw-feature-diagnostics.json)"
+        }
+        if ($onDisk.made_error) { $verdict.outcome = 'feature-not-made'; throw "lfs2 or ntfs30 could not be made on the disk: $($onDisk.made_error)" }
+        if (-not $onDisk.v_back) {
+            if ($ntfs30Headers) {
+                # The rewrite was made and read back; Windows would not mount what it made.
+                $verdict.outcome = 'ntfs30-headers-volume-not-mounted'
+                $verdict.ntfs30 = [ordered]@{ layout = $patch.layout; from_record = $patch.from_record; rewritten = $patch.rewritten_count; mirror_rewritten = @($patch.mirror_rewritten).Count
+                    file_system_after = $onDisk.diagnostics.volume.file_system; letter_after = $onDisk.diagnostics.volume.letter
+                    ntfs_events = @($onDisk.diagnostics.events | Where-Object { $_.provider -match 'Ntfs' -or $_.id -in 55, 98, 130, 137 } | ForEach-Object { "$($_.id)" } | Select-Object -Unique) }
+                throw "V: did not come back within 60 s after $($patch.rewritten_count) MFT records ($($patch.layout) layout, from record $($patch.from_record)) were rewritten into the NTFS 3.0 header form; records: ntfs30.json and raw-feature-diagnostics.json"
+            }
+            $verdict.outcome = 'feature-not-made'; throw 'V: did not come back after its disk was taken offline for lfs2 or ntfs30'
+        }
         if ($onDisk.listed_exit -ne 0) { throw "listing the volume again after lfs2 or ntfs30 failed (exit $($onDisk.listed_exit)): $($onDisk.listed)" }
         Copy-Item -FromSession $session -LiteralPath "$guestRoot\manifest-before.jsonl" -Destination $records -Force
         Say "listing again, of the volume as the run gets it: $($onDisk.listed)"
@@ -1348,10 +1425,6 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
             }
         }
         if ($ntfs30) {
-            $patch = $onDisk.ntfs30
-            $patch | Add-Member -NotePropertyName version_when_the_run_starts -NotePropertyValue $onDisk.version_when_the_run_starts
-            if ($ntfs30Headers) { $patch | Add-Member -NotePropertyName headers_when_the_run_starts -NotePropertyValue $onDisk.headers_when_the_run_starts }
-            [IO.File]::WriteAllText((Join-Path $records 'ntfs30.json'), ($patch | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
             $startsAt = $onDisk.version_when_the_run_starts
             $verdict.ntfs30 = [ordered]@{ version_before = $patch.mft.version_before; mft = $patch.mft.version_after; mirror = $patch.mirror.version_after
                 mirror_matched_before = $patch.mirror_matched_before; when_the_run_starts = [ordered]@{ mft = $startsAt.mft.version; mirror = $startsAt.mirror.version } }
@@ -1363,7 +1436,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
             if ($ntfs30Headers) {
                 $headers = $onDisk.headers_when_the_run_starts
                 $toCurrent = @($headers.rewritten_now_3_1_form); $toOther = @($headers.rewritten_now_other_form); $gone = @($headers.rewritten_no_longer_in_use)
-                $verdict.ntfs30.headers = [ordered]@{ records = $patch.headers.records; in_use = $patch.headers.in_use; rewritten = $patch.rewritten_count
+                $verdict.ntfs30.headers = [ordered]@{ layout = $patch.layout; from_record = $patch.from_record; records = $patch.headers.records; in_use = $patch.headers.in_use; rewritten = $patch.rewritten_count
                     already_3_0_form = $patch.headers.already_3_0_form; mirror_rewritten = @($patch.mirror_rewritten).Count; mirror_left_as_templates = @($patch.mirror_left_as_templates).Count
                     mft_runs = [int](@($patch.mft_runs).Count / 3)
                     when_the_run_starts = [ordered]@{ in_use_by_array_offset = $headers.in_use_by_array_offset; in_use_in_3_1_form = @($headers.in_use_in_3_1_form).Count

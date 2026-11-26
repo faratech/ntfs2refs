@@ -517,16 +517,30 @@ in-use FILE record of `$MFT` (found through `$MFT`'s own runs, so a
 fragmented `$MFT` is followed; one whose mapping goes on through an
 attribute list is refused by name) from the 3.1 header form (record number
 at 0x2c, update sequence array at 0x30) into the 3.0 form (no number, the
-array at 0x2a): the array moves with the record's own sequence number, the
-bytes from 0x2a to the first attribute are zeroed, and each record is read
-back and held to differ in nothing else. A record whose first attribute
-starts before 0x38 stops it. `$MFTMirr`'s first four slots, and any further
-slot that held the same bytes as its MFT record, are rewritten the same way
-and held equal to it; an inactive template slot is left. Then `$Volume` is
-set to 3.0 as for `ntfs30`. `ntfs30.json` adds the counts, `$MFT`'s runs and
-each rewritten record's SHA-256 before and after. Once Windows has the
-volume mounted again and it is listed, every in-use record is read again;
-if any rewritten one reads the 3.1 form, the attempt ends
+array at 0x2a): the array moves with the record's own sequence number and,
+with `-Ntfs30HeaderLayout packed` (the default, as Windows 2000 lays a record
+out), the attributes move down to the first 8-byte boundary after it (0x30
+for 1 KiB records, 0x38 in the 3.1 form), the first-attribute offset and
+bytes in use with them; `in-place` leaves them where they were. The bytes
+from 0x2a to the first attribute are the array and zeros, and each record
+is read back and held to differ in nothing else. A record whose first
+attribute starts before 0x38 stops it. `-Ntfs30HeaderFrom 16` rewrites only
+records 16 and up, leaving the system files in the 3.1 form. Each
+`$MFTMirr` slot whose record was rewritten and held the same bytes is
+rewritten the same way and held equal to it; an inactive template slot is
+left. Then `$Volume` is set to 3.0 as for `ntfs30`. `ntfs30.json` adds the
+layout, the counts, `$MFT`'s runs (up to its initialized length) and each
+rewritten record's SHA-256 before and after; it is kept whatever follows.
+If the volume is not back at V: within 60 s, the attempt ends
+`ntfs30-headers-volume-not-mounted`; `raw-feature-diagnostics.json` holds
+the disk's partitions and volume (file system, letter, health),
+`fsutil fsinfo ntfsinfo` and `fsutil dirty query` where it mounted, the
+System and NTFS Operational log entries since the disk went offline (NTFS,
+chkdsk and storage providers, and IDs 55, 98, 130, 137), and the raw headers
+of records 0, 1, 2, 3, 5 and the first rewritten ones (it is written for
+every `ntfs30-headers` attempt). Once Windows has the volume mounted again
+and it is listed, every in-use record is read again; if any rewritten one
+reads the 3.1 form, the attempt ends
 `ntfs30-headers-rewritten-by-windows-before-the-run` (records Windows
 newly allocates on mount may be in the 3.1 form: the verdict counts them,
 and the converter reads both). For both features the converter reads

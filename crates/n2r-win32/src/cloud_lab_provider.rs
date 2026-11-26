@@ -26,11 +26,12 @@ use windows_sys::Win32::Storage::CloudFilters::{
     CF_PLACEHOLDER_CREATE_FLAG_DISABLE_ON_DEMAND_POPULATION,
     CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC, CF_PLACEHOLDER_CREATE_INFO,
     CF_PLACEHOLDER_MANAGEMENT_POLICY_DEFAULT, CF_POPULATION_POLICY,
-    CF_POPULATION_POLICY_ALWAYS_FULL, CF_POPULATION_POLICY_MODIFIER_NONE,
+    CF_POPULATION_POLICY_ALWAYS_FULL, CF_POPULATION_POLICY_MODIFIER_NONE, CF_PROVIDER_STATUS_IDLE,
     CF_REGISTER_FLAG_DISABLE_ON_DEMAND_POPULATION_ON_ROOT, CF_REGISTER_FLAG_MARK_IN_SYNC_ON_ROOT,
     CF_SET_PIN_FLAG_NONE, CF_SYNC_POLICIES, CF_SYNC_REGISTRATION, CfConnectSyncRoot,
     CfCreatePlaceholders, CfDehydratePlaceholder, CfDisconnectSyncRoot, CfExecute,
     CfHydratePlaceholder, CfRegisterSyncRoot, CfSetPinState, CfUnregisterSyncRoot,
+    CfUpdateSyncProviderStatus,
 };
 use windows_sys::Win32::Storage::FileSystem::FILE_BASIC_INFO;
 
@@ -226,6 +227,19 @@ impl Connection {
             return Err(hresult(
                 &format!("connecting to {}", root.display()),
                 result,
+            ));
+        }
+        // Says it is running, as a provider does: CF_PROVIDER_STATUS_IDLE,
+        // which CfGetSyncRootInfo then reports to every reader (how a
+        // conversion tells a provider that runs from one that does not).
+        // SAFETY: the key this connection was just given.
+        let status = unsafe { CfUpdateSyncProviderStatus(key, CF_PROVIDER_STATUS_IDLE) };
+        if status < 0 {
+            // SAFETY: as above, once.
+            unsafe { CfDisconnectSyncRoot(key) };
+            return Err(hresult(
+                &format!("reporting the provider of {} as running", root.display()),
+                status,
             ));
         }
         Ok(Self { key })

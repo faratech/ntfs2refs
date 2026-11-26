@@ -74,7 +74,11 @@ impl CloudFinding {
 
     fn provider(&self) -> String {
         match &self.sync_root {
-            Some(Ok(root)) if !root.provider.is_empty() => root.provider.clone(),
+            // With the status it reports (CF_SYNC_PROVIDER_STATUS): 0 is
+            // disconnected, 1 idle.
+            Some(Ok(root)) if !root.provider.is_empty() => {
+                format!("{}, status {:#x}", root.provider, root.status)
+            }
             Some(Err(error)) => format!("its provider could not be asked: {error}"),
             _ => "its provider".to_owned(),
         }
@@ -728,7 +732,7 @@ mod tests {
         let refused = refusals(&findings, &BTreeSet::new());
         assert_eq!(refused.len(), 1, "{refused:?}");
         assert!(
-            refused[0].contains("\\c\\none.txt (Lab)")
+            refused[0].contains("\\c\\none.txt (Lab, status 0x0)")
                 && refused[0].contains("provider is not running")
                 && refused[0].contains("Nothing was changed"),
             "{refused:?}"

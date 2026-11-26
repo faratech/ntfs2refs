@@ -1194,6 +1194,46 @@ mod refusal_tests {
         assert!(matches!(view, Ok(None)), "{view:?}");
     }
 
+    /// The lab (cl4-down-leave-out, records 44, 46, 47): a placeholder file
+    /// wholly on the volume, whose copy holds exactly its raw contents, is
+    /// the raw stream as Windows sees it, which a run that verifies once need
+    /// not have Windows read; a copy that differs from the raw stream is not.
+    #[test]
+    fn a_copy_that_is_the_raw_stream_needs_no_second_read() {
+        let mut file = cloud_folder(&[]);
+        file.record_number = 0x7e57_0044;
+        file.is_directory = false;
+        file.streams = directory_with_stream("", 0).streams;
+        let bytes = b"the file's contents";
+        file.streams[0].logical_size = bytes.len() as u64;
+        file.streams[0].logical_sha256 = Some(n2r_win32::content_digest::of(bytes));
+        file.streams[0].logical_hash_status = ntfs::LogicalHashStatus::Complete;
+        let _held = crate::plain_projection::COPY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let run = tempfile::tempdir().unwrap();
+        n2r_win32::plain_copy::arm(
+            &run.path().join(n2r_win32::plain_copy::DIRECTORY),
+            vec![n2r_win32::plain_copy::PlainCopyRequest {
+                key: crate::plain_projection::copy_key(&file),
+                bytes: bytes.len() as u64,
+                through: n2r_win32::plain_copy::PlainRead::Filter,
+            }],
+        )
+        .unwrap();
+        n2r_win32::plain_copy::take_armed_with(|_| Ok(&bytes[..])).unwrap();
+        crate::plain_consent::take_plain_on_this_thread(true);
+        let same = crate::plain_projection::copy_is_the_raw_stream(&file, &file.streams[0]);
+        let mut changed = file.clone();
+        changed.streams[0].logical_sha256 = Some(n2r_win32::content_digest::of(b"other"));
+        let differs =
+            crate::plain_projection::copy_is_the_raw_stream(&changed, &changed.streams[0]);
+        crate::plain_consent::take_plain_on_this_thread(false);
+        let not_taken = crate::plain_projection::copy_is_the_raw_stream(&file, &file.streams[0]);
+        n2r_win32::plain_copy::remove(run.path()).unwrap();
+        assert!(same && !differs && !not_taken);
+    }
+
     /// The checked source readers take a directory's named stream: the lab's
     /// dirstream run was refused in payload supply planning with "plain
     /// standalone file required".

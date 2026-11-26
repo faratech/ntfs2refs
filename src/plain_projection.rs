@@ -471,10 +471,53 @@ pub(crate) fn plain_copy_pin(
 ///
 /// `None` for every other object, which is compared as it is.
 pub(crate) fn observed_view(file: &FileInventory) -> Result<Option<FileInventory>> {
+    // A sync root's folder: the Cloud Files filter hides the API's own
+    // stream from Windows (the lab: its stream enumeration ends at once,
+    // ERROR_HANDLE_EOF), so Windows is held to the folder without it.
+    if file.is_directory && cloud_taken(file) && file.streams.iter().any(sync_root_stream) {
+        return Ok(Some(sync_root_view(file)));
+    }
     let Some(pin) = plain_copy_pin(file)? else {
         return Ok(None);
     };
     filter_view(file, wof_taken(file), &pin.content_digest).map(Some)
+}
+
+/// A sync root's folder as Windows sees it: without the Cloud Files API's
+/// own streams and their DATA attributes.
+fn sync_root_view(file: &FileInventory) -> FileInventory {
+    let mut view = file.clone();
+    view.streams.retain(|stream| !sync_root_stream(stream));
+    view.attributes.retain(|attribute| {
+        !(attribute.type_code == 0x80
+            && String::from_utf16(&attribute.name_utf16)
+                .is_ok_and(|name| n2r_win32::plain_ledger::is_cloud_private_stream(&name)))
+    });
+    view
+}
+
+/// Whether `stream` of `file`, made plain from its copy, is that copy
+/// exactly as the raw record holds it: the unnamed stream of a cloud
+/// placeholder wholly on the volume, whose copy read through the filter has
+/// the raw reading's own content digest. Windows' view of it is then the
+/// raw stream's, which a run that verifies once need not read again; any
+/// other copied stream (WOF's, EFS's) is read by Windows and held to its
+/// copy.
+pub(crate) fn copy_is_the_raw_stream(
+    file: &FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+) -> bool {
+    if !stream.name_utf16.is_empty() || !cloud_copied(file) {
+        return false;
+    }
+    let Some(raw) = file.streams.iter().find(|s| s.name_utf16.is_empty()) else {
+        return false;
+    };
+    n2r_win32::plain_copy::taken_pin(&copy_key(file)).is_some_and(|pin| {
+        raw.logical_hash_status == crate::ntfs_inspect::LogicalHashStatus::Complete
+            && raw.logical_sha256.as_deref() == Some(pin.content_digest.as_str())
+            && raw.logical_size == pin.bytes
+    })
 }
 
 /// [`observed_view`] of a file whose copy has `content_digest`; `wof`
@@ -544,6 +587,11 @@ pub(crate) fn allocation_held_by_copy(
         })
         .is_some()
 }
+
+/// Held by a test that takes plain copies: the process holds one set of
+/// them at a time.
+#[cfg(test)]
+pub(crate) static COPY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The transform of one file or directory, from its raw record.
 pub(crate) fn of_file(file: &FileInventory) -> Result<Option<PlainTransform>> {
@@ -1160,6 +1208,19 @@ mod tests {
     }
 
     #[test]
+    fn a_sync_roots_folder_shows_windows_no_stream_of_the_apis() {
+        let mut folder = wof_file();
+        folder.is_directory = true;
+        let identity = "${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity";
+        folder.streams = vec![stream(identity, 0)];
+        folder.attributes = vec![attribute(0x80, identity, 0), attribute(0xc0, "", 0)];
+        let view = sync_root_view(&folder);
+        assert!(view.streams.is_empty());
+        assert_eq!(view.attributes.len(), 1);
+        assert!(view.reparse.is_some());
+    }
+
+    #[test]
     fn a_cloud_placeholder_shows_windows_what_its_raw_record_holds() {
         let copy = "cd".repeat(16);
         let mut raw = wof_file();
@@ -1186,6 +1247,9 @@ mod tests {
     #[test]
     fn only_a_copied_streams_allocation_is_held_by_its_copy() {
         // An identity no other test of this process takes a copy of.
+        let _held = COPY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (record, sequence) = (0xfeed_0000_0041u64, 9u16);
         assert!(!allocation_held_by_copy(record, sequence, &[]));
         let run = tempfile::tempdir().unwrap();

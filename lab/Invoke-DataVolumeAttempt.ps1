@@ -1530,6 +1530,12 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         if (-not $alive) { $verdict.outcome = 'cloud-provider-not-running'; throw "the lab cloud provider (process $served) is no longer running before the conversion" }
         if ($RunAs -ne 'administrator') { Say 'cloud: the converter runs as SYSTEM, which the provider (the harness account''s) does not serve; with -RunAs administrator it does' }
         Say "cloud: the lab provider (process $served) is serving"
+        # What the Cloud Files API reports of the sync root to this account:
+        # the provider's status (1, idle, once it is connected) and what of
+        # each placeholder is on the volume.
+        $reported = Invoke-Command -Session $session -ArgumentList $guestRoot, $verdict.source.features.cloud.sync_root -ScriptBlock {
+            param($root, $sync) (& "$root\lab-cloud-provider.exe" report --root $sync 2>&1) -join ' | ' }
+        Say "cloud: $reported"
     }
     Start-Worker $guestRoot $arguments $task $(if ($declinePlain) { @('n') } else { @() })
     Say "converter started: ntfs2refs $($arguments -join ' ')$(if ($declinePlain) { ' (its question about plain conversions answered no)' })"

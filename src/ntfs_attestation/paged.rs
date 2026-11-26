@@ -1006,7 +1006,14 @@ fn compare_domain_with_header(
                         return Ok(());
                     }
                     let mut plain = |stream: &crate::ntfs_inspect::StreamInventory| {
-                        if view.is_some() {
+                        // A stream made plain from a copy is read by Windows
+                        // and held to the copy, unless the copy holds exactly
+                        // the raw stream's contents (a cloud placeholder
+                        // wholly on the volume): then it is the raw stream,
+                        // plain or not as the raw reading holds it.
+                        if view.is_some()
+                            && !crate::plain_projection::copy_is_the_raw_stream(&file, stream)
+                        {
                             return Ok(false);
                         }
                         plain_content_stream(source, &file, stream)

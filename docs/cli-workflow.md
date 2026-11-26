@@ -438,9 +438,19 @@ plain silently. This version converts:
   every count the new volume is checked against (objects, streams and
   bytes) is the source's less exactly those objects.
 
-The other kinds a list can name (`dedup_rehydrated`,
-`projfs_placeholder_plain`, `sis_expanded`) are still refused as listed
-above.
+- a file Data Deduplication has optimized (`dedup_rehydrated`): it is read
+  through the deduplication filter on the frozen volume into a copy, as a
+  WOF file is, and the new file is made from that copy, whole; its reparse
+  point is not carried over, and the capacity check counts its plain length.
+  Only a Windows that has the filter can read it: on one without (Windows
+  11), such a file is refused by name with what to do, converting from a
+  Windows Server with Data Deduplication or running
+  `Start-DedupJob -Type Unoptimization -Volume <drive>:` first. The chunk
+  store under System Volume Information is carried as that folder's content
+  is.
+
+The other kinds a list can name (`projfs_placeholder_plain`,
+`sis_expanded`) are still refused as listed above.
 
 `--check` prints a "Converted to plain" section: how many objects of each
 kind, their bytes, the extra space on the new volume and in the working

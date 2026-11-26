@@ -155,6 +155,7 @@ impl PlainKind {
             PlainKind::AttributesCleared
                 | PlainKind::WofExpanded
                 | PlainKind::EfsDecrypted
+                | PlainKind::DedupRehydrated
                 | PlainKind::CloudPlaceholderPlain
                 | PlainKind::CloudLeftOut
         )
@@ -928,6 +929,7 @@ mod tests {
                 &PlainKind::AttributesCleared,
                 &PlainKind::EfsDecrypted,
                 &PlainKind::WofExpanded,
+                &PlainKind::DedupRehydrated,
                 &PlainKind::CloudPlaceholderPlain,
                 &PlainKind::CloudLeftOut
             ]

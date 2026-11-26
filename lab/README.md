@@ -526,6 +526,12 @@ The listing descends into placeholder folders, so it lists a sync root's
 contents whether its provider runs or not. The harness checks that the
 provider is still serving before it starts the converter. Both are still to be run.
 
+`dedup` (Windows Server only: ntfs2refs-server2025, with its `-VmId` and
+`-CredentialPath`) installs Data Deduplication if it is missing, turns it on
+for V: with files of any age, plants four identical files and runs an
+optimization job to its end; each has to hold a 0x80000013 reparse point. With
+`-AcceptPlain` they are made plain from what the filter reads.
+
 `temporary`, `offline` and `wof` (four `compact /exe` files, one per WOF
 algorithm, listed before the run in `wof-listed-before.jsonl`) convert with
 `-AcceptPlain`; without it a run stops before it changes anything. So does

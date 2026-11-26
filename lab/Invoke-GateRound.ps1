@@ -260,6 +260,8 @@ $dataCases = @(
     'cloud-down|-Content minimal -Features cloud-down -Check -AcceptPlain -Unattended -ExpectRefusal leave-out-cloud'
     # The same, with leaving the two out agreed: it converts without them.
     'cloud-down-leave-out|-Content minimal -Features cloud-down -Check -AcceptPlain -Unattended -LeaveOutCloud'
+    # Data Deduplication: on ntfs2refs-server2025 only, which has the filter
+    # (its -VmId and -CredentialPath); a Windows 11 VM cannot plant it.
     'names|-Content minimal -Features names -Check'
     # MBR disks: the volume alone on one, the working directory on one, both
     # with a run interrupted half way through the writes and resumed; and a

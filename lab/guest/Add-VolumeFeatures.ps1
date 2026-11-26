@@ -379,6 +379,31 @@ public static class ManyFiles {
                 not_present = @("\feature-$feature\synced\partial.bin", "\feature-$feature\synced\absent.bin")
             }
         }
+        'dedup' {
+            # Data Deduplication, which only Windows Server has: the feature
+            # is installed if it is missing (it stays), turned on for the
+            # volume with files of any age, and an optimization job run to
+            # its end. Each planted file then holds a dedup reparse point.
+            if (-not (Get-WindowsFeature -Name FS-Data-Deduplication -ErrorAction Stop).Installed) {
+                $null = Install-WindowsFeature -Name FS-Data-Deduplication -ErrorAction Stop
+            }
+            $null = New-Item -ItemType Directory -Path $dir -Force
+            $block = [Text.Encoding]::ASCII.GetBytes(('deduplicated text, the same in every file ' * 40000))
+            $plain = New-Object System.Collections.Generic.List[object]
+            foreach ($i in 1..4) {
+                [IO.File]::WriteAllBytes("$dir\dedup-$i.bin", $block)
+                $plain.Add([ordered]@{ kind = 'dedup_rehydrated'; path = "\feature-$feature\dedup-$i.bin" })
+            }
+            $null = Enable-DedupVolume -Volume $drive -UsageType Default -ErrorAction Stop
+            $null = Set-DedupVolume -Volume $drive -MinimumFileAgeDays 0 -ErrorAction Stop
+            $null = Start-DedupJob -Volume $drive -Type Optimization -Wait -ErrorAction Stop
+            foreach ($i in 1..4) {
+                $tag = (& fsutil.exe reparsepoint query "$dir\dedup-$i.bin" 2>&1 | Out-String)
+                if ($tag -notmatch '0x80000013') { throw "dedup-$i.bin was not optimized (no 0x80000013 reparse point): $tag" }
+            }
+            # Made plain once agreed (dedup_rehydrated): the ledger has to name each.
+            $made[$feature] = [ordered]@{ what = 'four identical files Data Deduplication has optimized'; plain = $plain.ToArray() }
+        }
         'quota' {
             $null = Run 'fsutil.exe' @('quota', 'enforce', $drive)
             $null = Run 'fsutil.exe' @('quota', 'modify', $drive, '100000000', '200000000', "$env:COMPUTERNAME\$env:USERNAME")

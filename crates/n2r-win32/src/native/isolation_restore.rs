@@ -205,7 +205,15 @@ impl GeneralFrozenPartition {
             // of the volume open. A handle that is just being closed (the
             // indexer's, a scanner's) is waited for; one that stays is the
             // user's to close, and the bare "Access is denied" did not say so.
-            let mut attempts = 0;
+            // How long: 20 s, or longer where the run has just downloaded
+            // cloud placeholders and waits for their provider to be closed
+            // (`lock_holders`). What holds the volume is named as the wait
+            // goes on, and in the refusal.
+            let patience = crate::lock_holders::patience();
+            let most = u32::try_from(patience.as_millis() / 500)
+                .unwrap_or(u32::MAX)
+                .max(1);
+            let mut attempts = 0u32;
             loop {
                 match control(
                     volume.as_ref().expect("volume owner"),
@@ -217,18 +225,36 @@ impl GeneralFrozenPartition {
                 ) {
                     Ok(_) => break,
                     Err(error)
-                        if attempts < 40 && matches!(error.raw_os_error(), Some(5) | Some(32)) =>
+                        if attempts < most
+                            && matches!(error.raw_os_error(), Some(5) | Some(32)) =>
                     {
                         attempts += 1;
+                        // Every 15 s of a wait, what holds it, where known.
+                        if attempts % 30 == 0 {
+                            let holders = crate::lock_holders::now();
+                            if !holders.is_empty() {
+                                eprintln!(
+                                    "Waiting for the volume to be free to take offline ({} of {} s): {holders}.",
+                                    attempts / 2,
+                                    most / 2
+                                );
+                            }
+                        }
                         std::thread::sleep(std::time::Duration::from_millis(500));
                     }
                     Err(error) => {
+                        let holders = crate::lock_holders::now();
                         return Err(io::Error::new(
                             error.kind(),
                             format!(
-                                "the volume on disk {} could not be locked to take it offline, after waiting {} s: something has a file or folder on it open. Close the programs and Explorer windows that use it (and any command prompt whose current folder is on it), then run the conversion again. Nothing was changed: {error}",
+                                "the volume on disk {} could not be locked to take it offline, after waiting {} s: something has a file or folder on it open{}. Close the programs and Explorer windows that use it (and any command prompt whose current folder is on it), then run the conversion again. Nothing was changed: {error}",
                                 binding.disk_number,
-                                attempts / 2
+                                attempts / 2,
+                                if holders.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" ({holders})")
+                                }
                             ),
                         ));
                     }

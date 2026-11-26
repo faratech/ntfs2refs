@@ -59,8 +59,23 @@ fn capabilities_report_what_the_executable_enforces() {
     assert_eq!(plain["converted"][0]["kind"], "attributes_cleared");
     assert_eq!(plain["converted"][1]["kind"], "efs_decrypted");
     assert_eq!(plain["converted"][2]["kind"], "wof_expanded");
-    assert_eq!(plain["converted"].as_array().unwrap().len(), 3);
-    assert_eq!(plain["modelled_still_refused"].as_array().unwrap().len(), 5);
+    assert_eq!(plain["converted"][3]["kind"], "cloud_placeholder_plain");
+    assert_eq!(plain["converted"][4]["kind"], "cloud_left_out");
+    assert_eq!(plain["converted"].as_array().unwrap().len(), 5);
+    assert_eq!(plain["modelled_still_refused"].as_array().unwrap().len(), 3);
+    // Downloading cloud placeholders before the freeze is a change to the
+    // source that a stopped run does not undo, and is said to be one.
+    assert!(
+        capabilities["source_changes_before_apply"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|change| change["change"]
+                .as_str()
+                .unwrap()
+                .contains("CfHydratePlaceholder")
+                && change["undone_if_the_run_stops"] == false)
+    );
     assert_eq!(plain["record"], "plain-conversions.json");
     assert!(
         plain["consent"]

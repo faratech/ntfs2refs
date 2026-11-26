@@ -29,6 +29,22 @@ pub const LEDGER_KIND: &str = "plain-conversions-v1";
 /// The first line of a list file, which names its format.
 pub const LIST_HEADER: &str = "ntfs2refs plain-conversions list v1";
 
+/// The start of the name of the named DATA stream in which the Cloud Files
+/// API keeps a sync root's registration on the sync root's own folder
+/// (`${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity`, as the lab
+/// read it from the raw record: the name begins with `$`). Private to the
+/// API, and of no use on ReFS, where the sync root cannot run.
+pub const CLOUD_SYNC_ROOT_STREAM_PREFIX: &str = "${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.";
+
+/// Whether a stream name is one of the Cloud Files API's own on a sync
+/// root's folder ([`CLOUD_SYNC_ROOT_STREAM_PREFIX`], any case).
+pub fn is_cloud_private_stream(name: &str) -> bool {
+    name.len() > CLOUD_SYNC_ROOT_STREAM_PREFIX.len()
+        && name.is_char_boundary(CLOUD_SYNC_ROOT_STREAM_PREFIX.len())
+        && name[..CLOUD_SYNC_ROOT_STREAM_PREFIX.len()]
+            .eq_ignore_ascii_case(CLOUD_SYNC_ROOT_STREAM_PREFIX)
+}
+
 /// FILE_ATTRIBUTE_TEMPORARY.
 pub const TEMPORARY: u32 = 0x100;
 /// FILE_ATTRIBUTE_OFFLINE.
@@ -136,7 +152,11 @@ impl PlainKind {
     pub fn implemented(self) -> bool {
         matches!(
             self,
-            PlainKind::AttributesCleared | PlainKind::WofExpanded | PlainKind::EfsDecrypted
+            PlainKind::AttributesCleared
+                | PlainKind::WofExpanded
+                | PlainKind::EfsDecrypted
+                | PlainKind::CloudPlaceholderPlain
+                | PlainKind::CloudLeftOut
         )
     }
 }
@@ -279,9 +299,24 @@ impl PlainList {
     pub fn not_in<'a>(&'a self, agreed: &PlainList) -> Vec<&'a PlainEntry> {
         let held: std::collections::BTreeSet<_> =
             agreed.entries.iter().map(PlainEntry::key).collect();
+        // What is below a folder agreed to be left out is left out with it.
+        let folders: Vec<&str> = agreed
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == PlainKind::CloudLeftOut)
+            .map(|entry| entry.path.as_str())
+            .collect();
+        let below = |entry: &PlainEntry| {
+            entry.kind == PlainKind::CloudLeftOut
+                && folders.iter().any(|folder| {
+                    entry.path.len() > folder.len()
+                        && entry.path.starts_with(folder)
+                        && entry.path.as_bytes()[folder.len()] == b'\\'
+                })
+        };
         self.entries
             .iter()
-            .filter(|entry| !held.contains(&entry.key()))
+            .filter(|entry| !held.contains(&entry.key()) && !below(entry))
             .collect()
     }
 }
@@ -318,6 +353,70 @@ pub struct LedgerRow {
     /// For an EFS file decrypted: what the raw source held of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub efs: Option<LedgerEfs>,
+    /// For a cloud placeholder made plain or left out: what the raw source
+    /// held of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud: Option<LedgerCloud>,
+    /// For an object left out of the conversion (`cloud_left_out`): what
+    /// the source's admission counted of it, which the new tree does not
+    /// hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_out: Option<LedgerLeftOut>,
+    /// For a cloud sync root's folder made plain: the Cloud Files API's own
+    /// named streams on it ([`is_cloud_private_stream`]), which the new
+    /// directory is made without.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dropped_streams: Vec<LedgerStream>,
+}
+
+/// A named stream a row declares left off its object.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LedgerStream {
+    pub name: String,
+    pub bytes: u64,
+}
+
+/// What a left-out object took in the source's admission: the object, its
+/// data streams and their bytes. Nothing else of the admission is changed
+/// by leaving it out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LedgerLeftOut {
+    pub directory: bool,
+    /// Its data streams, unnamed and named, as the admission counted them.
+    pub streams: u64,
+    /// Their logical bytes.
+    pub bytes: u64,
+}
+
+/// What every left-out object of a ledger takes in all.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LeftOutTotals {
+    pub files: u64,
+    pub directories: u64,
+    pub streams: u64,
+    pub bytes: u64,
+}
+
+impl LeftOutTotals {
+    pub fn objects(&self) -> u64 {
+        self.files + self.directories
+    }
+}
+
+/// What the raw source held of a cloud placeholder.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LedgerCloud {
+    /// Its reparse tag (0x9000x01A).
+    pub tag: u32,
+    pub directory: bool,
+    /// Its length as a program reads it.
+    pub plain_bytes: u64,
+    /// The bytes below its length that the frozen source held no clusters
+    /// for: 0 for one made plain, which has to be wholly on the volume.
+    pub raw_missing_bytes: u64,
 }
 
 /// What the raw source held of an EFS file made plain, to tie its plain
@@ -411,6 +510,9 @@ pub fn dropped_stream_names(kind: PlainKind) -> &'static [&'static str] {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeclaredDrops {
     by_object: BTreeMap<(u64, u16), Vec<Vec<u16>>>,
+    /// The objects left out of the new tree altogether (`cloud_left_out`),
+    /// each declared by its own row.
+    left_out: BTreeMap<(u64, u16), LedgerLeftOut>,
 }
 
 impl DeclaredDrops {
@@ -419,7 +521,65 @@ impl DeclaredDrops {
     pub fn from_ledger(ledger: &PlainLedger) -> Result<Self, String> {
         ledger.validate()?;
         let mut by_object: BTreeMap<(u64, u16), Vec<Vec<u16>>> = BTreeMap::new();
+        let mut left_out: BTreeMap<(u64, u16), LedgerLeftOut> = BTreeMap::new();
         for row in &ledger.rows {
+            let key = (row.record_number, row.sequence_number);
+            if !row.dropped_streams.is_empty() {
+                let sync_root_folder = row.kind == PlainKind::CloudPlaceholderPlain
+                    && row.cloud.as_ref().is_some_and(|cloud| cloud.directory);
+                if let Some(stream) = row
+                    .dropped_streams
+                    .iter()
+                    .find(|stream| !sync_root_folder || !is_cloud_private_stream(&stream.name))
+                {
+                    return Err(format!(
+                        "MFT record {} declares the stream {:?} dropped, which only the Cloud Files API's own stream on a cloud folder made plain may be",
+                        row.record_number, stream.name
+                    ));
+                }
+                // Counted as the admission counts a directory's named
+                // streams (#313), and held to being gone, as any drop.
+                if by_object
+                    .insert(
+                        key,
+                        row.dropped_streams
+                            .iter()
+                            .map(|stream| stream.name.encode_utf16().collect())
+                            .collect(),
+                    )
+                    .is_some()
+                {
+                    return Err(format!(
+                        "MFT record {} has more than one row in the plain-conversions ledger",
+                        row.record_number
+                    ));
+                }
+                continue;
+            }
+            match (row.kind, row.left_out) {
+                (PlainKind::CloudLeftOut, Some(counted)) => {
+                    if left_out.insert(key, counted).is_some() {
+                        return Err(format!(
+                            "MFT record {} is left out in more than one row of the plain-conversions ledger",
+                            row.record_number
+                        ));
+                    }
+                    continue;
+                }
+                (PlainKind::CloudLeftOut, None) => {
+                    return Err(format!(
+                        "MFT record {} is left out, and its ledger row does not say what the admission counted of it",
+                        row.record_number
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(format!(
+                        "MFT record {} is {} and declares what it left out, which only cloud_left_out does",
+                        row.record_number, row.kind
+                    ));
+                }
+                (_, None) => {}
+            }
             let names = dropped_stream_names(row.kind);
             if names.is_empty() {
                 continue;
@@ -439,7 +599,113 @@ impl DeclaredDrops {
                     .collect(),
             );
         }
-        Ok(Self { by_object })
+        if let Some((record, _)) = left_out.keys().find(|key| by_object.contains_key(key)) {
+            return Err(format!(
+                "MFT record {record} is both left out and declared to drop a stream"
+            ));
+        }
+        Ok(Self {
+            by_object,
+            left_out,
+        })
+    }
+
+    /// Whether this object of the source is left out of the new tree.
+    pub fn is_left_out(&self, record_number: u64, sequence_number: u16) -> bool {
+        self.left_out
+            .contains_key(&(record_number, sequence_number))
+    }
+
+    /// The objects left out, by identity.
+    pub fn left_out_objects(&self) -> impl Iterator<Item = &(u64, u16)> {
+        self.left_out.keys()
+    }
+
+    /// What the left-out objects take in all.
+    pub fn left_out_totals(&self) -> LeftOutTotals {
+        self.left_out
+            .values()
+            .fold(LeftOutTotals::default(), |mut totals, object| {
+                if object.directory {
+                    totals.directories += 1;
+                } else {
+                    totals.files += 1;
+                }
+                totals.streams += object.streams;
+                totals.bytes += object.bytes;
+                totals
+            })
+    }
+
+    /// Every object declared left out has to have been met in the source,
+    /// and not made: `skipped` holds those a tree build passed over.
+    pub fn require_left_out(
+        &self,
+        skipped: &std::collections::BTreeSet<(u64, u16)>,
+    ) -> Result<(), String> {
+        match self.left_out.keys().find(|key| !skipped.contains(key)) {
+            Some((record, _)) => Err(format!(
+                "the plain-conversions ledger leaves out MFT record {record}, which the tree build did not meet"
+            )),
+            None => match skipped.iter().find(|key| !self.left_out.contains_key(key)) {
+                Some((record, _)) => Err(format!(
+                    "MFT record {record} was left out of the tree, and the ledger does not declare it"
+                )),
+                None => Ok(()),
+            },
+        }
+    }
+
+    /// The counts the source's admission holds, from the new tree's: its
+    /// files, directories and data streams with every left-out object and
+    /// every declared stream drop added back. Each is exact: an admission
+    /// that differs from this differs from the new tree in something the
+    /// ledger does not declare.
+    pub fn admitted_from_new(
+        &self,
+        files: u64,
+        directories: u64,
+        streams: u64,
+    ) -> Result<(u64, u64, u64), String> {
+        let left_out = self.left_out_totals();
+        let overflow = || {
+            "the counts of the new tree with what the ledger declares left out overflow".to_owned()
+        };
+        Ok((
+            files.checked_add(left_out.files).ok_or_else(overflow)?,
+            directories
+                .checked_add(left_out.directories)
+                .ok_or_else(overflow)?,
+            streams
+                .checked_add(left_out.streams)
+                .and_then(|n| n.checked_add(self.total()))
+                .ok_or_else(overflow)?,
+        ))
+    }
+
+    /// The admission's directories less those left out: what the new
+    /// volume holds.
+    pub fn expected_directories(&self, admitted: u64) -> Result<u64, String> {
+        let left_out = self.left_out_totals().directories;
+        admitted.checked_sub(left_out).ok_or_else(|| {
+            format!("{left_out} directories are declared left out and the source holds {admitted}")
+        })
+    }
+
+    /// The admission's objects less those left out.
+    pub fn expected_objects(&self, admitted: u64) -> Result<u64, String> {
+        let left_out = self.left_out_totals().objects();
+        admitted.checked_sub(left_out).ok_or_else(|| {
+            format!("{left_out} objects are declared left out and the source holds {admitted}")
+        })
+    }
+
+    /// The admission's logical bytes less those of the left-out objects.
+    pub fn expected_bytes(&self, admitted: u64) -> Result<u64, String> {
+        let left_out = self.left_out_totals().bytes;
+        admitted.checked_sub(left_out).ok_or_else(|| {
+            format!("{left_out} bytes are declared left out and the source holds {admitted}")
+        })
     }
 
     /// How many streams are declared dropped in all.
@@ -458,11 +724,12 @@ impl DeclaredDrops {
         &self,
         record_number: u64,
         sequence_number: u16,
-        mut named_streams: impl Iterator<Item = &'a [u16]>,
+        named_streams: impl Iterator<Item = &'a [u16]>,
     ) -> Result<u64, String> {
         let Some(names) = self.by_object.get(&(record_number, sequence_number)) else {
             return Ok(0);
         };
+        let mut named_streams = named_streams;
         if named_streams.any(|name| names.iter().any(|dropped| dropped.as_slice() == name)) {
             return Err(format!(
                 "MFT record {record_number} keeps a stream its plain-conversions ledger row declares dropped"
@@ -482,37 +749,13 @@ impl DeclaredDrops {
         }
     }
 
-    /// The admission's counts (files, directories, streams) of the source
-    /// a new tree with these counts was made from: the new tree's, with
-    /// the streams declared dropped added back.
-    pub fn admitted_from_new(
-        &self,
-        files: u64,
-        directories: u64,
-        streams: u64,
-    ) -> Result<(u64, u64, u64), String> {
-        Ok((
-            files,
-            directories,
-            streams.checked_add(self.total()).ok_or_else(|| {
-                "the new tree's stream count with the declared drops overflows".to_owned()
-            })?,
-        ))
-    }
-
-    /// The admission's objects that are the new tree's. Every one is: a
-    /// stream dropped leaves its object.
-    pub fn expected_objects(&self, admitted: u64) -> Result<u64, String> {
-        Ok(admitted)
-    }
-
-    /// The admission's raw stream count less the declared drops: what the
-    /// new volume holds.
+    /// The admission's raw stream count less the declared drops and the
+    /// streams of the objects left out: what the new volume holds.
     pub fn expected_streams(&self, admitted: u64) -> Result<u64, String> {
-        admitted.checked_sub(self.total()).ok_or_else(|| {
+        let gone = self.total() + self.left_out_totals().streams;
+        admitted.checked_sub(gone).ok_or_else(|| {
             format!(
-                "{} streams are declared dropped and the source holds {admitted}",
-                self.total()
+                "{gone} streams are declared dropped or left out and the source holds {admitted}"
             )
         })
     }
@@ -552,6 +795,9 @@ mod tests {
             witness: "raw".into(),
             plain_copy: None,
             efs: None,
+            cloud: None,
+            left_out: None,
+            dropped_streams: Vec::new(),
         }
     }
 
@@ -681,7 +927,9 @@ mod tests {
             [
                 &PlainKind::AttributesCleared,
                 &PlainKind::EfsDecrypted,
-                &PlainKind::WofExpanded
+                &PlainKind::WofExpanded,
+                &PlainKind::CloudPlaceholderPlain,
+                &PlainKind::CloudLeftOut
             ]
         );
     }
@@ -781,6 +1029,136 @@ mod tests {
     }
 
     #[test]
+    fn what_is_below_a_folder_left_out_is_agreed_with_it() {
+        let agreed =
+            PlainList::new(vec![entry("\\c\\folder", PlainKind::CloudLeftOut, 0)]).unwrap();
+        let frozen = PlainList::new(vec![
+            entry("\\c\\folder", PlainKind::CloudLeftOut, 0),
+            entry("\\c\\folder\\x.txt", PlainKind::CloudLeftOut, 0),
+        ])
+        .unwrap();
+        assert!(frozen.not_in(&agreed).is_empty());
+        // Made plain below it, or a sibling of a similar name, is not.
+        let other = PlainList::new(vec![
+            entry("\\c\\folder\\y.txt", PlainKind::CloudPlaceholderPlain, 0),
+            entry("\\c\\folder2", PlainKind::CloudLeftOut, 0),
+        ])
+        .unwrap();
+        assert_eq!(other.not_in(&agreed).len(), 2);
+    }
+
+    #[test]
+    fn a_sync_roots_own_stream_is_dropped_from_its_folder_alone_and_counted() {
+        let identity = "${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity";
+        // Without its `$`, as the name does not read on the raw record: not it.
+        assert!(!is_cloud_private_stream(&identity[1..]));
+        assert!(is_cloud_private_stream(identity));
+        assert!(is_cloud_private_stream(&identity.to_ascii_lowercase()));
+        assert!(!is_cloud_private_stream(
+            "${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}."
+        ));
+        assert!(!is_cloud_private_stream("Zone.Identifier"));
+        let folder = |kind, directory, name: &str| LedgerRow {
+            kind,
+            cloud: Some(LedgerCloud {
+                tag: 0x9000_701a,
+                directory,
+                plain_bytes: 0,
+                raw_missing_bytes: 0,
+            }),
+            dropped_streams: vec![LedgerStream {
+                name: name.into(),
+                bytes: 120,
+            }],
+            ..wof_row(40, kind)
+        };
+        let drops = DeclaredDrops::from_ledger(&ledger_of(vec![folder(
+            PlainKind::CloudPlaceholderPlain,
+            true,
+            identity,
+        )]))
+        .unwrap();
+        // Held to being gone, and counted as the admission counts (#313)
+        // a directory's named streams.
+        let kept: Vec<u16> = identity.encode_utf16().collect();
+        assert!(
+            drops
+                .for_object(40, 1, [kept.as_slice()].into_iter())
+                .is_err()
+        );
+        assert_eq!(drops.for_object(40, 1, std::iter::empty()), Ok(1));
+        assert_eq!(drops.total(), 1);
+        assert_eq!(drops.admitted_from_new(1, 1, 1), Ok((1, 1, 2)));
+        // Only that stream, only on a cloud folder made plain.
+        for row in [
+            folder(PlainKind::CloudPlaceholderPlain, true, "Zone.Identifier"),
+            folder(PlainKind::CloudPlaceholderPlain, false, identity),
+            folder(PlainKind::AttributesCleared, true, identity),
+        ] {
+            assert!(DeclaredDrops::from_ledger(&ledger_of(vec![row])).is_err());
+        }
+    }
+
+    #[test]
+    fn left_out_objects_are_taken_off_the_counts_and_nothing_else() {
+        let left = |record: u64, directory: bool, streams: u64, bytes: u64| LedgerRow {
+            left_out: Some(LedgerLeftOut {
+                directory,
+                streams,
+                bytes,
+            }),
+            ..wof_row(record, PlainKind::CloudLeftOut)
+        };
+        let drops = DeclaredDrops::from_ledger(&ledger_of(vec![
+            left(50, false, 2, 1000),
+            left(51, true, 0, 0),
+            wof_row(40, PlainKind::WofExpanded),
+        ]))
+        .unwrap();
+        assert!(drops.is_left_out(50, 1) && drops.is_left_out(51, 1));
+        assert!(!drops.is_left_out(50, 2) && !drops.is_left_out(40, 1));
+        let totals = drops.left_out_totals();
+        assert_eq!(
+            (
+                totals.files,
+                totals.directories,
+                totals.streams,
+                totals.bytes
+            ),
+            (1, 1, 2, 1000)
+        );
+        // The admission from the new tree: the objects and their streams
+        // added back, and the WOF stream drop.
+        assert_eq!(drops.admitted_from_new(10, 4, 20), Ok((11, 5, 23)));
+        assert_eq!(drops.expected_streams(23), Ok(20));
+        assert_eq!(drops.expected_directories(5), Ok(4));
+        assert_eq!(drops.expected_objects(16), Ok(14));
+        assert_eq!(drops.expected_bytes(5000), Ok(4000));
+        assert!(drops.expected_objects(1).is_err());
+        // Each declared object has to be the one the build passed over.
+        let met: std::collections::BTreeSet<_> = [(50, 1), (51, 1)].into();
+        assert!(drops.require_left_out(&met).is_ok());
+        assert!(drops.require_left_out(&[(50, 1)].into()).is_err());
+        assert!(
+            drops
+                .require_left_out(&[(50, 1), (51, 1), (52, 1)].into())
+                .is_err()
+        );
+        // A left-out row must say what it took; no other kind may.
+        assert!(
+            DeclaredDrops::from_ledger(&ledger_of(vec![wof_row(60, PlainKind::CloudLeftOut)]))
+                .is_err()
+        );
+        assert!(
+            DeclaredDrops::from_ledger(&ledger_of(vec![LedgerRow {
+                kind: PlainKind::CloudPlaceholderPlain,
+                ..left(61, false, 1, 1)
+            }]))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn totals_are_counted_by_kind() {
         let list = PlainList::new(vec![
             entry("\\a", PlainKind::AttributesCleared, TEMPORARY),
@@ -811,6 +1189,9 @@ mod tests {
             witness: "raw".into(),
             plain_copy: None,
             efs: None,
+            cloud: None,
+            left_out: None,
+            dropped_streams: Vec::new(),
         };
         let mut ledger = PlainLedger {
             kind: LEDGER_KIND.into(),

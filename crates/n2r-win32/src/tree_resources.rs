@@ -260,14 +260,16 @@ impl SourceResourceAdmission {
     }
     /// [`Self::validate_tree`] of the new tree, which holds the admitted
     /// source less exactly what this process's plain-conversions ledger
-    /// declares (`plain_ledger::declared`): the streams it drops.
+    /// declares (`plain_ledger::declared`): the streams it drops and the
+    /// objects it leaves out, each with its streams.
     pub fn validate_new_tree(self, files: u64, directories: u64, streams: u64) -> io::Result<()> {
         let (files, directories, streams) = crate::plain_ledger::declared()
             .admitted_from_new(files, directories, streams)
             .map_err(io::Error::other)?;
         self.validate_tree(files, directories, streams)
     }
-    /// The admitted objects that are the new tree's.
+    /// The admitted objects less those the ledger declares left out: the
+    /// objects of the new tree.
     pub fn new_tree_objects(self) -> io::Result<u64> {
         crate::plain_ledger::declared()
             .expected_objects(self.objects()?)
@@ -716,6 +718,9 @@ mod tests {
                     witness: "raw".into(),
                     plain_copy: None,
                     efs: None,
+                    cloud: None,
+                    left_out: None,
+                    dropped_streams: Vec::new(),
                 }],
             })
             .unwrap(),

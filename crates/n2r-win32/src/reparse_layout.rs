@@ -59,6 +59,12 @@ pub fn wof_file_algorithm(buffer: &[u8]) -> Option<u32> {
         .filter(|algorithm| WOF_ALGORITHMS.iter().any(|(known, _)| known == algorithm))
 }
 
+/// IO_REPARSE_TAG_CLOUD and its sixteen variants (0x9000x01A): the
+/// placeholders of a Cloud Files API provider, such as OneDrive.
+pub fn is_cloud_tag(tag: u32) -> bool {
+    tag & 0xffff_0fff == 0x9000_001a
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Point {
@@ -259,6 +265,13 @@ impl Point {
         if self.tag() == IO_REPARSE_TAG_WOF && wof_file_algorithm(bytes).is_some() {
             return Ok(());
         }
+        // A cloud provider's placeholder: its data is the provider's own and
+        // is read as bytes only. It is never recreated either: such an
+        // object is made plain once the user agrees
+        // (`cloud_placeholder_plain`), and refused otherwise by admission.
+        if is_cloud_tag(self.tag()) {
+            return Ok(());
+        }
         if LX_SPECIAL_TAGS.contains(&self.tag()) {
             if bytes.len() != HEADER_BYTES {
                 return Err(invalid(
@@ -423,5 +436,29 @@ mod refusal_tests {
             assert!(point(IO_REPARSE_TAG_LX_SYMLINK, &data).validate().is_err());
         }
         assert_eq!(unsupported_tag_meaning(0x1234_5678), "");
+    }
+
+    #[test]
+    fn a_cloud_placeholder_is_read_whole_and_refused_by_admission_not_here() {
+        let point = |tag: u32, data: &[u8]| {
+            let mut buffer = tag.to_le_bytes().to_vec();
+            buffer.extend_from_slice(&(data.len() as u16).to_le_bytes());
+            buffer.extend_from_slice(&[0, 0]);
+            buffer.extend_from_slice(data);
+            Point { buffer }
+        };
+        // Every cloud-files tag reads, whatever the provider keeps in it.
+        for tag in [0x9000_001au32, 0x9000_101a, 0x9000_f01a] {
+            assert!(is_cloud_tag(tag), "{tag:#x}");
+            assert!(point(tag, &[1, 2, 3, 4]).validate().is_ok(), "{tag:#x}");
+            assert!(point(tag, &[]).validate().is_ok(), "{tag:#x}");
+        }
+        // ProjFS and other tags are not cloud placeholders.
+        assert!(!is_cloud_tag(0x9000_001c) && !is_cloud_tag(0x8000_001a));
+        assert!(point(0x9000_001c, &[1]).validate().is_err());
+        // The common header still has to say the point's length.
+        let mut short = point(0x9000_001a, &[1, 2]);
+        short.buffer.pop();
+        assert!(short.validate().is_err());
     }
 }

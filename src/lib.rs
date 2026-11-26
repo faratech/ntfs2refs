@@ -14,6 +14,7 @@ pub(crate) mod compact_recovery_bundle;
 pub(crate) mod confirmation;
 pub mod disclaimer;
 pub mod drive_cli;
+pub(crate) mod drive_plain_prefreeze;
 pub(crate) mod drive_recovery;
 pub(crate) mod execution_mode;
 #[cfg(windows)]

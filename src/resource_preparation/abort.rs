@@ -85,10 +85,29 @@ pub(crate) fn after_collection_failure(
             "source collection failed before AP; unchanged original NTFS restored on disk {}",
             mounted.disk_number
         )),
-        Err(error) => original.context(format!(
-            "source collection failed before AP; original NTFS cleanup did not complete and the source may remain excluded or already be online: {error:#}"
-        )),
+        Err(error) => with_failed_cleanup(original, "source collection failed before AP", error),
     }
+}
+
+/// A failure whose cleanup failed too: the failure first, which is what
+/// went wrong, then that the source could not be given back and why. A
+/// cleanup error must never stand in for the failure it followed (the lab,
+/// cl8-down-leave-out: one device error reported, twice, and nothing of
+/// where the run had stopped). The original stays the error's root cause.
+pub(crate) fn with_failed_cleanup(
+    original: anyhow::Error,
+    when: &str,
+    cleanup: anyhow::Error,
+) -> anyhow::Error {
+    let said = format!("{original:#}");
+    original.context(failed_cleanup_text(when, &said, &format!("{cleanup:#}")))
+}
+
+/// Pure: the words of [`with_failed_cleanup`].
+pub(crate) fn failed_cleanup_text(when: &str, original: &str, cleanup: &str) -> String {
+    format!(
+        "{when}: {original}. Then the unchanged original NTFS could not be given back, so the source may remain excluded (offline and read-only) or already be online; preserve the run's folder. The cleanup stopped at: {cleanup}. (The failure, again)"
+    )
 }
 
 pub(super) fn restore_live_source<O: PreparationObserver>(
@@ -105,4 +124,28 @@ pub(super) fn restore_live_source<O: PreparationObserver>(
     context.restore_original_unchanged(native_events, |batch| {
         observer.native_events("restore-unchanged-original-ntfs", batch)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_cleanup_never_stands_in_for_the_failure() {
+        let original = anyhow::anyhow!("walking the shadow").context("target capture");
+        let cleanup = anyhow::anyhow!("The device is no longer available. (os error 55)");
+        let error = with_failed_cleanup(original, "conversion failed before publication", cleanup);
+        let text = format!("{error:#}");
+        let failure = text.find("target capture: walking the shadow").unwrap();
+        let cleaned = text.find("The cleanup stopped at: The device").unwrap();
+        // The failure first, then the cleanup, and the failure stays the
+        // error's root cause.
+        assert!(failure < cleaned, "{text}");
+        assert!(
+            text.starts_with("conversion failed before publication: target capture"),
+            "{text}"
+        );
+        assert!(text.contains("may remain excluded"), "{text}");
+        assert_eq!(error.root_cause().to_string(), "walking the shadow");
+    }
 }

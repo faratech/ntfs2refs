@@ -497,6 +497,35 @@ When `-SampleStacks` is used on an interrupted run, the last profile written
 before the cut is collected as `interrupted-stacks.txt` when available.
 The recovery writes its own `stacks.txt`.
 
+`cloud` and `cloud-down` make a sync root of the lab's own Cloud Files API
+provider (`lab-cloud-provider.exe`, built with `--bin lab-cloud-provider`
+and copied beside the converter), backed by a folder on the control OS's
+C:, with placeholders fully present, partly present, not present and pinned,
+and a folder of them. `cloud` leaves the provider running: with
+`-AcceptPlain` the run downloads the two that are not wholly present before
+the freeze, lists the volume itself after that (`--compare-listing`), and
+that listing is the one the new volume is compared with. `cloud-down` stops
+it: the unattended run tries to download the two, names both, and stops
+before the freeze with the source unchanged; with `-LeaveOutCloud` as well (and `-Check -AcceptPlain
+-Unattended`, whose check prints the list's checksum) it passes
+`--leave-out-cloud` and converts without them, each declared
+`cloud_left_out` and absent afterwards (`cloud-down-leave-out`). The harness stops the provider and unregisters the sync root
+when the attempt ends. A Cloud Files provider serves only the account that
+runs it, and the feature step starts it as the account the harness works as:
+run `cloud` with `-RunAs administrator`. A provider connected in one logon session does not serve
+another, so the harness stops the feature step's provider and starts one in
+the converter's own worker session, which has to download `probe.bin` (a
+small placeholder of `cloud`) before the converter starts
+(`cloud-provider-not-serving` otherwise). A connected provider holds its sync
+root open, so the volume cannot be locked while it runs: the harness stops it
+as soon as the converter prints its `cloud-downloads-done-v1` line, as a user
+closes OneDrive when the run asks (an unattended run waits up to 5 minutes
+for the lock, naming the holders). The provider's status is shown
+(the check, and `lab-cloud-provider report` before the run), never a gate.
+The listing descends into placeholder folders, so it lists a sync root's
+contents whether its provider runs or not. The harness checks that the
+provider is still serving before it starts the converter. Both are still to be run.
+
 `temporary`, `offline` and `wof` (four `compact /exe` files, one per WOF
 algorithm, listed before the run in `wof-listed-before.jsonl`) convert with
 `-AcceptPlain`; without it a run stops before it changes anything. So does

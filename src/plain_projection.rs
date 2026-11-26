@@ -21,6 +21,16 @@
 //!   (`n2r_win32::plain_copy`) and the new file is made from that copy,
 //!   without the reparse point, the WofCompressedData stream and the sparse
 //!   and reparse attributes; everything else is carried over.
+//! - [`PlainKind::CloudPlaceholderPlain`], a cloud provider's placeholder
+//!   (Cloud Files API, OneDrive and others) whose data is wholly on the
+//!   volume once the volume is frozen. What was not is downloaded before
+//!   the freeze (`drive_plain_prefreeze`), with the user's agreement. The
+//!   raw source has to hold every byte of its unnamed stream (no hole below
+//!   its length); the new file is then made from a copy read through the
+//!   Cloud Files filter recalling nothing, as a WOF file is (the copy holds
+//!   the bytes without the sparse layout a placeholder keeps them in),
+//!   without the reparse point and the provider's pin, recall, OFFLINE and
+//!   sparse marks. A directory placeholder loses its point and marks only.
 use crate::{
     ntfs_admission,
     ntfs_inspect::{FileInventory, RootFileDomain},
@@ -54,10 +64,20 @@ impl PlainTransform {
                 n2r_win32::plain_ledger::REPARSE_POINT | n2r_win32::plain_ledger::SPARSE_FILE
             }
             PlainKind::EfsDecrypted => ENCRYPTED,
+            // Its reparse point, the provider's pin and recall marks, and
+            // the OFFLINE and sparse marks a placeholder has.
+            PlainKind::CloudPlaceholderPlain => CLOUD_CLEARED,
             _ => self.cleared_attributes,
         }
     }
 }
+
+/// What a cloud placeholder made plain is made without: what the content
+/// verdict takes off its record before (`volume_manifest::declared_after`).
+pub(crate) const CLOUD_CLEARED: u32 = n2r_win32::plain_ledger::REPARSE_POINT
+    | n2r_win32::plain_ledger::SPARSE_FILE
+    | n2r_win32::plain_ledger::CLOUD_ATTRIBUTES
+    | n2r_win32::plain_ledger::OFFLINE;
 
 /// The transform an object with these source attributes takes, if any.
 ///
@@ -289,13 +309,136 @@ pub(crate) fn efs_taken(file: &FileInventory) -> bool {
         && efs_object(file).ok().flatten().is_some()
 }
 
+/// Said wherever a cloud placeholder is refused because its data is not on
+/// the volume.
+pub(crate) const CLOUD_REMEDY: &str = "start its cloud provider (OneDrive, say) so that the conversion can download it before the volume is frozen, and run the conversion as the user the provider runs for (a Cloud Files provider serves only the account that runs it); or make it always available on this device; or agree to leave it out, which keeps it in the cloud and not on the new volume";
+
+/// What the Cloud Files API's placeholders become, said with the question.
+/// OneDrive and the Cloud Files API do not run on ReFS.
+pub(crate) const CLOUD_WARNING: &str = "OneDrive and other Cloud Files API providers do not run on ReFS: after the conversion the folders they synced stop syncing, and their files are ordinary files that are not uploaded or updated any more. Move the provider's folder to an NTFS volume first to keep it syncing";
+
+/// A cloud provider's placeholder (Cloud Files API, reparse tags
+/// 0x9000x01A), as the raw source shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CloudPlaceholder {
+    pub tag: u32,
+    pub directory: bool,
+    /// The file's length as a program reads it (0 for a directory).
+    pub plain_bytes: u64,
+    /// The bytes of its unnamed stream the raw source holds no clusters
+    /// for (holes), below its length: what is not on the volume.
+    pub raw_missing_bytes: u64,
+}
+
+/// The bytes of `stream` below its length that no allocated cluster holds.
+pub(crate) fn raw_missing_bytes(stream: &crate::ntfs_inspect::StreamInventory) -> u64 {
+    if stream.resident {
+        return 0;
+    }
+    let present: Vec<n2r_win32::cloud_native::FileRange> = stream
+        .extents
+        .iter()
+        .filter(|extent| extent.physical_offset.is_some())
+        .map(|extent| n2r_win32::cloud_native::FileRange {
+            offset: extent.logical_offset,
+            length: extent.length,
+        })
+        .collect();
+    stream.logical_size - n2r_win32::cloud_native::present_bytes(stream.logical_size, &present)
+}
+
+/// The cloud placeholder `file` is, if it is one of a shape this build
+/// makes plain: a directory with no data stream, or a file whose unnamed
+/// stream is neither compressed nor encrypted. Anything else with a cloud
+/// tag is refused by admission, by name.
+pub(crate) fn cloud_placeholder(file: &FileInventory) -> Result<Option<CloudPlaceholder>> {
+    let Some(point) = crate::ntfs_reparse::file_point(file)? else {
+        return Ok(None);
+    };
+    if !n2r_win32::reparse_layout::is_cloud_tag(point.tag()) {
+        return Ok(None);
+    }
+    if file.is_directory {
+        // A sync root's folder holds the Cloud Files API's own stream
+        // (`${3D0CE612-...}.SyncRootIdentity`), which is left off it; any
+        // other named stream on a cloud folder is refused by admission.
+        return Ok(file
+            .streams
+            .iter()
+            .all(sync_root_stream)
+            .then_some(CloudPlaceholder {
+                tag: point.tag(),
+                directory: true,
+                plain_bytes: 0,
+                raw_missing_bytes: 0,
+            }));
+    }
+    let unnamed: Vec<_> = file
+        .streams
+        .iter()
+        .filter(|s| s.name_utf16.is_empty())
+        .collect();
+    let [stream] = unnamed.as_slice() else {
+        return Ok(None);
+    };
+    if !matches!(stream.flags, 0 | 0x8000) {
+        return Ok(None);
+    }
+    Ok(Some(CloudPlaceholder {
+        tag: point.tag(),
+        directory: false,
+        plain_bytes: stream.logical_size,
+        raw_missing_bytes: raw_missing_bytes(stream),
+    }))
+}
+
+/// Whether this run makes `file`, a cloud placeholder file, plain from a
+/// copy: one taken plain and not left out (`cloud_left_out`, as the run's
+/// ledger declares it once the volume is frozen). A left-out placeholder
+/// has no copy: it is not made at all, and Windows' view of it at the
+/// freeze is compared as the raw record holds it.
+pub(crate) fn cloud_copied(file: &FileInventory) -> bool {
+    cloud_taken(file)
+        && !file.is_directory
+        && !n2r_win32::plain_ledger::declared()
+            .is_left_out(file.record_number, file.sequence_number)
+}
+
+/// Whether `stream` is the Cloud Files API's own on a sync root's folder.
+pub(crate) fn sync_root_stream(stream: &crate::ntfs_inspect::StreamInventory) -> bool {
+    String::from_utf16(&stream.name_utf16)
+        .is_ok_and(|name| n2r_win32::plain_ledger::is_cloud_private_stream(&name))
+}
+
+/// Whether `stream` of `file` is one a cloud folder made plain is made
+/// without (`sync_root_stream`, on a folder this run makes plain).
+pub(crate) fn cloud_dropped_stream(
+    file: &FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+) -> bool {
+    file.is_directory && sync_root_stream(stream) && cloud_taken(file)
+}
+
+/// Whether this run makes `file`, a cloud placeholder, plain (where
+/// `cloud_placeholder_plain` is enabled). Whether its data is on the volume
+/// is held at the freeze ([`census`]), not here: before the freeze a run
+/// downloads what is not.
+pub(crate) fn cloud_taken(file: &FileInventory) -> bool {
+    PlainKind::CloudPlaceholderPlain.implemented()
+        && crate::plain_consent::takes_plain()
+        && cloud_placeholder(file).ok().flatten().is_some()
+}
+
 /// The plain copy `file`'s new unnamed stream is made from: a WOF file's,
-/// read through WOF, or an EFS file's, decrypted. It has to have been taken.
+/// read through WOF, an EFS file's, decrypted, or a cloud placeholder's,
+/// read through the Cloud Files filter recalling nothing. It has to have
+/// been taken.
 pub(crate) fn plain_copy_pin(
     file: &FileInventory,
 ) -> Result<Option<n2r_win32::plain_copy::PlainCopyPin>> {
     let copied = wof_taken(file)
-        || (efs_taken(file) && matches!(efs_object(file)?, Some(EfsObject::File(_))));
+        || (efs_taken(file) && matches!(efs_object(file)?, Some(EfsObject::File(_))))
+        || cloud_copied(file);
     if !copied {
         return Ok(None);
     }
@@ -303,7 +446,7 @@ pub(crate) fn plain_copy_pin(
         .map(Some)
         .with_context(|| {
             format!(
-                "MFT record {} is made plain from its copy, which was not taken",
+                "MFT record {} is made plain from its copy, and no copy of it was taken at the freeze: the census of the frozen source requested none for it",
                 file.record_number
             )
         })
@@ -316,16 +459,65 @@ pub(crate) fn plain_copy_pin(
 /// - WOF hides its reparse point, the REPARSE_POINT and SPARSE_FILE
 ///   attributes and its WofCompressedData stream (the lab's listing of a
 ///   `compact /exe` file shows attributes 0x20, one stream, the full length).
+/// - A cloud placeholder (`cloud_placeholder_plain`) hides nothing from an
+///   observer that opens it as its reparse point, as Windows' observation
+///   of the source does: its point, its cloud tag and its pinned, recall,
+///   OFFLINE and sparse attributes are what the raw record holds, and the
+///   whole of its data is on the volume (the census holds it to that). Its
+///   unnamed stream's allocation is the raw record's too.
 /// - Either way the unnamed stream's contents are what the filter reads,
 ///   which the plain copy holds: Windows' read of it is held to the copy's
 ///   content digest, and never left unread as a plain stream would be.
 ///
 /// `None` for every other object, which is compared as it is.
 pub(crate) fn observed_view(file: &FileInventory) -> Result<Option<FileInventory>> {
+    // A sync root's folder: the Cloud Files filter hides the API's own
+    // stream from Windows (the lab: its stream enumeration ends at once,
+    // ERROR_HANDLE_EOF), so Windows is held to the folder without it.
+    if file.is_directory && cloud_taken(file) && file.streams.iter().any(sync_root_stream) {
+        return Ok(Some(sync_root_view(file)));
+    }
     let Some(pin) = plain_copy_pin(file)? else {
         return Ok(None);
     };
     filter_view(file, wof_taken(file), &pin.content_digest).map(Some)
+}
+
+/// A sync root's folder as Windows sees it: without the Cloud Files API's
+/// own streams and their DATA attributes.
+fn sync_root_view(file: &FileInventory) -> FileInventory {
+    let mut view = file.clone();
+    view.streams.retain(|stream| !sync_root_stream(stream));
+    view.attributes.retain(|attribute| {
+        !(attribute.type_code == 0x80
+            && String::from_utf16(&attribute.name_utf16)
+                .is_ok_and(|name| n2r_win32::plain_ledger::is_cloud_private_stream(&name)))
+    });
+    view
+}
+
+/// Whether `stream` of `file`, made plain from its copy, is that copy
+/// exactly as the raw record holds it: the unnamed stream of a cloud
+/// placeholder wholly on the volume, whose copy read through the filter has
+/// the raw reading's own content digest. Windows' view of it is then the
+/// raw stream's, which a run that verifies once need not read again; any
+/// other copied stream (WOF's, EFS's) is read by Windows and held to its
+/// copy.
+pub(crate) fn copy_is_the_raw_stream(
+    file: &FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+) -> bool {
+    if !stream.name_utf16.is_empty() || !cloud_copied(file) {
+        return false;
+    }
+    let Some(raw) = file.streams.iter().find(|s| s.name_utf16.is_empty()) else {
+        return false;
+    };
+    n2r_win32::plain_copy::taken_pin(&copy_key(file)).is_some_and(|pin| {
+        raw.logical_hash_status == crate::ntfs_inspect::LogicalHashStatus::Complete
+            && raw.logical_sha256.as_deref() == Some(pin.content_digest.as_str())
+            && raw.logical_size == pin.bytes
+    })
 }
 
 /// [`observed_view`] of a file whose copy has `content_digest`; `wof`
@@ -396,12 +588,26 @@ pub(crate) fn allocation_held_by_copy(
         .is_some()
 }
 
+/// Held by a test that takes plain copies: the process holds one set of
+/// them at a time.
+#[cfg(test)]
+pub(crate) static COPY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The transform of one file or directory, from its raw record.
 pub(crate) fn of_file(file: &FileInventory) -> Result<Option<PlainTransform>> {
     // An EFS object of another shape is refused by admission, by name.
     if PlainKind::EfsDecrypted.implemented() && efs_object(file).ok().flatten().is_some() {
         return Ok(Some(PlainTransform {
             kind: PlainKind::EfsDecrypted,
+            cleared_attributes: 0,
+        }));
+    }
+    // A cloud placeholder of another shape is refused by admission, by name.
+    if PlainKind::CloudPlaceholderPlain.implemented()
+        && cloud_placeholder(file).ok().flatten().is_some()
+    {
+        return Ok(Some(PlainTransform {
+            kind: PlainKind::CloudPlaceholderPlain,
             cleared_attributes: 0,
         }));
     }
@@ -464,6 +670,23 @@ pub(crate) fn entry(path: String, file: &FileInventory, transform: PlainTransfor
             download_bytes: 0,
         };
     }
+    // A cloud placeholder's plain copy, kept in the working storage; what
+    // the raw source does not hold of it is downloaded before the freeze
+    // (the check replaces this with what the Cloud Files API reports).
+    if let Some(cloud) = (transform.kind == PlainKind::CloudPlaceholderPlain)
+        .then(|| cloud_placeholder(file).ok().flatten())
+        .flatten()
+    {
+        return PlainEntry {
+            kind: transform.kind,
+            path,
+            cleared_attributes: transform.cleared_attributes,
+            bytes: cloud.plain_bytes,
+            volume_extra_bytes: 0,
+            working_extra_bytes: cloud.plain_bytes,
+            download_bytes: cloud.raw_missing_bytes,
+        };
+    }
     let cluster = n2r_win32::target_cluster::bytes();
     PlainEntry {
         kind: transform.kind,
@@ -505,6 +728,8 @@ pub(crate) fn attach_copies(rows: &mut [LedgerRow]) -> Result<()> {
     for row in rows.iter_mut().filter(|row| {
         row.kind == PlainKind::WofExpanded
             || (row.kind == PlainKind::EfsDecrypted && row.efs.is_some())
+            || (row.kind == PlainKind::CloudPlaceholderPlain
+                && row.cloud.as_ref().is_some_and(|cloud| !cloud.directory))
     }) {
         let pin = n2r_win32::plain_copy::taken_pin(&n2r_win32::plain_copy::PlainCopyKey {
             record_number: row.record_number,
@@ -526,16 +751,141 @@ pub(crate) fn attach_copies(rows: &mut [LedgerRow]) -> Result<()> {
     Ok(())
 }
 
+/// Whether `path` (as a listing names it) is `left` or below it.
+pub(crate) fn within(path: &str, left: &str) -> bool {
+    path == left
+        || (path.len() > left.len()
+            && path.starts_with(left)
+            && path.as_bytes()[left.len()] == b'\\')
+}
+
+/// Whether an object with these names is left out: every name within a
+/// path agreed to be left out, or none. An object some of whose names are
+/// left out and some not (a hard link out of a folder left out) cannot be
+/// half made, and is refused by name.
+pub(crate) fn left_out_by(
+    paths: &[String],
+    left_out: &std::collections::BTreeSet<String>,
+) -> std::result::Result<bool, String> {
+    let inside = paths
+        .iter()
+        .filter(|path| left_out.iter().any(|left| within(path, left)))
+        .count();
+    match inside {
+        0 => Ok(false),
+        n if n == paths.len() => Ok(true),
+        _ => Err(format!(
+            "{} has names both in a cloud folder left out and outside it ({}): it cannot be left out in part. Nothing was changed: remove the hard links that leave the folder, or do not leave the folder out",
+            paths[0],
+            paths.join(", ")
+        )),
+    }
+}
+
+/// The list entry and the ledger row of an object left out of the
+/// conversion (`cloud_left_out`): what the admission counted of it (the
+/// object, a file's data streams and their bytes), which the new tree does
+/// not hold.
+fn left_out_row(file: &FileInventory, paths: Vec<String>) -> Result<(PlainEntry, LedgerRow)> {
+    let first = paths
+        .first()
+        .cloned()
+        .with_context(|| format!("MFT record {} has no name", file.record_number))?;
+    let (streams, bytes) = counted_streams(file);
+    let before = crate::ntfs_file_attributes::project_user(file)?.win32_attributes;
+    let placeholder = cloud_placeholder(file)?;
+    Ok((
+        PlainEntry {
+            kind: PlainKind::CloudLeftOut,
+            path: first,
+            cleared_attributes: 0,
+            bytes,
+            volume_extra_bytes: 0,
+            working_extra_bytes: 0,
+            download_bytes: 0,
+        },
+        LedgerRow {
+            kind: PlainKind::CloudLeftOut,
+            paths,
+            record_number: file.record_number,
+            sequence_number: file.sequence_number,
+            before: LedgerState {
+                attributes: before,
+                reparse_tag: placeholder.map(|placeholder| placeholder.tag),
+            },
+            after: LedgerState::default(),
+            witness: format!(
+                "MFT record {} on the frozen source, {}; left out as agreed, it stays in the cloud",
+                file.record_number,
+                if placeholder.is_some() {
+                    "a cloud placeholder"
+                } else {
+                    "below a cloud folder left out"
+                }
+            ),
+            plain_copy: None,
+            efs: None,
+            cloud: placeholder.map(|placeholder| n2r_win32::plain_ledger::LedgerCloud {
+                tag: placeholder.tag,
+                directory: placeholder.directory,
+                plain_bytes: placeholder.plain_bytes,
+                raw_missing_bytes: placeholder.raw_missing_bytes,
+            }),
+            left_out: Some(n2r_win32::plain_ledger::LedgerLeftOut {
+                directory: file.is_directory,
+                streams,
+                bytes,
+            }),
+            dropped_streams: Vec::new(),
+        },
+    ))
+}
+
+/// The data streams the source's admission counts of an object, and their
+/// bytes: every stream of a file or a directory (a directory's named
+/// streams are counted, as they are carried).
+fn counted_streams(file: &FileInventory) -> (u64, u64) {
+    (
+        file.streams.len() as u64,
+        file.streams
+            .iter()
+            .fold(0u64, |sum, stream| sum.saturating_add(stream.logical_size)),
+    )
+}
+
 /// The objects of a frozen source that are converted to plain: the list,
 /// and the ledger's rows with every name of each object. NTFS-internal
 /// objects are never converted.
 pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
     let (mut entries, mut rows, mut copies, mut wofs) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut not_present: Vec<String> = Vec::new();
+    // What the user agreed to leave out: those paths, and everything below
+    // a folder among them. Each object is found and declared by its own
+    // row; nothing is left out by inference afterwards.
+    let left_out = crate::plain_consent::left_out_paths();
     for ordinal in 0..files.file_count() {
         let file = files.file(ordinal)?;
         if ntfs_admission::paged::internal_role(files, &file)?.is_some() {
             continue;
+        }
+        if !left_out.is_empty() {
+            let paths: Vec<String> = ntfs_admission::paged::user_paths(files, &file)
+                .with_context(|| {
+                    format!(
+                        "the names of MFT record {}, which may be left out",
+                        file.record_number
+                    )
+                })?
+                .iter()
+                .map(|path| listing_path(path))
+                .collect();
+            if left_out_by(&paths, &left_out).map_err(anyhow::Error::msg)? {
+                let (entry, row) = left_out_row(&file, paths)?;
+                entries.push(entry);
+                rows.push(row);
+                continue;
+            }
         }
         let Some(transform) = of_file(&file)? else {
             continue;
@@ -578,6 +928,30 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
                 through: n2r_win32::plain_copy::PlainRead::Decrypted,
             });
         }
+        let cloud = (transform.kind == PlainKind::CloudPlaceholderPlain)
+            .then(|| cloud_placeholder(&file))
+            .transpose()?
+            .flatten();
+        if let Some(placeholder) = cloud {
+            // What the Cloud Files API said was on the volume has to be
+            // what the frozen source holds: the whole file, no hole below
+            // its length. A placeholder that is not was neither downloaded
+            // before the freeze nor agreed to be left out.
+            if placeholder.raw_missing_bytes != 0 {
+                not_present.push(format!(
+                    "{first} ({} of its {} bytes)",
+                    placeholder.raw_missing_bytes, placeholder.plain_bytes
+                ));
+                continue;
+            }
+            if !placeholder.directory {
+                copies.push(n2r_win32::plain_copy::PlainCopyRequest {
+                    key: copy_key(&file),
+                    bytes: placeholder.plain_bytes,
+                    through: n2r_win32::plain_copy::PlainRead::Filter,
+                });
+            }
+        }
         entries.push(entry(first, &file, transform));
         rows.push(LedgerRow {
             kind: transform.kind,
@@ -586,7 +960,9 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
             sequence_number: file.sequence_number,
             before: LedgerState {
                 attributes: before,
-                reparse_tag: wof.map(|_| n2r_win32::reparse_layout::IO_REPARSE_TAG_WOF),
+                reparse_tag: wof
+                    .map(|_| n2r_win32::reparse_layout::IO_REPARSE_TAG_WOF)
+                    .or(cloud.map(|placeholder| placeholder.tag)),
             },
             after: LedgerState {
                 attributes: transform.target_attributes(before),
@@ -597,6 +973,10 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
                 file.record_number,
                 if wof.is_some() {
                     ", its WOF reparse point and streams, and its plain copy read through WOF"
+                } else if cloud.is_some_and(|placeholder| !placeholder.directory) {
+                    ", its cloud reparse point, the clusters of its whole unnamed stream, and its plain copy read through the Cloud Files filter recalling nothing"
+                } else if cloud.is_some() {
+                    ", its cloud reparse point"
                 } else {
                     ""
                 }
@@ -609,7 +989,33 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
                 }),
                 _ => None,
             },
+            cloud: cloud.map(|placeholder| n2r_win32::plain_ledger::LedgerCloud {
+                tag: placeholder.tag,
+                directory: placeholder.directory,
+                plain_bytes: placeholder.plain_bytes,
+                raw_missing_bytes: placeholder.raw_missing_bytes,
+            }),
+            left_out: None,
+            // A sync root's folder: the Cloud Files API's own stream on it.
+            dropped_streams: if cloud.is_some_and(|placeholder| placeholder.directory) {
+                file.streams
+                    .iter()
+                    .filter(|stream| sync_root_stream(stream))
+                    .map(|stream| n2r_win32::plain_ledger::LedgerStream {
+                        name: String::from_utf16_lossy(&stream.name_utf16),
+                        bytes: stream.logical_size,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
         });
+    }
+    if let Some(first) = not_present.first() {
+        anyhow::bail!(
+            "{} cloud placeholder(s) of the frozen source are not wholly on this device, for example {first}: nothing was downloaded for them before the volume was frozen, and leaving them out was not agreed. Nothing was changed: {CLOUD_REMEDY}",
+            not_present.len()
+        );
     }
     let list = PlainList::new(entries).map_err(anyhow::Error::msg)?;
     rows.sort_by(|a, b| a.paths.cmp(&b.paths));
@@ -712,6 +1118,20 @@ mod tests {
         .unwrap()
     }
 
+    fn cloud_stream(
+        resident: bool,
+        logical: u64,
+        extents: serde_json::Value,
+    ) -> crate::ntfs_inspect::StreamInventory {
+        serde_json::from_value(serde_json::json!({
+            "name": "", "name_utf16": [], "resident": resident, "flags": 0x8000,
+            "logical_size": logical, "initialized_size": logical,
+            "allocated_size": logical.next_multiple_of(4096),
+            "extents": extents, "resident_sha256": null,
+        }))
+        .unwrap()
+    }
+
     fn wof_file() -> FileInventory {
         FileInventory {
             record_number: 41,
@@ -788,8 +1208,48 @@ mod tests {
     }
 
     #[test]
+    fn a_sync_roots_folder_shows_windows_no_stream_of_the_apis() {
+        let mut folder = wof_file();
+        folder.is_directory = true;
+        let identity = "${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity";
+        folder.streams = vec![stream(identity, 0)];
+        folder.attributes = vec![attribute(0x80, identity, 0), attribute(0xc0, "", 0)];
+        let view = sync_root_view(&folder);
+        assert!(view.streams.is_empty());
+        assert_eq!(view.attributes.len(), 1);
+        assert!(view.reparse.is_some());
+    }
+
+    #[test]
+    fn a_cloud_placeholder_shows_windows_what_its_raw_record_holds() {
+        let copy = "cd".repeat(16);
+        let mut raw = wof_file();
+        raw.streams.retain(|s| s.name_utf16.is_empty());
+        raw.attributes = vec![attribute(0x80, "", 0x8000), attribute(0xc0, "", 0)];
+        raw.standard_information.as_mut().unwrap().file_attributes = 0x8_0620;
+        let view = filter_view(&raw, false, &copy).unwrap();
+        // Its point, its attributes (pinned, sparse, reparse) and its sparse
+        // stream are as the raw record holds them.
+        assert!(view.reparse.is_some());
+        assert_eq!(view.attributes.len(), 2);
+        assert_eq!(
+            view.standard_information.as_ref().unwrap().file_attributes,
+            0x8_0620
+        );
+        assert_eq!(view.streams[0].flags, 0x8000);
+        // Its contents are held to the copy read through the filter.
+        assert_eq!(
+            view.streams[0].logical_sha256.as_deref(),
+            Some(copy.as_str())
+        );
+    }
+
+    #[test]
     fn only_a_copied_streams_allocation_is_held_by_its_copy() {
         // An identity no other test of this process takes a copy of.
+        let _held = COPY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (record, sequence) = (0xfeed_0000_0041u64, 9u16);
         assert!(!allocation_held_by_copy(record, sequence, &[]));
         let run = tempfile::tempdir().unwrap();
@@ -814,6 +1274,103 @@ mod tests {
         n2r_win32::plain_copy::remove(run.path()).unwrap();
         assert!(held && !other_sequence && !named);
         assert!(!allocation_held_by_copy(record, sequence, &[]));
+    }
+
+    #[test]
+    fn a_placeholder_is_on_the_volume_only_where_clusters_hold_it() {
+        // Wholly allocated: nothing is missing.
+        let full = cloud_stream(
+            false,
+            10_000,
+            serde_json::json!([{"logical_offset": 0, "physical_offset": 40960, "length": 12288}]),
+        );
+        assert_eq!(raw_missing_bytes(&full), 0);
+        // A hole in the middle, and an unallocated tail past the last run.
+        let partial = cloud_stream(
+            false,
+            10_000,
+            serde_json::json!([
+                {"logical_offset": 0, "physical_offset": 40960, "length": 4096},
+                {"logical_offset": 4096, "physical_offset": null, "length": 4096},
+            ]),
+        );
+        assert_eq!(raw_missing_bytes(&partial), 10_000 - 4096);
+        // Nothing allocated: the whole file is in the cloud.
+        let none = cloud_stream(
+            false,
+            10_000,
+            serde_json::json!([{"logical_offset": 0, "physical_offset": null, "length": 12288}]),
+        );
+        assert_eq!(raw_missing_bytes(&none), 10_000);
+        // A resident stream is in its record.
+        assert_eq!(
+            raw_missing_bytes(&cloud_stream(true, 20, serde_json::json!([]))),
+            0
+        );
+    }
+
+    #[test]
+    fn only_the_cloud_files_apis_own_stream_is_a_sync_roots() {
+        let named = |name: &str| {
+            let mut stream = cloud_stream(true, 120, serde_json::json!([]));
+            stream.name = name.into();
+            stream.name_utf16 = name.encode_utf16().collect();
+            stream.flags = 0;
+            stream
+        };
+        assert!(sync_root_stream(&named(
+            "${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity"
+        )));
+        assert!(!sync_root_stream(&named("Zone.Identifier")));
+        assert!(!sync_root_stream(&named("")));
+    }
+
+    #[test]
+    fn a_cloud_placeholder_made_plain_loses_its_point_and_marks_only() {
+        let transform = PlainTransform {
+            kind: PlainKind::CloudPlaceholderPlain,
+            cleared_attributes: 0,
+        };
+        // ARCHIVE | READONLY stay; REPARSE_POINT, SPARSE_FILE, OFFLINE,
+        // PINNED and RECALL_ON_DATA_ACCESS go.
+        let before = 0x20 | 0x1 | 0x400 | 0x200 | 0x1000 | 0x8_0000 | 0x40_0000;
+        assert_eq!(transform.target_attributes(before), 0x21);
+        // The list agrees to the object, not to the attributes taken off,
+        // which only TEMPORARY and OFFLINE may be.
+        assert!(
+            PlainList::new(vec![PlainEntry {
+                kind: PlainKind::CloudPlaceholderPlain,
+                path: "\\OneDrive\\a.txt".into(),
+                cleared_attributes: 0,
+                bytes: 10,
+                volume_extra_bytes: 0,
+                working_extra_bytes: 10,
+                download_bytes: 10,
+            }])
+            .is_ok()
+        );
+        assert!(CLOUD_WARNING.contains("do not run on ReFS"));
+        assert!(CLOUD_REMEDY.contains("leave it out"));
+    }
+
+    #[test]
+    fn what_is_left_out_is_each_object_within_a_path_agreed() {
+        let left: std::collections::BTreeSet<String> =
+            ["\\c\\folder".to_owned(), "\\c\\a.bin".to_owned()].into();
+        let paths = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        assert_eq!(left_out_by(&paths(&["\\c\\a.bin"]), &left), Ok(true));
+        assert_eq!(left_out_by(&paths(&["\\c\\folder"]), &left), Ok(true));
+        assert_eq!(
+            left_out_by(&paths(&["\\c\\folder\\deep\\x.txt"]), &left),
+            Ok(true)
+        );
+        // A sibling whose name only begins the same is not below it.
+        assert_eq!(left_out_by(&paths(&["\\c\\folder2\\x"]), &left), Ok(false));
+        assert_eq!(left_out_by(&paths(&["\\c\\a.bin2"]), &left), Ok(false));
+        // A file with a name inside and one outside cannot be half made.
+        let split = left_out_by(&paths(&["\\c\\folder\\x", "\\d\\x"]), &left).unwrap_err();
+        assert!(split.contains("cannot be left out in part"), "{split}");
+        assert!(within("\\c", "\\c") && !within("\\c", "\\c\\d"));
     }
 
     #[test]

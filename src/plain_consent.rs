@@ -47,15 +47,75 @@ pub(crate) fn offer_for_this_run() {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static TAKES_PLAIN_ON_THIS_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// For a test of admission: this thread's admission takes objects to plain,
+/// whatever the process's state (which other tests share) says.
+#[cfg(test)]
+pub(crate) fn take_plain_on_this_thread(on: bool) {
+    TAKES_PLAIN_ON_THIS_THREAD.with(|cell| cell.set(on));
+}
+
 /// Whether this run takes objects to plain (offered or agreed) rather than
 /// refusing them.
 pub(crate) fn takes_plain() -> bool {
+    #[cfg(test)]
+    if TAKES_PLAIN_ON_THIS_THREAD.with(|cell| cell.get()) {
+        return true;
+    }
     !matches!(*state(), State::Refused)
 }
 
 /// The user agreed to `list`.
 pub(crate) fn agree(list: PlainList) {
     *state() = State::Agreed(list);
+}
+
+/// Pure: `agreed` with the placeholders of `left` left out instead: every
+/// entry within a path of `left` (the path itself, or below a folder of
+/// it) goes, and `left`'s own entries come in.
+pub(crate) fn with_left_out(agreed: &PlainList, left: &PlainList) -> Result<PlainList> {
+    let mut entries: Vec<_> = agreed
+        .entries()
+        .iter()
+        .filter(|entry| {
+            !left
+                .entries()
+                .iter()
+                .any(|gone| crate::plain_projection::within(&entry.path, &gone.path))
+        })
+        .cloned()
+        .collect();
+    entries.extend(left.entries().iter().cloned());
+    PlainList::new(entries).map_err(anyhow::Error::msg)
+}
+
+/// The user agreed, besides the list, to leave out the placeholders of
+/// `left` (`cloud_left_out`): the run's agreed list is the one with them
+/// left out.
+pub(crate) fn leave_out(left: &PlainList) -> Result<()> {
+    let mut state = state();
+    let State::Agreed(agreed) = &*state else {
+        bail!("placeholders are left out only of a list that was agreed");
+    };
+    *state = State::Agreed(with_left_out(agreed, left)?);
+    Ok(())
+}
+
+/// The paths this run agreed to leave out.
+pub(crate) fn left_out_paths() -> std::collections::BTreeSet<String> {
+    match &*state() {
+        State::Agreed(list) => list
+            .entries()
+            .iter()
+            .filter(|entry| entry.kind == n2r_win32::plain_ledger::PlainKind::CloudLeftOut)
+            .map(|entry| entry.path.clone())
+            .collect(),
+        _ => Default::default(),
+    }
 }
 
 /// What the frozen source would make plain, held to what was agreed. The
@@ -235,6 +295,18 @@ pub(crate) fn section(list: &PlainList, list_file: Option<&Path>) -> Vec<String>
                 .map(|warning| format!("  Warning: {warning}")),
         );
     }
+    if list.entries().iter().any(|entry| {
+        matches!(
+            entry.kind,
+            n2r_win32::plain_ledger::PlainKind::CloudPlaceholderPlain
+                | n2r_win32::plain_ledger::PlainKind::CloudLeftOut
+        )
+    }) {
+        lines.push(format!(
+            "  Warning: {}.",
+            crate::plain_projection::CLOUD_WARNING
+        ));
+    }
     for entry in list.entries().iter().take(5) {
         lines.push(format!("  {} ({})", entry.path, entry.kind));
     }
@@ -385,6 +457,56 @@ mod tests {
     }
 
     #[test]
+    fn a_list_with_placeholders_left_out_holds_them_and_what_is_below_them() {
+        let entry = |path: &str, kind| PlainEntry {
+            kind,
+            path: path.into(),
+            cleared_attributes: 0,
+            bytes: 1,
+            volume_extra_bytes: 0,
+            working_extra_bytes: 0,
+            download_bytes: 0,
+        };
+        let agreed = PlainList::new(vec![
+            entry("\\c\\a.bin", PlainKind::CloudPlaceholderPlain),
+            entry("\\c\\folder", PlainKind::CloudPlaceholderPlain),
+            entry("\\c\\folder\\x.bin", PlainKind::CloudPlaceholderPlain),
+            entry("\\c\\kept.bin", PlainKind::CloudPlaceholderPlain),
+        ])
+        .unwrap();
+        let left = PlainList::new(vec![
+            entry("\\c\\a.bin", PlainKind::CloudLeftOut),
+            entry("\\c\\folder", PlainKind::CloudLeftOut),
+        ])
+        .unwrap();
+        let both = with_left_out(&agreed, &left).unwrap();
+        let shown: Vec<_> = both
+            .entries()
+            .iter()
+            .map(|e| (e.path.as_str(), e.kind))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("\\c\\a.bin", PlainKind::CloudLeftOut),
+                ("\\c\\folder", PlainKind::CloudLeftOut),
+                ("\\c\\kept.bin", PlainKind::CloudPlaceholderPlain),
+            ]
+        );
+        // What the frozen source then finds below the folder is agreed.
+        let frozen = PlainList::new(vec![
+            entry("\\c\\folder\\x.bin", PlainKind::CloudLeftOut),
+            entry("\\c\\kept.bin", PlainKind::CloudPlaceholderPlain),
+        ])
+        .unwrap();
+        assert!(bind(&frozen, Some(&both)).is_ok());
+        // Made plain where it was agreed left out: not agreed.
+        let made =
+            PlainList::new(vec![entry("\\c\\a.bin", PlainKind::CloudPlaceholderPlain)]).unwrap();
+        assert!(bind(&made, Some(&both)).is_err());
+    }
+
+    #[test]
     fn the_ledger_is_kept_in_a_file_of_its_own_that_is_never_overwritten() {
         let directory = tempfile::tempdir().unwrap();
         let ledger = n2r_win32::plain_ledger::PlainLedger {
@@ -431,6 +553,25 @@ mod tests {
         assert!(text.contains("\\a\\t.tmp (attributes_cleared)"), "{text}");
         assert!(
             text.contains(&format!("S:\\runs\\plain.txt (sha256 {})", found.sha256())),
+            "{text}"
+        );
+        assert!(!text.contains("do not run on ReFS"), "{text}");
+        // A cloud placeholder: the sync stops, and the user is told so.
+        let cloud = PlainList::new(vec![PlainEntry {
+            kind: PlainKind::CloudPlaceholderPlain,
+            path: "\\OneDrive\\a.txt".into(),
+            cleared_attributes: 0,
+            bytes: 10,
+            volume_extra_bytes: 0,
+            working_extra_bytes: 10,
+            download_bytes: 3 << 20,
+        }])
+        .unwrap();
+        let text = section(&cloud, None).join("\n");
+        assert!(
+            text.contains(
+                "Warning: OneDrive and other Cloud Files API providers do not run on ReFS"
+            ) && text.contains("3 MiB to download before the volume is frozen"),
             "{text}"
         );
         let asked = question(&found);

@@ -1890,7 +1890,7 @@ where
                 );
                 match cancelled {
                     Ok(receipt) => Err(original.context(format!("conversion failed before AP; original NTFS restored through durable cancellation: {receipt}"))),
-                    Err(cleanup) => Err(original.context(format!("conversion failed before AP; durable cancellation did not complete and source may remain excluded or already be online: {cleanup:#}"))),
+                    Err(cleanup) => Err(abort::with_failed_cleanup(original, "conversion failed before AP (its durable cancellation did not complete either)", cleanup)),
                 }
             } else {
                 if context.early_preparation_delegated()? {
@@ -1922,7 +1922,11 @@ where
                         }
                         Err(original.context(RestoredBeforePublication(mounted.disk_number)))
                     }
-                    Err(cleanup) => Err(original.context(format!("conversion failed before publication; original NTFS cleanup did not complete and source may remain excluded or already be online: {cleanup:#}"))),
+                    Err(cleanup) => Err(abort::with_failed_cleanup(
+                        original,
+                        "conversion failed before publication",
+                        cleanup,
+                    )),
                 }
             }
         }

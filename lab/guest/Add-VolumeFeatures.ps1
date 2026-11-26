@@ -21,7 +21,9 @@ param(
     # Files of the 'manyfiles' feature.
     [int]$FileCount = 500000,
     # A directory of the control OS to copy onto the volume with its security.
-    [string]$CopyFrom = 'C:\Program Files'
+    [string]$CopyFrom = 'C:\Program Files',
+    # lab-cloud-provider.exe, for the 'cloud' and 'cloud-down' features.
+    [string]$CloudProvider
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 $drive = $Root.TrimEnd('\')
@@ -324,6 +326,58 @@ public static class ManyFiles {
             }
             # Made plain once agreed (wof_expanded): the ledger has to name each.
             $made[$feature] = [ordered]@{ what = "four files compressed by compact /exe ($($stored -join '; '))"; plain = $plain.ToArray() }
+        }
+        { $_ -in 'cloud', 'cloud-down' } {
+            # A Cloud Files API sync root of the lab's own provider
+            # (lab-cloud-provider.exe, -CloudProvider), backed by a folder on
+            # the control OS's volume: one placeholder wholly on the volume,
+            # one with its first 64 KiB only, one with nothing, one pinned,
+            # and a folder of them. 'cloud' leaves the provider running (the
+            # run downloads what is missing before the freeze); 'cloud-down'
+            # stops it (the run is refused, naming the two it cannot download,
+            # or, once leaving them out is agreed, converts without them).
+            if (-not $CloudProvider) { throw "the '$feature' feature needs -CloudProvider" }
+            $backing = "C:\n2r-cloud-backing\$feature"
+            if (Test-Path -LiteralPath $backing) { Remove-Item -LiteralPath $backing -Recurse -Force }
+            $null = New-Item -ItemType Directory -Path "$backing\folder" -Force
+            foreach ($file in 'present.bin', 'partial.bin', 'absent.bin', 'pinned.bin', 'folder\inner.bin') {
+                [IO.File]::WriteAllBytes("$backing\$file", (Bytes 300000))
+            }
+            # For 'cloud': a small placeholder, not present, that the harness
+            # downloads from the converter's own session to prove the
+            # provider serves it.
+            if ($feature -eq 'cloud') { [IO.File]::WriteAllBytes("$backing\probe.bin", (Bytes 4096)) }
+            $sync = "$dir\synced"
+            $null = New-Item -ItemType Directory -Path $sync -Force
+            $text = Run $CloudProvider @('create', '--root', $sync, '--backing', $backing,
+                '--present', 'present.bin', '--present', 'folder\inner.bin',
+                '--partial', 'partial.bin', '--pinned', 'pinned.bin')
+            $plain = New-Object System.Collections.Generic.List[object]
+            # The sync root is itself a placeholder (a cloud tag on the folder).
+            $plain.Add([ordered]@{ kind = 'cloud_placeholder_plain'; path = "\feature-$feature\synced" })
+            foreach ($path in @('folder', 'folder\inner.bin', 'present.bin', 'partial.bin', 'absent.bin', 'pinned.bin') + @(if ($feature -eq 'cloud') { 'probe.bin' })) {
+                # With the provider stopped, the two not wholly present can only
+                # be left out (the run is refused unless that is agreed:
+                # -LeaveOutCloud), and are absent afterwards.
+                $kind = if ($feature -eq 'cloud-down' -and $path -in 'partial.bin', 'absent.bin') { 'cloud_left_out' } else { 'cloud_placeholder_plain' }
+                $plain.Add([ordered]@{ kind = $kind; path = "\feature-$feature\synced\$path" })
+            }
+            $stop = "C:\n2r-cloud-backing\$feature.stop"
+            Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
+            $served = $null
+            if ($feature -eq 'cloud') {
+                $served = Start-Process -FilePath $CloudProvider -PassThru -WindowStyle Hidden -ArgumentList @(
+                    'serve', '--root', "`"$sync`"", '--backing', "`"$backing`"", '--stop-file', "`"$stop`"")
+                Start-Sleep -Seconds 2
+                if ($served.HasExited) { throw "lab-cloud-provider serve ended at once (exit $($served.ExitCode))" }
+            }
+            $made[$feature] = [ordered]@{
+                what = "a cloud sync root of the lab provider ($(($text -replace '\s+', ' ').Trim())); its provider is $(if ($served) { "running (process $($served.Id))" } else { 'stopped' })"
+                plain = $plain.ToArray()
+                sync_root = $sync; backing = $backing; stop_file = $stop
+                provider_process = $(if ($served) { $served.Id } else { $null })
+                not_present = @("\feature-$feature\synced\partial.bin", "\feature-$feature\synced\absent.bin")
+            }
         }
         'quota' {
             $null = Run 'fsutil.exe' @('quota', 'enforce', $drive)

@@ -98,6 +98,14 @@ pub struct Record {
     /// refused, or left out with the user's agreement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plain_read_error: Option<String>,
+    /// Why a placeholder's stored contents (`sha256`, read with its reparse
+    /// point opened and nothing recalled) could not be read: its data is
+    /// not on the volume, and the filter that owns it refuses the read
+    /// (a cloud placeholder not present locally, its provider not
+    /// running). Recorded, as the same on every reading of an unchanged
+    /// volume, not an error of the listing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_read_error: Option<String>,
     pub links: u32,
     /// Identifies the file behind several hard links. Only meaningful within
     /// one listing; never compared across listings.
@@ -117,6 +125,20 @@ pub const WOF_WIM_BACKED: u32 = 0x100;
 pub fn is_placeholder_tag(tag: u32) -> bool {
     is_cloud_tag(tag) || matches!(tag, PROJFS_TAG | DEDUP_TAG | SIS_TAG)
 }
+/// Whether the listing lists what a directory entry holds: a directory,
+/// and of the directories with a reparse point only a placeholder folder
+/// (cloud files, ProjFS), never a link or a junction.
+pub fn descends(attributes: u32, reparse_tag: Option<u32>) -> bool {
+    const DIRECTORY: u32 = 0x10;
+    if attributes & DIRECTORY == 0 {
+        return false;
+    }
+    if attributes & REPARSE_POINT == 0 {
+        return true;
+    }
+    reparse_tag.is_some_and(|tag| is_cloud_tag(tag) || tag == PROJFS_TAG)
+}
+
 /// IO_REPARSE_TAG_CLOUD and its sixteen variants.
 pub fn is_cloud_tag(tag: u32) -> bool {
     tag & 0xffff_0fff == 0x9000_001a
@@ -529,7 +551,10 @@ fn feature_view_differs(was: &Record, is: &Record) -> Option<String> {
             was.wof_algorithm, is.wof_algorithm
         ));
     }
-    if was.plain_sha256 != is.plain_sha256 || was.plain_read_error != is.plain_read_error {
+    if was.plain_sha256 != is.plain_sha256
+        || was.plain_read_error != is.plain_read_error
+        || was.content_read_error != is.content_read_error
+    {
         return Some("the contents a program reads through the placeholder differ".to_owned());
     }
     None
@@ -766,15 +791,20 @@ fn declared_after(row: &LedgerRow, before: &Record) -> Result<Record, String> {
                 before.reparse_tag
             ));
         }
-        let Some(plain) = before.plain_sha256.clone() else {
-            return Err(format!(
-                "the listing before could not read the {what} as a program does: {}",
-                before.plain_read_error.as_deref().unwrap_or("not read")
-            ));
-        };
-        after.sha256 = Some(plain);
+        // A directory placeholder has no contents to read; it loses its
+        // reparse point and its marks alone.
+        if !before.directory {
+            let Some(plain) = before.plain_sha256.clone() else {
+                return Err(format!(
+                    "the listing before could not read the {what} as a program does: {}",
+                    before.plain_read_error.as_deref().unwrap_or("not read")
+                ));
+            };
+            after.sha256 = Some(plain);
+        }
         after.plain_sha256 = None;
         after.plain_read_error = None;
+        after.content_read_error = None;
         after.reparse_tag = None;
         after.reparse_sha256 = None;
         after.relative_link_target = None;
@@ -844,7 +874,22 @@ fn declared_after(row: &LedgerRow, before: &Record) -> Result<Record, String> {
         }
         PlainKind::SisExpanded => placeholder(&mut after, tag == SIS_TAG, "single-instance link")?,
         PlainKind::CloudPlaceholderPlain => {
-            placeholder(&mut after, is_cloud_tag(tag), "cloud placeholder")?
+            placeholder(&mut after, is_cloud_tag(tag), "cloud placeholder")?;
+            // A sync root's folder: the Cloud Files API's own streams on it
+            // are gone, each as the row declares it, and only those.
+            // The Cloud Files filter hides these streams from Windows
+            // (the lab: the folder's stream enumeration ends at once), so the
+            // listing before may not show them; where it does, they go.
+            for dropped in &row.dropped_streams {
+                if !crate::plain_ledger::is_cloud_private_stream(&dropped.name) {
+                    return Err(format!(
+                        "the ledger declares the stream {} dropped, which is not the Cloud Files API's own",
+                        dropped.name
+                    ));
+                }
+                let listed = format!(":{}:$DATA", dropped.name);
+                after.streams.retain(|stream| stream.name != listed);
+            }
         }
         PlainKind::ProjfsPlaceholderPlain => {
             placeholder(&mut after, tag == PROJFS_TAG, "ProjFS placeholder")?
@@ -968,6 +1013,19 @@ pub fn compare_with_plain(
     // that makes, held to what is there afterwards.
     let mut expected: Vec<Record> = Vec::new();
     let mut compared: BTreeSet<&str> = BTreeSet::new();
+    // A folder placeholder left out takes everything below it with it; each
+    // of those objects has its own row, and is held to being below one.
+    let left_out_folders: Vec<&str> = ledger
+        .rows
+        .iter()
+        .filter(|row| row.kind == PlainKind::CloudLeftOut)
+        .flat_map(|row| row.paths.iter().map(String::as_str))
+        .filter(|path| {
+            before_by_path.get(path).is_some_and(|record| {
+                record.directory && record.reparse_tag.is_some_and(is_cloud_tag)
+            })
+        })
+        .collect();
     for row in &ledger.rows {
         for path in &row.paths {
             let Some(was) = before_by_path.get(path.as_str()) else {
@@ -982,12 +1040,17 @@ pub fn compare_with_plain(
                 continue;
             };
             if row.kind == PlainKind::CloudLeftOut {
-                if !was.reparse_tag.is_some_and(is_cloud_tag) {
+                let below_a_left_out_folder = left_out_folders.iter().any(|folder| {
+                    path.len() > folder.len()
+                        && path.starts_with(folder)
+                        && path.as_bytes()[folder.len()] == b'\\'
+                });
+                if !was.reparse_tag.is_some_and(is_cloud_tag) && !below_a_left_out_folder {
                     fail(
                         path,
                         "declared feature not shown before",
                         format!(
-                            "left out as a cloud placeholder, and the listing before shows reparse tag {:?}",
+                            "left out as a cloud placeholder, and the listing before shows reparse tag {:?}, below no cloud folder left out",
                             was.reparse_tag
                         ),
                     );
@@ -1204,8 +1267,14 @@ mod capture {
 
     // FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES | READ_CONTROL | ACCESS_SYSTEM_SECURITY
     const READ_EVERYTHING: u32 = 0x0102_0089;
-    // FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN
-    const OPEN_FLAGS: u32 = 0x0a20_0000;
+    // FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT |
+    // FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_OPEN_NO_RECALL: the object
+    // itself, and never a recall of a placeholder's data from its provider
+    // (a listing must not change what it lists: a cloud placeholder that is
+    // not on the volume stays so, and its contents are read as stored).
+    const OPEN_FLAGS: u32 = 0x0a30_0000;
+    // FILE_FLAG_OPEN_NO_RECALL in every open of the listing.
+    const _: () = assert!(OPEN_FLAGS & 0x0010_0000 != 0 && PLAIN_FLAGS & 0x0010_0000 != 0);
     const REPARSE: u32 = 0x400;
     const DIRECTORY: u32 = 0x10;
     const ENCRYPTED: u32 = 0x4000;
@@ -1309,6 +1378,9 @@ mod capture {
     struct Pending {
         path: String,
         attributes: u32,
+        /// The reparse tag the directory listing gives, for an entry with
+        /// a reparse point.
+        reparse_tag: Option<u32>,
         created: i64,
         written: i64,
         changed: i64,
@@ -1411,6 +1483,9 @@ mod capture {
                             format!("{path}\\{name}")
                         },
                         attributes: u32_at(entry, 56),
+                        // FILE_ID_BOTH_DIR_INFO's EaSize holds the reparse
+                        // tag of an entry with a reparse point.
+                        reparse_tag: (u32_at(entry, 56) & REPARSE != 0).then(|| u32_at(entry, 64)),
                         created: i64_at(entry, 8),
                         written: i64_at(entry, 24),
                         changed: i64_at(entry, 32),
@@ -1757,6 +1832,11 @@ mod capture {
         if !directory {
             match hash(&mut file, buffer) {
                 Ok((_, sha256)) => record.sha256 = Some(sha256),
+                // A placeholder whose data is not on the volume: its filter
+                // refuses the read, the same way on every reading.
+                Err(error) if record.reparse_tag.is_some_and(super::is_placeholder_tag) => {
+                    record.content_read_error = Some(error.to_string())
+                }
                 Err(error) => note(&mut record, "content", &error),
             }
         }
@@ -1791,6 +1871,7 @@ mod capture {
         let mut pending = vec![Pending {
             path: "\\".to_owned(),
             attributes: u32_at(basic, 32),
+            reparse_tag: None,
             created: i64_at(basic, 0),
             written: i64_at(basic, 16),
             changed: i64_at(basic, 24),
@@ -1803,8 +1884,12 @@ mod capture {
         while next < pending.len() {
             let entry = &pending[next];
             next += 1;
-            // Links and junctions are recorded, never followed.
-            if entry.attributes & DIRECTORY == 0 || entry.attributes & REPARSE != 0 {
+            // Links and junctions are recorded, never followed. A
+            // placeholder folder (cloud files, ProjFS) is a directory of
+            // its own, whose contents are on the volume: it is listed, so
+            // that what it holds is listed with or without its provider
+            // (and as a plain directory after a conversion lists it).
+            if !super::descends(entry.attributes, entry.reparse_tag) {
                 continue;
             }
             let path = entry.path.clone();
@@ -1893,6 +1978,9 @@ mod tests {
             witness: "test".into(),
             plain_copy: None,
             efs: None,
+            cloud: None,
+            left_out: None,
+            dropped_streams: Vec::new(),
         }
     }
     /// A volume with an ordinary file and a TEMPORARY one, before and after
@@ -2222,6 +2310,164 @@ mod tests {
             there.plain.failure_kinds["left out, and there afterwards"],
             1
         );
+        // A sync root's folder made plain: its point and marks go, and the
+        // Cloud Files API's own stream on it, as declared, and only that.
+        let identity = "${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity";
+        let stream = |name: &str| Stream {
+            name: format!(":{name}:$DATA"),
+            bytes: 120,
+            sha256: "s".into(),
+        };
+        let mut root = directory("\\sync");
+        root.attributes |= 0x400;
+        root.reparse_tag = Some(0x9000_701a);
+        root.streams = vec![stream(identity), stream("kept")];
+        let mut plain_root = directory("\\sync");
+        plain_root.streams = vec![stream("kept")];
+        let declared_row = LedgerRow {
+            paths: vec!["\\sync".into()],
+            dropped_streams: vec![n2r_win32_ledger_stream(identity)],
+            ..row(PlainKind::CloudPlaceholderPlain)
+        };
+        let verdict = compare_with_plain(
+            &[root.clone()],
+            &[plain_root.clone()],
+            Declared::default(),
+            &ledger(vec![declared_row.clone()]),
+        );
+        assert!(verdict.identical(), "{verdict:?}");
+        // Gone without being declared, or another stream gone: not identical.
+        let undeclared = compare_with_plain(
+            &[root.clone()],
+            &[plain_root],
+            Declared::default(),
+            &ledger(vec![LedgerRow {
+                dropped_streams: Vec::new(),
+                ..declared_row.clone()
+            }]),
+        );
+        assert!(!undeclared.identical(), "{undeclared:?}");
+        let mut lost = directory("\\sync");
+        lost.streams = Vec::new();
+        assert!(
+            !compare_with_plain(
+                &[root],
+                &[lost],
+                Declared::default(),
+                &ledger(vec![declared_row])
+            )
+            .identical()
+        );
+        // A folder placeholder left out, and what is below it, each by its
+        // own row: all absent afterwards. A plain file below it is left out
+        // with it; one elsewhere is not a placeholder to leave out.
+        let mut folder = directory("\\c");
+        folder.attributes |= 0x400;
+        folder.reparse_tag = Some(0x9000_001a);
+        let inner = file("\\c\\plain.txt", "x");
+        let outside = file("\\d.txt", "y");
+        let left = |path: &str| LedgerRow {
+            paths: vec![path.into()],
+            ..row(PlainKind::CloudLeftOut)
+        };
+        let verdict = compare_with_plain(
+            &[directory("\\"), folder.clone(), inner.clone()],
+            &[directory("\\")],
+            Declared::default(),
+            &ledger(vec![left("\\c"), left("\\c\\plain.txt")]),
+        );
+        assert!(verdict.identical(), "{verdict:?}");
+        let stray = compare_with_plain(
+            &[directory("\\"), outside],
+            &[directory("\\")],
+            Declared::default(),
+            &ledger(vec![left("\\d.txt")]),
+        );
+        assert_eq!(
+            stray.plain.failure_kinds["declared feature not shown before"],
+            1
+        );
+        // Below the folder, but not declared: the listing comparison finds
+        // it missing.
+        let undeclared = compare_with_plain(
+            &[directory("\\"), folder, inner],
+            &[directory("\\")],
+            Declared::default(),
+            &ledger(vec![left("\\c")]),
+        );
+        assert!(!undeclared.identical(), "{undeclared:?}");
+        // A directory placeholder: its point and marks go, and nothing is
+        // read of it.
+        let mut folder = directory("\\d");
+        folder.attributes |= 0x400 | 0x8_0000;
+        folder.reparse_tag = Some(0x9000_001a);
+        folder.reparse_sha256 = Some("r".into());
+        let verdict = compare_with_plain(
+            &[folder.clone()],
+            &[directory("\\d")],
+            Declared::default(),
+            &ledger(vec![LedgerRow {
+                paths: vec!["\\d".into()],
+                ..row(PlainKind::CloudPlaceholderPlain)
+            }]),
+        );
+        assert!(verdict.identical(), "{verdict:?}");
+        // A file whose contents the listing could not read was not shown.
+        let mut unread = cloud.clone();
+        unread.plain_sha256 = None;
+        unread.plain_read_error = Some("not on this device".into());
+        assert!(
+            !compare_with_plain(
+                &[unread],
+                &[file("\\f", "bytes")],
+                Declared::default(),
+                &ledger(vec![row(PlainKind::CloudPlaceholderPlain)])
+            )
+            .identical()
+        );
+    }
+
+    fn n2r_win32_ledger_stream(name: &str) -> crate::plain_ledger::LedgerStream {
+        crate::plain_ledger::LedgerStream {
+            name: name.into(),
+            bytes: 120,
+        }
+    }
+
+    #[test]
+    fn a_placeholder_not_present_reads_the_same_way_twice() {
+        // The lab (cl6-down): absent.bin, with its provider stopped, could
+        // not be read before nor afterwards, in the same way.
+        let mut absent = file("\\c\\absent.bin", "x");
+        absent.sha256 = None;
+        absent.reparse_tag = Some(0x9000_601a);
+        absent.attributes |= 0x400;
+        absent.content_read_error =
+            Some("The cloud file provider is not running. (os error 362)".into());
+        let same = compare_exact(&[absent.clone()], &[absent.clone()]);
+        assert!(same.identical(), "{same:?}");
+        // Read one time and not the other: a difference.
+        let mut read = absent.clone();
+        read.content_read_error = None;
+        read.sha256 = Some("bytes".into());
+        assert!(!compare_exact(&[absent.clone()], &[read]).identical());
+        let mut other = absent.clone();
+        other.content_read_error = Some("another refusal".into());
+        assert!(!compare_exact(&[absent], &[other]).identical());
+    }
+
+    #[test]
+    fn a_placeholder_folder_is_listed_and_a_link_is_not_followed() {
+        // A directory, a cloud folder and a ProjFS one are listed.
+        assert!(descends(0x10, None));
+        assert!(descends(0x10 | 0x400, Some(0x9000_701a)));
+        assert!(descends(0x10 | 0x400, Some(0x9000_001a)));
+        assert!(descends(0x10 | 0x400, Some(PROJFS_TAG)));
+        // A junction, a directory symbolic link, a file: not followed.
+        assert!(!descends(0x10 | 0x400, Some(0xa000_0003)));
+        assert!(!descends(0x10 | 0x400, Some(SYMLINK_TAG)));
+        assert!(!descends(0x10 | 0x400, None));
+        assert!(!descends(0x20 | 0x400, Some(0x9000_001a)));
     }
 
     #[test]

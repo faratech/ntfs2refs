@@ -1156,15 +1156,19 @@ fn maps_with_resources(
             .context("native map count overflow")?;
         Ok(())
     })?;
-    // The new volume holds the admitted streams less those the run's
-    // plain-conversions ledger declares dropped (`DeclaredDrops`).
-    let streams = n2r_win32::plain_ledger::declared()
+    // The new volume holds the admitted streams and directories less those
+    // the run's plain-conversions ledger declares dropped or left out
+    // (`DeclaredDrops`).
+    let declared = n2r_win32::plain_ledger::declared();
+    let streams = declared
         .expected_streams(admission.data_streams)
+        .map_err(anyhow::Error::msg)?;
+    let directories = declared
+        .expected_directories(admission.directories)
         .map_err(anyhow::Error::msg)?;
     ensure!(
         count as u64
-            == admission
-                .directories
+            == directories
                 .checked_add(streams)
                 .context("native map count overflow")?,
         "native complete map count differs from actual admitted tree"

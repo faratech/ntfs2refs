@@ -1013,6 +1013,227 @@ mod refusal_tests {
         (resource_counts, replacement, case)
     }
 
+    /// A cloud folder as the lab's `cloud` volume has it: a directory with a
+    /// cloud reparse point and the given named streams.
+    fn cloud_folder(streams: &[&str]) -> FileInventory {
+        let mut point = 0x9000_701au32.to_le_bytes().to_vec();
+        point.extend_from_slice(&8u16.to_le_bytes());
+        point.extend_from_slice(&0u16.to_le_bytes());
+        point.extend_from_slice(b"provider");
+        let attribute = |type_code: u32, name: &str, value: &[u8]| ntfs::AttributeInventory {
+            type_code,
+            instance: 0,
+            name_utf16: name.encode_utf16().collect(),
+            flags: 0,
+            resident: true,
+            logical_size: value.len() as u64,
+            initialized_size: value.len() as u64,
+            allocated_size: value.len().next_multiple_of(8) as u64,
+            lowest_vcn: 0,
+            compression_unit: 0,
+            total_allocated_size: None,
+            extents: vec![],
+            resident_sha256: Some(n2r_win32::content_digest::of(value)),
+            resident_metadata_hex: (type_code == 0xc0).then(|| hex::encode(value)),
+        };
+        let mut folder = directory_with_stream("x", 0);
+        folder.record_number = 38;
+        folder.streams = streams
+            .iter()
+            .map(|name| {
+                let mut stream = directory_with_stream(name, 0).streams.remove(0);
+                stream.logical_size = 29;
+                stream.initialized_size = 29;
+                stream
+            })
+            .collect();
+        folder.attributes = std::iter::once(attribute(0xc0, "", &point))
+            .chain(streams.iter().map(|name| attribute(0x80, name, &[7; 29])))
+            .collect();
+        folder.standard_information = Some(ntfs::StandardInformation {
+            creation_time: 1,
+            modification_time: 2,
+            mft_change_time: 3,
+            access_time: 4,
+            // ARCHIVE | REPARSE_POINT; NTFS keeps no DIRECTORY bit here.
+            file_attributes: 0x420,
+            security_id: None,
+        });
+        folder.reparse = Some(n2r_win32::reparse_layout::Point { buffer: point });
+        folder
+    }
+
+    /// What admission says of an object, less the SACL condition a test
+    /// object without a descriptor always has.
+    fn admission_issues(f: &FileInventory) -> Vec<String> {
+        let geometry = ntfs::NtfsGeometry {
+            bytes_per_sector: 512,
+            sectors_per_cluster: 8,
+            cluster_size: 4096,
+            total_sectors: 1 << 20,
+            volume_size: 512 << 20,
+            total_clusters: 1 << 17,
+            mft_lcn: 4,
+            mftmirr_lcn: 8,
+            file_record_size: 1024,
+            index_record_size: 4096,
+            serial_number: 1,
+        };
+        user_issues_with_context_alias_scope(
+            f,
+            true,
+            &geometry,
+            true,
+            false,
+            None,
+            None,
+            16,
+            false,
+            false,
+            false,
+            false,
+            |_| true,
+        )
+        .into_iter()
+        .filter(|issue| !issue.contains("SACL"))
+        .collect()
+    }
+
+    /// The lab (reference-b, MFT records 38 and 41): a sync root's folder,
+    /// with the Cloud Files API's own stream, and a folder placeholder in
+    /// it. A run that takes them plain settles every condition admission
+    /// reports of them (the cloud point, the stream's attribute, the
+    /// directory stream); one that does not refuses them by name.
+    #[test]
+    fn a_cloud_folder_made_plain_settles_its_point_and_the_apis_own_stream() {
+        let identity = "${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.SyncRootIdentity";
+        let sync_root = cloud_folder(&[identity]);
+        let folder = cloud_folder(&[]);
+        let other = cloud_folder(&["note"]);
+        crate::plain_consent::take_plain_on_this_thread(true);
+        let taken = (
+            admission_issues(&sync_root),
+            admission_issues(&folder),
+            admission_issues(&other),
+            crate::plain_projection::cloud_placeholder(&sync_root)
+                .unwrap()
+                .is_some_and(|placeholder| placeholder.directory),
+        );
+        crate::plain_consent::take_plain_on_this_thread(false);
+        assert!(taken.0.is_empty(), "{:?}", taken.0);
+        assert!(taken.1.is_empty(), "{:?}", taken.1);
+        assert!(taken.3);
+        // Any other named stream on a cloud folder is not the API's: refused.
+        assert!(
+            taken
+                .2
+                .iter()
+                .any(|issue| issue.contains("cloud placeholder")),
+            "{:?}",
+            taken.2
+        );
+        // Not taken plain (a Windows boot volume, say): refused by name.
+        let refused = admission_issues(&sync_root);
+        assert!(
+            refused
+                .iter()
+                .any(|issue| issue.contains("cloud placeholder"))
+                && refused
+                    .iter()
+                    .any(|issue| issue.contains("named data stream")),
+            "{refused:?}"
+        );
+    }
+
+    /// The lab (cl3-down-leave-out, MFT record 42): a placeholder file left
+    /// out has no copy, and Windows' view of it at the freeze is not asked
+    /// for one; one made plain is.
+    #[test]
+    fn a_left_out_placeholder_is_not_made_from_a_copy() {
+        let mut file = cloud_folder(&[]);
+        file.record_number = 0x7e57_0042;
+        file.is_directory = false;
+        file.streams = directory_with_stream("", 0).streams;
+        crate::plain_consent::take_plain_on_this_thread(true);
+        let copied = crate::plain_projection::cloud_copied(&file);
+        n2r_win32::plain_ledger::declare(
+            n2r_win32::plain_ledger::DeclaredDrops::from_ledger(
+                &n2r_win32::plain_ledger::PlainLedger {
+                    kind: n2r_win32::plain_ledger::LEDGER_KIND.into(),
+                    agreed_list_sha256: String::new(),
+                    frozen_list_sha256: String::new(),
+                    source_inspection_sha256: String::new(),
+                    rows: vec![n2r_win32::plain_ledger::LedgerRow {
+                        kind: n2r_win32::plain_ledger::PlainKind::CloudLeftOut,
+                        paths: vec!["\\c\\absent.bin".into()],
+                        record_number: file.record_number,
+                        sequence_number: file.sequence_number,
+                        before: Default::default(),
+                        after: Default::default(),
+                        witness: "raw".into(),
+                        plain_copy: None,
+                        efs: None,
+                        cloud: None,
+                        left_out: Some(n2r_win32::plain_ledger::LedgerLeftOut {
+                            directory: false,
+                            streams: 1,
+                            bytes: 5,
+                        }),
+                        dropped_streams: Vec::new(),
+                    }],
+                },
+            )
+            .unwrap(),
+        );
+        let left_out = crate::plain_projection::cloud_copied(&file);
+        let view = crate::plain_projection::observed_view(&file);
+        n2r_win32::plain_ledger::declare(Default::default());
+        crate::plain_consent::take_plain_on_this_thread(false);
+        assert!(copied && !left_out);
+        // Compared as the raw record holds it, with no copy asked for.
+        assert!(matches!(view, Ok(None)), "{view:?}");
+    }
+
+    /// The lab (cl4-down-leave-out, records 44, 46, 47): a placeholder file
+    /// wholly on the volume, whose copy holds exactly its raw contents, is
+    /// the raw stream as Windows sees it, which a run that verifies once need
+    /// not have Windows read; a copy that differs from the raw stream is not.
+    #[test]
+    fn a_copy_that_is_the_raw_stream_needs_no_second_read() {
+        let mut file = cloud_folder(&[]);
+        file.record_number = 0x7e57_0044;
+        file.is_directory = false;
+        file.streams = directory_with_stream("", 0).streams;
+        let bytes = b"the file's contents";
+        file.streams[0].logical_size = bytes.len() as u64;
+        file.streams[0].logical_sha256 = Some(n2r_win32::content_digest::of(bytes));
+        file.streams[0].logical_hash_status = ntfs::LogicalHashStatus::Complete;
+        let _held = crate::plain_projection::COPY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let run = tempfile::tempdir().unwrap();
+        n2r_win32::plain_copy::arm(
+            &run.path().join(n2r_win32::plain_copy::DIRECTORY),
+            vec![n2r_win32::plain_copy::PlainCopyRequest {
+                key: crate::plain_projection::copy_key(&file),
+                bytes: bytes.len() as u64,
+                through: n2r_win32::plain_copy::PlainRead::Filter,
+            }],
+        )
+        .unwrap();
+        n2r_win32::plain_copy::take_armed_with(|_| Ok(&bytes[..])).unwrap();
+        crate::plain_consent::take_plain_on_this_thread(true);
+        let same = crate::plain_projection::copy_is_the_raw_stream(&file, &file.streams[0]);
+        let mut changed = file.clone();
+        changed.streams[0].logical_sha256 = Some(n2r_win32::content_digest::of(b"other"));
+        let differs =
+            crate::plain_projection::copy_is_the_raw_stream(&changed, &changed.streams[0]);
+        crate::plain_consent::take_plain_on_this_thread(false);
+        let not_taken = crate::plain_projection::copy_is_the_raw_stream(&file, &file.streams[0]);
+        n2r_win32::plain_copy::remove(run.path()).unwrap();
+        assert!(same && !differs && !not_taken);
+    }
+
     /// The checked source readers take a directory's named stream: the lab's
     /// dirstream run was refused in payload supply planning with "plain
     /// standalone file required".
@@ -2190,6 +2411,20 @@ pub(crate) fn user_issues_with_context_alias_scope(
                 n2r_win32::reparse_layout::unsupported_tag_meaning(point.tag())
             ));
         }
+    } else if let Some(point) = reparse
+        .as_ref()
+        .filter(|point| n2r_win32::reparse_layout::is_cloud_tag(point.tag()))
+    {
+        // A cloud provider's placeholder is never recreated as such. A data
+        // volume's is made a plain file once its list is agreed
+        // (`cloud_placeholder_plain`); anywhere else, or of another shape,
+        // it is refused by name, with the remedy.
+        if !(ordinary && crate::plain_projection::cloud_taken(f)) {
+            issues.push(format!(
+                "it is a cloud placeholder{}",
+                n2r_win32::reparse_layout::unsupported_tag_meaning(point.tag())
+            ));
+        }
     } else if let Some(point) = &reparse {
         if (point.tag() == 0xa0000003 && !f.is_directory)
             || (!f.is_directory && (f.streams.len() != 1 || f.streams[0].logical_size != 0))
@@ -2224,8 +2459,18 @@ pub(crate) fn user_issues_with_context_alias_scope(
     // An EFS object this run makes plain: its encrypted DATA and its $EFS
     // attribute are what the plain copy stands for.
     let efs_plain = ordinary && crate::plain_projection::efs_taken(f);
+    // A sync root's folder made plain: the Cloud Files API's own stream on
+    // it is left off, and declared so in the ledger.
+    let cloud_folder = ordinary && f.is_directory && crate::plain_projection::cloud_taken(f);
     let unsupported_attribute = f.attributes.iter().find(|a| {
         if efs_plain && crate::plain_projection::efs_attribute(a) {
+            return false;
+        }
+        if cloud_folder
+            && a.type_code == 0x80
+            && String::from_utf16(&a.name_utf16)
+                .is_ok_and(|name| n2r_win32::plain_ledger::is_cloud_private_stream(&name))
+        {
             return false;
         }
         let plain =
@@ -2355,7 +2600,14 @@ pub(crate) fn user_issues_with_context_alias_scope(
         } else {
             0
         }
-        | if efs_plain { n2r_win32::plain_ledger::ENCRYPTED } else { 0 };
+        | if efs_plain { n2r_win32::plain_ledger::ENCRYPTED } else { 0 }
+        // A cloud placeholder made plain: the provider's pin and recall
+        // marks and OFFLINE, which the new object is made without.
+        | if ordinary && crate::plain_projection::cloud_taken(f) {
+            crate::plain_projection::CLOUD_CLEARED
+        } else {
+            0
+        };
     match crate::ntfs_file_attributes::project_user(f) {
         Ok(attributes) if attributes.source_attributes & !carried_attributes == 0 => {}
         Ok(attributes) => issues.push(format!(
@@ -2399,7 +2651,10 @@ pub(crate) fn user_issues_with_context_alias_scope(
         }
     }
     if f.is_directory {
-        if let Some(issue) = directory_stream_issue(
+        // A cloud folder made plain has no named stream but the Cloud Files
+        // API's own, which is left off it (a declared drop), not carried.
+        if cloud_folder {
+        } else if let Some(issue) = directory_stream_issue(
             f,
             ordinary,
             reparse.is_some(),

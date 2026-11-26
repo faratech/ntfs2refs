@@ -100,6 +100,9 @@ pub(super) struct Report {
     /// What a conversion makes plain files of, once the list is agreed
     /// (`plain_consent`): not refused, and not converted without consent.
     pub plain: crate::plain_projection::PlainList,
+    /// What the Cloud Files API reported of each cloud placeholder of the
+    /// list, online; nothing was downloaded to learn it.
+    pub cloud: Vec<crate::drive_plain_prefreeze::CloudFinding>,
     /// How long each part of the reading took, in order.
     pub laps: Vec<(&'static str, std::time::Duration)>,
 }
@@ -663,6 +666,8 @@ fn read(
             let mut wof = Vec::new();
             // EFS files this run would decrypt, whose key is asked for below.
             let mut efs_files = Vec::new();
+            // Cloud placeholders, asked of the Cloud Files API below.
+            let mut cloud = Vec::new();
             let (mut stays, mut copied) = (0u64, 0u64);
             for ordinal in 0..raw.file_count() {
                 let file = raw.file(ordinal)?;
@@ -696,6 +701,13 @@ fn read(
                     {
                         efs_files.push(crate::plain_projection::listing_path(&path));
                     }
+                    if let Ok(Some(placeholder)) = crate::plain_projection::cloud_placeholder(&file)
+                    {
+                        cloud.push((
+                            crate::plain_projection::listing_path(&path),
+                            placeholder.directory,
+                        ));
+                    }
                     plain.push(crate::plain_projection::entry(
                         crate::plain_projection::listing_path(&path),
                         &file,
@@ -714,6 +726,14 @@ fn read(
             if let Some(outside) = refused.outside_policy("") {
                 report.refusals.push(outside);
             }
+            // What of each cloud placeholder is on the volume, as the Cloud
+            // Files API says; it downloads nothing to say it.
+            report.cloud = crate::drive_plain_prefreeze::find(&root, &cloud);
+            crate::drive_plain_prefreeze::apply_downloads(&mut plain, &report.cloud);
+            report.notes.extend(crate::drive_plain_prefreeze::summary(&report.cloud));
+            report
+                .refusals
+                .extend(crate::drive_plain_prefreeze::check_refusals(&report.cloud)?);
             report.plain = crate::plain_projection::PlainList::new(plain)
                 .map_err(anyhow::Error::msg)?;
             // Each EFS file is opened for its data as this account, which
@@ -1205,6 +1225,7 @@ mod tests {
             refusals: vec!["first reason".into(), "second reason".into()],
             notes: vec!["3 file(s) and directories have an object ID".into()],
             estimate: None,
+            cloud: Vec::new(),
             laps: vec![
                 ("file records", std::time::Duration::from_millis(1500)),
                 (

@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
 Converts one NTFS data volume of a chosen geometry in a lab VM's control OS
 and compares the volume's listing before and after.
@@ -83,6 +83,13 @@ param(
     # anything), and efs, wof, casesensitive, snapshot, bitlocker (which are
     # refused). dirstream converts (named streams on directories). quota
     # converts: the quotas are recorded, not carried over.
+    # cloud and cloud-down: a sync root of lab-cloud-provider.exe with
+    # placeholders fully present, partly present, not present and pinned;
+    # with -AcceptPlain 'cloud' converts (its provider runs, and the run
+    # downloads what is missing before the freeze: it lists the volume
+    # itself after that, --compare-listing, and that listing is the one
+    # compared), and 'cloud-down' is refused naming the two it cannot
+    # download (its provider is stopped), with the source unchanged.
     # Two are not made through Windows but on the disk itself,
     # by guest\Use-RawNtfs.ps1, with the disk offline just before the run:
     # lfs2 (the control OS's NtfsDisableLfsDowngrade is 1 from before the
@@ -289,6 +296,12 @@ param(
     # run the comparison is given the run's ledger (--plain-ledger), and the
     # ledger has to name exactly the (kind, path) pairs the features planted.
     [switch]$AcceptPlain,
+    # Agree to leave out the cloud placeholders that cannot be brought onto
+    # the volume (-Features cloud-down: its provider is stopped): with
+    # -AcceptPlain -Unattended -Check, it passes --leave-out-cloud with the
+    # checksum the check printed. Those placeholders are then absent after
+    # the run, each declared cloud_left_out in the ledger.
+    [switch]$LeaveOutCloud,
     # A shadow-copy (VSS) provider that the converter does not know.
     # 'answering' is one of Windows Server's own, the iSCSI target storage
     # provider (the Windows feature iSCSITarget-VSS-VDS, so the VM has to run
@@ -315,6 +328,10 @@ $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 $workspace = Split-Path -Parent $PSScriptRoot
 if (-not $Binary) { $Binary = Join-Path $workspace 'target\release\ntfs2refs.exe' }
 if (-not $ManifestBinary) { $ManifestBinary = Join-Path $workspace 'target\release\lab-volume-manifest.exe' }
+# The lab's Cloud Files API provider, for -Features cloud and cloud-down.
+$cloudFeatures = @($Features | Where-Object { $_ -in 'cloud', 'cloud-down' })
+$CloudProviderBinary = Join-Path (Split-Path -Parent $ManifestBinary) 'lab-cloud-provider.exe'
+if ($cloudFeatures -and -not (Test-Path -LiteralPath $CloudProviderBinary)) { throw "Not found: $CloudProviderBinary (cargo build --locked --release --bin lab-cloud-provider)" }
 foreach ($file in $Binary, $ManifestBinary) { if (-not (Test-Path -LiteralPath $file)) { throw "Not found: $file (cargo build --locked --release --bin ntfs2refs --bin lab-volume-manifest)" } }
 if ($ClusterBytes -lt 512 -or $ClusterBytes -gt 2097152 -or ($ClusterBytes -band ($ClusterBytes - 1))) { throw "-ClusterBytes $ClusterBytes is not a power of two from 512 to 2097152" }
 if ($ClusterBytes -lt $SectorBytes) { throw "-ClusterBytes $ClusterBytes is smaller than the $SectorBytes-byte sector" }
@@ -426,6 +443,9 @@ if ($IntegrityRecords) {
     if (Test-Path -LiteralPath $integrityStorage) { throw "Integrity evidence already exists at $integrityStorage" }
     $null = New-Item -ItemType Directory -Path $integrityStorage
 }
+# Set only by the cloud feature; read on every run under strict mode.
+$script:cloudServe = $null
+$script:cloudStopOnDownloads = $null
 $session = New-PSSession -VMId $VmId -Credential $credential
 # The control OS's scheduled drive optimisation holds up writes to its ReFS
 # volumes for minutes when Windows' automatic maintenance starts it (issue
@@ -497,6 +517,7 @@ try {
         Copy-Item -ToSession $session -LiteralPath $symbols -Destination "$guestRoot\ntfs2refs.pdb" -Force
     }
     Copy-Item -ToSession $session -LiteralPath $ManifestBinary -Destination "$guestRoot\lab-volume-manifest.exe" -Force
+    if ($cloudFeatures) { Copy-Item -ToSession $session -LiteralPath $CloudProviderBinary -Destination "$guestRoot\lab-cloud-provider.exe" -Force }
     Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Invoke-ConverterRun.ps1') -Destination "$guestRoot\worker.ps1" -Force
     Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Add-VolumeFeatures.ps1') -Destination "$guestRoot\features.ps1" -Force
     Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Use-RawNtfs.ps1') -Destination "$guestRoot\rawntfs.ps1" -Force
@@ -733,7 +754,7 @@ try {
             $featureJson = Invoke-Command -Session $session -ArgumentList $guestRoot, $guestFeatures, $DirectoryEntries, $BigFileGB, $FileCount -ScriptBlock {
                 param($root, $features, $entries, $bigGB, $files)
                 $block = [scriptblock]::Create((Get-Content -LiteralPath "$root\features.ps1" -Raw))
-                & $block -Root 'V:\' -Features $features -DirectoryEntries $entries -BigFileGB $bigGB -FileCount $files
+                & $block -Root 'V:\' -Features $features -DirectoryEntries $entries -BigFileGB $bigGB -FileCount $files -CloudProvider "$root\lab-cloud-provider.exe"
             }
         } catch { $verdict.outcome = 'feature-not-made'; throw "a feature could not be put on the volume: $($_.Exception.Message)" }
         $verdict.source.features = ($featureJson | Select-Object -Last 1) | ConvertFrom-Json
@@ -984,6 +1005,33 @@ public static class SiblingRaw {
         if ($RunAs -eq 'administrator') {
             if ($script:worker) { Remove-PSSession $script:worker -ErrorAction SilentlyContinue }
             $script:worker = New-PSSession -VMId $VmId -Credential $credential
+            if ($script:cloudServe) {
+                # The lab provider, in the converter's own session: started,
+                # then proven to serve that session by downloading probe.bin
+                # (a placeholder of its own, not present until now).
+                $c = $script:cloudServe
+                $script:cloudServe = $null
+                $probe = Invoke-Command -Session $script:worker -ArgumentList $c.exe, $c.sync, $c.backing, $c.stop, $c.probe -ScriptBlock {
+                    param($exe, $sync, $backing, $stop, $probe)
+                    Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
+                    $process = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden -ArgumentList @(
+                        'serve', '--root', "`"$sync`"", '--backing', "`"$backing`"", '--stop-file', "`"$stop`"")
+                    Start-Sleep -Seconds 2
+                    $hydrated = (& $exe hydrate --path $probe 2>&1) -join ' '
+                    $exit = $LASTEXITCODE
+                    [pscustomobject]@{ process = $process.Id; alive = -not $process.HasExited; exit = $exit; hydrated = $hydrated
+                        report = ((& $exe report --root $sync 2>&1) -join ' | ') }
+                }
+                Say "cloud: the provider in the worker's session (process $($probe.process)): probe download exit $($probe.exit) $($probe.hydrated); $($probe.report)"
+                if (-not $probe.alive -or $probe.exit -ne 0) {
+                    $verdict.outcome = 'cloud-provider-not-serving'
+                    throw "the lab cloud provider does not serve the converter's session: $($probe.hydrated)"
+                }
+                # Stopped as soon as the converter says its downloads are
+                # done: a connected provider holds its sync root open, and the
+                # volume cannot be locked until it is closed (Wait-Worker).
+                $script:cloudStopOnDownloads = $c.stop
+            }
             $null = Invoke-Command -Session $script:worker -ArgumentList $Root -AsJob -ScriptBlock {
                 param($root) $null = & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$root\worker.ps1" -Root $root 2>&1 }
         } else {
@@ -1013,6 +1061,16 @@ public static class SiblingRaw {
         $turnOff = [bool]($StopInPhase -and $PowerOffDuringPreparation)
         do {
             if (-not $StopInPhase -or $stopped) { Start-Sleep -Seconds 2 }
+            if ($script:cloudStopOnDownloads) {
+                # The converter's line once its downloads before the freeze
+                # are done: the provider is closed then, as a user closes it.
+                $closed = Invoke-Command -Session $session -ArgumentList $Root, $script:cloudStopOnDownloads -ScriptBlock {
+                    param($root, $stop)
+                    if ((Test-Path "$root\stdout.log") -and (Select-String -LiteralPath "$root\stdout.log" -SimpleMatch -Pattern '"kind":"cloud-downloads-done-v1"' -Quiet)) {
+                        Set-Content -LiteralPath $stop -Value 'stop'; $true
+                    } else { $false } }
+                if ($closed) { Say 'cloud: the converter''s downloads are done; the provider is stopped, so that the volume can be taken offline'; $script:cloudStopOnDownloads = $null }
+            }
             $state = Invoke-Command -Session $session -ArgumentList $Root, ([bool]$HoldAt -and -not $held), $(if ($stopped) { '' } else { $StopInPhase }), $turnOff, $TakeMemoryMB, $TakeMemoryAt, $measureScaling -ScriptBlock {
                 param($root, $watchHold, $phase, $turnOff, $takeMB, $takeAt, $measureScaling)
                 $ended = (Test-Path "$root\native-terminal.json") -or (Test-Path "$root\worker-error.txt")
@@ -1181,7 +1239,7 @@ public static class SiblingRaw {
     if ($Diagnose) { $arguments += '--diagnose' }
     if ($Review) { $arguments += '--review' }
     if ($Verify) { $arguments += @('--verify', $Verify) }
-    if ($CompareListing) { $arguments += '--compare-listing' }
+    if ($CompareListing -or $Features -contains 'cloud') { $arguments += '--compare-listing' }
     if ($DropShortNames -and $RefuseShortNames) { throw '-DropShortNames and -RefuseShortNames ask for opposite things' }
     # Short names are dropped unless the run is asked to refuse them.
     $shortNamesDropped = -not $RefuseShortNames
@@ -1242,6 +1300,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     }
     # The checksum of the list of objects to make plain files, as the check prints it.
     $plainSha = ''
+    $leaveOutSha = ''
     if ($Check -or $CheckOnly) {
         $checkArguments = @('--drive', 'V', '--scratch-directory', $working, '--check')
         if ($TargetFormat -ne 'default') { $checkArguments += @('--target-format', $TargetFormat) }
@@ -1286,6 +1345,9 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         # Exit 7: nothing refused, and a list of objects to make plain files, with its checksum.
         $plainSha = [string]($checked.text | ForEach-Object { if ($_ -match '--accept-plain ([0-9a-f]{64})') { $Matches[1] } } | Select-Object -Last 1)
         if ($plainSha) { $verdict.check.plain_list_sha256 = $plainSha; Say "check: a list of objects to make plain files, sha256 $plainSha" }
+        # The list of cloud placeholders that cannot be brought onto the volume, which a run may leave out.
+        $leaveOutSha = [string]($checked.text | ForEach-Object { if ($_ -match '--leave-out-cloud ([0-9a-f]{64})') { $Matches[1] } } | Select-Object -Last 1)
+        if ($leaveOutSha) { $verdict.check.leave_out_list_sha256 = $leaveOutSha; Say "check: cloud placeholders that may be left out, sha256 $leaveOutSha" }
         if ($checked.exit -eq 7 -and -not $plainSha) { $verdict.outcome = 'check-plain-without-checksum'; throw 'the check exited 7 and printed no list checksum' }
         if ($FreshFile) {
             # The check's count of short names against Windows' own: the
@@ -1352,6 +1414,10 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         if ($AcceptPlain) {
             if (-not $plainSha) { $verdict.outcome = 'accept-plain-without-a-list'; throw '-AcceptPlain -Unattended needs -Check, whose list checksum it passes, and the check printed none' }
             $arguments += @('--accept-plain', $plainSha)
+        }
+        if ($LeaveOutCloud) {
+            if (-not $leaveOutSha) { $verdict.outcome = 'leave-out-without-a-list'; throw '-LeaveOutCloud needs -Check -AcceptPlain -Unattended, and the check printed no --leave-out-cloud checksum' }
+            $arguments += @('--leave-out-cloud', $leaveOutSha)
         }
     }
     if ($lfs2 -or $ntfs30 -or $ntfs12Any) {
@@ -1640,6 +1706,42 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     # Without -AcceptPlain, a run with objects to make plain (the check printed
     # their list) is asked about them and declines: it has to stop there.
     $declinePlain = -not $Unattended -and -not $AcceptPlain -and [bool]$plainSha
+    if ($Features -contains 'cloud') {
+        # The lab provider has to serve the converter's own logon session: a
+        # Cloud Files provider connected in one (the feature step's remoting
+        # session) does not serve a process of another (the lab, cl6-plain:
+        # "The cloud file provider is not running", os error 362). With
+        # -RunAs administrator the feature step's provider is stopped here,
+        # and Start-Worker starts one in the worker's own session before the
+        # converter, and proves it serves by downloading probe.bin.
+        $served = $verdict.source.features.cloud.provider_process
+        $alive = Invoke-Command -Session $session -ArgumentList $served -ScriptBlock { param($id) [bool](Get-Process -Id $id -ErrorAction SilentlyContinue) }
+        if (-not $alive) { $verdict.outcome = 'cloud-provider-not-running'; throw "the lab cloud provider (process $served) is no longer running before the conversion" }
+        if ($RunAs -eq 'administrator') {
+            $stopped = Invoke-Command -Session $session -ArgumentList $served, $verdict.source.features.cloud.stop_file -ScriptBlock {
+                param($id, $stop)
+                Set-Content -LiteralPath $stop -Value 'stop'
+                $process = Get-Process -Id $id -ErrorAction SilentlyContinue
+                if ($process) { $null = $process.WaitForExit(15000) }
+                Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
+                -not (Get-Process -Id $id -ErrorAction SilentlyContinue)
+            }
+            if (-not $stopped) { $verdict.outcome = 'cloud-provider-not-stopped'; throw "the feature step's lab cloud provider (process $served) did not stop" }
+            $script:cloudServe = @{ exe = "$guestRoot\lab-cloud-provider.exe"; sync = $verdict.source.features.cloud.sync_root
+                backing = $verdict.source.features.cloud.backing; stop = $verdict.source.features.cloud.stop_file
+                probe = "$($verdict.source.features.cloud.sync_root)\probe.bin" }
+            Say "cloud: the feature step's provider (process $served) stopped; the worker's session starts its own"
+        } else {
+            Say 'cloud: the converter runs as SYSTEM, which the provider (the harness account''s, in another session) does not serve; with -RunAs administrator it does'
+            Say "cloud: the lab provider (process $served) is serving"
+        }
+        # What the Cloud Files API reports of the sync root to this account:
+        # the provider's status (1, idle, once it is connected) and what of
+        # each placeholder is on the volume.
+        $reported = Invoke-Command -Session $session -ArgumentList $guestRoot, $verdict.source.features.cloud.sync_root -ScriptBlock {
+            param($root, $sync) (& "$root\lab-cloud-provider.exe" report --root $sync 2>&1) -join ' | ' }
+        Say "cloud: $reported"
+    }
     Start-Worker $guestRoot $arguments $task $(if ($declinePlain) { @('n') } else { @() })
     Say "converter started: ntfs2refs $($arguments -join ' ')$(if ($declinePlain) { ' (its question about plain conversions answered no)' })"
     $waited = Wait-Worker $guestRoot $InterruptAt $StopDuringPreparation
@@ -2083,9 +2185,21 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                 Get-ChildItem -LiteralPath $working -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending |
                     ForEach-Object { Join-Path $_.FullName 'plain-conversions.json' } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1 }
             if ($ledger) { Copy-Item -LiteralPath $ledger -Destination "$root\plain-conversions.json" -Force }
+            # A run that downloaded cloud placeholders before the freeze
+            # changed the volume then, and listed it itself afterwards
+            # (--compare-listing): that listing is the one the new volume is
+            # held to, and a rolled-back one too (the downloads are not undone);
+            # the harness's own, from before the downloads, is kept.
+            $before = "$root\manifest-before.jsonl"
+            $run = Get-ChildItem -LiteralPath $working -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending |
+                Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'plain-prefreeze-after.json') } | Select-Object -First 1 -ExpandProperty FullName
+            if ($run -and (Test-Path -LiteralPath "$run\plain-prefreeze-after.json") -and (Test-Path -LiteralPath "$run\listing-before.jsonl")) {
+                Copy-Item -LiteralPath "$run\listing-before.jsonl" -Destination "$root\manifest-before-downloaded.jsonl" -Force
+                $before = "$root\manifest-before-downloaded.jsonl"
+            }
             $arguments = @('compare'); if ($exact) { $arguments += '--exact' } else { if ($dropped) { $arguments += '--short-names-dropped' }; if ($marksLeft) { $arguments += '--case-marks-not-carried' } }
             if ($ledger) { $arguments += @('--plain-ledger', "$root\plain-conversions.json") }
-            $arguments += @('--before', "$root\manifest-before.jsonl", '--after', "$root\manifest-after.jsonl", '--report', "$root\manifest-report.json")
+            $arguments += @('--before', $before, '--after', "$root\manifest-after.jsonl", '--report', "$root\manifest-report.json")
             $summary = & "$root\lab-volume-manifest.exe" $arguments 2>&1
             $exit = $LASTEXITCODE; $differences = $null; $kinds = @{}; $plain = $null; $plainRows = @()
             if (Test-Path -LiteralPath "$root\manifest-report.json") {
@@ -2298,7 +2412,12 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         $wholeError = if (Test-Path -LiteralPath $stderr) { (Get-Content -LiteralPath $stderr -Encoding UTF8) -join "`n" } else { '' }
         $same = @($verdict.check.refusals | Where-Object { $_ -and $wholeError.Contains($_.Substring(0, [Math]::Min(60, $_.Length))) }).Count -gt 0
         # Exit 7: nothing refused, once the list of objects made plain is agreed.
-        $verdict.check.agrees = switch ($verdict.check.exit) { 0 { -not $refusedNow } 3 { $refusedNow } 7 { $(if ($AcceptPlain) { -not $refusedNow } else { $null }) } default { $null } }
+        # Exit 7 with a list of cloud placeholders to leave out: an
+        # unattended run that does not agree to leave them out
+        # (-LeaveOutCloud) is refused for exactly that, which the check
+        # said it would be.
+        $leaveOutRefused = $refusedNow -and [bool]$leaveOutSha -and -not $LeaveOutCloud -and $verdict.outcome -eq 'refused-as-expected' -and ("$errorLine" -match 'leave-out-cloud')
+        $verdict.check.agrees = switch ($verdict.check.exit) { 0 { -not $refusedNow } 3 { $refusedNow } 7 { $(if ($AcceptPlain) { (-not $refusedNow) -or $leaveOutRefused } else { $null }) } default { $null } }
         $verdict.check.named_the_same_refusal = if ($verdict.check.exit -eq 3 -and $refusedNow) { $same } else { $null }
         Say "check and run: $(if ($null -eq $verdict.check.agrees) { 'the check was inconclusive' } elseif ($verdict.check.agrees) { 'agree' } else { 'DISAGREE' })$(if ($null -ne $verdict.check.named_the_same_refusal) { "; the same refusal: $($verdict.check.named_the_same_refusal)" })"
         if ($verdict.check.agrees -eq $false) { $verdict.outcome = "$($verdict.outcome)-but-check-disagreed" }
@@ -2402,6 +2521,20 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                 "$said; providers now: $(@(& vssadmin.exe list providers 2>&1 | Where-Object { "$_" -match 'Provider name' }).Count)"
             }
             Say "shadow-copy provider: $removed"
+        }
+        if ($cloudFeatures) {
+            # The lab provider: stopped, and its sync roots unregistered.
+            # (The provider was copied to the attempt's own folder; a recovery
+            # stages its converter in a folder below it.)
+            $stopped = Invoke-Command -Session $session -ArgumentList "C:\n2r\datalab\$Name", $cloudFeatures -ScriptBlock {
+                param($root, $features)
+                foreach ($feature in $features) {
+                    Set-Content -LiteralPath "C:\n2r-cloud-backing\$feature.stop" -Value 'stop' -ErrorAction SilentlyContinue
+                    $null = & "$root\lab-cloud-provider.exe" unregister --root "V:\feature-$feature\synced" 2>&1
+                    "$feature unregistered: $LASTEXITCODE"
+                }
+            }
+            Say "cloud provider: $($stopped -join '; ')"
         }
         if (-not $KeepVolume) {
             Invoke-Command -Session $session -ArgumentList $guestRoot, $Name -ErrorAction Stop -ScriptBlock {

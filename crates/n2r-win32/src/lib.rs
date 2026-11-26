@@ -22,6 +22,9 @@ pub mod bitmap_window;
 pub mod bitmap_window_native;
 pub mod bitmap_window_transport;
 pub mod bulk_digest;
+#[cfg(windows)]
+pub mod cloud_lab_provider;
+pub mod cloud_native;
 pub mod content_digest;
 #[cfg(windows)]
 pub mod directory_case;
@@ -44,6 +47,7 @@ pub mod lab_hold;
 pub mod layout;
 #[cfg(windows)]
 pub mod layout_residual_pages;
+pub mod lock_holders;
 pub mod logical_hash;
 pub mod maintenance_watch;
 #[cfg(windows)]

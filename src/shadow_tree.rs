@@ -592,10 +592,15 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
             )
             .map_err(anyhow::Error::msg)?;
         // (The admission is compared with the tree's counts and these
-        // drops added back: `validate_new_tree`.)
+        // drops, and the objects left out, added back: `validate_new_tree`.)
         if dropped != 0 {
             drops_met.insert((object.record_number, object.sequence_number));
         }
+        ensure!(
+            !drops.is_left_out(object.record_number, object.sequence_number),
+            "MFT record {} is left out of the conversion, and is in the expected tree",
+            object.record_number
+        );
         ensure!(
             resource_admission.is_some() || stream_count <= ntfs_admission::MAX_DATA_STREAMS,
             "expected total DATA stream count exceeds 16,384"
@@ -998,8 +1003,10 @@ fn derive_profile(
         let plain_cleared = crate::plain_projection::cleared_on_target(f)?;
         // A WOF file is made plain from its copy on the paged route only.
         ensure!(
-            !crate::plain_projection::wof_taken(f) && !crate::plain_projection::efs_taken(f),
-            "MFT record {}: a file WOF keeps compressed is made plain only on the paged data-volume route",
+            !crate::plain_projection::wof_taken(f)
+                && !crate::plain_projection::efs_taken(f)
+                && !crate::plain_projection::cloud_taken(f),
+            "MFT record {}: an object made plain from its copy (a WOF, EFS or cloud-placeholder file) is made only on the paged data-volume route",
             f.record_number
         );
         let (source_offset, source_extents, length, sha256, source_evidence, sparse) =

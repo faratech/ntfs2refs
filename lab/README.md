@@ -492,6 +492,30 @@ the only differences of a refused volume, as many before as after, the attempt
 is still `refused-source-unchanged`. Run `bitlocker` last: Windows then writes
 its recovery folders to every volume that arrives afterwards.
 
+Two features are made on the disk itself, by `guest\Use-RawNtfs.ps1`, after
+the listing and any `-Check`, just before the run: the disk is taken offline
+(a clean dismount), the bytes are read or written, the disk is brought back
+and the volume is listed again. `lfs2` sets the control OS's
+`HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\NtfsDisableLfsDowngrade`
+to 1 before the volume is made and puts back what was there when the attempt
+ends; at that dismount the two `$LogFile` restart pages have to read LFS 2.0
+(major at 0x1c, minor at 0x1a) and carry the clean-dismount flag, or the
+attempt ends `lfs2-not-produced`. `lfs2.json` holds both pages; the verdict's
+`lfs2.run_read` the LFS versions the run's own records name, and a converted
+run whose records name only another one ends `...-but-run-read-lfs-<v>`.
+Whether NTFS reads the value without a restart is not known: with
+`-RestartForLfs2` the control OS is restarted after it is set and again after
+it is put back (about a minute each). `ntfs30` writes `$Volume`'s version
+(bytes 8 and 9 of its `$VOLUME_INFORMATION`) as 3.0 in MFT record 3 and in
+`$MFTMirr`, through the update-sequence fixups and with the record's own
+sequence number; `ntfs30.json` holds both copies before and after and what
+the disk reads once Windows has the volume mounted again. If that is already
+3.1, the attempt ends `ntfs30-upgraded-by-windows-before-the-run`. A
+converted run has to have recorded `ntfs-version-intent.json` from 3.0 and
+`ntfs-version-after.json` at 3.1 (both copied to the attempt's records), or
+it ends `...-but-ntfs-upgrade-not-recorded`. Neither feature is for
+`-NativeRefsControl` or `-CheckOnly`.
+
 The volume gets a fixed set of content: files around every size boundary, a
 nested tree with non-ASCII and long names, named streams, hard links, a sparse
 file, LZNT1-compressed files (on clusters up to 4 KiB, where NTFS compresses),

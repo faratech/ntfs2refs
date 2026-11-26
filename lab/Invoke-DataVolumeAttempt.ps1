@@ -81,7 +81,19 @@ param(
     # by default; refused with -RefuseShortNames), and temporary, offline,
     # efs, wof, casesensitive, snapshot, bitlocker, dirstream (which are
     # refused). quota converts: the quotas are recorded, not carried over.
+    # Two are not made through Windows but on the disk itself,
+    # by guest\Use-RawNtfs.ps1, with the disk offline just before the run:
+    # lfs2 (the control OS's NtfsDisableLfsDowngrade is 1 from before the
+    # volume is made until the attempt ends, so a clean dismount leaves the
+    # $LogFile restart pages LFS 2.0; they are read and have to be 2.0 and
+    # clean, else the outcome is lfs2-not-produced; lfs2.json) and ntfs30
+    # ($Volume's version written as 3.0 in the MFT and in $MFTMirr; the run
+    # has to have Windows upgrade it to 3.1 and record that; ntfs30.json).
     [string[]]$Features = @(),
+    # With -Features lfs2: restart the control OS after NtfsDisableLfsDowngrade
+    # is set (and again at the end, after it is put back), for an NTFS that
+    # reads the value only when it starts.
+    [switch]$RestartForLfs2,
     [int]$DirectoryEntries = 20000,
     [int]$BigFileGB = 6,
     # Files of the 'manyfiles' feature: a volume for measuring how a run
@@ -284,6 +296,12 @@ if ($PowerOffDuringPreparation) {
     if ($AfterStop -ne 'cancel') { throw '-PowerOffDuringPreparation is followed by the cancellation: not with -AfterStop restart' }
     if ($Siblings) { throw '-PowerOffDuringPreparation does not put the volumes of -Siblings back under their letters after the restart: not with -Siblings' }
 }
+# The features made on the disk itself rather than through Windows.
+$rawFeatures = @('lfs2', 'ntfs30')
+$requestedFeatures = @($Features | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+$lfs2 = $requestedFeatures -contains 'lfs2'; $ntfs30 = $requestedFeatures -contains 'ntfs30'
+if (($lfs2 -or $ntfs30) -and ($NativeRefsControl -or $CheckOnly)) { throw '-Features lfs2 and ntfs30 shape the NTFS volume a run converts: not with -NativeRefsControl or -CheckOnly' }
+if ($RestartForLfs2 -and -not $lfs2) { throw '-RestartForLfs2 is for -Features lfs2' }
 
 $records = Join-Path $workspace ".lab\hyperv\attempts\$Name"
 if (Test-Path -LiteralPath $records) { throw "Attempt '$Name' already has records at $records; choose another -Name" }
@@ -380,6 +398,31 @@ $verdict.drive_optimization = if ($WithDriveOptimization) { 'left on' } else {
 }
 Say "the control OS's scheduled drive optimisation: $($verdict.drive_optimization)"
 $hostDisk = $null; $worker = $null
+# Restarts the control OS from inside and waits until it answers again, has
+# started since, and has its scratch volume S: back.
+function Restart-ControlOs([string]$Why) {
+    $booted = Invoke-Command -Session $script:session -ScriptBlock { (Get-CimInstance Win32_OperatingSystem).LastBootUpTime }
+    Say "restarting the control OS: $Why"
+    try { Invoke-Command -Session $script:session -ScriptBlock { Restart-Computer -Force } } catch { }
+    Remove-PSSession $script:session -ErrorAction SilentlyContinue
+    $clock = [Diagnostics.Stopwatch]::StartNew(); $deadline = (Get-Date).AddMinutes(15)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 10
+        $new = $null
+        try {
+            $new = New-PSSession -VMId $VmId -Credential $credential -ErrorAction Stop
+            $now = Invoke-Command -Session $new -ErrorAction Stop -ScriptBlock { [pscustomobject]@{ booted = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime; scratch = (Test-Path -LiteralPath 'S:\') } }
+            if ($now.booted -gt $booted -and $now.scratch) {
+                $script:session = $new
+                Say "the control OS is back ($([Math]::Round($clock.Elapsed.TotalSeconds)) s)"
+                return
+            }
+            Remove-PSSession $new -ErrorAction SilentlyContinue
+        } catch { if ($new) { Remove-PSSession $new -ErrorAction SilentlyContinue } }
+    }
+    throw "the control OS did not come back within 15 minutes of its restart ($Why)"
+}
+$lfs2Restarted = $false
 $guestRoot = "C:\n2r\datalab\$Name"
 # format.com spells an allocation unit as bytes up to 8192 and as K or M above.
 $unit = if ($ClusterBytes -ge 1048576) { '{0}M' -f ($ClusterBytes / 1048576) } elseif ($ClusterBytes -ge 16384) { '{0}K' -f ($ClusterBytes / 1024) } else { "$ClusterBytes" }
@@ -409,6 +452,33 @@ try {
     Copy-Item -ToSession $session -LiteralPath $ManifestBinary -Destination "$guestRoot\lab-volume-manifest.exe" -Force
     Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Invoke-ConverterRun.ps1') -Destination "$guestRoot\worker.ps1" -Force
     Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Add-VolumeFeatures.ps1') -Destination "$guestRoot\features.ps1" -Force
+    Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Use-RawNtfs.ps1') -Destination "$guestRoot\rawntfs.ps1" -Force
+    if ($lfs2) {
+        # NTFS on Windows 8 and later keeps $LogFile in the LFS 2.0 format
+        # while a volume is mounted and turns it back to 1.1 at a clean
+        # dismount unless NtfsDisableLfsDowngrade is 1. It is set before the
+        # volume is made, so that every mount of it, and every dismount up
+        # to the converter's freeze, has it; the attempt's end puts back what
+        # was there.
+        $was = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
+            param($root)
+            $key = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'
+            $value = (Get-Item -LiteralPath $key).GetValue('NtfsDisableLfsDowngrade', $null)
+            $text = if ($null -eq $value) { 'absent' } else { "$value" }
+            # Noted first: whatever happens next, the attempt's end puts it back.
+            Set-Content -LiteralPath "$root\lfs-downgrade-was.txt" -Value $text -Encoding ASCII
+            Set-ItemProperty -LiteralPath $key -Name NtfsDisableLfsDowngrade -Value 1 -Type DWord
+            $text
+        }
+        $verdict.lfs2 = [ordered]@{ ntfs_disable_lfs_downgrade_was = "$was"; restarted_for_it = [bool]$RestartForLfs2 }
+        Say "lfs2: NtfsDisableLfsDowngrade set to 1 (it was $was)"
+        if ($RestartForLfs2) {
+            $lfs2Restarted = $true
+            Restart-ControlOs 'for NtfsDisableLfsDowngrade to be read when NTFS starts'
+            # (The disks the guest has, by which a new 4Kn disk is found, as they are numbered now.)
+            $ready = Invoke-Command -Session $session -ScriptBlock { (Get-Disk).Number }
+        }
+    }
 
     # The source disk: a VHDX in the guest, or for 4Kn one the host attaches.
     if ($Siblings -and ($SectorBytes -eq 4096 -or $NativeRefsControl)) { throw '-Siblings is for a converted volume on a 512-byte-sector disk' }
@@ -607,10 +677,12 @@ try {
 
     $wanted = @($Features | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
     if ($Content -eq 'lived-in') { $wanted = @(@('copy', 'objectids', 'security', 'ea', 'links', 'longpath', 'deep', 'bigdir', 'usn') + $wanted | Select-Object -Unique) }
-    if ($wanted) {
+    # (lfs2 and ntfs30 are made on the disk just before the run, below.)
+    $guestFeatures = @($wanted | Where-Object { $_ -notin $rawFeatures })
+    if ($guestFeatures) {
         try {
             # (As a script block: the guest's execution policy does not run files.)
-            $featureJson = Invoke-Command -Session $session -ArgumentList $guestRoot, $wanted, $DirectoryEntries, $BigFileGB, $FileCount -ScriptBlock {
+            $featureJson = Invoke-Command -Session $session -ArgumentList $guestRoot, $guestFeatures, $DirectoryEntries, $BigFileGB, $FileCount -ScriptBlock {
                 param($root, $features, $entries, $bigGB, $files)
                 $block = [scriptblock]::Create((Get-Content -LiteralPath "$root\features.ps1" -Raw))
                 & $block -Root 'V:\' -Features $features -DirectoryEntries $entries -BigFileGB $bigGB -FileCount $files
@@ -619,7 +691,7 @@ try {
         $verdict.source.features = ($featureJson | Select-Object -Last 1) | ConvertFrom-Json
         if ($wanted -contains 'bigdir') { $verdict.source.directory_entries = $DirectoryEntries }
         Set-Content -LiteralPath (Join-Path $records 'features.json') -Value ($featureJson | Select-Object -Last 1) -Encoding UTF8
-        Say "features: $($wanted -join ', ')"
+        Say "features: $($guestFeatures -join ', ')"
     }
     if ($NativeRefsControl) {
         # Nothing to convert: the volume is ReFS as Windows made it.
@@ -1214,6 +1286,68 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         if (-not $listed.serial) { $verdict.outcome = 'list-did-not-show-serial'; throw "--list shows no serial number for V:: $($listed.row)" }
         $arguments += @('--yes', '--volume-serial', $(if ($WrongSerial) { '0000-0000' } else { $listed.serial }))
     }
+    if ($lfs2 -or $ntfs30) {
+        # Made on the disk itself, as late as can be: the disk is taken
+        # offline, which dismounts the volume cleanly (and keeps any file
+        # system off it while its bytes are read and written), the restart
+        # pages of $LogFile are read (lfs2) and $Volume's version is written
+        # as 3.0 (ntfs30), and the disk is brought back. The volume is then
+        # listed again: the listing before the run is of the volume as the
+        # run gets it.
+        try {
+            $rawJson = Invoke-Command -Session $session -ArgumentList $guestRoot, $sourceDisk, $sourceOffset, $lfs2, $ntfs30, $unlock -ScriptBlock {
+                param($root, $number, $offset, $lfs2, $ntfs30, $unlock)
+                $tool = [scriptblock]::Create((Get-Content -LiteralPath "$root\rawntfs.ps1" -Raw))
+                $result = [ordered]@{}
+                Set-Disk -Number $number -IsOffline $true
+                try {
+                    $disk = Get-Disk -Number $number
+                    if (-not $disk.IsOffline) { throw "disk $number did not go offline" }
+                    if ($lfs2) { $result.lfs2 = (& $tool -DiskNumber $number -PartitionOffset $offset -Action read-log | Select-Object -Last 1) | ConvertFrom-Json }
+                    if ($ntfs30) { $result.ntfs30 = (& $tool -DiskNumber $number -PartitionOffset $offset -Action set-version -Major 3 -Minor 0 | Select-Object -Last 1) | ConvertFrom-Json }
+                } finally { Set-Disk -Number $number -IsOffline $false }
+                $until = (Get-Date).AddSeconds(60)
+                while (-not (Test-Path -LiteralPath 'V:\') -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 500 }
+                try { & ([scriptblock]::Create($unlock)) } catch { }
+                $result.v_back = [bool](Test-Path -LiteralPath 'V:\')
+                $text = & "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-before.jsonl" 2>&1
+                $result.listed_exit = $LASTEXITCODE; $result.listed = ($text -join ' ')
+                # What the disk says when the run starts: Windows has had the
+                # volume mounted again for as long as the listing took.
+                if ($ntfs30) { $result.version_when_the_run_starts = (& $tool -DiskNumber $number -PartitionOffset $offset -Action read-version | Select-Object -Last 1) | ConvertFrom-Json }
+                [pscustomobject]$result | ConvertTo-Json -Depth 8 -Compress
+            }
+        } catch { $verdict.outcome = 'feature-not-made'; throw "lfs2 or ntfs30 could not be made on the disk: $($_.Exception.Message)" }
+        $onDisk = ($rawJson | Select-Object -Last 1) | ConvertFrom-Json
+        if (-not $onDisk.v_back) { $verdict.outcome = 'feature-not-made'; throw 'V: did not come back after its disk was taken offline for lfs2 or ntfs30' }
+        if ($onDisk.listed_exit -ne 0) { throw "listing the volume again after lfs2 or ntfs30 failed (exit $($onDisk.listed_exit)): $($onDisk.listed)" }
+        Copy-Item -FromSession $session -LiteralPath "$guestRoot\manifest-before.jsonl" -Destination $records -Force
+        Say "listing again, of the volume as the run gets it: $($onDisk.listed)"
+        if ($lfs2) {
+            $log = $onDisk.lfs2
+            [IO.File]::WriteAllText((Join-Path $records 'lfs2.json'), ($log | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+            $verdict.lfs2.at_dismount = [ordered]@{ lfs_version = $log.lfs_version; clean_dismount = $log.clean_dismount
+                system_page_bytes = $log.pages[0].system_page_bytes; log_page_bytes = $log.pages[0].log_page_bytes; flags = @($log.pages | ForEach-Object { $_.flags }) }
+            Say "lfs2: after a clean dismount the `$LogFile restart pages are LFS $($log.lfs_version), $($log.pages[0].system_page_bytes)-byte pages, flags $(@($log.pages | ForEach-Object { '0x{0:x}' -f $_.flags }) -join ' and ')$(if ($log.clean_dismount) { ', clean' } else { ', NOT marked clean' })"
+            if ($log.lfs_version -ne '2.0' -or -not $log.clean_dismount) {
+                $verdict.outcome = 'lfs2-not-produced'
+                throw "could not produce LFS 2.0: after a clean dismount with NtfsDisableLfsDowngrade=1 (set before the volume was made$(if ($lfs2Restarted) { ', and the control OS restarted since' })) the restart pages read LFS $($log.lfs_version)$(if (-not $log.clean_dismount) { ', not marked clean' })$(if (-not $lfs2Restarted) { '. NTFS may read the value only when it starts: run again with -RestartForLfs2' })"
+            }
+        }
+        if ($ntfs30) {
+            $patch = $onDisk.ntfs30
+            $patch | Add-Member -NotePropertyName version_when_the_run_starts -NotePropertyValue $onDisk.version_when_the_run_starts
+            [IO.File]::WriteAllText((Join-Path $records 'ntfs30.json'), ($patch | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+            $startsAt = $onDisk.version_when_the_run_starts
+            $verdict.ntfs30 = [ordered]@{ version_before = $patch.mft.version_before; mft = $patch.mft.version_after; mirror = $patch.mirror.version_after
+                mirror_matched_before = $patch.mirror_matched_before; when_the_run_starts = [ordered]@{ mft = $startsAt.mft.version; mirror = $startsAt.mirror.version } }
+            Say "ntfs30: `$Volume written as NTFS $($patch.mft.version_after) (was $($patch.mft.version_before); mirror $($patch.mirror.version_before) -> $($patch.mirror.version_after)); once V: was mounted again and listed it reads $($startsAt.mft.version) (mirror $($startsAt.mirror.version))"
+            if ($startsAt.mft.version -ne '3.0') {
+                $verdict.outcome = 'ntfs30-upgraded-by-windows-before-the-run'
+                throw "Windows wrote NTFS $($startsAt.mft.version) to `$Volume when it mounted the volume again after the patch, before the run started: the run cannot be shown an NTFS 3.0 volume this way"
+            }
+        }
+    }
     $arguments += $ConverterArgs
     $verdict.converter_arguments = $arguments
     $task = "N2R-DataLab-$Name"
@@ -1785,6 +1919,41 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         if ($verdict.outcome -in 'refused-source-unchanged', 'refused-as-expected') { $verdict.outcome = 'refused-after-shrinking-the-partition' }
         elseif ($verdict.outcome -in 'diagnose-clean', 'diagnose-found-failures') { $verdict.outcome = 'diagnose-changed-the-source' }
     }
+    if ($lfs2 -or $ntfs30) {
+        # What the run recorded of the volume it was given, from its working
+        # directory (removed when the attempt ends): the NTFS upgrade it had
+        # Windows make (ntfs-version-intent.json, ntfs-version-after.json),
+        # and the LFS version of the restart pages it read at its freeze,
+        # wherever a record of its own names one.
+        $recorded = Invoke-Command -Session $session -ArgumentList $working -ScriptBlock {
+            param($working)
+            $files = @(Get-ChildItem -LiteralPath $working -Recurse -File -Filter '*.json' -ErrorAction SilentlyContinue)
+            $newest = { param($leaf) $files | Where-Object Name -EQ $leaf | Sort-Object LastWriteTimeUtc | Select-Object -Last 1 }
+            $intent = & $newest 'ntfs-version-intent.json'; $after = & $newest 'ntfs-version-after.json'
+            $lfs = @($files | Where-Object Length -LT 64MB | Select-String -Pattern '"lfs_version"\s*:\s*"(\d+\.\d+)"' -ErrorAction SilentlyContinue |
+                ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -Unique)
+            [pscustomobject]@{ intent = if ($intent) { [IO.File]::ReadAllText($intent.FullName) } else { $null }; intent_path = if ($intent) { $intent.FullName } else { $null }
+                after = if ($after) { [IO.File]::ReadAllText($after.FullName) } else { $null }; after_path = if ($after) { $after.FullName } else { $null }
+                lfs_versions = $lfs }
+        }
+        $passed = $verdict.outcome -in 'converted', 'resumed'
+        if ($ntfs30) {
+            foreach ($leaf in 'intent', 'after') {
+                if ($recorded.$leaf) { [IO.File]::WriteAllText((Join-Path $records "ntfs-version-$leaf.json"), "$($recorded.$leaf)", [Text.UTF8Encoding]::new($false)) }
+            }
+            $from = try { ("$($recorded.intent)" | ConvertFrom-Json).ntfs_version_before } catch { $null }
+            $to = try { ("$($recorded.after)" | ConvertFrom-Json).ntfs_version_after } catch { $null }
+            $verdict.ntfs30.run_recorded = [ordered]@{ intent = $recorded.intent_path; from = $from; after = $recorded.after_path; to = $to }
+            Say "ntfs30: the run recorded $(if ($recorded.intent) { "an upgrade from NTFS $from" } else { 'NO ntfs-version-intent.json' }) and $(if ($recorded.after) { "NTFS $to afterwards" } else { 'NO ntfs-version-after.json' })"
+            if ($passed -and -not ($from -eq '3.0' -and $to -eq '3.1')) { $verdict.outcome = "$($verdict.outcome)-but-ntfs-upgrade-not-recorded" }
+        }
+        if ($lfs2) {
+            $verdict.lfs2.run_read = @($recorded.lfs_versions)
+            Say "lfs2: the run's records name LFS $(if (@($recorded.lfs_versions).Count) { @($recorded.lfs_versions) -join ' and ' } else { '(none of them names a version)' })"
+            # (Only a version named, and not 2.0, is held against the run: a record of it may be kept where this does not look.)
+            if ($passed -and @($recorded.lfs_versions).Count -and @($recorded.lfs_versions) -notcontains '2.0') { $verdict.outcome = "$($verdict.outcome)-but-run-read-lfs-$(@($recorded.lfs_versions) -join '-')" }
+        }
+    }
     if ($Siblings) { & $holdSiblings (& $said '^(This volume shares disk .*)$') }
     if ($Check) {
         # The check and the conversion have to agree: on whether the volume
@@ -1930,6 +2099,26 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         } elseif ($hostDisk) { Say "kept: the 4Kn disk stays attached to the VM ($hostDisk)" }
         $verdict.cleanup_ok = -not $KeepVolume
     } catch { $verdict.cleanup_ok = $false; Say "cleanup failed: $($_.Exception.Message)" }
+    if ($lfs2) {
+        # NtfsDisableLfsDowngrade as it was before the attempt, as the attempt noted it.
+        if (-not $verdict.Contains('lfs2')) { $verdict.lfs2 = [ordered]@{} }
+        try {
+            $restored = Invoke-Command -Session $session -ArgumentList "C:\n2r\datalab\$Name" -ErrorAction Stop -ScriptBlock {
+                param($root)
+                $note = "$root\lfs-downgrade-was.txt"
+                if (-not (Test-Path -LiteralPath $note)) { return 'nothing of this attempt to put back' }
+                $was = "$(Get-Content -LiteralPath $note -Raw)".Trim()
+                $key = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'
+                if ($was -eq 'absent') { Remove-ItemProperty -LiteralPath $key -Name NtfsDisableLfsDowngrade -ErrorAction SilentlyContinue }
+                else { Set-ItemProperty -LiteralPath $key -Name NtfsDisableLfsDowngrade -Value ([int]$was) -Type DWord }
+                Remove-Item -LiteralPath $note -Force
+                "put back ($was)"
+            }
+            $verdict.lfs2.restored = "$restored"
+            Say "lfs2: NtfsDisableLfsDowngrade $restored"
+            if ($lfs2Restarted) { Restart-ControlOs 'for NTFS to start again with NtfsDisableLfsDowngrade as it was' }
+        } catch { $verdict.lfs2.restored = "FAILED: $($_.Exception.Message)"; Say "lfs2: NtfsDisableLfsDowngrade could not be put back: $($_.Exception.Message)" }
+    }
     Remove-PSSession $session -ErrorAction SilentlyContinue
     Save-Verdict
     Say "outcome: $($verdict.outcome). Records: $records"

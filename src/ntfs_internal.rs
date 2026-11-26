@@ -455,10 +455,18 @@ pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<Ve
         geometry.file_record_size,
         geometry.index_record_size
     );
-    // NTFS 1.2 has no $Extend, so none of these indexes; its attribute types
-    // 0x40 and 0xC0 are NT 4.0's $VOLUME_VERSION and $SYMBOLIC_LINK, refused
-    // rather than read as an object ID or a reparse point.
-    if crate::ntfs_version::legacy_layout_text(raw.volume_version.as_deref()) {
+    // NTFS 1.2 has no $Extend of its own, so none of these indexes; then its
+    // attribute types 0x40 and 0xC0 are NT 4.0's $VOLUME_VERSION and
+    // $SYMBOLIC_LINK, refused rather than read as an object ID or a reparse
+    // point. Indexes Windows has made on such a volume are verified below.
+    if crate::ntfs_version::legacy_layout_text(raw.volume_version.as_deref())
+        && !raw.files.iter().any(|f| {
+            matches!(
+                ntfs_admission::internal_role(raw, f).as_deref(),
+                Some("$Extend\\$ObjId" | "$Extend\\$Reparse" | "$Extend\\$Quota")
+            )
+        })
+    {
         ensure!(
             !raw.files.iter().any(|f| f
                 .attributes

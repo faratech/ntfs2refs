@@ -57,19 +57,27 @@ fn inspect_scope_with<F: std::ops::Deref<Target = ntfs::FileInventory>>(
     mut get: impl FnMut(u64) -> Result<F>,
     mut role: impl FnMut(&ntfs::FileInventory) -> Result<Option<String>>,
     mut windows_user: impl FnMut(&ntfs::FileInventory) -> Result<bool>,
-    // NTFS 1.2: no $Extend, so no transaction metadata and no default RM's
-    // files; and no attribute type 0x100, which NT 4.0 does not define.
+    // NTFS 1.2: no $Extend of its own, so no transaction metadata and no
+    // default RM's files, and no attribute type 0x100, which NT 4.0 does not
+    // define. Where Windows has made them (as it does on mounting such a
+    // volume), they are held to the same default-RM profile as on 3.x.
     legacy: bool,
 ) -> Result<Scope> {
+    let mut untouched_legacy = legacy;
     if legacy {
         for ordinal in 0..count {
             let file = get(ordinal)?;
-            ensure!(
-                !file.attributes.iter().any(|a| a.type_code == 0x100),
-                "record {} of this NTFS 1.2 volume has attribute type 0x100, which NTFS 1.2 does not define",
-                file.record_number
-            );
+            if file.attributes.iter().any(|a| a.type_code == 0x100)
+                || role(&file)?.is_some_and(|role| {
+                    role.starts_with("$Extend\\$RmMetadata") || role == "$Extend\\$Deleted"
+                })
+            {
+                untouched_legacy = false;
+                break;
+            }
         }
+    }
+    if untouched_legacy {
         return Ok(Scope {
             transactional_records: Vec::new(),
             windows_user_marker_records: 0,

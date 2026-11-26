@@ -160,7 +160,8 @@ pub(super) fn classify(
     root: &Path,
     scratch: &SourceScratch,
     windows_link_counter_hint: bool,
-    // NTFS 1.2 has no $Extend: record 11 is a reserved record like 12 to 15.
+    // NTFS 1.2 has no $Extend of its own: record 11 is a reserved record
+    // like 12 to 15, unless Windows has made it the $Extend directory.
     legacy: bool,
     mut blocked: impl FnMut(InspectionBlocker) -> Result<()>,
 ) -> Result<()> {
@@ -187,7 +188,6 @@ pub(super) fn classify(
                 match file.record_number {
                     5 if root_valid => State::OutsideExtend,
                     5 => State::Unresolved(Issue::InvalidRootAnchor),
-                    11 if legacy => State::Unresolved(Issue::UnsupportedReservedParent),
                     11 if root_valid
                         && valid_role_anchor(
                             &file,
@@ -200,6 +200,9 @@ pub(super) fn classify(
                     {
                         State::WithinExtend
                     }
+                    // NTFS 1.2 has no $Extend, but Windows may have made one (above);
+                    // otherwise record 11 is a reserved record like 12 to 15.
+                    11 if legacy => State::Unresolved(Issue::UnsupportedReservedParent),
                     11 => State::Unresolved(Issue::InvalidExtendAnchor),
                     _ => State::Unresolved(Issue::UnsupportedReservedParent),
                 },

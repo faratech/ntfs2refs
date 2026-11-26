@@ -352,10 +352,48 @@ pub fn upcase() -> Vec<u16> {
     table
 }
 
-/// NT 4.0's fifteen attribute definitions: (name, type, flags, minimum,
-/// maximum); $FILE_NAME collates as file names, the rest as binary.
-fn attrdef() -> Vec<u8> {
+/// Which `$AttrDef` the volume carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttrDef {
+    /// NT 4.0's fifteen definitions: $VOLUME_VERSION at 0x40,
+    /// $SYMBOLIC_LINK at 0xC0, $PROPERTY_SET at 0xF0, no 0x100.
+    Nt4,
+    /// The definitions Windows 2000 and later write (ntfs-3g's
+    /// attrdef_ntfs3x_array): $OBJECT_ID at 0x40, $REPARSE_POINT at 0xC0,
+    /// $LOGGED_UTILITY_STREAM at 0x100, and a zeroed entry at the end.
+    /// Windows 11, mounting an NTFS 1.2 volume, writes NT 5 structures into
+    /// it ($Extend, $RmMetadata and $TxfLog, $TXF_DATA on the root, an object
+    /// ID on $Volume); with NT 4.0's table they are of types the volume does
+    /// not define, or of sizes it forbids. (lab n12-image-2: the volume came
+    /// back dirty, "Full Repair Needed".)
+    Windows,
+}
+
+/// The attribute definitions: (name, type, flags, minimum, maximum);
+/// $FILE_NAME collates as file names, the rest as binary.
+fn attrdef(table: AttrDef) -> Vec<u8> {
     const NONE: u64 = u64::MAX;
+    if table == AttrDef::Windows {
+        let rows: [(&str, u32, u32, u64, u64); 15] = [
+            ("$STANDARD_INFORMATION", 0x10, 0x40, 0x30, 0x48),
+            ("$ATTRIBUTE_LIST", 0x20, 0x80, 0, NONE),
+            ("$FILE_NAME", 0x30, 0x42, 0x44, 0x242),
+            ("$OBJECT_ID", 0x40, 0x40, 0, 0x100),
+            ("$SECURITY_DESCRIPTOR", 0x50, 0x80, 0, NONE),
+            ("$VOLUME_NAME", 0x60, 0x40, 2, 0x100),
+            ("$VOLUME_INFORMATION", 0x70, 0x40, 0xc, 0xc),
+            ("$DATA", 0x80, 0, 0, NONE),
+            ("$INDEX_ROOT", 0x90, 0x40, 0, NONE),
+            ("$INDEX_ALLOCATION", 0xa0, 0x80, 0, NONE),
+            ("$BITMAP", 0xb0, 0x80, 0, NONE),
+            ("$REPARSE_POINT", 0xc0, 0x80, 0, 0x4000),
+            ("$EA_INFORMATION", 0xd0, 0x40, 8, 8),
+            ("$EA", 0xe0, 0, 0, 0x10000),
+            ("$LOGGED_UTILITY_STREAM", 0x100, 0x80, 0, 0x10000),
+        ];
+        // Sixteen entries of 0xa0 bytes: the last zeroed, as Windows writes it.
+        return definitions(&rows, 16);
+    }
     let rows: [(&str, u32, u32, u64, u64); 15] = [
         ("$STANDARD_INFORMATION", 0x10, 0x40, 0x30, 0x30),
         ("$ATTRIBUTE_LIST", 0x20, 0x80, 0, NONE),
@@ -373,7 +411,11 @@ fn attrdef() -> Vec<u8> {
         ("$EA", 0xe0, 0, 0, 0x10000),
         ("$PROPERTY_SET", 0xf0, 0, 0, NONE),
     ];
-    let mut out = vec![0u8; rows.len() * 0xa0];
+    definitions(&rows, rows.len())
+}
+
+fn definitions(rows: &[(&str, u32, u32, u64, u64)], entries: usize) -> Vec<u8> {
+    let mut out = vec![0u8; entries * 0xa0];
     for (i, (name, kind, flags, minimum, maximum)) in rows.iter().enumerate() {
         let at = i * 0xa0;
         for (j, unit) in utf16(name).iter().enumerate() {
@@ -409,8 +451,35 @@ impl Volume {
 }
 
 /// An NTFS 1.2 volume filling a partition of `partition_bytes` that starts
-/// `hidden_sectors` sectors into its disk.
+/// `hidden_sectors` sectors into its disk, with NT 4.0's `$AttrDef`.
 pub fn volume(partition_bytes: u64, hidden_sectors: u32, version: (u8, u8)) -> Volume {
+    volume_with(
+        partition_bytes,
+        hidden_sectors,
+        version,
+        Options {
+            attrdef: AttrDef::Nt4,
+            windows_extend: false,
+        },
+    )
+}
+
+/// What [`volume_with`] varies.
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    pub attrdef: AttrDef,
+    /// Record 11 as the empty `$Extend` directory Windows makes when it
+    /// mounts an NTFS 1.2 volume, in place of the reserved record.
+    pub windows_extend: bool,
+}
+
+/// [`volume`], varied as `options` says.
+pub fn volume_with(
+    partition_bytes: u64,
+    hidden_sectors: u32,
+    version: (u8, u8),
+    options: Options,
+) -> Volume {
     assert!(partition_bytes.is_multiple_of(CLUSTER) && partition_bytes >= 8 * 1024 * 1024);
     let total_sectors = partition_bytes / SECTOR - 1;
     let total_clusters = total_sectors * SECTOR / CLUSTER;
@@ -451,7 +520,7 @@ pub fn volume(partition_bytes: u64, hidden_sectors: u32, version: (u8, u8)) -> V
     // (name, record, allocated, data) of each file NTFS keeps for itself, in the root.
     let mft_bytes = (MFT_RECORDS * RECORD) as u64;
     let upcase_bytes = 0x20000u64;
-    let attrdef_bytes = attrdef().len() as u64;
+    let attrdef_bytes = attrdef(options.attrdef).len() as u64;
     let log_bytes = LOG_CLUSTERS * CLUSTER;
     let system: [(&str, u64, u64, u64); 10] = [
         ("$MFT", 0, mft_bytes, mft_bytes),
@@ -688,6 +757,13 @@ pub fn volume(partition_bytes: u64, hidden_sectors: u32, version: (u8, u8)) -> V
         sub,
         file_name_value(root, "SUB", 0, 0, directory_flags),
     ));
+    if options.windows_extend {
+        names.push((
+            "$Extend".into(),
+            reference(11, sequence(11)),
+            file_name_value(root, "$Extend", 0, 0, hidden_system | directory_flags),
+        ));
+    }
     let table = upcase();
     names.sort_by(|a, b| {
         let key = |s: &str| -> Vec<u16> {
@@ -731,8 +807,37 @@ pub fn volume(partition_bytes: u64, hidden_sectors: u32, version: (u8, u8)) -> V
         ],
     );
     records.push((5, root_record));
-    // Records 11 to 15: reserved, in use, nameless.
+    // Records 11 to 15: reserved, in use, nameless (or 11 Windows' $Extend).
     for number in 11..16 {
+        if number == 11 && options.windows_extend {
+            records.push((
+                11,
+                file_record(
+                    sequence(11),
+                    1,
+                    3,
+                    &[
+                        standard_information(hidden_system),
+                        resident(
+                            0x30,
+                            "",
+                            &file_name_value(
+                                root,
+                                "$Extend",
+                                0,
+                                0,
+                                hidden_system | directory_flags,
+                            ),
+                            1,
+                            true,
+                        ),
+                        security(2),
+                        resident(0x90, "$I30", &index_root(&end_entry(None), false), 3, false),
+                    ],
+                ),
+            ));
+            continue;
+        }
         records.push((
             number,
             file_record(
@@ -767,7 +872,7 @@ pub fn volume(partition_bytes: u64, hidden_sectors: u32, version: (u8, u8)) -> V
     // $LogFile: as a format leaves it.
     head[cluster_at(LOG_LCN)..cluster_at(LOG_LCN + LOG_CLUSTERS)].fill(0xff);
     // $AttrDef and $UpCase.
-    let definitions = attrdef();
+    let definitions = attrdef(options.attrdef);
     head[cluster_at(ATTRDEF_LCN)..cluster_at(ATTRDEF_LCN) + definitions.len()]
         .copy_from_slice(&definitions);
     for (i, unit) in table.iter().enumerate() {

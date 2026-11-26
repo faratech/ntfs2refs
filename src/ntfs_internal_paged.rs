@@ -584,15 +584,16 @@ fn verify_domain_with_windows<R: Read + Seek>(
     }
     let expected_pin = expected_reparse.finish()?;
     let expected = SortedRecordStore::open(&expected_pin, &scratch)?;
-    // NTFS 1.2 has no $Extend, so no object-ID, reparse-point or quota
-    // index. Its attribute types 0x40 and 0xC0 are NT 4.0's $VOLUME_VERSION
-    // and $SYMBOLIC_LINK, not an object ID or a reparse point: a file that
-    // has one is refused, not read as the 3.x attribute.
-    if crate::ntfs_version::legacy_layout_text(source.header().volume_version.as_deref()) {
-        ensure!(
-            selected.iter().all(Option::is_none),
-            "this NTFS 1.2 volume has files in $Extend's roles, which NTFS 1.2 does not have"
-        );
+    // NTFS 1.2 has no $Extend of its own, so no object-ID, reparse-point or
+    // quota index; then its attribute types 0x40 and 0xC0 are NT 4.0's
+    // $VOLUME_VERSION and $SYMBOLIC_LINK, not an object ID or a reparse
+    // point, and a file that has one is refused rather than read as the 3.x
+    // attribute. Where Windows has made the indexes (as it does on mounting
+    // such a volume), they are verified as on 3.x, and a partial set is
+    // refused there as missing.
+    if crate::ntfs_version::legacy_layout_text(source.header().volume_version.as_deref())
+        && selected.iter().all(Option::is_none)
+    {
         ensure!(
             object_id_count == 0 && expected.len() == 0,
             "a file on this NTFS 1.2 volume has attribute 0x40 ($VOLUME_VERSION) or 0xC0 ($SYMBOLIC_LINK), which the converter does not read"

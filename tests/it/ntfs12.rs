@@ -29,8 +29,23 @@ const LAYOUT_BLOCKERS: [&str; 3] = [
 
 #[test]
 fn an_ntfs_12_volume_is_read_as_nt4_laid_it_out() {
-    let volume = ntfs12::volume(PARTITION, 2048, (1, 2));
-    let image = volume.image();
+    for attrdef in [ntfs12::AttrDef::Nt4, ntfs12::AttrDef::Windows] {
+        read_as_nt4_laid_it_out(
+            ntfs12::volume_with(
+                PARTITION,
+                2048,
+                (1, 2),
+                ntfs12::Options {
+                    attrdef,
+                    windows_extend: false,
+                },
+            )
+            .image(),
+        );
+    }
+}
+
+fn read_as_nt4_laid_it_out(image: Vec<u8>) {
     let report = inspect(&image);
     assert_eq!(report.volume_version.as_deref(), Some("1.2"));
     let blocked: Vec<_> = codes(&report)
@@ -147,6 +162,57 @@ fn nt4_system_records_have_their_own_roles() {
     assert!(scope.transactional_records.is_empty() && scope.deferred_directories.is_empty());
 }
 
+/// The hybrid every NTFS 1.2 volume becomes once Windows 11 has mounted it
+/// (lab n12-image-2): still stating 1.2, its files' own descriptors, and the
+/// $Extend directory Windows made in record 11. Record 11 is $Extend, as on
+/// 3.x; and with no index or transaction metadata in it yet there is none to
+/// verify.
+#[test]
+fn a_12_volume_with_the_extend_windows_made_is_read() {
+    let image = ntfs12::volume_with(
+        PARTITION,
+        2048,
+        (1, 2),
+        ntfs12::Options {
+            attrdef: ntfs12::AttrDef::Windows,
+            windows_extend: true,
+        },
+    )
+    .image();
+    let report = inspect(&image);
+    assert!(
+        !report
+            .blockers
+            .iter()
+            .any(|b| b.code == "metadata_role_ancestry_unresolved"),
+        "{:#?}",
+        report.blockers
+    );
+    let extend = report.files.iter().find(|f| f.record_number == 11).unwrap();
+    assert_eq!(
+        ntfs_admission::internal_role(&report, extend).as_deref(),
+        Some("$Extend")
+    );
+    let namespace = report.namespace_reconciliation.as_ref().unwrap();
+    assert_eq!(
+        namespace.status,
+        ntfs_namespace::Status::ConsistentRawModel,
+        "{}",
+        namespace.detail
+    );
+    let security = report.security_reconciliation.as_ref().unwrap();
+    assert_eq!(
+        security.status,
+        ntfs_security::Status::ConsistentRawModel,
+        "{}",
+        security.detail
+    );
+    let indexes = ntfs_internal::verify(&mut Cursor::new(&image), &report).unwrap();
+    assert!(indexes.indexes.is_empty() && indexes.replacement_supported);
+    let scope = ntfs2refs::ntfs_transactions::inspect_scope(&report).unwrap();
+    assert!(scope.transactional_records.is_empty());
+}
+
 /// The NT 4.0 layout is read only where $Volume states 1.2: the same volume
 /// stating 3.0 lacks the $Secure and $Extend a 3.x volume has, and is refused.
 #[test]
@@ -170,7 +236,8 @@ fn the_nt4_layout_is_not_taken_for_a_3x_volume() {
 /// The lab's volume: tests/support/ntfs12.rs's head of an NTFS 1.2 volume
 /// for a partition of `N2R_NTFS12_PARTITION_BYTES`, written to
 /// `N2R_NTFS12_IMAGE`, for `Invoke-DataVolumeAttempt.ps1 -Features ntfs12
-/// -Ntfs12Image <it>` (lab/README.md).
+/// -Ntfs12Image <it>` (lab/README.md). Its `$AttrDef` is the one Windows
+/// writes, unless `N2R_NTFS12_ATTRDEF` is `nt4`.
 #[test]
 #[ignore = "writes the lab's NTFS 1.2 image where N2R_NTFS12_IMAGE says"]
 fn write_the_lab_ntfs12_image() {
@@ -179,10 +246,23 @@ fn write_the_lab_ntfs12_image() {
         .expect("N2R_NTFS12_PARTITION_BYTES")
         .parse()
         .expect("a number of bytes");
-    let volume = ntfs12::volume(partition, 0, (1, 2));
+    let attrdef = match std::env::var("N2R_NTFS12_ATTRDEF").as_deref() {
+        Ok("nt4") => ntfs12::AttrDef::Nt4,
+        Ok("windows") | Err(_) => ntfs12::AttrDef::Windows,
+        Ok(other) => panic!("N2R_NTFS12_ATTRDEF is nt4 or windows, not {other}"),
+    };
+    let volume = ntfs12::volume_with(
+        partition,
+        0,
+        (1, 2),
+        ntfs12::Options {
+            attrdef,
+            windows_extend: false,
+        },
+    );
     std::fs::write(&output, &volume.head).unwrap();
     eprintln!(
-        "{output}: {} bytes, the head of an NTFS 1.2 volume of {} clusters for a partition of {partition} bytes",
+        "{output}: {} bytes, the head of an NTFS 1.2 volume of {} clusters for a partition of {partition} bytes, with the {attrdef:?} $AttrDef",
         volume.head.len(),
         volume.total_clusters
     );

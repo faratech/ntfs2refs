@@ -2102,14 +2102,14 @@ fn classify_metadata_roles(report: &mut NtfsInspection, budget: &mut ReportBudge
     let root_valid = root.is_some_and(|i| {
         valid_role_anchor(&files[i], &[u16::from(b'.')], files[i].sequence_number)
     });
-    // NTFS 1.2 has no $Extend: record 11 is a reserved record like 12 to 15.
+    // NTFS 1.2 has no $Extend of its own: record 11 is a reserved record
+    // like 12 to 15, unless Windows has made it the $Extend directory.
     let legacy = crate::ntfs_version::legacy_layout_text(report.volume_version.as_deref());
     for (i, file) in files.iter().enumerate() {
         if file.record_number < 16 {
             states[i] = match file.record_number {
                 5 if root_valid => State::OutsideExtend,
                 5 => State::Unresolved(Issue::InvalidRootAnchor),
-                11 if legacy => State::Unresolved(Issue::UnsupportedReservedParent),
                 11 if root_valid
                     && valid_role_anchor(
                         file,
@@ -2119,6 +2119,9 @@ fn classify_metadata_roles(report: &mut NtfsInspection, budget: &mut ReportBudge
                 {
                     State::WithinExtend
                 }
+                // NTFS 1.2 has no $Extend, but Windows may have made one (above);
+                // otherwise record 11 is a reserved record like 12 to 15.
+                11 if legacy => State::Unresolved(Issue::UnsupportedReservedParent),
                 11 => State::Unresolved(Issue::InvalidExtendAnchor),
                 _ => State::Unresolved(Issue::UnsupportedReservedParent),
             };

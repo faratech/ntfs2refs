@@ -607,7 +607,12 @@ scheduled), as the converter's refusal tells a user to: its whole output is
 kept in `chkdsk.txt`, the version and health before it in the verdict's
 `ntfs12.before_chkdsk`, and the volume is settled, read and judged again;
 if it is then healthy the run goes on, and `ntfs12.chkdsk.version_after`
-says whether chkdsk left it 1.2. Otherwise the verdict's
+says whether chkdsk left it 1.2. Every `ntfs12` and `ntfs12-version`
+attempt also keeps, as the disk holds them once the volume has settled
+(after chkdsk where it ran), record 9 whole in `ntfs12.json` and the
+`$UpCase` table and `$Secure`'s `$SDS` as files, `upcase.bin` and `sds.bin`
+(the latter where there is one), to set beside a volume Windows made.
+Otherwise the verdict's
 `ntfs12` says in what version and state Windows left it, and the run goes
 on to convert it. The image carries the `$AttrDef` Windows writes (with
 `$OBJECT_ID`, `$REPARSE_POINT` and `$LOGGED_UTILITY_STREAM`, which Windows

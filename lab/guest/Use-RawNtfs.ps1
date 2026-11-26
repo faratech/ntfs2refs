@@ -49,7 +49,7 @@ param(
     [Parameter(Mandatory)][int]$DiskNumber,
     # The partition's byte offset on the disk.
     [Parameter(Mandatory)][long]$PartitionOffset,
-    [Parameter(Mandatory)][ValidateSet('read-version', 'set-version', 'read-log', 'set-headers-30', 'read-headers', 'write-image')][string]$Action,
+    [Parameter(Mandatory)][ValidateSet('read-version', 'set-version', 'read-log', 'set-headers-30', 'read-headers', 'write-image', 'dump-stream')][string]$Action,
     [int]$Major = -1,
     [int]$Minor = -1,
     # read-headers: the records set-headers-30 rewrote, each checked again.
@@ -68,7 +68,12 @@ param(
     # writes them), and the partition's length, which the image's boot
     # sector has to state.
     [string]$Image,
-    [long]$PartitionBytes = 0
+    [long]$PartitionBytes = 0,
+    # dump-stream: the stream of MFT record -Records[0] (unnamed, or named
+    # -StreamName), at most -MaxBytes of it, written raw to -Output.
+    [string]$StreamName = '',
+    [string]$Output,
+    [long]$MaxBytes = 16MB
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 if (-not ('N2RLabRawNtfs' -as [type])) {
@@ -162,6 +167,21 @@ public static class N2RLabRawNtfs {
         }
     }
     // The offset of the first unnamed attribute of a type in a FILE record, or -1.
+    // The offset of the $DATA-like attribute of a type and name, or -1.
+    public static int FindNamed(byte[] record, long type, string name) {
+        int at = U16(record, 0x14);
+        while (at + 16 <= record.Length) {
+            long found = U32(record, at);
+            if (found == 0xFFFFFFFFL) break;
+            int length = (int)U32(record, at + 4);
+            if (length < 16 || at + length > record.Length) throw new InvalidDataException("attribute at " + at + " has length " + length);
+            int nameLength = record[at + 9], nameAt = U16(record, at + 10);
+            string actual = nameLength == 0 ? "" : System.Text.Encoding.Unicode.GetString(record, at + nameAt, nameLength * 2);
+            if (found == type && actual == name) return at;
+            at += length;
+        }
+        return -1;
+    }
     public static int Find(byte[] record, long type) {
         int at = U16(record, 0x14);
         while (at + 16 <= record.Length) {
@@ -564,6 +584,32 @@ switch ($Action) {
             })
         $volume = Read-FileRecord 3 'mft'
         $result.version = (Get-VolumeVersion $volume).version
+    }
+    'dump-stream' {
+        # A stream of a record as the disk holds it, for setting beside one
+        # Windows made (the $UpCase table, $Secure's $SDS).
+        if ($Records.Count -ne 1 -or -not $Output) { throw 'dump-stream takes one -Records and -Output' }
+        $mft = Get-MftLayout
+        $number = $Records[0]
+        $raw = [N2RLabRawNtfs]::ReadStream($device, $PartitionOffset, $cluster, $mft.runs, $number * [long]$recordBytes, $recordBytes)
+        $what = "MFT record $number"
+        $fixed = [byte[]]$raw.Clone()
+        $null = [N2RLabRawNtfs]::Unfix($fixed, $what)
+        $attribute = [N2RLabRawNtfs]::FindNamed($fixed, 0x80, $StreamName)
+        if ($attribute -lt 0) { throw "$what has no `$DATA stream '$StreamName'" }
+        $bytes = if ($fixed[$attribute + 8] -eq 0) {
+            $length = [int][N2RLabRawNtfs]::U32($fixed, $attribute + 0x10)
+            $value = $attribute + [N2RLabRawNtfs]::U16($fixed, $attribute + 0x14)
+            $copy = New-Object byte[] $length; [Array]::Copy($fixed, $value, $copy, 0, $length); $copy
+        } else {
+            $size = [BitConverter]::ToInt64($fixed, $attribute + 0x30)
+            $runs = [N2RLabRawNtfs]::Runs($fixed, $attribute)
+            [N2RLabRawNtfs]::ReadStream($device, $PartitionOffset, $cluster, $runs, 0, [int][Math]::Min($size, $MaxBytes))
+        }
+        [IO.File]::WriteAllBytes($Output, $bytes)
+        $result.record = $number; $result.stream = $StreamName; $result.output = $Output
+        $result.bytes = $bytes.Length; $result.sha256 = Get-Sha256 $bytes
+        $result.record_hex = Get-Hex $raw 0 $recordBytes
     }
     'write-image' {
         # A whole volume's metadata written over the partition: the image

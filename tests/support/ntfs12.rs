@@ -329,8 +329,17 @@ fn index_block(entries: &[u8]) -> Vec<u8> {
     b
 }
 
-/// A $UpCase table: each UTF-16 unit's single upper-case mapping, where it
-/// has one that is itself unchanged by upper-casing.
+/// The $UpCase table Windows writes: the system's own upper-case mapping of
+/// every UTF-16 unit. (lab n12-image-4: a table of Rust's mappings had
+/// chkdsk report "Correcting errors in the uppercase file".)
+#[cfg(windows)]
+pub fn upcase() -> Vec<u16> {
+    n2r_win32::upcase_table::system()
+}
+
+/// Elsewhere: each UTF-16 unit's single upper-case mapping, where it has one
+/// that is itself unchanged by upper-casing.
+#[cfg(not(windows))]
 pub fn upcase() -> Vec<u16> {
     let mut table: Vec<u16> = (0..=0xffffu32).map(|c| c as u16).collect();
     for c in 0..=0xffffu32 {
@@ -887,6 +896,12 @@ pub fn volume_with(
         for cluster in start..start + count {
             head[bitmap_at + (cluster / 8) as usize] |= 1 << (cluster % 8);
         }
+    }
+    // The bits past the volume's last cluster, to the end of the bitmap's
+    // eight-byte multiple, set, as Windows sets them (lab n12-image-4: left
+    // clear, chkdsk reported "Correcting errors in the Volume Bitmap").
+    for cluster in total_clusters..bitmap_bytes * 8 {
+        head[bitmap_at + (cluster / 8) as usize] |= 1 << (cluster % 8);
     }
     head[cluster_at(big_lcn)..cluster_at(big_lcn) + BIG_BYTES].copy_from_slice(&big);
     Volume {

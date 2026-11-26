@@ -1457,7 +1457,15 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                     # and (ntfs12-version) the records of a volume Windows made, whole,
                     # to set beside the synthetic volume's.
                     if ($ntfs12 -or $ntfs12Version) {
-                        try { $result.headers_when_the_run_starts = & $last (& $tool -DiskNumber $number -PartitionOffset $offset -Action read-headers) } catch { $result.headers_read_error = "$($_.Exception.Message)" }
+                        # (Record 9 whole too: $Quota as written, $Secure once chkdsk has made one.)
+                        try { $result.headers_when_the_run_starts = & $last (& $tool -DiskNumber $number -PartitionOffset $offset -Action read-headers -Records ([long[]]@(9))) } catch { $result.headers_read_error = "$($_.Exception.Message)" }
+                        # The $UpCase table and $Secure's $SDS as the disk holds them, as
+                        # files, to set beside a volume Windows made (upcase.bin, sds.bin).
+                        $result.dumped = [ordered]@{}
+                        foreach ($dump in @(@(10, '', 'upcase.bin'), @(9, '$SDS', 'sds.bin'))) {
+                            try { $result.dumped[$dump[2]] = & $last (& $tool -DiskNumber $number -PartitionOffset $offset -Action dump-stream -Records ([long[]]@($dump[0])) -StreamName $dump[1] -Output "$root\$($dump[2])") }
+                            catch { $result.dumped[$dump[2]] = "not dumped: $($_.Exception.Message)" }
+                        }
                     }
                 }
                 # What Windows made of the volume: its partition and volume,
@@ -1506,8 +1514,13 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
             if ($ntfs30Headers) { $patch | Add-Member -NotePropertyName headers_when_the_run_starts -NotePropertyValue $onDisk.headers_when_the_run_starts }
             [IO.File]::WriteAllText((Join-Path $records 'ntfs30.json'), ($patch | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
         }
+        if ($ntfs12Any -and $onDisk.PSObject.Properties['dumped'] -and $onDisk.dumped) {
+            foreach ($leaf in 'upcase.bin', 'sds.bin') {
+                if ($onDisk.dumped.$leaf -isnot [string]) { Copy-Item -FromSession $session -LiteralPath "$guestRoot\$leaf" -Destination $records -Force }
+            }
+        }
         if ($ntfs12Any -and $onDisk.ntfs12) {
-            $made = [ordered]@{ written = $onDisk.ntfs12; as_written = $onDisk.ntfs12_as_written; version_when_the_run_starts = $onDisk.version_when_the_run_starts; headers_when_the_run_starts = $onDisk.headers_when_the_run_starts }
+            $made = [ordered]@{ written = $onDisk.ntfs12; as_written = $onDisk.ntfs12_as_written; dumped = $(if ($onDisk.PSObject.Properties['dumped']) { $onDisk.dumped }); version_when_the_run_starts = $onDisk.version_when_the_run_starts; headers_when_the_run_starts = $onDisk.headers_when_the_run_starts }
             [IO.File]::WriteAllText((Join-Path $records 'ntfs12.json'), ($made | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
         }
         if ($onDisk.diagnostics) {

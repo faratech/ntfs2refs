@@ -279,15 +279,7 @@ pub(crate) fn efs_object(file: &FileInventory) -> Result<Option<EfsObject>> {
     })))
 }
 
-/// Whether a blocker of the raw inspection is one an EFS object raises: its
-/// encryption, its $EFS attribute, its stream that has no raw logical hash.
-pub(crate) fn efs_blocker(code: &str, message: &str) -> bool {
-    code == "ntfs_encryption"
-        || (code == "unsupported_attribute"
-            && message == "Attribute type 0x100 needs a preservation policy")
-        || (code == "logical_stream_hash_unavailable"
-            && message.ends_with(": UnsupportedEncryption"))
-}
+pub(crate) use crate::ntfs_inspect::efs_blocker;
 
 /// Whether this run makes `file` a plain object from EFS (where
 /// `efs_decrypted` is enabled, `PlainKind::implemented`).

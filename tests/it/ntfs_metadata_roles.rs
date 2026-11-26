@@ -168,6 +168,62 @@ fn the_reading_keeps_a_wof_file_for_the_plain_census() {
     }
 }
 
+/// An EFS-encrypted file as the raw reading sees it: the encrypted mark in
+/// its standard information, an encrypted unnamed stream and its $EFS.
+fn efs_record() -> Vec<u8> {
+    let mut information = vec![0u8; 72];
+    information[32..36].copy_from_slice(&0x4020u32.to_le_bytes());
+    let mut data = support::resident(0x80, "", b"ciphertext", 1);
+    // The attribute header's flags: encrypted.
+    data[12..14].copy_from_slice(&0x4000u16.to_le_bytes());
+    support::record(
+        &[
+            support::resident(0x10, "", &information, 3),
+            filename("encrypted.txt", 5, 1, 1, 0),
+            data,
+            support::resident(0x100, "$EFS", &[0u8; 64], 2),
+        ],
+        1,
+        1,
+    )
+}
+
+/// The reading `--check`, a conversion's check before its question and its
+/// admission of the frozen source begin with: what it reports of an EFS
+/// file is all of a kind a run that makes the file plain settles for that
+/// file (`ntfs_inspect::efs_blocker`), so nothing of it refuses the volume
+/// before the plain census has classified the file.
+#[test]
+fn the_reading_reports_an_efs_file_only_as_efs() {
+    let report = inspect_records(&[(20, efs_record())]);
+    let blockers: Vec<_> = report
+        .blockers
+        .iter()
+        .filter(|blocker| blocker.file_record_number == Some(20))
+        .collect();
+    assert!(
+        blockers
+            .iter()
+            .any(|blocker| blocker.code == "ntfs_encryption"),
+        "{blockers:?}"
+    );
+    for blocker in &blockers {
+        assert!(
+            ntfs2refs::ntfs_inspect::efs_blocker(&blocker.code, &blocker.message),
+            "{blocker:?} is reported of an EFS file and is not settled as one"
+        );
+    }
+    // Nothing else is settled as EFS's.
+    assert!(!ntfs2refs::ntfs_inspect::efs_blocker(
+        "unsupported_attribute",
+        "Attribute type 0xd0 needs a preservation policy"
+    ));
+    assert!(!ntfs2refs::ntfs_inspect::efs_blocker(
+        "logical_stream_hash_unavailable",
+        "DATA attribute 1 has no complete logical hash: UnsupportedCompression"
+    ));
+}
+
 #[test]
 fn follows_nested_extend_ancestry_and_retains_every_stream() {
     let data = support::record(

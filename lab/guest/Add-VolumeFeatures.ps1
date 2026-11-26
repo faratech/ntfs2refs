@@ -371,6 +371,7 @@ public static class ManyFiles {
                 what = "a cloud sync root of the lab provider ($(($text -replace '\s+', ' ').Trim())); its provider is $(if ($served) { "running (process $($served.Id))" } else { 'stopped' })"
                 plain = $plain.ToArray()
                 sync_root = $sync; backing = $backing; stop_file = $stop
+                provider_process = $(if ($served) { $served.Id } else { $null })
                 not_present = @("\feature-$feature\synced\partial.bin", "\feature-$feature\synced\absent.bin")
             }
         }

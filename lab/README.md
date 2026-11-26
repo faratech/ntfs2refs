@@ -510,7 +510,11 @@ unchanged; with `-LeaveOutCloud` as well (and `-Check -AcceptPlain
 -Unattended`, whose check prints the list's checksum) it passes
 `--leave-out-cloud` and converts without them, each declared
 `cloud_left_out` and absent afterwards (`cloud-down-leave-out`). The harness stops the provider and unregisters the sync root
-when the attempt ends. Both are still to be run.
+when the attempt ends. A Cloud Files provider serves only the account that
+runs it, and the feature step starts it as the account the harness works as:
+run `cloud` with `-RunAs administrator` (as SYSTEM the run finds the
+provider not running for it, and says so). The harness checks that the
+provider is still serving before it starts the converter. Both are still to be run.
 
 `temporary`, `offline` and `wof` (four `compact /exe` files, one per WOF
 algorithm, listed before the run in `wof-listed-before.jsonl`) convert with

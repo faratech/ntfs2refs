@@ -1520,6 +1520,17 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     # Without -AcceptPlain, a run with objects to make plain (the check printed
     # their list) is asked about them and declines: it has to stop there.
     $declinePlain = -not $Unattended -and -not $AcceptPlain -and [bool]$plainSha
+    if ($Features -contains 'cloud') {
+        # The lab provider has to be serving when the converter runs, as the
+        # account the converter runs as: a Cloud Files provider serves the
+        # user who runs it (the feature step starts it as the account the
+        # harness works as, which -RunAs administrator runs the converter as).
+        $served = $verdict.source.features.cloud.provider_process
+        $alive = Invoke-Command -Session $session -ArgumentList $served -ScriptBlock { param($id) [bool](Get-Process -Id $id -ErrorAction SilentlyContinue) }
+        if (-not $alive) { $verdict.outcome = 'cloud-provider-not-running'; throw "the lab cloud provider (process $served) is no longer running before the conversion" }
+        if ($RunAs -ne 'administrator') { Say 'cloud: the converter runs as SYSTEM, which the provider (the harness account''s) does not serve; with -RunAs administrator it does' }
+        Say "cloud: the lab provider (process $served) is serving"
+    }
     Start-Worker $guestRoot $arguments $task $(if ($declinePlain) { @('n') } else { @() })
     Say "converter started: ntfs2refs $($arguments -join ' ')$(if ($declinePlain) { ' (its question about plain conversions answered no)' })"
     $waited = Wait-Worker $guestRoot $InterruptAt $StopDuringPreparation
@@ -2175,7 +2186,12 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         $wholeError = if (Test-Path -LiteralPath $stderr) { (Get-Content -LiteralPath $stderr -Encoding UTF8) -join "`n" } else { '' }
         $same = @($verdict.check.refusals | Where-Object { $_ -and $wholeError.Contains($_.Substring(0, [Math]::Min(60, $_.Length))) }).Count -gt 0
         # Exit 7: nothing refused, once the list of objects made plain is agreed.
-        $verdict.check.agrees = switch ($verdict.check.exit) { 0 { -not $refusedNow } 3 { $refusedNow } 7 { $(if ($AcceptPlain) { -not $refusedNow } else { $null }) } default { $null } }
+        # Exit 7 with a list of cloud placeholders to leave out: an
+        # unattended run that does not agree to leave them out
+        # (-LeaveOutCloud) is refused for exactly that, which the check
+        # said it would be.
+        $leaveOutRefused = $refusedNow -and [bool]$leaveOutSha -and -not $LeaveOutCloud -and $verdict.outcome -eq 'refused-as-expected' -and ("$errorLine" -match 'leave-out-cloud')
+        $verdict.check.agrees = switch ($verdict.check.exit) { 0 { -not $refusedNow } 3 { $refusedNow } 7 { $(if ($AcceptPlain) { (-not $refusedNow) -or $leaveOutRefused } else { $null }) } default { $null } }
         $verdict.check.named_the_same_refusal = if ($verdict.check.exit -eq 3 -and $refusedNow) { $same } else { $null }
         Say "check and run: $(if ($null -eq $verdict.check.agrees) { 'the check was inconclusive' } elseif ($verdict.check.agrees) { 'agree' } else { 'DISAGREE' })$(if ($null -ne $verdict.check.named_the_same_refusal) { "; the same refusal: $($verdict.check.named_the_same_refusal)" })"
         if ($verdict.check.agrees -eq $false) { $verdict.outcome = "$($verdict.outcome)-but-check-disagreed" }

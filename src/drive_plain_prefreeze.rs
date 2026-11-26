@@ -196,7 +196,7 @@ pub(crate) fn summary(findings: &[CloudFinding]) -> Vec<String> {
             .collect();
         if !stopped.is_empty() {
             lines.push(format!(
-                "The provider of {} of them is not running, so they cannot be downloaded now: {}.",
+                "The provider of {} of them is not running for this account (a Cloud Files provider serves only the user who runs it), so they cannot be downloaded now: {}.",
                 stopped.len(),
                 named(&stopped)
             ));
@@ -264,7 +264,7 @@ pub(crate) fn refusals(findings: &[CloudFinding], left_out: &BTreeSet<String>) -
         .collect();
     if !files.is_empty() {
         refusals.push(format!(
-            "{} cloud placeholder(s) are not wholly on this device and their provider is not running to download them: {}. Nothing was changed: {}",
+            "{} cloud placeholder(s) are not wholly on this device and their provider is not running for this account to download them: {}. Nothing was changed: {}",
             files.len(),
             named(&files),
             crate::plain_projection::CLOUD_REMEDY
@@ -366,7 +366,7 @@ pub(crate) fn decide_leave_out(
             "--leave-out-cloud names the list {named}, and the cloud placeholders this run would leave out are {sha}: the volume is not as it was when that list was made. Nothing was changed. Read the list again (--check) and agree to it as it is"
         ),
         None if unattended => bail!(
-            "{} cloud placeholder(s) cannot be brought onto the volume now, because their provider is not running or has not listed a folder in full: {} (list sha256 {sha}). --yes does not leave them out by itself: start their provider, or add --leave-out-cloud {sha} after reading the list. Nothing was changed",
+            "{} cloud placeholder(s) cannot be brought onto the volume now, because their provider is not running for this account (a Cloud Files provider serves only the user who runs it) or has not listed a folder in full: {} (list sha256 {sha}). --yes does not leave them out by itself: start their provider and run as its user, or add --leave-out-cloud {sha} after reading the list. Nothing was changed",
             list.len(),
             named(
                 &list

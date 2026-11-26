@@ -253,7 +253,10 @@ $dataCases = @(
     # lab-volume-manifest.exe in the build): with it running, those not on the
     # device are downloaded before the freeze and all made plain; with it stopped,
     # refused by name before anything is changed.
-    'cloud-plain|-Content minimal -Features cloud -Check -AcceptPlain -Unattended'
+    # (As the account the provider runs as: a Cloud Files provider serves
+    # the user who runs it, and the feature step starts it as the
+    # harness's account.)
+    'cloud-plain|-Content minimal -Features cloud -Check -AcceptPlain -Unattended -RunAs administrator'
     'cloud-down|-Content minimal -Features cloud-down -Check -AcceptPlain -Unattended -ExpectRefusal leave-out-cloud'
     # The same, with leaving the two out agreed: it converts without them.
     'cloud-down-leave-out|-Content minimal -Features cloud-down -Check -AcceptPlain -Unattended -LeaveOutCloud'

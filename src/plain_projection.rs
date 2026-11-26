@@ -311,7 +311,7 @@ pub(crate) fn efs_taken(file: &FileInventory) -> bool {
 
 /// Said wherever a cloud placeholder is refused because its data is not on
 /// the volume.
-pub(crate) const CLOUD_REMEDY: &str = "start its cloud provider (OneDrive, say) so that the conversion can download it before the volume is frozen, or make it always available on this device; or agree to leave it out, which keeps it in the cloud and not on the new volume";
+pub(crate) const CLOUD_REMEDY: &str = "start its cloud provider (OneDrive, say) so that the conversion can download it before the volume is frozen, and run the conversion as the user the provider runs for (a Cloud Files provider serves only the account that runs it); or make it always available on this device; or agree to leave it out, which keeps it in the cloud and not on the new volume";
 
 /// What the Cloud Files API's placeholders become, said with the question.
 /// OneDrive and the Cloud Files API do not run on ReFS.
@@ -392,6 +392,18 @@ pub(crate) fn cloud_placeholder(file: &FileInventory) -> Result<Option<CloudPlac
     }))
 }
 
+/// Whether this run makes `file`, a cloud placeholder file, plain from a
+/// copy: one taken plain and not left out (`cloud_left_out`, as the run's
+/// ledger declares it once the volume is frozen). A left-out placeholder
+/// has no copy: it is not made at all, and Windows' view of it at the
+/// freeze is compared as the raw record holds it.
+pub(crate) fn cloud_copied(file: &FileInventory) -> bool {
+    cloud_taken(file)
+        && !file.is_directory
+        && !n2r_win32::plain_ledger::declared()
+            .is_left_out(file.record_number, file.sequence_number)
+}
+
 /// Whether `stream` is the Cloud Files API's own on a sync root's folder.
 pub(crate) fn sync_root_stream(stream: &crate::ntfs_inspect::StreamInventory) -> bool {
     String::from_utf16(&stream.name_utf16)
@@ -426,7 +438,7 @@ pub(crate) fn plain_copy_pin(
 ) -> Result<Option<n2r_win32::plain_copy::PlainCopyPin>> {
     let copied = wof_taken(file)
         || (efs_taken(file) && matches!(efs_object(file)?, Some(EfsObject::File(_))))
-        || (cloud_taken(file) && !file.is_directory);
+        || cloud_copied(file);
     if !copied {
         return Ok(None);
     }
@@ -434,7 +446,7 @@ pub(crate) fn plain_copy_pin(
         .map(Some)
         .with_context(|| {
             format!(
-                "MFT record {} is made plain from its copy, which was not taken",
+                "MFT record {} is made plain from its copy, and no copy of it was taken at the freeze: the census of the frozen source requested none for it",
                 file.record_number
             )
         })

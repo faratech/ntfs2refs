@@ -1145,6 +1145,55 @@ mod refusal_tests {
         );
     }
 
+    /// The lab (cl3-down-leave-out, MFT record 42): a placeholder file left
+    /// out has no copy, and Windows' view of it at the freeze is not asked
+    /// for one; one made plain is.
+    #[test]
+    fn a_left_out_placeholder_is_not_made_from_a_copy() {
+        let mut file = cloud_folder(&[]);
+        file.record_number = 0x7e57_0042;
+        file.is_directory = false;
+        file.streams = directory_with_stream("", 0).streams;
+        crate::plain_consent::take_plain_on_this_thread(true);
+        let copied = crate::plain_projection::cloud_copied(&file);
+        n2r_win32::plain_ledger::declare(
+            n2r_win32::plain_ledger::DeclaredDrops::from_ledger(
+                &n2r_win32::plain_ledger::PlainLedger {
+                    kind: n2r_win32::plain_ledger::LEDGER_KIND.into(),
+                    agreed_list_sha256: String::new(),
+                    frozen_list_sha256: String::new(),
+                    source_inspection_sha256: String::new(),
+                    rows: vec![n2r_win32::plain_ledger::LedgerRow {
+                        kind: n2r_win32::plain_ledger::PlainKind::CloudLeftOut,
+                        paths: vec!["\\c\\absent.bin".into()],
+                        record_number: file.record_number,
+                        sequence_number: file.sequence_number,
+                        before: Default::default(),
+                        after: Default::default(),
+                        witness: "raw".into(),
+                        plain_copy: None,
+                        efs: None,
+                        cloud: None,
+                        left_out: Some(n2r_win32::plain_ledger::LedgerLeftOut {
+                            directory: false,
+                            streams: 1,
+                            bytes: 5,
+                        }),
+                        dropped_streams: Vec::new(),
+                    }],
+                },
+            )
+            .unwrap(),
+        );
+        let left_out = crate::plain_projection::cloud_copied(&file);
+        let view = crate::plain_projection::observed_view(&file);
+        n2r_win32::plain_ledger::declare(Default::default());
+        crate::plain_consent::take_plain_on_this_thread(false);
+        assert!(copied && !left_out);
+        // Compared as the raw record holds it, with no copy asked for.
+        assert!(matches!(view, Ok(None)), "{view:?}");
+    }
+
     /// The checked source readers take a directory's named stream: the lab's
     /// dirstream run was refused in payload supply planning with "plain
     /// standalone file required".

@@ -255,6 +255,11 @@ fn filter_view(file: &FileInventory, wof: bool, content_digest: &str) -> Result<
         .with_context(|| format!("MFT record {} has no unnamed stream", file.record_number))?;
     // EFS: Windows reads the encrypted stream decrypted, as an ordinary one.
     unnamed.flags &= !0x4000;
+    // WOF: Windows shows the stream as an ordinary one, not sparse (the lab:
+    // attributes 0x20 where the raw record gives 0x220).
+    if wof {
+        unnamed.flags &= !0x8000;
+    }
     unnamed.logical_sha256 = Some(content_digest.to_owned());
     unnamed.logical_hash_status = crate::ntfs_inspect::LogicalHashStatus::Complete;
     for attribute in view
@@ -263,8 +268,30 @@ fn filter_view(file: &FileInventory, wof: bool, content_digest: &str) -> Result<
         .filter(|attribute| attribute.type_code == 0x80 && attribute.name_utf16.is_empty())
     {
         attribute.flags &= !0x4000;
+        if wof {
+            attribute.flags &= !0x8000;
+        }
     }
     Ok(view)
+}
+
+/// Whether a stream's allocation, as Windows reports it, is held by its
+/// plain copy rather than by the raw record: the unnamed stream of an object
+/// this run makes plain from a copy. WOF reports the allocation of its
+/// compressed data for it, which no raw extent of the stream accounts for;
+/// the stream's contents are held to the copy's digest instead.
+pub(crate) fn allocation_held_by_copy(
+    record_number: u64,
+    sequence_number: u16,
+    stream_name_utf16: &[u16],
+) -> bool {
+    stream_name_utf16.is_empty()
+        && n2r_win32::plain_copy::taken_pin(&n2r_win32::plain_copy::PlainCopyKey {
+            record_number,
+            sequence_number,
+            stream_name_utf16: Vec::new(),
+        })
+        .is_some()
 }
 
 /// The transform of one file or directory, from its raw record.
@@ -585,6 +612,9 @@ mod tests {
             0x20
         );
         assert_eq!(view.streams[0].logical_size, raw.streams[0].logical_size);
+        // Not sparse, as Windows shows it (0x20, not 0x220).
+        assert_eq!(view.streams[0].flags, 0);
+        assert_eq!(view.attributes[0].flags, 0);
         assert_eq!(view.names.len(), raw.names.len());
         // Its contents are the copy's, read by Windows and held to them.
         assert_eq!(
@@ -607,6 +637,34 @@ mod tests {
         let mut none = wof_file();
         none.streams.retain(|s| !s.name_utf16.is_empty());
         assert!(filter_view(&none, false, &copy).is_err());
+    }
+
+    #[test]
+    fn only_a_copied_streams_allocation_is_held_by_its_copy() {
+        // An identity no other test of this process takes a copy of.
+        let (record, sequence) = (0xfeed_0000_0041u64, 9u16);
+        assert!(!allocation_held_by_copy(record, sequence, &[]));
+        let run = tempfile::tempdir().unwrap();
+        n2r_win32::plain_copy::arm(
+            &run.path().join(n2r_win32::plain_copy::DIRECTORY),
+            vec![n2r_win32::plain_copy::PlainCopyRequest {
+                key: n2r_win32::plain_copy::PlainCopyKey {
+                    record_number: record,
+                    sequence_number: sequence,
+                    stream_name_utf16: Vec::new(),
+                },
+                bytes: 4,
+            }],
+        )
+        .unwrap();
+        n2r_win32::plain_copy::take_armed_with(|_| Ok(&b"wof!"[..])).unwrap();
+        let held = allocation_held_by_copy(record, sequence, &[]);
+        // Another sequence of the record, a named stream: their own allocation.
+        let other_sequence = allocation_held_by_copy(record, sequence + 1, &[]);
+        let named = allocation_held_by_copy(record, sequence, &[0x61]);
+        n2r_win32::plain_copy::remove(run.path()).unwrap();
+        assert!(held && !other_sequence && !named);
+        assert!(!allocation_held_by_copy(record, sequence, &[]));
     }
 
     #[test]

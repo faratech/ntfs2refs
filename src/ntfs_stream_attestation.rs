@@ -522,8 +522,15 @@ fn check_file_inner(
                 sum.checked_add(e.length)
                     .context("allocated stream bytes overflow")
             })?;
+        // A copied stream's allocation is the owning filter's (WOF's
+        // compressed data); its contents are held to the plain copy.
         ensure!(
-            q.allocated_size == physical,
+            q.allocated_size == physical
+                || crate::plain_projection::allocation_held_by_copy(
+                    file.record_number,
+                    file.sequence_number,
+                    &s.name_utf16
+                ),
             "native physical allocation differs from mapped NTFS data"
         );
         if let Some(attribute) = compressed {

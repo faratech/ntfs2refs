@@ -1171,6 +1171,12 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
     ) -> Result<Option<u64>> {
         let result = (|| {
             self.prepare(identity)?;
+            // A stream supplied from its plain copy lies nowhere on the
+            // source: no range of it is in place there (lab, pe3-efs:
+            // "checked COPY session absent").
+            if self.plain.is_some() {
+                return Ok(None);
+            }
             self.session
                 .as_ref()
                 .context("checked COPY session absent")?

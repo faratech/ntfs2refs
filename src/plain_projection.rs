@@ -1320,17 +1320,29 @@ pub(crate) fn within(path: &str, left: &str) -> bool {
 /// path agreed to be left out, or none. An object some of whose names are
 /// left out and some not (a hard link out of a folder left out) cannot be
 /// half made, and is refused by name.
-pub(crate) fn left_out_by(
+fn left_out_by(
     paths: &[String],
-    left_out: &std::collections::BTreeSet<String>,
-) -> std::result::Result<bool, String> {
-    let inside = paths
-        .iter()
-        .filter(|path| left_out.iter().any(|left| within(path, left)))
-        .count();
+    left_out: &std::collections::BTreeMap<String, PlainKind>,
+) -> std::result::Result<Option<PlainKind>, String> {
+    let mut inside = 0;
+    let mut first = None;
+    for path in paths {
+        let boundaries = path.match_indices('\\').map(|(index, _)| index);
+        let matched = boundaries
+            .chain(std::iter::once(path.len()))
+            .find_map(|end| left_out.get_key_value(&path[..end]));
+        if let Some((name, kind)) = matched {
+            inside += 1;
+            // Prefixes are visited shortest first. Across aliases, retain
+            // the first matching consent path in the map's lexical order.
+            if first.is_none_or(|(previous, _)| name < previous) {
+                first = Some((name, *kind));
+            }
+        }
+    }
     match inside {
-        0 => Ok(false),
-        n if n == paths.len() => Ok(true),
+        0 => Ok(None),
+        n if n == paths.len() => Ok(first.map(|(_, kind)| kind)),
         _ => Err(format!(
             "{} has names both in a placeholder folder left out and outside it ({}): it cannot be left out in part. Nothing was changed: remove the hard links that leave the folder, or do not leave the folder out",
             paths[0],
@@ -1465,12 +1477,7 @@ pub(crate) fn census(files: &impl RootFileDomain) -> Result<Census> {
                 .iter()
                 .map(|path| listing_path(path))
                 .collect();
-            let keys: std::collections::BTreeSet<String> = left_out.keys().cloned().collect();
-            if left_out_by(&paths, &keys).map_err(anyhow::Error::msg)? {
-                let below = left_out
-                    .iter()
-                    .find(|(left, _)| paths.iter().any(|path| within(path, left)))
-                    .map_or(PlainKind::CloudLeftOut, |(_, kind)| *kind);
+            if let Some(below) = left_out_by(&paths, &left_out).map_err(anyhow::Error::msg)? {
                 let (entry, row) = left_out_row(&file, paths, below)?;
                 entries.push(entry);
                 rows.push(row);
@@ -2243,18 +2250,33 @@ mod tests {
 
     #[test]
     fn what_is_left_out_is_each_object_within_a_path_agreed() {
-        let left: std::collections::BTreeSet<String> =
-            ["\\c\\folder".to_owned(), "\\c\\a.bin".to_owned()].into();
+        use PlainKind::{CloudLeftOut, ProjfsLeftOut};
+        let left = [
+            ("\\c\\folder".to_owned(), CloudLeftOut),
+            ("\\c\\folder\\deep".to_owned(), ProjfsLeftOut),
+            ("\\c\\a.bin".to_owned(), ProjfsLeftOut),
+        ]
+        .into();
         let paths = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
-        assert_eq!(left_out_by(&paths(&["\\c\\a.bin"]), &left), Ok(true));
-        assert_eq!(left_out_by(&paths(&["\\c\\folder"]), &left), Ok(true));
+        assert_eq!(
+            left_out_by(&paths(&["\\c\\a.bin"]), &left),
+            Ok(Some(ProjfsLeftOut))
+        );
+        assert_eq!(
+            left_out_by(&paths(&["\\c\\folder"]), &left),
+            Ok(Some(CloudLeftOut))
+        );
         assert_eq!(
             left_out_by(&paths(&["\\c\\folder\\deep\\x.txt"]), &left),
-            Ok(true)
+            Ok(Some(CloudLeftOut))
+        );
+        assert_eq!(
+            left_out_by(&paths(&["\\c\\folder\\deep\\x.txt", "\\c\\a.bin"]), &left),
+            Ok(Some(ProjfsLeftOut))
         );
         // A sibling whose name only begins the same is not below it.
-        assert_eq!(left_out_by(&paths(&["\\c\\folder2\\x"]), &left), Ok(false));
-        assert_eq!(left_out_by(&paths(&["\\c\\a.bin2"]), &left), Ok(false));
+        assert_eq!(left_out_by(&paths(&["\\c\\folder2\\x"]), &left), Ok(None));
+        assert_eq!(left_out_by(&paths(&["\\c\\a.bin2"]), &left), Ok(None));
         // A file with a name inside and one outside cannot be half made.
         let split = left_out_by(&paths(&["\\c\\folder\\x", "\\d\\x"]), &left).unwrap_err();
         assert!(split.contains("cannot be left out in part"), "{split}");

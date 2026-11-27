@@ -413,11 +413,13 @@ function Capture-Settled([string]$path, [int]$diskNumber, [bool]$hasJunction) {
         $current = ($own | Sort-Object -CaseSensitive) -join "`n"
         # Search may be available without indexing this volume. Its records
         # still participate in both comparisons whenever Windows writes them.
-        $settled = $populated -and (-not $hasJunction -or (& $has 'MountPointManagerRemoteDatabase')) -and
-            $current -ceq $previous
+        $initialized = $populated -and (-not $hasJunction -or (& $has 'MountPointManagerRemoteDatabase'))
+        $settled = $initialized -and $current -ceq $previous
         $previous = $current
         $now = Get-Date
-        if (-not $settled -and $now -lt $deadline -and $now -ge $remount) {
+        # A capture can itself take longer than the remount interval. Once
+        # the files exist, keep the mount so a second inventory can agree.
+        if (-not $initialized -and $now -lt $deadline -and $now -ge $remount) {
             & $afresh
             $remount = (Get-Date).AddSeconds(20)
             $previous = $null

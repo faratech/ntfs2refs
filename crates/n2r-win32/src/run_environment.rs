@@ -5,16 +5,59 @@
 //! device open failed, the Windows build when the frozen source's
 //! observations were checked, minutes into a run and with the disk offline.
 
-use std::{io, mem, ptr};
+use std::{io, mem, os::windows::ffi::OsStrExt, path::Path, ptr};
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE},
-    Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
+    Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, LocalFree},
+    Security::{
+        Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, GetTokenInformation,
+        SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
+    },
+    Storage::FileSystem::CreateDirectoryW,
     System::{
         Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RegGetValueW},
         SystemInformation::{GetProductInfo, OSVERSIONINFOEXW, OSVERSIONINFOW},
         Threading::{GetCurrentProcess, OpenProcessToken},
     },
 };
+
+/// Creates the run root and its inheritable access list in the same operation.
+/// The root can contain decrypted copies, their shadow and journal data. Keep
+/// access for the owner, SYSTEM and elevated local recovery administrators.
+pub fn create_private_working_directory(path: &Path) -> io::Result<()> {
+    let parent = path.parent().ok_or(io::ErrorKind::InvalidInput)?;
+    let leaf = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
+    let path = parent.canonicalize()?.join(leaf);
+    let path: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let sddl: Vec<u16> = "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+        .encode_utf16()
+        .chain([0])
+        .collect();
+    let mut descriptor = ptr::null_mut();
+    // SAFETY: SDDL is NUL-terminated; the out-pointer lives through the call.
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            1,
+            &mut descriptor,
+            ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor,
+        bInheritHandle: 0,
+    };
+    // SAFETY: the UTF-16 path and valid allocated descriptor live through
+    // creation. CreateDirectoryW does not retain either pointer.
+    let created = unsafe { CreateDirectoryW(path.as_ptr(), &attributes) };
+    let error = io::Error::last_os_error();
+    // SAFETY: this call owns the allocation from the SDDL conversion.
+    unsafe { LocalFree(descriptor) };
+    if created == 0 { Err(error) } else { Ok(()) }
+}
 
 #[link(name = "ntdll")]
 unsafe extern "system" {

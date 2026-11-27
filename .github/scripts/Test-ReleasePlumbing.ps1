@@ -53,6 +53,8 @@ $coordinator = Join-Path $PSScriptRoot 'Invoke-PrivateQualification.ps1'
 $oldRunId = $env:GITHUB_RUN_ID
 $oldAttempt = $env:GITHUB_RUN_ATTEMPT
 $oldRepository = $env:GITHUB_REPOSITORY
+$oldExitCode = Get-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
+$callerExitCode = if ($oldExitCode) { $oldExitCode.Value }
 $repo = 'example/private-lab'
 $request = '1234-2'
 $output = Join-Path ([IO.Path]::GetTempPath()) 'fake-qualification-output'
@@ -112,5 +114,7 @@ try {
     $env:GITHUB_REPOSITORY = $oldRepository
     $env:GITHUB_RUN_ID = $oldRunId
     $env:GITHUB_RUN_ATTEMPT = $oldAttempt
+    if ($oldExitCode) { $global:LASTEXITCODE = $callerExitCode }
+    else { Remove-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue }
 }
 'Release workflow references, dependencies and private coordinator checks passed.'

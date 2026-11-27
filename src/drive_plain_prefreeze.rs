@@ -18,7 +18,7 @@
 //! What is downloaded is decided before the question from what the Cloud
 //! Files API reports ([`CloudFinding`]): every placeholder of the agreed list
 //! that is not wholly on the volume, except those the user agreed to leave
-//! out (they stay in the cloud). A placeholder that cannot be downloaded
+//! out. A placeholder that cannot be downloaded
 //! (its provider is not running) is named, and the run is refused before
 //! anything changes unless it is left out. The download itself
 //! ([`run`]) names every placeholder it could not complete.
@@ -245,7 +245,7 @@ fn left(path: &str, left_out: &BTreeSet<String>) -> bool {
 }
 
 /// Whether a placeholder is not wholly on the volume, and so may be left
-/// out (it stays in the cloud): a file that needs a download, whatever its
+/// out: a file that needs a download, whatever its
 /// provider reports of itself (the run tries the download, and names it if
 /// it fails), or a folder its provider has not listed in full (what it
 /// lacks cannot be named, so it can only be left out whole).
@@ -397,10 +397,9 @@ pub(crate) fn decide_leave_out(
 /// The question a run asks about leaving placeholders out.
 pub(crate) fn leave_out_question(list: &PlainList) -> String {
     format!(
-        "Leave these {} {} out of the conversion? They stay {} and are not on the new volume (list sha256 {}). Answer no to have them downloaded from their provider before the volume is frozen. [y/N]",
+        "Leave these {} {} out of the conversion? Retrieval of omitted content depends on its provider or storage manager. List SHA-256 {}. Answer no to have the converter try to retrieve them before freezing the volume. [y/N]",
         list.len(),
         crate::plain_projection::placeholders_noun(families_of(list)),
-        crate::plain_projection::left_out_stay(families_of(list)),
         list.sha256()
     )
 }
@@ -427,7 +426,7 @@ pub(crate) fn write_leave_out_list(
 
 /// After the plain-conversions list was agreed: the placeholders not
 /// wholly on the volume are named, and the user asked whether to leave them
-/// out (they stay in the cloud). Agreed (or `--leave-out-cloud` naming the
+/// out. Agreed (or `--leave-out-cloud` naming the
 /// list), the run's list leaves them out; otherwise every file among them
 /// is downloaded before the freeze, and a folder its provider has not
 /// listed in full refuses the run with nothing changed.
@@ -1049,7 +1048,7 @@ mod tests {
         assert!(decide_leave_out(&PlainList::default(), Some(&sha), true).is_err());
         assert!(parse_leave_out(&"AB".repeat(32)).is_ok() && parse_leave_out("ab").is_err());
         let asked = leave_out_question(&list);
-        assert!(asked.contains("stay in the cloud") && asked.contains("downloaded"));
+        assert!(asked.contains("depends on its provider") && asked.contains("try to retrieve"));
     }
 
     #[test]
@@ -1125,7 +1124,7 @@ mod tests {
         let asked = leave_out_question(&list);
         assert!(
             asked.contains("1 storage manager's file(s)")
-                && asked.contains("in their storage manager's store"),
+                && asked.contains("depends on its provider or storage manager"),
             "{asked}"
         );
         // A recall that fails is named with the manager's remedy, not the

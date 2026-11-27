@@ -449,7 +449,7 @@ pub(crate) fn require_sis_room(links: &[SisFile], target_cluster: u64, free: u64
 
 /// Said wherever a cloud placeholder is refused because its data is not on
 /// the volume.
-pub(crate) const CLOUD_REMEDY: &str = "start its cloud provider (OneDrive, say) so that the conversion can download it before the volume is frozen, and run the conversion as the user the provider runs for (a Cloud Files provider serves only the account that runs it); or make it always available on this device; or agree to leave it out, which keeps it in the cloud and not on the new volume";
+pub(crate) const CLOUD_REMEDY: &str = "start its cloud provider so the converter can download it before the volume is frozen. Run the converter as the account running the provider. You can also make it always available on this device or agree to leave it out. Retrieval of omitted content depends on the provider";
 
 /// What the Cloud Files API's placeholders become, said with the question.
 /// OneDrive and the Cloud Files API do not run on ReFS.
@@ -459,11 +459,11 @@ pub(crate) use n2r_win32::plain_ledger::PlaceholderFamily;
 
 /// Said wherever a ProjFS placeholder is refused because its data is not on
 /// the volume.
-pub(crate) const PROJFS_REMEDY: &str = "start its ProjFS provider (the program that projects its folder) so that the conversion can read it onto the volume before the volume is frozen; or agree to leave it out, which keeps it with its provider and not on the new volume";
+pub(crate) const PROJFS_REMEDY: &str = "start its ProjFS provider so the converter can read it onto the volume before the volume is frozen. You can also agree to leave it out. Retrieval of omitted content depends on the provider";
 
 /// Said wherever a storage manager's file is refused because its data is
 /// not on the volume.
-pub(crate) const HSM_REMEDY: &str = "start its storage manager (Remote Storage or the HSM product that moved it) so that the conversion can recall it before the volume is frozen, or recall it yourself by opening it; or agree to leave it out, which keeps it in the manager's store and not on the new volume";
+pub(crate) const HSM_REMEDY: &str = "start its storage manager so the converter can recall it before the volume is frozen, or recall it yourself by opening it. You can also agree to leave it out. Retrieval of omitted content depends on the storage manager";
 
 /// The remedy for a placeholder of `family` whose data is not on the volume.
 pub(crate) fn remedy(family: PlaceholderFamily) -> &'static str {
@@ -501,19 +501,6 @@ pub(crate) fn placeholders_noun(
         Some(PlaceholderFamily::Projfs) => "ProjFS placeholder(s)",
         Some(PlaceholderFamily::Hsm) => "storage manager's file(s)",
         _ => "cloud placeholder(s)",
-    }
-}
-
-/// Where placeholders of `families` that are left out stay.
-pub(crate) fn left_out_stay(families: impl IntoIterator<Item = PlaceholderFamily>) -> &'static str {
-    let families: std::collections::BTreeSet<PlaceholderFamily> = families.into_iter().collect();
-    match families.iter().next() {
-        _ if families.len() > 1 => {
-            "with their provider (in the cloud, with their ProjFS provider or in their storage manager's store)"
-        }
-        Some(PlaceholderFamily::Projfs) => "with their ProjFS provider",
-        Some(PlaceholderFamily::Hsm) => "in their storage manager's store",
-        _ => "in the cloud",
     }
 }
 
@@ -1379,7 +1366,7 @@ fn left_out_row(
             },
             after: LedgerState::default(),
             witness: format!(
-                "MFT record {} on the frozen source, {}; left out as agreed, it stays with its {}",
+                "MFT record {} on the frozen source, {}. Omitted as agreed. Retrieval depends on its {}",
                 file.record_number,
                 if placeholder.is_some() {
                     "a placeholder"
@@ -2025,8 +2012,6 @@ mod tests {
         assert_eq!(placeholders_noun([Projfs]), "ProjFS placeholder(s)");
         assert_eq!(placeholders_noun([Hsm, Hsm]), "storage manager's file(s)");
         assert_eq!(placeholders_noun([Cloud, Hsm]), "placeholder(s)");
-        assert_eq!(left_out_stay([Cloud]), "in the cloud");
-        assert_eq!(left_out_stay([Projfs]), "with their ProjFS provider");
         // A storage manager moves files: a folder with its tag is no
         // placeholder this build makes plain.
         let mut folder = with_point(wof_file(), {

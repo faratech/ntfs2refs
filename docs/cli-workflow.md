@@ -416,7 +416,7 @@ plain silently. This version converts:
   second one:
 
   ```text
-  Leave these 2 cloud placeholder(s) out of the conversion? They stay in the cloud and are not on the new volume (list sha256 5d1e...). Answer no to have them downloaded from their provider before the volume is frozen. [y/N]
+  Leave these 2 cloud placeholder(s) out of the conversion? Retrieval of omitted content depends on its provider or storage manager. List SHA-256 1c1b2b27d456fc98e13947b8b5e782e32dc95c0a3391f86d0ba99b8f27ae99a2. Answer no to have the converter try to retrieve them before freezing the volume. [y/N]
   ```
 
   Unattended, `--leave-out-cloud <sha256>` naming that list leaves them
@@ -898,7 +898,7 @@ differences it accepts.
 | `--target-format dev-drive\|standard` | How Windows formats the new file system; standard is the default on Windows Server, dev-drive elsewhere |
 | `--short-names refuse\|drop` | What to do with a data volume's 8.3 short names: convert without them and keep a list (the default; said before the question), or refuse the volume |
 | `--accept-plain <sha256>` | With `--yes`: agrees to the list of objects converted to plain files, by its SHA-256 as `--check` prints it |
-| `--leave-out-cloud <sha256>` | With `--yes --accept-plain`: agrees to leave out the cloud placeholders that cannot be brought onto the volume now, by the SHA-256 of their list as `--check` prints it; they stay in the cloud |
+| `--leave-out-cloud <sha256>` | With `--yes --accept-plain`, agrees to omit the exact placeholders listed by `--check`. Retrieval of omitted content depends on the provider or storage manager |
 | `--windows-boot-volume` | The volume is an installed Windows that is not running |
 | `--restart-media <dir>` | Windows installation media, for a partition on the disk of the running Windows: it is converted through a restart |
 | `--recover <dir> --recovery-sha256 <sum>` `[--rollback]` | Finishes, or undoes, an interrupted run |

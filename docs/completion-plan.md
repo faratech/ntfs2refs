@@ -49,6 +49,16 @@ Windows 11 attempts `rfacts-wof-015451-resume` and
 listing comparison with a malformed optional report. The resume verified
 all four WOF compression algorithms, and rollback restored exact NTFS.
 
+On Windows 11 build 26300.9457, the build from main commit `c3e97b2f`
+passed exact Cloud Files rollback and SVI resume in round `features-062914`.
+Both recovery workers started after the apply hold with a malformed
+optional report. The SVI worker verified three recorded omissions. The
+converter SHA-256 was
+`1233e986aac990aedc34a33328c1e0eaf5c0b80be55148cfdff69cdffcae0d00`.
+That Windows 11 control OS refused to enable Client-ProjFS with DISM error
+775. Those cases stopped during fixture creation. The historical Server
+ProjFS verdicts retain their original platform and build identities.
+
 Windows 11 attempts `completion-efs-v4-042626-resume` and
 `completion-efs-v4-042626-rollback` used converter SHA-256
 `d0b2982dfdceb522d6907e725ead41086bc18bfa4373b7c1d5bfce978a7ab8fc`.

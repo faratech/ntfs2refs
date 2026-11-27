@@ -174,6 +174,17 @@ foreach ($case in $gateCases.Keys) {
     if ($row.outcome -cne $gateCases[$case] -or $row.route -cne (Get-GateRoundCaseRoute $case)) {
         throw "Wrong outcome or route for Hyper-V gate case $case"
     }
+    if ($transformationRecoveryCases.Contains($case)) {
+        $action = if ($gateCases[$case] -eq 'rolled-back') { 'rollback' } else { 'resume' }
+        $report = $row.plain_report_fault
+        if ($row.hold -cne 'apply-mid-ranges' -or $row.reached_hold -ne $true -or
+            $row.interruption -cne 'process-termination' -or $row.recovery -cne $action -or
+            $row.cleanup_ok -ne $true -or $row.manifest -cne 'identical' -or ($action -eq 'rollback' -and $row.exact_manifest -ne $true) -or
+            $report.original_sha256 -notmatch '^[a-f0-9]{64}$' -or $report.damaged_sha256 -notmatch '^[a-f0-9]{64}$' -or
+            $report.original_sha256 -eq $report.damaged_sha256 -or $report.worker_sha256 -cne $row.converter_sha256) {
+            throw "Incomplete transformation recovery evidence for Hyper-V case $case"
+        }
+    }
 }
 $requiredRecovery = @{
     'apply-mid-resume' = @('fast', 'apply-mid-ranges', 'process-termination', 'resume')

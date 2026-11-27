@@ -67,6 +67,9 @@ function Add-Case([string]$Name, [string]$Route, [string]$Expected, $Verdict, [b
         torn_marker_settled = $Verdict.torn_marker.settled_by_recovery; recovery = $interruption.recovery
         postflush = $Verdict.interrupt.postflush
         prompt_wait_seconds = $Verdict.interrupt.prompt_wait_seconds
+        plain_report_fault = if ($Verdict.plain_report_fault) {
+            $Verdict.plain_report_fault | Select-Object original_sha256, damaged_sha256, worker_sha256
+        }
         manifest = $Verdict.manifest.result; exact_manifest = $Verdict.manifest.exact; cleanup_ok = $Verdict.cleanup_ok
         cleanup_outcome = $Verdict.cleanup_outcome
         working_filesystem = $Verdict.made.working_filesystem

@@ -70,6 +70,8 @@ function Test-ReleaseArchive([string]$Qualification) {
         Copy-Item -LiteralPath $path -Destination $stage
     }
     Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $archive
+    $archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    "$archiveHash  candidate.zip" | Set-Content -LiteralPath "$archive.sha256"
 
     function Check-Archive([string]$ErrorPattern) {
         $failure = $null
@@ -82,6 +84,9 @@ function Test-ReleaseArchive([string]$Qualification) {
     }
 
     Check-Archive
+    "$archiveHash  other.zip" | Set-Content -LiteralPath "$archive.sha256"
+    Check-Archive 'Published archive checksum differs from the verified ZIP'
+    "$archiveHash  candidate.zip" | Set-Content -LiteralPath "$archive.sha256"
     $published = Join-Path $distribution 'QUALIFICATION.json'
     Add-Content -LiteralPath $published -Value 'changed'
     Check-Archive 'Published qualification file differs for QUALIFICATION\.json'

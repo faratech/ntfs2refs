@@ -46,3 +46,9 @@ try {
     $extra = @($zip.Entries | Where-Object { $_.FullName -cnotin $hashes.Keys })
     if ($extra.Count) { throw "Unexpected ZIP entry: $($extra[0].FullName)" }
 } finally { $zip.Dispose() }
+
+$archiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+$checksum = Get-Content -LiteralPath "$archivePath.sha256" -Raw
+if ($checksum.TrimEnd("`r", "`n") -cne "$archiveHash  $(Split-Path -Leaf $archivePath)") {
+    throw 'Published archive checksum differs from the verified ZIP'
+}

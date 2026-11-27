@@ -49,6 +49,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 $workspace = Split-Path -Parent $PSScriptRoot
+. "$PSScriptRoot/ReleaseArchiveDocuments.ps1"
 
 # The parts of a PE file that hold the moment it was linked, as (offset,
 # length) pairs: the COFF time stamp, the checksum, and for each debug
@@ -173,9 +174,9 @@ try {
     $stage = Join-Path $Output "ntfs2refs-$version-windows-x64"
     $null = New-Item -ItemType Directory -Path $stage, (Join-Path $stage 'docs')
     Copy-Item -LiteralPath $binaries -Destination $stage
-    Copy-Item -LiteralPath 'README.md', 'DISCLAIMER.md' -Destination $stage
-    if (Test-Path -LiteralPath 'LICENSE') { Copy-Item -LiteralPath 'LICENSE' -Destination $stage }
-    foreach ($document in 'cli-workflow.md', 'feature-matrix.md', 'recovery-matrix.md') { Copy-Item -LiteralPath (Join-Path 'docs' $document) -Destination (Join-Path $stage 'docs') }
+    foreach ($document in Get-ReleaseArchiveSourceDocuments $workspace) {
+        Copy-Item -LiteralPath (Join-Path $workspace $document) -Destination (Join-Path $stage $document)
+    }
     if ($Qualification) {
         foreach ($leaf in 'QUALIFICATION.json', 'QUALIFICATION.md') {
             $path = Join-Path $Qualification $leaf
@@ -191,6 +192,7 @@ try {
         throw 'The package does not report the qualification for its converter'
     }
     [IO.File]::WriteAllText((Join-Path $stage 'capabilities.json'), $capabilities, [Text.UTF8Encoding]::new($false))
+    if ($Qualification) { Copy-Item -LiteralPath (Join-Path $stage 'capabilities.json') -Destination $Output }
 
     $notes = New-Object System.Collections.Generic.List[string]
     $notes.Add("# ntfs2refs $version")

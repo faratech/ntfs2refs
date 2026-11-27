@@ -49,6 +49,16 @@ Windows 11 attempts `rfacts-wof-015451-resume` and
 listing comparison with a malformed optional report. The resume verified
 all four WOF compression algorithms, and rollback restored exact NTFS.
 
+Windows 11 attempts `completion-efs-v4-042626-resume` and
+`completion-efs-v4-042626-rollback` used converter SHA-256
+`d0b2982dfdceb522d6907e725ead41086bc18bfa4373b7c1d5bfce978a7ab8fc`.
+Both verified the ACLs on the retained plaintext copy and shadow under a
+scratch parent with an inheritable Everyone grant. Fresh processes
+recovered both runs with a malformed optional report and matching
+independent listings. The missing-key case refused conversion and matched
+the untouched source listing. The two standing `pefs0402` boot fixtures
+also matched their listings with the same build.
+
 ### Integrity evidence
 
 The development run `completion-integrity-020116-event-131` matched its

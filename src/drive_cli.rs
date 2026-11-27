@@ -2226,8 +2226,9 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                     run.display()
                 )
             })?;
-        fs::create_dir(&run)
-            .with_context(|| format!("creating this run's directory {}", run.display()))?;
+        n2r_win32::run_environment::create_private_working_directory(&run).with_context(|| {
+            format!("creating this run's protected directory {}", run.display())
+        })?;
         save_new(
             &run.join(super::left_behind::TOKEN_RECORD),
             &super::left_behind::TokenRecord::of_this_process(token),

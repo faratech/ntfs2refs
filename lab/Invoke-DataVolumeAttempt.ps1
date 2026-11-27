@@ -161,6 +161,9 @@ param(
     # Prove resume rejects a damaged publication-pinned transformation file,
     # then restore the file and perform normal recovery of the same run.
     [switch]$RejectDamagedRecoveryFacts,
+    # Test EFS with an inheritable Everyone grant on the scratch parent, and
+    # inspect the retained plaintext and shadow before a fresh worker runs.
+    [switch]$ExpectProtectedPlainScratch,
     # Run the converter with --review (#110): it stops before its handoff with
     # the volume mounted read-only as ReFS and exits 0. The harness holds the
     # stop to that (a write to V: has to fail, and V: has to list as it did
@@ -406,6 +409,10 @@ $verdict = [ordered]@{
     converter_sha256 = (Get-FileHash -LiteralPath $Binary -Algorithm SHA256).Hash.ToLowerInvariant()
     listing_tool_sha256 = (Get-FileHash -LiteralPath $ManifestBinary -Algorithm SHA256).Hash.ToLowerInvariant()
 }
+if ($ExpectProtectedPlainScratch -and (-not $InterruptAt -or 'efs' -notin $Features -or $Review -or $WorkingMbr)) {
+    throw '-ExpectProtectedPlainScratch needs an interrupted EFS conversion on the regular scratch disk'
+}
+$originalScratchDacl = $null
 function Save-Verdict { [IO.File]::WriteAllText((Join-Path $records 'verdict.json'), ($verdict | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false)) }
 
 function Add-WorkerLedgerEvidence([System.Collections.IDictionary]$Resources, [string[]]$Lines) {
@@ -652,6 +659,18 @@ try {
     $sizeMB = $PartitionMB + 2048 + $(if ($Siblings) { 3840 } else { 0 })
     $style = if ($SourceMbr) { 'mbr' } else { 'gpt' }
     $working = if ($WorkingMbr) { 'M:\runs' } else { 'S:\datalab\runs' }
+    if ($ExpectProtectedPlainScratch) {
+        $originalScratchDacl = Invoke-Command -Session $session -ArgumentList $working -ScriptBlock {
+            param($path)
+            $acl = Get-Acl -LiteralPath $path
+            $original = $acl.GetSecurityDescriptorSddlForm('Access')
+            $everyone = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+            $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                $everyone, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
+            Set-Acl -LiteralPath $path -AclObject $acl
+            $original
+        }
+    }
     if ($SectorBytes -eq 4096) {
         $hostDisk = Join-Path $records 'source-4kn.vhdx'
         $null = New-VHD -Path $hostDisk -SizeBytes ($sizeMB * 1MB) -Dynamic -LogicalSectorSizeBytes 4096 -PhysicalSectorSizeBytes 4096
@@ -2070,6 +2089,28 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         $printed = Select-String -LiteralPath (Join-Path $records 'interrupted-stdout.log') -Pattern '^To recover: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64})' | Select-Object -Last 1
         if (-not $printed) { $verdict.outcome = 'interrupted-without-recovery-command'; throw 'the interrupted run printed no "To recover:" line' }
         $recover = @('--recover', $printed.Matches[0].Groups[1].Value, '--recovery-sha256', $printed.Matches[0].Groups[2].Value)
+        if ($ExpectProtectedPlainScratch) {
+            $verdict.protected_plain_scratch = Invoke-Command -Session $session -ArgumentList $recover[1], $working -ScriptBlock {
+                param($conversion, $scratch)
+                $run = Split-Path -Parent $conversion
+                $allowed = 'S-1-3-4', 'S-1-5-18', 'S-1-5-32-544'
+                $scratchRules = (Get-Acl -LiteralPath $scratch).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
+                if (-not ($scratchRules | Where-Object { $_.IdentityReference.Value -eq 'S-1-1-0' -and $_.AccessControlType -eq 'Allow' -and $_.InheritanceFlags -eq 3 })) {
+                    throw 'The scratch parent lacks the test grant to Everyone'
+                }
+                if (-not (Get-Acl -LiteralPath $run).AreAccessRulesProtected) { throw 'Conversion directory allows inheritance from the scratch parent' }
+                $copies = @(Get-ChildItem -LiteralPath (Join-Path $run 'plain-copies') -File -Filter '*.plain')
+                if (!$copies.Count) { throw 'The interrupted EFS conversion retained no plaintext copies' }
+                $paths = @($run, (Join-Path $run 'shadow.vhdx')) + @($copies.FullName)
+                foreach ($path in $paths) {
+                    $rules = (Get-Acl -LiteralPath $path).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
+                    if (!$rules.Count -or ($rules | Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin $allowed })) {
+                        throw "Unrestricted working artifact $path"
+                    }
+                }
+                @{ protected = $true; copies = $copies.Count; shadow_checked = $true }
+            }
+        }
         if ($measureScaling) {
             # Keep the two measurements under the same requested ceiling.
             $limit = @($arguments | Where-Object { $_ -like '--memory-limit=*' })
@@ -2687,6 +2728,18 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     Say "error: $($_.Exception.Message)"
 } finally {
     if ($worker) { Remove-PSSession $worker -ErrorAction SilentlyContinue }
+    if ($originalScratchDacl) {
+        try {
+            Invoke-Command -Session $session -ArgumentList $working, $originalScratchDacl -ScriptBlock {
+                param($path, $sddl)
+                $acl = Get-Acl -LiteralPath $path
+                $acl.SetSecurityDescriptorSddlForm($sddl, 'Access')
+                Set-Acl -LiteralPath $path -AclObject $acl
+            }
+        } catch {
+            $verdict.scratch_dacl_restore_error = "$_"
+        }
+    }
     if ($IntegrityRecords) {
         try {
             $crashes = @(Save-IntegrityHostCrashes -VmId $VmId -Started $integrityStarted -Output $integrityStorage)
@@ -2822,7 +2875,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                 Remove-Item -LiteralPath $hostDisk -Force
             }
         } elseif ($hostDisk) { Say "kept: the 4Kn disk stays attached to the VM ($hostDisk)" }
-        $verdict.cleanup_ok = -not $KeepVolume
+        $verdict.cleanup_ok = -not $KeepVolume -and -not $verdict['scratch_dacl_restore_error']
     } catch { $verdict.cleanup_ok = $false; Say "cleanup failed: $($_.Exception.Message)" }
     if ($lfs2) {
         # NtfsDisableLfsDowngrade as it was before the attempt, as the attempt noted it.

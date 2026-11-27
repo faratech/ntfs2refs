@@ -145,9 +145,22 @@ foreach ($case in $requiredLab.Keys) {
     if ($row.outcome -cne $requiredLab[$case] -or ($row.outcome -ne 'control-passed' -and $row.manifest -cne 'identical')) {
         throw "Wrong outcome or manifest for Hyper-V case $case"
     }
-    if ($case -like 'integrity-*' -and ($row.reboot_use -ne $true -or $row.cleanup_ok -ne $true -or
-        $null -eq $row.integrity_events -or @($row.integrity_events | Where-Object { $_.provider -match 'ReFS' -and $_.id -in 131, 134 }).Count)) {
-        throw "Incomplete integrity evidence for Hyper-V case $case"
+    if ($case -like 'integrity-*') {
+        $scope = $row.integrity_event_scope
+        $start = [datetimeoffset]::MinValue
+        $end = [datetimeoffset]::MinValue
+        $partition = [guid]::Empty
+        if ($row.reboot_use -ne $true -or $row.cleanup_ok -ne $true -or
+            ($row.guest_bugchecks -isnot [int] -and $row.guest_bugchecks -isnot [long]) -or $row.guest_bugchecks -ne 0 -or
+            $scope -isnot [Collections.IDictionary] -or $scope.completed -isnot [bool] -or !$scope.completed -or
+            -not [guid]::TryParse([string]$scope.partition, [ref]$partition) -or $partition -eq [guid]::Empty -or
+            -not ($scope.aliases -match '^\\\\\?\\Volume\{[0-9a-f-]{36}\}[\\]?$') -or
+            -not [datetimeoffset]::TryParse($scope.started_utc, [ref]$start) -or
+            -not [datetimeoffset]::TryParse($scope.ended_utc, [ref]$end) -or $end -lt $start -or
+            $row.integrity_events -isnot [Collections.IList] -or
+            @(Get-RefsIntegrityFailures $row.integrity_events @($scope.aliases) @($scope.other_aliases)).Count) {
+            throw "Incomplete integrity evidence for Hyper-V case $case"
+        }
     }
     if ($case -eq 'integrity-event-131') { Assert-Integrity131Case $row }
     if ($case -in 'integrity-native-loaded', 'integrity-converted-loaded', 'integrity-lived-in') {

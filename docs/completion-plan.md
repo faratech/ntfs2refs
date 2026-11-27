@@ -71,6 +71,24 @@ a system-volume pagefile. Actual dump retention still needs a bugcheck
 sample. Native idle control `completion-native-control-032528-idle`
 also passed five remounts and the reboot checks. The historical event 131
 and earlier native control failures remain open.
+
+The first loaded native control completed its remounts and Windows logged a
+reboot, but PowerShell Direct could not verify the post-reboot workload. Its
+scratch container and guest event logs were retained. Loaded native control
+`integrity-reconnect-061653-loaded` passed five remounts and verified
+post-reboot data and writes after closing the old guest session before
+connecting to the new boot. The control observed zero guest bugchecks and
+zero serious ReFS events. The host completed 10 hash batches during fill
+and delete and 11 during remount. The event record identifies the test
+window and partition and preserves the original event XML.
+
+The matched converted case `integrity-match-062247-converted` used the
+same Windows 11 and 4 KiB Dev Drive profile. It matched the independent
+listing and passed the load, remount, reboot, and post-reboot write checks.
+Both runs recorded completed storage observations and cleanup. The
+converter SHA-256 was
+`68c28a9eab5e7ae3da27c1cd14e91dd95a88bcf83a181dbc1892603ab3e70d27`.
+
 ## Scale fixture and Server availability
 
 Server attempt `completion-scale-015637-2m-preflight` built 2,000,000 files

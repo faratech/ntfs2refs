@@ -21,21 +21,25 @@ function Get-HostedRoundFailures([Collections.IDictionary]$Row, [switch]$BeforeC
     }
     $aliases = if ($observation -is [Collections.IDictionary] -and $observation.target -is [Collections.IDictionary]) { $observation.target.aliases } else { @() }
     $otherAliases = if ($observation -is [Collections.IDictionary] -and $observation.target -is [Collections.IDictionary]) { $observation.target.other_aliases } else { @() }
-    foreach ($event in $Row.events) {
+    Get-RefsIntegrityFailures $Row.events @($aliases) @($otherAliases)
+    if (-not $BeforeCleanup -and ($Row.cleanup_ok -isnot [bool] -or -not $Row.cleanup_ok)) { 'cleanup did not pass' }
+    if ($Row.retention -eq 'failed') { 'failure evidence retention failed' }
+}
+
+function Get-RefsIntegrityFailures($Events, [string[]]$Aliases, [string[]]$OtherAliases) {
+    foreach ($event in $Events) {
         if ($event -isnot [Collections.IDictionary] -or -not $event.provider -or $null -eq $event.id) {
             'storage event observation contains an invalid event record'
             continue
         }
         if ($event.provider -match 'ReFS' -and $event.id -in 131, 134) {
-            $observed = Get-HostedEventAttribution @($event.volume) @($aliases) @($otherAliases)
+            $observed = Get-HostedEventAttribution @($event.volume) $Aliases $OtherAliases
             if ($event.attribution -ceq 'other' -and $observed.attribution -ceq 'other' -and $event.phase) { continue }
             if ($event.attribution -ceq 'target' -and $observed.attribution -ceq 'target' -and $event.phase) {
                 "ReFS event $($event.id) on $($event.volume) during $($event.phase)"
             } else { "Unattributed ReFS event $($event.id); qualification is inconclusive" }
         }
     }
-    if (-not $BeforeCleanup -and ($Row.cleanup_ok -isnot [bool] -or -not $Row.cleanup_ok)) { 'cleanup did not pass' }
-    if ($Row.retention -eq 'failed') { 'failure evidence retention failed' }
 }
 
 function Assert-HostedRoundPassed([Collections.IDictionary]$Row, [string]$Label) {

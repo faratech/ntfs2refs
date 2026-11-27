@@ -82,6 +82,7 @@ function Add-Case([string]$Name, [string]$Route, [string]$Expected, $Verdict, [b
             elseif ($Route -eq 'running' -and $Verdict.after.boot_utc) { @{ filesystem = $Verdict.after.filesystem; cluster_bytes = $Verdict.after.cluster_bytes; boot_utc = $Verdict.after.boot_utc } }
             elseif ($Route -eq 'restart') { $Verdict.after.control_boot }
         integrity_events = $Verdict.integrity.events; reboot_use = $Verdict.reboot_use; host_load = $Verdict.host_load
+        guest_bugchecks = $Verdict.guest_bugchecks; integrity_event_scope = $Verdict.integrity.event_scope
         integrity_fixture = if ($Route -eq 'integrity') {
             @{
                 content = $Verdict.source.content; directory_entries = $Verdict.source.directory_entries; check_agrees = $Verdict.check.agrees

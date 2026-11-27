@@ -1,3 +1,5 @@
+. "$PSScriptRoot/../.github/scripts/HostedRoundResult.ps1"
+
 function Save-IntegritySource($Session, [string]$Name, [string]$Output) {
     $image = "S:\datalab\$Name.vhdx"
     $bytes = Invoke-Command -Session $Session -ArgumentList $image -ScriptBlock { param($path) (Get-Item -LiteralPath $path).Length }
@@ -20,25 +22,34 @@ function Save-IntegritySource($Session, [string]$Name, [string]$Output) {
     }
 }
 
+function Wait-IntegrityGuestSession([guid]$VmId, [pscredential]$Credential, [int]$Minutes, [datetime]$PreviousBoot = [datetime]::MinValue) {
+    $deadline = (Get-Date).AddMinutes($Minutes)
+    do {
+        $next = New-PSSession -VMId $VmId -Credential $Credential -ErrorAction SilentlyContinue
+        if ($next) {
+            if ($PreviousBoot -eq [datetime]::MinValue) { return $next }
+            try {
+                $boot = Invoke-Command -Session $next -ScriptBlock { (Get-CimInstance Win32_OperatingSystem).LastBootUpTime } -ErrorAction Stop
+                if ($boot -gt $PreviousBoot) { return $next }
+            } catch {
+                # The guest can disconnect while the previous boot is ending.
+            }
+            Remove-PSSession $next -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $deadline)
+}
+
 function Restart-IntegrityGuest($Session, [guid]$VmId, [pscredential]$Credential, [datetime]$PreviousBoot) {
     Invoke-Command -Session $Session -ScriptBlock {
         shutdown.exe /r /t 2 | Out-Null
         if ($LASTEXITCODE -ne 0) { throw 'Could not restart the acceptance VM' }
     }
-    Start-Sleep -Seconds 5
-    $deadline = (Get-Date).AddMinutes(5)
-    do {
-        Start-Sleep -Seconds 2
-        $next = New-PSSession -VMId $VmId -Credential $Credential -ErrorAction SilentlyContinue
-        if ($next) {
-            $boot = Invoke-Command -Session $next -ScriptBlock { (Get-CimInstance Win32_OperatingSystem).LastBootUpTime }
-            if ($boot -gt $PreviousBoot) { break }
-            Remove-PSSession $next
-            $next = $null
-        }
-    } while ((Get-Date) -lt $deadline)
-    if (-not $next) { throw 'Acceptance guest did not restart' }
+    # Release the old PowerShell Direct connection before opening a new one.
     Remove-PSSession $Session
+    Start-Sleep -Seconds 5
+    $next = Wait-IntegrityGuestSession $VmId $Credential 5 $PreviousBoot
+    if (!$next) { throw 'PowerShell Direct could not verify a new boot of the acceptance guest' }
     $next
 }
 
@@ -107,12 +118,23 @@ function Invoke-IntegrityReboot($Session, [guid]$VmId, [pscredential]$Credential
     $next
 }
 
-function Save-IntegrityEvents($Session, [datetime]$Started, [string]$Name, [string]$Output, $Acceptance) {
+function Get-IntegrityVolumePaths($Session) {
+    Invoke-Command -Session $Session -ScriptBlock {
+        @{
+            target = (Get-Volume -DriveLetter V -ErrorAction Stop).Path
+            partition = (Get-Partition -DriveLetter V -ErrorAction Stop).Guid
+            other = @(Get-Volume -ErrorAction Stop | Where-Object { $_.DriveLetter -ne 'V' -and $_.Path } | ForEach-Object Path)
+        }
+    }
+}
+
+function Save-IntegrityEvents($Session, [datetime]$Started, [string]$Name, [string]$Output, $Acceptance, $BeforeVolumes) {
     $data = Invoke-Command -Session $Session -ArgumentList $Started, $Name -ScriptBlock {
         param($start, $name)
         # Get-WinEvent interprets StartTime as local wall-clock time.
+        $ended = Get-Date
         try {
-            $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = $start.ToLocalTime() } -ErrorAction Stop |
+            $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = $start.ToLocalTime(); EndTime = $ended } -ErrorAction Stop |
                 Where-Object { $_.ProviderName -match 'ReFS|Ntfs|volmgr|disk|storport' -and ($_.Level -le 3 -or $_.Id -in 131, 134) })
         } catch {
             if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { throw }
@@ -125,6 +147,8 @@ function Save-IntegrityEvents($Session, [datetime]$Started, [string]$Name, [stri
             windows = (Get-CimInstance Win32_OperatingSystem).BuildNumber
             volume = $volume | Select-Object Path, UniqueId, FileSystem, AllocationUnitSize, HealthStatus
             partition = $partition | Select-Object Guid, DiskNumber, PartitionNumber
+            ended_utc = $ended.ToUniversalTime().ToString('o')
+            other_volumes = @(Get-Volume -ErrorAction Stop | Where-Object { $_.DriveLetter -ne 'V' -and $_.Path } | ForEach-Object Path)
             refs = $refs
             events = @($events | ForEach-Object {
                 $created = $_.TimeCreated
@@ -136,12 +160,35 @@ function Save-IntegrityEvents($Session, [datetime]$Started, [string]$Name, [stri
     }
     $steps = @()
     if ($Acceptance) { $steps = @($Acceptance.steps) }
+    $initialTarget = if ($BeforeVolumes) { $BeforeVolumes.target }
+    $initialPartition = if ($BeforeVolumes) { $BeforeVolumes.partition }
+    $initialOthers = if ($BeforeVolumes) { $BeforeVolumes.other }
+    $aliases = @($initialTarget, $data.volume.Path | Where-Object { $_ } | Sort-Object -Unique)
+    $otherAliases = @($data.other_volumes | Where-Object { $_ -in $initialOthers -and $_ -notin $aliases })
+    $scope = @{ completed = [bool]($initialTarget -and $data.volume.Path -and $initialPartition -and $data.partition.Guid -eq $initialPartition)
+        started_utc = $Started.ToUniversalTime().ToString('o'); ended_utc = $data.ended_utc
+        aliases = $aliases; other_aliases = $otherAliases; partition = $data.partition.Guid }
+    $events = @(foreach ($event in $data.events) {
+        $xml = [xml]$event.xml
+        $fields = @($xml.SelectNodes('//*[local-name()="EventData" or local-name()="UserData"]//*[not(*)]') | ForEach-Object InnerText)
+        $attribution = Get-HostedEventAttribution $fields $aliases $otherAliases
+        $phase = 'test-window'
+        if ($event.time_utc) {
+            $time = [datetimeoffset]$event.time_utc
+            $step = $steps | Where-Object { $_.started_utc -and $_.finished_utc -and
+                $time -ge [datetimeoffset]$_.started_utc -and $time -le [datetimeoffset]$_.finished_utc } | Select-Object -First 1
+            if ($step) { $phase = $step.step }
+        }
+        @{ provider = $event.provider; id = $event.id; time = $event.time; record = $event.record
+            attribution = $attribution.attribution; volume = $attribution.volume; phase = $phase }
+    })
     $data | Add-Member -NotePropertyName acceptance_steps -NotePropertyValue $steps
+    $data | Add-Member -NotePropertyName event_scope -NotePropertyValue $scope
+    $data | Add-Member -NotePropertyName attributed_events -NotePropertyValue $events
     $data | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Output 'storage-events.json') -Encoding utf8
-    # The isolated acceptance VM is dedicated to one experiment at a time.
-    $serious = @($data.events | Where-Object { $_.provider -match 'ReFS' -and $_.id -in 131, 134 })
+    $serious = @(Get-RefsIntegrityFailures $events $aliases $otherAliases)
     @{ windows = $data.windows; refs = $data.refs; volume = $data.volume; partition = $data.partition
-        serious_count = $serious.Count; events = @($data.events | ForEach-Object { @{ provider = $_.provider; id = $_.id; time = $_.time; record = $_.record } }) }
+        event_scope = $scope; serious_count = $serious.Count; events = $events }
 }
 
 # A guest bugcheck can break PowerShell Direct before the guest log can be copied.

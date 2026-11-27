@@ -71,9 +71,9 @@ recovery environment turned on (`reagentc /info`) and no BitLocker. Experimental
 back up first.
 
 **What does not come across?**
-What ReFS does not have: object IDs, NTFS compression and the change journal;
-on a data drive, 8.3 short names are dropped after you agree (or refused,
-if you ask). The guide lists each.
+The converter drops NTFS object IDs and NTFS compression. ReFS starts a fresh
+change journal. On a data drive, the converter drops 8.3 short names by default
+and can refuse volumes that have them. See the [conversion guide](docs/cli-workflow.md).
 
 ## Build
 

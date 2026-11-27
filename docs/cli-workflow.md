@@ -386,9 +386,10 @@ plain silently. This version converts:
   data recovery agent; or `cipher /d`). The file is then read decrypted on
   the frozen volume into a copy in the run's directory and the new file is
   made from it, plain; a directory has only its encrypted mark taken off.
-  Anyone the file's permissions allow can then read it, and its plain text
-  sits in the working storage until the run ends: the section says so, and
-  recommends BitLocker. A file with named streams, or compressed or sparse
+  Anyone the file's permissions allow can then read it. Working storage
+  contains plaintext, which may remain after an interruption so recovery can
+  finish. Ordinary cleanup deletes those files. A file with named streams,
+  or compressed or sparse
   and encrypted, is still refused;
 - a cloud provider's placeholder (`cloud_placeholder_plain`): OneDrive Files
   On-Demand and any other provider of the Cloud Files API. `--check`, and
@@ -535,8 +536,9 @@ describe (about 200,000 with 13 GB available), and never fewer than 65,536.
 
 The largest volume converted in the lab was the Windows volume: 23 GB in
 about 190,000 files and directories. The largest data volume held 500,000
-small files, and took 45 minutes: about 5 ms a file, as volumes of 100,000
-and of 20,000 do.
+small files. One historical 500,000-file conversion took 1,815 seconds.
+Disk activity, memory and workload shape affect timing. See the
+[recorded performance measurements](performance.md).
 
 **Memory is what limits the number of files today.** A run keeps a ledger of
 the memory it may use, two thirds of what is free when it starts. What it
@@ -819,8 +821,9 @@ checksum is the SHA-256 of the `preparation-intent.json` in it
 (`Get-FileHash -Algorithm SHA256`).
 
 A run that ends before it prints the line above has recorded nothing to
-recover from, and the volume is online as it was (a shrink is not undone);
-only the working volume it was building may still be attached. A run that
+recover from and NTFS is online. Authorized preparation changes such as a
+partition shrink, file relocation and downloaded or recalled data can persist.
+The working volume it was building may still be attached. A run that
 stops with an error then detaches it itself. One that is cut off cannot: the
 next conversion run, or `ntfs2refs --list` from an elevated terminal,
 detaches it and names the run's folder, which can then be deleted. A run that
@@ -1008,15 +1011,13 @@ plain").
   makes every check a fast run leaves out. Much slower.
 
 A partition on the disk of the running Windows, a conversion with
-`--restart-media`, and a run whose interrupted preparation is resumed (a
-thorough run's: a fast run's is not resumed, see above) still commit before
-the verification, as `--verify thorough` does: from their handoff on a
-rollback is closed. A resumed preparation says so before it writes to the
-volume.
+`--restart-media`, and the existing interrupted-preparation continuation
+commit before final native verification. Rollback closes at their handoff.
+A resumed preparation says so before it writes to the volume.
 
-**If the verification does not pass** (with `--verify fast`), nothing is
-committed and nothing is rolled back. The run ends with an error that says
-what stopped it and gives the two ways on:
+**If read-only verification fails before handoff**, the run ends with an
+error describing the failure and leaves the conversion sealed for retry or
+rollback.
 
 ```text
 To verify again and finish: ntfs2refs --recover "<dir>" --recovery-sha256 <sum>

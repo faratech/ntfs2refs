@@ -33,12 +33,12 @@ it lies on target-cluster boundaries; the rest goes through the working storage.
   (`src/selected_journal/resource_domain/prepare/qualification/apply.rs`) and
   finalize (`src/resource_finalize.rs`).
 - The converter's own writes to the source start at the journal apply step.
-  Everything earlier is safe to abandon, except two steps that change the
-  source through the NTFS driver: a partition whose length is not a multiple
-  of 64 MiB is first shrunk to one (`drive_boot::normalize_geometry`; announced
-  before the prompt, not reverted; the lab's Windows partition needs none),
-  and `--minimize-scratch` moves files before the freeze. `--diagnose` refuses
-  both: every entry that changes the source takes a `SourceChangeAuthority`
+  Preparation can shrink a partition to a multiple of 64 MiB
+  (`drive_boot::normalize_geometry`), relocate files with
+  `--minimize-scratch`, or hydrate Cloud Files and ProjFS placeholders
+  and recall HSM data with the user's consent. These effects survive
+  cancellation and rollback. The journal restores the frozen NTFS state.
+  Every entry that changes the source takes a `SourceChangeAuthority`
   (`src/execution_mode.rs`) that only a conversion can mint.
 - Working files are hashed when written and then held open; the source is
   offline, read-only and held. Full re-reads happen once, at the gate before
@@ -170,9 +170,10 @@ Keep it that way. Before a change is committed:
    on the 1-in-40 fixture that recover with an identical listing:
    `-InterruptAt apply-mid-ranges` (half way through the source writes),
    `-InterruptAt apply-seal-recorded` (sealed for the verification, before
-   finalization) and `-InterruptAt handoff-sealed` (handed off). With
-   `--verify thorough` the handoff is written by the apply, so there
-   `handoff-sealed` is the point before finalization. A change to a
+   finalization) and `-InterruptAt handoff-sealed` (handed off). New
+   whole-disk runs in both verification modes hand off after read-only
+   verification. The partition backend and existing preparation
+   continuation hand off during apply. A change to a
    per-object path also passes a full run (several defects only showed at
    full size), and one to source inspection or stream planning also converts
    data volumes of 512-byte clusters and on a 4Kn disk, to both target units,
@@ -195,7 +196,7 @@ reorder the work:
 
 1. Stabilize conversion and qualify the signed candidate. Preserve evidence
    for #253 and keep recovery results tied to the tested build and mode.
-   Align new fast and thorough handoff ordering in a later change.
+   Complete late handoff for new partition runs with their own protocol.
 2. Walk rows already spill. A 500,511-object conversion passed on an 8 GB VM
    under memory pressure (#129). Constructor handles, identities and
    validation indexes still scale with object count. Measure conversion and

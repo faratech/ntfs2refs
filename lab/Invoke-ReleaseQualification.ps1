@@ -8,6 +8,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/QualificationInterruption.ps1"
+. "$PSScriptRoot/GateRoundCases.ps1"
 $root = Split-Path -Parent $PSScriptRoot
 $attempts = Join-Path $root '.lab/hyperv/attempts'
 $identity = Get-Content -LiteralPath (Join-Path $Candidate 'candidate.json') -Raw | ConvertFrom-Json -AsHashtable
@@ -102,7 +103,7 @@ try {
     foreach ($row in $gateRows) {
         $v = Read-Verdict $row.Case
         $case = $row.Case.Substring($prefix.Length + 1)
-        $route = if ($case -like 'c-*') { 'running' } elseif ($v.Contains('fixture')) { 'boot' } else { 'data' }
+        $route = Get-GateRoundCaseRoute $case
         Add-Case $case $route $row.Expected $v $row.Passed
     }
     if ($gateExit -ne 0) { throw "The Hyper-V gate round failed ($gateExit)" }

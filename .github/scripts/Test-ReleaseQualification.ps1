@@ -102,8 +102,13 @@ try {
     }
     $identity = @{ schema = 1; tag = '0.0.5'; commit = '1' * 40; request = '123-1'; hashes = $hashes }
     Save-Json $identity (Join-Path $candidate 'candidate.json')
+    $targetVolume = '\\?\Volume{11111111-1111-1111-1111-111111111111}'
+    $otherVolume = '\\?\Volume{22222222-2222-2222-2222-222222222222}'
     $hosted = @{ converter_sha256 = $hashes['ntfs2refs.exe']; listing_tool_sha256 = $hashes['lab-volume-manifest.exe']
-        manifest_matches = $true; refs_version = '3.14'; cleanup_ok = $true; outcome = 'converted'; terminated = $true }
+        manifest_matches = $true; refs_version = '3.14'; cleanup_ok = $true; outcome = 'converted'; terminated = $true
+        passed = $true; failures = @(); retention = 'not requested'; events = @()
+        event_observation = @{ schema = 1; completed = $true; started_utc = '2026-11-26T00:00:00Z'; ended_utc = '2026-11-26T00:01:00Z'
+            target = @{ image = 'C:/test/image.vhdx'; partition_guid = '33333333-3333-3333-3333-333333333333'; aliases = @($targetVolume); other_aliases = @($otherVolume) } } }
     $nativeRows = @{}
     foreach ($case in $NativeRegressionCases.Keys) {
         $spec = $NativeRegressionCases[$case]
@@ -118,6 +123,14 @@ try {
         $nativeRows[$case] = $row
         Save-Json $row (Join-Path $evidence "native-$case/regression.json")
     }
+    function Save-SoakFixture([string]$Profile, $Row) {
+        $dir = Join-Path $evidence "soak-records-$Profile"
+        $path = Join-Path $dir 'rounds.jsonl'
+        Save-Json $Row $path
+        Save-Json @{ schema = 1; workflow_run = '123'; workflow_attempt = '1'; profiles = @($Profile); minutes = 240; round_limit = 0
+            first_seed = $Row.seed; rounds = 1; stop_reason = 'duration'; elapsed_seconds = 14403
+            rows_sha256 = (Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant() } (Join-Path $dir 'campaign.json')
+    }
     $soakRows = @{}
     foreach ($case in 'convert', 'many', 'resume', 'rollback', 'cancel') {
         $round = $nativeRows[$case].Clone()
@@ -126,8 +139,9 @@ try {
         $round.hold_at = $plan.hold_at
         $round.reached_hold = [bool]$plan.hold_at
         $round.end_after_seconds = $plan.end_after_seconds
+        $round.round = 1
         $soakRows[$case] = $round
-        Save-Json $round (Join-Path $evidence "soak-records-$case/rounds.jsonl")
+        Save-SoakFixture $case $round
     }
     $cases = @(foreach ($name in 'fixture10', 'admin-fixture40', 'full-system', 'apply-mid-resume', 'apply-mid-rollback', 'seal-recorded-resume', 'handoff-sealed-resume', 'verify-readonly-rollback', 'torn-handoff-resume', 'vm-verify-passed-rollback', 'vm-thorough-verify-passed-resume', 'vm-thorough-verify-passed-rollback', 'lived-in', 'lived-in-64k', 'std-4k', 'std-64k', 'devdrive', 'restart-convert', 'restart-cancel', 'restart-refs-refusal', 'integrity-native-idle', 'integrity-converted-idle', 'integrity-native-loaded', 'integrity-converted-loaded', 'integrity-lived-in', 'integrity-event-131') {
         $outcome = switch -Wildcard ($name) {
@@ -225,6 +239,12 @@ try {
         $server.observed_target_format = if ($server.case_id -eq 'devdrive') { 'dev-drive' } else { 'standard' }
         $server.observed_target_clusters = if ($server.case_id -eq 'std-64k') { 65536 } else { 4096 }
     }
+    . "$PSScriptRoot/../../lab/GateRoundCases.ps1"
+    $gateCases = Get-GateRoundExpectations @('fixtures', 'data', 'full', 'server', 'running')
+    foreach ($case in $gateCases.Keys | Where-Object { $_ -notin $cases.case_id }) {
+        $cases += @{ case_id = $case; route = Get-GateRoundCaseRoute $case; passed = $true; expected = $gateCases[$case]
+            outcome = $gateCases[$case]; manifest = 'identical'; cleanup_ok = $true }
+    }
     foreach ($row in $cases) {
         $row.converter_sha256 = $hashes['ntfs2refs.exe']
         if ($row.route -ne 'running') { $row.listing_tool_sha256 = $hashes['lab-volume-manifest.exe'] }
@@ -235,6 +255,11 @@ try {
     Save-Json $lab $labPath
     Invoke-Gate 'all-valid'
     Test-ReleaseArchive (Join-Path $root 'all-valid')
+    $withoutProviderCase = $lab.Clone()
+    $withoutProviderCase.cases = @($cases | Where-Object case_id -ne 'projfs-plain')
+    Save-Json $withoutProviderCase $labPath
+    Invoke-Gate 'missing-required-provider-case' 'Missing required Hyper-V gate case projfs-plain'
+    Save-Json $lab $labPath
     foreach ($test in @(
         @('resume', 'hold_at', '', 'Invalid interruption evidence'),
         @('resume', 'hold_at', 'apply-mid-ranges', 'Invalid interruption evidence'),
@@ -251,10 +276,9 @@ try {
         $profile, $key, $value, $message = $test
         $row = $soakRows[$profile].Clone()
         $row[$key] = $value
-        $path = Join-Path $evidence "soak-records-$profile/rounds.jsonl"
-        Save-Json $row $path
+        Save-SoakFixture $profile $row
         Invoke-Gate "soak-$profile-$key-$value" "$message for soak $profile"
-        Save-Json $soakRows[$profile] $path
+        Save-SoakFixture $profile $soakRows[$profile]
     }
 
     foreach ($test in @(
@@ -269,11 +293,26 @@ try {
         $row.terminated = $terminated
         $row.recovery_mode = $action
         $row.outcome = $outcome
-        $path = Join-Path $evidence "soak-records-$profile/rounds.jsonl"
-        Save-Json $row $path
+        Save-SoakFixture $profile $row
         Invoke-Gate "soak-$profile-$terminated-$action-$outcome"
-        Save-Json $soakRows[$profile] $path
+        Save-SoakFixture $profile $soakRows[$profile]
     }
+
+    $campaignPath = Join-Path $evidence 'soak-records-convert/campaign.json'
+    $campaign = Get-Content -LiteralPath $campaignPath -Raw | ConvertFrom-Json -AsHashtable
+    $short = $campaign.Clone(); $short.elapsed_seconds = 300
+    Save-Json $short $campaignPath
+    Invoke-Gate 'short-soak-campaign' 'Incomplete or mismatched soak campaign for convert'
+    Save-Json $campaign $campaignPath
+    $soakPath = Join-Path $evidence 'soak-records-convert/rounds.jsonl'
+    Add-Content -LiteralPath $soakPath -Value ' '
+    Invoke-Gate 'changed-soak-campaign-log' 'Incomplete or mismatched soak campaign for convert'
+    Save-SoakFixture 'convert' $soakRows['convert']
+
+    $otherEvent = $hosted.Clone()
+    $otherEvent.events = @(@{ provider = 'Microsoft-Windows-ReFS'; id = 131; attribution = 'other'; volume = $otherVolume; phase = 'conversion' })
+    Assert-HostedRoundPassed $otherEvent 'known unrelated volume'
+    $invalidObservation = $hosted.event_observation.Clone(); $invalidObservation.completed = $false
 
     foreach ($test in @(
         @('fixture10', 'converter_sha256', 'ntfs2refs.exe'),
@@ -375,7 +414,7 @@ try {
     $data.observed_target_clusters = 4096
     $lab.cases = $cases | Where-Object case_id -ne 'std-64k'
     Save-Json $lab $labPath
-    Invoke-Gate 'missing-server-allocation-unit' 'Missing observed platform profile for std-64k'
+    Invoke-Gate 'missing-server-allocation-unit' 'Missing required Hyper-V gate case std-64k'
     $lab.cases = $cases
     $serverWide = $cases | Where-Object case_id -eq 'std-64k'
     $serverWide.observed_target_clusters = 4096
@@ -399,7 +438,11 @@ try {
         @('cancel', 'terminated', $false, 'missed its interruption'),
         @('cancel', 'end_after_seconds', 24.8, 'missed its interruption'),
         @('handled-preparation', 'attached_before_cleanup', @('shadow.vhdx'), 'shadow detached before cleanup'),
-        @('many', 'events', @(@{provider = 'Microsoft-Windows-ReFS'; id = 134}), 'Invalid hosted qualification verdict')
+        @('many', 'events', @(@{provider = 'Microsoft-Windows-ReFS'; id = 131; attribution = 'target'; volume = $targetVolume; phase = 'conversion'}), 'ReFS event 131'),
+        @('many', 'events', @(@{provider = 'Microsoft-Windows-ReFS'; id = 134; attribution = 'unresolved'}), 'Unattributed ReFS event 134'),
+        @('many', 'event_observation', $invalidObservation, 'storage event observation is incomplete'),
+        @('many', 'cleanup_ok', $false, 'cleanup did not pass'),
+        @('many', 'retention', 'failed', 'failure evidence retention failed')
     )) {
         $case, $key, $value, $message = $test
         $row = $nativeRows[$case].Clone(); $row[$key] = $value
@@ -446,7 +489,7 @@ try {
     $verifyReadOnly.cleanup_ok = $true
     $lab.cases = $cases | Where-Object { $_.case_id -ne 'verify-readonly-rollback' }
     Save-Json $lab $labPath
-    Invoke-Gate 'without-optional-boot-recovery'
+    Invoke-Gate 'missing-required-readonly-rollback' 'Missing required Hyper-V gate case verify-readonly-rollback'
     $lab.cases = $cases
     $powerOff.interruption = 'process-termination'
     Save-Json $lab $labPath

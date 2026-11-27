@@ -12,6 +12,8 @@ The substantive work from #287, #288 and #291 is already on the audited `main`. 
 
 The plumbing change passed the workflow and private-coordinator checks, the existing release-evidence validator tests, and all locked workspace tests. Standing runs `rpl0036-fixture10` and `rpl0036-admin-fixture40` used the unchanged signed executables from rehearsal `45929856792-1` and matched their listings. A complete signed rehearsal still needs a new candidate and a reserved lab.
 
+The hosted-verdict change shares its pass policy across the runner and consumers. The archive checks the four-hour campaign receipt and all 111 ordinary Hyper-V gate cases. In disposable Server run `hosted-verdict-005012`, the clean signed-binary round matched its listing and passed with a completed event query. The deliberate event-query failure exited 1 after an identical listing, with before/after manifests and verified private failure material retained by the runner. The public release evidence tests exercise event and cleanup failures, missing gate cases, and incomplete or modified soak logs. Both standing fixtures in `hrv0100` matched their listings using the shared case inventory and signed executables from `45929856792-1`.
+
 ## Work and evidence
 
 | Package | Depends on | Remaining acceptance |
@@ -31,6 +33,7 @@ The plumbing change passed the workflow and private-coordinator checks, the exis
 
 - Preserve the Windows-built shadow, source ownership and read-only boundaries, prewrite checks, byte comparison, strict manifests, and journal flush and readback order. Use the authenticated marker bytes and recorded lifecycle to decide rollback eligibility.
 - For transformation recovery, bind the canonical affected object and stream identities and their source, consent and frozen-list commitments through the authenticated publication. Use a versioned, reopenable artifact and verify it before it can affect coverage. The human report is separate. Legacy forward recovery needs independently proven coverage, and rollback retains its journal and source checks.
+- The dedicated recovery opener currently calls `new_tree_objects()` while validating the publication, before it branches into resume or rollback. That count uses declared omissions. Move authority off the CLI report loader and separate the transform-dependent target checks from the legacy rollback path, keeping the published envelope, expected-store, source, locator and journal checks intact. Cover omitted objects as well as dropped streams in the interruption cases.
 - For each case record the commit and executable hashes, route and platform, verification mode, requested and reached hold, recovered result, manifest and integrity outcomes, cleanup result and retained evidence. Keep pre-preparation state, authorized preparation changes and the frozen rollback baseline distinct.
 - Run locked workspace tests and the standing fixture gates before commits, and CI on the PR head before merging. Exercise native interruption boundaries on affected paths. Keep failed workload and resource observations, including admission refusals.
 - Protect the lab's shared disk chains and checkpoints. Get approval for removal under `.lab` and for destructive physical tests on a designated device. Keep credentials in the established environments.

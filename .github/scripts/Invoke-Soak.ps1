@@ -81,6 +81,19 @@ if (-not $Scratch) {
     $Scratch = Join-Path "$($other.DriveLetter):\" 'n2r-soak\runs'
 }
 $null = New-Item -ItemType Directory -Force -Path $Disks, $Scratch, $Records
+$Disks = (Resolve-Path -LiteralPath $Disks).Path
+$Scratch = (Resolve-Path -LiteralPath $Scratch).Path
+$Records = (Resolve-Path -LiteralPath $Records).Path
+if (Test-Path -LiteralPath (Join-Path $Records 'rounds.jsonl')) { throw "Soak records already exist at $Records" }
+if ($FailureStorage) {
+    $FailureStorage = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($FailureStorage)
+    foreach ($source in $Disks, $Scratch, $Records) {
+        if ($FailureStorage.TrimEnd('\') -eq $source.TrimEnd('\') -or
+            $FailureStorage.StartsWith(($source.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Failure storage must be outside the round storage at $source"
+        }
+    }
+}
 $used = @(Get-Volume | Where-Object DriveLetter | ForEach-Object { [string]$_.DriveLetter }) + @(Get-PSDrive -PSProvider FileSystem | ForEach-Object Name)
 $letter = @('V', 'W', 'T', 'U', 'R', 'Q') | Where-Object { $_ -notin $used } | Select-Object -First 1
 if (-not $letter) { throw 'no free drive letter among V, W, T, U, R, Q' }
@@ -92,6 +105,7 @@ $automountWasOff = [bool]((& mountvol.exe) -match 'automatic mounting of new vol
 if ($automountWasOff) { $null = & mountvol.exe /E; "automatic mounting of new volumes was off on this machine; turned on for the soak (mountvol /E)" }
 
 . "$PSScriptRoot/SeededSoakPlan.ps1"
+. "$PSScriptRoot/HostedRoundResult.ps1"
 $recoverLine = '^To recover: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64})'
 $cancelLine = 'To get it back as NTFS: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64}) --rollback'
 
@@ -151,11 +165,93 @@ function New-SoakDisk([string]$path, [int]$gib, [int]$cluster) {
     $disk.Number
 }
 
-function Remove-SoakDisk([string]$path) {
-    if (Test-Path -LiteralPath $path) {
-        try { Dismount-DiskImage -ImagePath $path -ErrorAction Stop | Out-Null } catch { }
-        for ($i = 0; $i -lt 20; $i++) { try { Remove-Item -LiteralPath $path -Force -ErrorAction Stop; break } catch { Start-Sleep -Milliseconds 500 } }
+function Save-SoakTargetIdentity([string]$Path, [string]$Letter, [Collections.IDictionary]$Target) {
+    $disk = Get-DiskImage -ImagePath $Path -ErrorAction Stop | Get-Disk -ErrorAction Stop
+    $partition = Get-Partition -DriveLetter $Letter -ErrorAction Stop
+    $volume = Get-Volume -Partition $partition -ErrorAction Stop
+    if ($partition.DiskNumber -ne $disk.Number -or -not $partition.Guid -or -not $volume.Path) {
+        throw "Could not bind ${Letter}: to its test image $Path"
     }
+    $first = -not $Target.partition_guid
+    if (-not $first -and $Target.partition_guid -ne $partition.Guid) { throw "Test partition changed on $Path" }
+    $Target.partition_guid = $partition.Guid
+    $Target.aliases += @($volume.Path, $volume.UniqueId | Where-Object { $_ })
+    # Some ReFS events report only the kernel name of the mounted volume.
+    $filterVolumes = & fltmc.exe volumes 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        foreach ($line in $filterVolumes) {
+            if ($line -match ('^\s*' + [regex]::Escape("${Letter}:") + '\s+(\\Device\\HarddiskVolume\d+)\s')) {
+                $Target.aliases += $Matches[1]
+            }
+        }
+    }
+    $Target.aliases = @($Target.aliases | Sort-Object -Unique)
+    $other = @(Get-Volume -ErrorAction Stop | Where-Object { $_.Path -and $_.Path -notin $Target.aliases } | ForEach-Object Path)
+    $Target.other_aliases = if ($first) { @($other) } else { @($other | Where-Object { $_ -in $Target.other_aliases }) }
+}
+
+function Save-SoakEvents([datetime]$Started, $Phases, [Collections.IDictionary]$Row, [string]$Directory) {
+    $end = Get-Date
+    $Row.event_observation.ended_utc = $end.ToUniversalTime().ToString('o')
+    try {
+        $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = $Started; EndTime = $end } -ErrorAction Stop |
+            Where-Object { $_.ProviderName -match 'ReFS|Ntfs|volmgr|disk|storport' -and ($_.Level -le 3 -or $_.Id -in 131, 134) })
+    } catch {
+        if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { throw }
+        $events = @()
+    }
+    if ($events) { $events | ForEach-Object { $_.ToXml() } | Set-Content -LiteralPath (Join-Path $Directory 'storage-events.xml.txt') }
+    $Row.events = @(foreach ($event in $events) {
+        $xml = [xml]$event.ToXml()
+        $fields = @($xml.SelectNodes('//*[local-name()="EventData" or local-name()="UserData"]//*[not(*)]') |
+            ForEach-Object InnerText)
+        $scope = Get-HostedEventAttribution $fields $Row.event_observation.target.aliases $Row.event_observation.target.other_aliases
+        $phase = $Phases | Where-Object at -LE $event.TimeCreated | Select-Object -Last 1
+        @{ provider = $event.ProviderName; id = $event.Id; record = $event.RecordId; time = $event.TimeCreated
+            attribution = $scope.attribution; volume = $scope.volume; phase = if ($phase) { $phase.name } }
+    })
+    $Row.event_observation.completed = $true
+}
+
+function Copy-SoakFailureMaterial([string]$Target, [string]$Image, [string]$Work, [string]$Directory) {
+    if (Test-Path -LiteralPath $Target) { throw "Retention slot already exists at $Target" }
+    $null = New-Item -ItemType Directory -Path $Target
+    $volume = Get-Volume -FilePath $Target
+    $files = @(foreach ($source in $Image, $Work, $Directory) {
+        if (Test-Path -LiteralPath $source -PathType Container) { Get-ChildItem -LiteralPath $source -File -Force -Recurse }
+        elseif (Test-Path -LiteralPath $source -PathType Leaf) { Get-Item -LiteralPath $source }
+    })
+    if ($files | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }) {
+        throw 'Unexpected reparse point in round evidence'
+    }
+    if ($volume.SizeRemaining -lt ($files | Measure-Object Length -Sum).Sum) { throw 'Insufficient storage for round evidence' }
+    foreach ($file in $files) {
+        $relative = if ($file.FullName.StartsWith("$Work\", [StringComparison]::OrdinalIgnoreCase)) {
+            Join-Path 'work' ([IO.Path]::GetRelativePath($Work, $file.FullName))
+        } elseif ($file.FullName.StartsWith("$Directory\", [StringComparison]::OrdinalIgnoreCase)) {
+            Join-Path 'records' ([IO.Path]::GetRelativePath($Directory, $file.FullName))
+        } else { $file.Name }
+        $copy = Join-Path $Target $relative
+        $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $copy)
+        Copy-Item -LiteralPath $file.FullName -Destination $copy
+        if ((Get-FileHash -LiteralPath $file.FullName).Hash -cne (Get-FileHash -LiteralPath $copy).Hash) {
+            throw "Retained copy differs for $($file.FullName)"
+        }
+    }
+}
+
+function Remove-SoakDirectory([string]$Path, [string]$Parent) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $resolved = (Resolve-Path -LiteralPath $Path).Path
+    $parentPath = (Resolve-Path -LiteralPath $Parent).Path
+    if ((Split-Path -Parent $resolved) -ne $parentPath -or
+        ((Get-Item -LiteralPath $resolved -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Refusing to clean unexpected round directory $resolved"
+    }
+    if (Get-ChildItem -LiteralPath $resolved -Force -Recurse -Attributes ReparsePoint) {
+        throw "Refusing to clean reparse points under $resolved"
+    }
+    Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction Stop
 }
 
 # The volume's content, all of it drawn from $seed.
@@ -361,14 +457,15 @@ function Wait-Volume([string]$fileSystem) {
     throw "${letter}: is $(if ($volume) { "$($volume.FileSystem) $($volume.HealthStatus)" } else { 'not mounted' }), not $fileSystem. $($state -join ' | ')"
 }
 
-$started = Get-Date
 $results = [Collections.Generic.List[object]]::new()
 $failed = $null
+$campaignClock = [Diagnostics.Stopwatch]::StartNew()
+$stopReason = 'round limit'
 "soak of $converter ($((& $converter --version 2>$null) -join ' ')) for $Minutes minutes$(if ($Rounds) { " or $Rounds rounds" }); profiles $($Profile -join ', '); first seed $Seed"
 "disks in $Disks, working storage in $Scratch, records in $Records, volume ${letter}:"
 for ($round = 1; ; $round++) {
     if ($Rounds -and $round -gt $Rounds) { break }
-    if (((Get-Date) - $started).TotalMinutes -ge $Minutes) { break }
+    if ($campaignClock.Elapsed.TotalMinutes -ge $Minutes) { $stopReason = 'duration'; break }
     $roundSeed = $Seed + $round - 1
     $kind = $Profile[($round - 1) % $Profile.Count]
     $plan = Get-SeededSoakPlan $roundSeed $kind $TargetClusterBytes
@@ -382,17 +479,23 @@ for ($round = 1; ; $round++) {
     if ($CancelAtPreparation) { $hold = 'preparation-shadow-built'; $endAfter = 0 }
     $name = 'r{0:d3}-{1}-{2}' -f $round, $kind, $roundSeed
     $dir = Join-Path $Records $name
-    $null = New-Item -ItemType Directory -Force -Path $dir
+    $null = New-Item -ItemType Directory -Path $dir
     $vhd = Join-Path $Disks "$name.vhdx"
     $work = Join-Path $Scratch $name
+    if ((Test-Path -LiteralPath $vhd) -or (Test-Path -LiteralPath $work)) { throw "Round storage already exists for $name" }
     $roundStarted = Get-Date
+    $phases = [Collections.Generic.List[object]]::new()
+    $phases.Add(@{ name = 'preparation'; at = $roundStarted })
     $result = [ordered]@{ round = $round; profile = $kind; scenario = $Scenario; seed = $roundSeed; verify = $verify; ntfs_cluster = $ntfsCluster; refs_cluster = $refsCluster; disk_gib = $gib
         hold_at = $hold; reached_hold = $false; terminated = $false; end_after_seconds = $endAfter; content = ''; convert_seconds = $null
         recovery = ''; recovery_mode = 'none'; outcome = ''; detail = ''; findings = @(); manifest_matches = $false; attached_before_cleanup = @(); cleanup_ok = $false
-        converter_sha256 = $converterHash; listing_tool_sha256 = $manifestHash; windows_build = $osBuild; refs_version = ''; events = @(); retention = 'not requested' }
+        converter_sha256 = $converterHash; listing_tool_sha256 = $manifestHash; windows_build = $osBuild; refs_version = ''; events = @(); retention = 'not requested'
+        passed = $false; failures = @(); event_observation = @{ schema = 1; completed = $false; started_utc = $roundStarted.ToUniversalTime().ToString('o')
+            ended_utc = $null; target = @{ image = $vhd; partition_guid = $null; aliases = @(); other_aliases = @() }; error = $null } }
     Say "round ${round}: $kind, seed $roundSeed, --verify $verify, NTFS clusters of $ntfsCluster, ReFS clusters of $refsCluster, a $gib GiB disk$(if ($hold) { ", held at $hold" })$(if ($endAfter) { ", ended after $endAfter s" })"
     try {
         $diskNumber = New-SoakDisk $vhd $gib $ntfsCluster
+        Save-SoakTargetIdentity $vhd $letter $result.event_observation.target
         if ($Scenario -eq 'seeded') {
             $result.content = New-SoakContent "${letter}:" $roundSeed $ntfsCluster ($kind -eq 'many') ([Math]::Min(1.5GB, [long]$gib * 1GB / 4))
         } else {
@@ -421,6 +524,7 @@ for ($round = 1; ; $round++) {
         if ($MemoryLimitMiB) { $arguments += @('--memory-limit', "$MemoryLimitMiB") }
         if ($WriteTailsSingly) { $arguments += '--lab-write-tails-singly' }
         if ($Scenario -eq 'handled-preparation') { $arguments += '--lab-fail-preparation-after-shadow' }
+        $phases.Add(@{ name = 'conversion'; at = Get-Date })
         $run = Invoke-Converter $arguments (Join-Path $dir 'convert') $hold $endAfter
         $result.convert_seconds = $run.seconds
         if ($null -ne $sparseLayout) {
@@ -451,6 +555,7 @@ for ($round = 1; ; $round++) {
             elseif ($hold) { throw "the run was held at $hold but had printed no `"To recover:`" line" }
             else { $expect = 'NTFS' }
             if ($recovery) {
+                $phases.Add(@{ name = 'recovery'; at = Get-Date })
                 $result.recovery_mode = if ($recovery -contains '--rollback') { 'rollback' } else { 'resume' }
                 $result.recovery = $recovery -join ' '
                 $again = Invoke-Converter $recovery (Join-Path $dir 'recover')
@@ -494,7 +599,9 @@ for ($round = 1; ; $round++) {
                 }
             }
         }
+        $phases.Add(@{ name = 'manifest comparison'; at = Get-Date })
         $volume = Wait-Volume $expect
+        Save-SoakTargetIdentity $vhd $letter $result.event_observation.target
         if ($expect -eq 'ReFS') {
             $info = & fsutil.exe fsinfo refsinfo "${letter}:" 2>&1 | Out-String
             if ($LASTEXITCODE -ne 0 -or $info -notmatch 'ReFS Volume Version\s*:\s*([\d.]+)') { throw "Could not record the ReFS version: $info" }
@@ -512,11 +619,9 @@ for ($round = 1; ; $round++) {
         $result.outcome = if ($expect -eq 'ReFS') { 'converted' } else { 'ntfs-as-before' }
         $result.manifest_matches = $true
         Say "  ${letter}: is $($volume.FileSystem) $($volume.HealthStatus); listings $(if ($expect -eq 'NTFS') { 'identical' } else { 'match' })"
-        foreach ($leaf in 'before.jsonl', 'after.jsonl') { Remove-Item -LiteralPath (Join-Path $dir $leaf) -Force -ErrorAction SilentlyContinue }
     } catch {
         $result.outcome = 'FAILED'; $result.detail = "$_"
         Say "  FAILED: $_"
-        $failed = $result
     } finally {
         # A run that is killed before it records anything to recover from
         # leaves its working volume attached: no code runs at the kill. The
@@ -524,67 +629,101 @@ for ($round = 1; ; $round++) {
         # has ended and recorded nothing; a run with something to recover
         # from is left to its own --recover. So --list is run here, as the
         # next thing a person would run, and what it detached is recorded.
-        $attached = { @(Get-ChildItem -LiteralPath $work -Recurse -Force -File -Filter *.vhdx -ErrorAction SilentlyContinue | ForEach-Object {
-            try { Get-DiskImage -ImagePath $_.FullName -ErrorAction Stop } catch { } } | Where-Object { $_.Attached }) }
-        $before = & $attached
-        $result.attached_before_cleanup = @($before | ForEach-Object ImagePath)
-        if ($Scenario -eq 'handled-preparation' -and ($before -or $result.findings)) {
-            $result.outcome = 'FAILED'; $result.detail = 'handled preparation required harness assistance'; $failed = $result
+        $phases.Add(@{ name = 'cleanup and detach'; at = Get-Date })
+        $attached = {
+            if (Test-Path -LiteralPath $work) {
+                Get-ChildItem -LiteralPath $work -Recurse -Force -File -Filter *.vhdx | ForEach-Object {
+                    Get-DiskImage -ImagePath $_.FullName -ErrorAction Stop
+                } | Where-Object Attached
+            }
         }
-        $systemEvents = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = $roundStarted; Level = 1, 2, 3 } -ErrorAction SilentlyContinue |
-            Where-Object { $_.ProviderName -match 'ReFS|Ntfs|volmgr|disk|storport' })
-        $result.events = @($systemEvents | ForEach-Object { @{ provider = $_.ProviderName; id = $_.Id; record = $_.RecordId; time = $_.TimeCreated } })
-        if ($systemEvents) { $systemEvents | ForEach-Object { $_.ToXml() } | Set-Content -LiteralPath (Join-Path $dir 'storage-events.xml.txt') }
-        if ($failed -and $FailureStorage) {
-            try {
-                $target = Join-Path $FailureStorage $kind
-                if (Test-Path -LiteralPath $target) { throw "retention slot already exists at $target" }
-                $null = New-Item -ItemType Directory -Path $target
-                # The stopped process cannot mutate these files. Detach by exact image path before copying.
-                foreach ($path in @($result.attached_before_cleanup) + @($vhd)) {
-                    if ((Test-Path -LiteralPath $path) -and (Get-DiskImage -ImagePath $path).Attached) { Dismount-DiskImage -ImagePath $path | Out-Null }
+        $canClean = $true
+        try {
+            $before = @(& $attached)
+            $result.attached_before_cleanup = @($before | ForEach-Object ImagePath)
+            if ($Scenario -eq 'handled-preparation' -and ($before -or $result.findings)) {
+                throw 'handled preparation required harness assistance'
+            }
+            if ($before -and $result.manifest_matches) {
+                & $converter --list 2>&1 | Out-File -LiteralPath (Join-Path $dir 'list-after-run.txt') -Encoding utf8
+                if ($LASTEXITCODE -ne 0) { throw "working-volume cleanup probe exited $LASTEXITCODE" }
+            }
+            $left = @(& $attached)
+            foreach ($image in $left) {
+                $result.findings += "the run left $($image.ImagePath) attached; detached for harness cleanup"
+                Dismount-DiskImage -ImagePath $image.ImagePath -ErrorAction Stop | Out-Null
+            }
+            if (Test-Path -LiteralPath $vhd) {
+                if ((Get-DiskImage -ImagePath $vhd -ErrorAction Stop).Attached) {
+                    Dismount-DiskImage -ImagePath $vhd -ErrorAction Stop | Out-Null
                 }
-                $files = @((Get-Item -LiteralPath $vhd -ErrorAction SilentlyContinue)) + @(Get-ChildItem -LiteralPath $work -File -Recurse -Force -ErrorAction SilentlyContinue)
-                $volume = Get-Volume -FilePath $target
-                if ($volume.SizeRemaining -lt ($files | Measure-Object Length -Sum).Sum) { throw 'insufficient space for the failed round' }
-                if (Test-Path -LiteralPath $vhd) { Copy-Item -LiteralPath $vhd -Destination $target }
-                if (Test-Path -LiteralPath $work) { Copy-Item -LiteralPath $work -Destination $target -Recurse -Force }
-                $result.retention = 'kept'
-            } catch { $result.retention = "capture failed: $_" }
+                if ((Get-DiskImage -ImagePath $vhd -ErrorAction Stop).Attached) { throw "Test image still attached: $vhd" }
+            }
+            if (@(& $attached).Count) { throw "Working image still attached under $work" }
+        } catch {
+            $canClean = $false
+            $result.failures += "Detach: $($_.Exception.Message)"
         }
-        if (& $attached) {
-            $listed = try { & $converter --list 2>&1 | Out-String } catch { "$_" }
-            $listed | Out-File -LiteralPath (Join-Path $dir 'list-after-run.txt') -Encoding utf8
-            $settled = @($before | Where-Object { $image = $_; -not (& $attached | Where-Object ImagePath -EQ $image.ImagePath) })
-            foreach ($image in $settled) { Say "  --list detached $($image.ImagePath), the working volume of a run that ended before it recorded anything" }
+        try { Save-SoakEvents $roundStarted $phases $result $dir } catch {
+            $result.event_observation.error = $_.Exception.Message
         }
-        # Virtual disks still attached in the run's working storage after
-        # that: a finding, recorded; detached so that the storage can be freed.
-        $left = & $attached
-        foreach ($image in $left) {
-            $disk = $image | Get-Disk
-            $result.findings += "the run left $($image.ImagePath) attached (disk $($disk.Number), offline=$($disk.IsOffline), read-only=$($disk.IsReadOnly))"
-            Say "  FINDING: the run left $($image.ImagePath) attached (offline=$($disk.IsOffline), read-only=$($disk.IsReadOnly)); detached"
-            try { Dismount-DiskImage -ImagePath $image.ImagePath | Out-Null } catch { Say "  could not detach it: $_" }
+        $result.failures += @(Get-HostedRoundFailures $result -BeforeCleanup)
+        $privateCopy = $null
+        if ($FailureStorage) {
+            if (-not $canClean) { $result.retention = 'in place' }
+            else {
+                $privateCopy = Join-Path $FailureStorage $name
+                try {
+                    Copy-SoakFailureMaterial $privateCopy $vhd $work $dir
+                    $result.retention = 'kept'
+                } catch {
+                    $canClean = $false
+                    $result.retention = 'failed'
+                    $result.failures += "Retention: $($_.Exception.Message)"
+                }
+            }
+        } elseif ($result.failures) { $result.retention = 'compact' }
+        if ($canClean) {
+            try {
+                if (Test-Path -LiteralPath $vhd) { Remove-Item -LiteralPath $vhd -Force -ErrorAction Stop }
+                Remove-SoakDirectory $work $Scratch
+                $result.cleanup_ok = -not (Test-Path -LiteralPath $work) -and -not (Test-Path -LiteralPath $vhd)
+                if ($result.cleanup_ok -and -not $result.failures -and $privateCopy) {
+                    Remove-SoakDirectory $privateCopy $FailureStorage
+                    $result.retention = 'not needed'
+                }
+            } catch {
+                $result.cleanup_ok = $false
+                $result.failures += "Cleanup: $($_.Exception.Message)"
+            }
         }
-        $stillAttached = & $attached
-        Remove-SoakDisk $vhd
-        # Any virtual disk still attached after the round, wherever it lies.
-        $stray = @(Get-Disk | Where-Object { $_.BusType -eq 'File Backed Virtual' })
-        if ($stray) { Say "  attached virtual disks after the round: $(@($stray | ForEach-Object { "disk $($_.Number) offline=$($_.IsOffline) $([Math]::Round($_.Size / 1GB, 1)) GiB" }) -join ', ')" }
-        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
-        if (Test-Path -LiteralPath $work) { Say "  the working storage $work could not be removed entirely" }
-        $result.cleanup_ok = -not $stillAttached -and -not (Test-Path -LiteralPath $work) -and -not (Test-Path -LiteralPath $vhd)
+        $result.failures = @(@($result.failures) + @(Get-HostedRoundFailures $result) | Select-Object -Unique)
+        $result.passed = $result.failures.Count -eq 0
+        if ($result.passed) {
+            foreach ($leaf in 'before.jsonl', 'after.jsonl') { Remove-Item -LiteralPath (Join-Path $dir $leaf) -Force -ErrorAction SilentlyContinue }
+        } else {
+            $failed = $result
+            if ($result.retention -eq 'not requested') { $result.retention = 'compact' }
+            $result.surviving_paths = @($dir, $privateCopy, $vhd, $work | Where-Object { $_ -and (Test-Path -LiteralPath $_) })
+            Say "  FAILED observations or cleanup: $($result.failures -join ', '); evidence: $($result.surviving_paths -join ', ')"
+        }
         $results.Add([pscustomobject]$result)
         ([pscustomobject]$result | ConvertTo-Json -Depth 8 -Compress) | Add-Content -LiteralPath (Join-Path $Records 'rounds.jsonl') -Encoding utf8
     }
-    if ($failed) { break }
+    if ($failed) { $stopReason = 'failed round'; break }
 }
 
+$campaignClock.Stop()
+$rowsPath = Join-Path $Records 'rounds.jsonl'
+@{ schema = 1; workflow_run = $env:GITHUB_RUN_ID; workflow_attempt = $env:GITHUB_RUN_ATTEMPT; profiles = $Profile
+    minutes = $Minutes; round_limit = $Rounds; first_seed = $Seed; rounds = $results.Count; stop_reason = $stopReason
+    elapsed_seconds = $campaignClock.Elapsed.TotalSeconds; rows_sha256 = if (Test-Path -LiteralPath $rowsPath) { (Get-FileHash -LiteralPath $rowsPath).Hash.ToLowerInvariant() }
+} | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $Records 'campaign.json') -Encoding utf8
+
 $lines = @('| Round | Profile | Seed | Verify | NTFS / ReFS clusters | Hold or end | Seconds | Outcome |', '|---|---|---|---|---|---|---|---|')
-foreach ($r in $results) { $lines += "| $($r.round) | $($r.profile) | $($r.seed) | $($r.verify) | $($r.ntfs_cluster) / $($r.refs_cluster) | $(if ($r.hold_at) { $r.hold_at } elseif ($r.end_after_seconds) { "$($r.end_after_seconds) s" } else { '' }) | $($r.convert_seconds) | $($r.outcome)$(if ($r.detail) { ': ' + ($r.detail -replace '\|', '/') })$(if ($r.findings) { '; findings: ' + (($r.findings -join '; ') -replace '\|', '/') }) |" }
+foreach ($r in $results) { $lines += "| $($r.round) | $($r.profile) | $($r.seed) | $($r.verify) | $($r.ntfs_cluster) / $($r.refs_cluster) | $(if ($r.hold_at) { $r.hold_at } elseif ($r.end_after_seconds) { "$($r.end_after_seconds) s" } else { '' }) | $($r.convert_seconds) | $(if ($r.passed) { $r.outcome } else { 'FAILED: ' + (($r.failures -join ', ') -replace '\|', '/') })$(if ($r.detail) { ': ' + ($r.detail -replace '\|', '/') })$(if ($r.findings) { '; findings: ' + (($r.findings -join '; ') -replace '\|', '/') }) |" }
 $findings = @($results | Where-Object { $_.findings })
-$headline = "soak: $($results.Count) rounds in $([Math]::Round(((Get-Date) - $started).TotalMinutes)) minutes, $(@($results | Where-Object outcome -ne 'FAILED').Count) passed$(if ($findings) { ", $($findings.Count) with findings" })$(if ($failed) { "; round $($failed.round) failed (reproduce: -Profile $($failed.profile) -Seed $($failed.seed) -Rounds 1)" })"
+$headline = "soak: $($results.Count) rounds in $([Math]::Round($campaignClock.Elapsed.TotalMinutes)) minutes, $(@($results | Where-Object passed).Count) passed$(if ($findings) { ", $($findings.Count) with findings" })$(if ($failed) { "; round $($failed.round) failed (reproduce: -Profile $($failed.profile) -Seed $($failed.seed) -Rounds 1)" })"
 $headline
 $lines
 if ($env:GITHUB_STEP_SUMMARY) { (@("### $headline", '') + $lines) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8 }

@@ -1,4 +1,5 @@
 # The deterministic runner and publication gate use the same case definitions.
+. "$PSScriptRoot/HostedRoundResult.ps1"
 $NativeRegressionCases = [ordered]@{
     convert = @{ Soak = @{ Seed = 315781002 }; Outcome = 'converted' }
     many = @{ Soak = @{ Profile = 'many'; Seed = 315782001 }; Outcome = 'converted' }
@@ -22,6 +23,7 @@ $NativeRegressionCases = [ordered]@{
 }
 
 function Assert-NativeRegressionVerdict([string]$Case, $Row) {
+    Assert-HostedRoundPassed $Row $Case
     $spec = $NativeRegressionCases[$Case]
     $soak = $spec.Soak
     if ($Row.profile -cne ($soak.Profile ?? 'convert') -or $Row.seed -ne ($soak.Seed ?? 315781002) -or
@@ -30,7 +32,7 @@ function Assert-NativeRegressionVerdict([string]$Case, $Row) {
     }
     if (($spec.NtfsClusterBytes -and $Row.ntfs_cluster -ne $spec.NtfsClusterBytes) -or
         ($spec.Verify -and $Row.verify -cne $spec.Verify)) { throw "Wrong source geometry or verification mode for $Case" }
-    if ($Row.outcome -cne $spec.Outcome -or $Row.manifest_matches -ne $true -or $Row.cleanup_ok -ne $true) {
+    if ($Row.outcome -cne $spec.Outcome) {
         throw "Unexpected verdict for $Case"
     }
     if ($Row.hold_at -cne ($spec.Hold ?? '') -or $Row.reached_hold -ne [bool]$spec.Hold -or

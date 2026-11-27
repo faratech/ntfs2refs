@@ -399,26 +399,33 @@ function Capture-Settled([string]$path, [int]$diskNumber, [bool]$hasJunction) {
         }
         $null = Wait-Volume 'NTFS'
     }
-    & $afresh; $remount = (Get-Date).AddSeconds(20); $deadline = (Get-Date).AddSeconds(150); $previous = -1
+    $inventory = { Select-String -LiteralPath $path -Pattern 'System Volume Information' -SimpleMatch | ForEach-Object Line }
+    & $afresh; $remount = (Get-Date).AddSeconds(20); $deadline = (Get-Date).AddSeconds(150); $previous = $null
     do {
         Start-Sleep -Seconds 2
         Capture $path
-        $own = @(Select-String -LiteralPath $path -Pattern 'System Volume Information' -SimpleMatch)
-        $has = { param($leaf) [bool]($own | Where-Object { $_.Line -like "*$leaf*" }) }
-        $settled = (& $has 'WPSettings.dat') -and (-not $hasJunction -or (& $has 'MountPointManagerRemoteDatabase')) -and
-            (-not $indexer -or (& $has 'IndexerVolumeGuid')) -and $own.Count -eq $previous
-        $previous = $own.Count
+        $own = @(& $inventory)
+        $records = @($own | ForEach-Object { ConvertFrom-Json -InputObject $_ })
+        $has = { param($leaf) [bool]($records | Where-Object { $_.path -eq "\System Volume Information\$leaf" }) }
+        # The storage service may first create an empty WPSettings.dat and
+        # populate it on the next mount. Its presence and the entry count can
+        # remain unchanged throughout that transition.
+        $populated = [bool]($records | Where-Object { $_.path -eq '\System Volume Information\WPSettings.dat' -and $_.bytes -gt 0 })
+        $current = ($own | Sort-Object -CaseSensitive) -join "`n"
+        $settled = $populated -and (-not $hasJunction -or (& $has 'MountPointManagerRemoteDatabase')) -and
+            (-not $indexer -or (& $has 'IndexerVolumeGuid')) -and $current -ceq $previous
+        $previous = $current
         $now = Get-Date
         if (-not $settled -and $now -lt $deadline -and $now -ge $remount) {
             & $afresh
             $remount = (Get-Date).AddSeconds(20)
-            $previous = -1
+            $previous = $null
         }
     } until ($settled -or $now -ge $deadline)
-    if (-not $settled) { Say "  (System Volume Information did not settle in 150 s: $($own.Count) entries)" }
+    if (-not $settled) { throw "System Volume Information did not settle before conversion on ${letter}: ($($own.Count) entries)" }
 
     # The manifest records the root first. Windows can update it during a
-    # long capture even if the System Volume Information entry count agrees.
+    # long capture even if the System Volume Information records agree.
     $root = "${letter}:\"
     $captureLimit = 3
     for ($capture = 1; $capture -le $captureLimit; $capture++) {
@@ -437,6 +444,9 @@ function Capture-Settled([string]$path, [int]$diskNumber, [bool]$hasJunction) {
         if ($capture -eq $captureLimit) { throw "Before-listing remained unstable after $captureLimit capture checks because $difference" }
         Say "  (recapturing before-listing without a remount because $difference)"
         Capture $path
+        if (((& $inventory | Sort-Object -CaseSensitive) -join "`n") -cne $previous) {
+            throw "System Volume Information changed while recapturing the root on ${letter}:"
+        }
     }
 }
 

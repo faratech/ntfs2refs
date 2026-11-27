@@ -10,6 +10,7 @@ const CURRENT: &[&str] = &[
     "README.md",
     "AGENTS.md",
     "docs/cli-workflow.md",
+    "docs/completion-plan.md",
     "docs/feature-matrix.md",
     "docs/recovery-matrix.md",
     "docs/performance.md",

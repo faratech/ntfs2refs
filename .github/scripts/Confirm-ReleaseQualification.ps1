@@ -11,6 +11,7 @@ $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\NativeRegressionCases.ps1"
 . "$PSScriptRoot/SeededSoakPlan.ps1"
 . "$PSScriptRoot/../../lab/GateRoundCases.ps1"
+. "$PSScriptRoot/../../lab/IntegrityWindowProof.ps1"
 function Read-Json([string]$Path) { Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable }
 $identity = Read-Json (Join-Path $Candidate 'candidate.json')
 $files = 'ntfs2refs.exe', 'ntfs2refs-recovery.exe', 'lab-volume-manifest.exe'
@@ -148,9 +149,9 @@ foreach ($case in $requiredLab.Keys) {
         $null -eq $row.integrity_events -or @($row.integrity_events | Where-Object { $_.provider -match 'ReFS' -and $_.id -in 131, 134 }).Count)) {
         throw "Incomplete integrity evidence for Hyper-V case $case"
     }
-    if ($case -eq 'integrity-event-131' -and ($row.integrity_fixture.content -ne 'lived-in' -or
-        $row.integrity_fixture.directory_entries -ne 4000 -or $row.integrity_fixture.check_agrees -ne $true)) {
-        throw 'Incomplete ReFS event 131 fixture evidence'
+    if ($case -eq 'integrity-event-131') { Assert-Integrity131Case $row }
+    if ($case -in 'integrity-native-loaded', 'integrity-converted-loaded', 'integrity-lived-in') {
+        Assert-IntegrityLoadWindows $row $case
     }
 }
 $gateCases = Get-GateRoundExpectations @('fixtures', 'data', 'full', 'server', 'running')
@@ -291,7 +292,7 @@ $lines = @(
     "Candidate ``$Tag`` from ``$Commit`` passed $($native.Count) deterministic native cases, $($soak.Count) seeded soak rounds, and $($lab.cases.Count) Hyper-V cases.", '',
     'The three executable hashes, per-case manifest results, platform details, and filesystem findings are in `QUALIFICATION.json`.', '',
     'Data and developer volumes passed continued allocation, deletion, remount, and reboot tests. The installed Windows volume reached the desktop on ReFS 3.14 with Secure Boot enabled.', '',
-    'The matched ReFS controls and the 4,000-entry lived-in case with a preflight check passed. The cause of the original ReFS event 131 in [#253](https://github.com/faratech/ntfs2refs/issues/253) remains unresolved.', '',
+    'The matched ReFS controls passed. The 4,000-entry lived-in case with a preflight check passed with host CPU activity observed during fill and deletion and during remount. The cause of the original ReFS event 131 in [#253](https://github.com/faratech/ntfs2refs/issues/253) remains unresolved.', '',
     'Physical disks and actual storage-power loss are unqualified.', '',
     '### Exercised platform profiles', '',
     'Windows edition is reported as its operating-system SKU. Restart cases identify the Windows installation that receives the converted partition after WinPE returns. Candidate coverage is limited to the observed combinations listed below.', '',

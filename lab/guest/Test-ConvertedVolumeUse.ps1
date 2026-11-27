@@ -221,14 +221,19 @@ Step 'converted files are as they were left' {
     "$checked converted files read again"
 }
 Step 'ReFS events' {
-    $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = $started; Level = 1, 2, 3 } -ErrorAction SilentlyContinue |
-        Where-Object { $_.ProviderName -match 'ReFS|Ntfs|volmgr|disk' })
+    try {
+        $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = $started } -ErrorAction Stop |
+            Where-Object { $_.ProviderName -match 'ReFS|Ntfs|volmgr|disk' -and ($_.Level -le 3 -or $_.Id -in 131, 134) })
+    } catch {
+        if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { throw }
+        $events = @()
+    }
     # Taking a disk offline while its ReFS volume is mounted makes ReFS log
     # event 135 ("unable to mount it ... a device which does not exist"): the
     # 'mount again' step does that on purpose, and a volume Windows formatted
     # itself logs the same (the control run shows it). Anything else is an error.
     $offline = @($events | Where-Object { $_.ProviderName -match 'ReFS' -and $_.Id -eq 135 -and $_.Message -match 'device which does not exist' })
-    $serious = @($events | Where-Object { $_.ProviderName -match 'ReFS' -and $_.Level -le 2 -and $_ -notin $offline })
+    $serious = @($events | Where-Object { $_.ProviderName -match 'ReFS' -and ($_.Level -le 2 -or $_.Id -in 131, 134) -and $_ -notin $offline })
     if ($serious) { throw "ReFS logged $($serious.Count) error(s): $($serious[0].Id) $((($serious[0].Message -split "`n")[0]).Trim())" }
     "no ReFS error; $($offline.Count) of event 135 from taking the disk offline; $($events.Count - $offline.Count) storage warning(s) or error(s) of other providers"
 }

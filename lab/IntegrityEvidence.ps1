@@ -20,12 +20,7 @@ function Save-IntegritySource($Session, [string]$Name, [string]$Output) {
     }
 }
 
-function Invoke-IntegrityReboot($Session, [guid]$VmId, [pscredential]$Credential, [string]$Name) {
-    $saved = Invoke-Command -Session $Session -ScriptBlock {
-        $path = 'V:\qualification-across-reboot.txt'
-        [IO.File]::WriteAllText($path, 'ntfs2refs acceptance across reboot')
-        [pscustomobject]@{ boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime; hash = (Get-FileHash -LiteralPath $path).Hash }
-    }
+function Restart-IntegrityGuest($Session, [guid]$VmId, [pscredential]$Credential, [datetime]$PreviousBoot) {
     Invoke-Command -Session $Session -ScriptBlock {
         shutdown.exe /r /t 2 | Out-Null
         if ($LASTEXITCODE -ne 0) { throw 'Could not restart the acceptance VM' }
@@ -37,13 +32,50 @@ function Invoke-IntegrityReboot($Session, [guid]$VmId, [pscredential]$Credential
         $next = New-PSSession -VMId $VmId -Credential $Credential -ErrorAction SilentlyContinue
         if ($next) {
             $boot = Invoke-Command -Session $next -ScriptBlock { (Get-CimInstance Win32_OperatingSystem).LastBootUpTime }
-            if ($boot -gt $saved.boot) { break }
+            if ($boot -gt $PreviousBoot) { break }
             Remove-PSSession $next
             $next = $null
         }
     } while ((Get-Date) -lt $deadline)
     if (-not $next) { throw 'Acceptance guest did not restart' }
     Remove-PSSession $Session
+    $next
+}
+
+function Initialize-IntegrityCrashCapture([guid]$VmId, [pscredential]$Credential, [string]$Output) {
+    $session = New-PSSession -VMId $VmId -Credential $Credential -ErrorAction Stop
+    try {
+        $was = Invoke-Command -Session $session -ScriptBlock {
+            $key = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'
+            Set-ItemProperty -LiteralPath $key -Name CrashDumpEnabled -Value 3 -Type DWord
+            Set-ItemProperty -LiteralPath $key -Name AutoReboot -Value 1 -Type DWord
+            Set-ItemProperty -LiteralPath $key -Name LogEvent -Value 1 -Type DWord
+            Set-ItemProperty -LiteralPath $key -Name MinidumpDir -Value '%SystemRoot%\Minidump' -Type ExpandString
+            (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
+        }
+        $session = Restart-IntegrityGuest $session $VmId $Credential $was
+        $configuration = Invoke-Command -Session $session -ScriptBlock {
+            $crash = Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'
+            $page = @(Get-CimInstance Win32_PageFileUsage | Where-Object {
+                $_.Name.StartsWith("$env:SystemDrive\", [StringComparison]::OrdinalIgnoreCase) -and $_.AllocatedBaseSize -ge 2
+            })
+            if ($crash.CrashDumpEnabled -ne 3 -or $crash.AutoReboot -ne 1 -or $crash.LogEvent -ne 1 -or !$page.Count) {
+                throw 'The disposable guest lacks the small-dump policy or its system-volume paging file'
+            }
+            @{ kind = 'small-memory-dump'; directory = [Environment]::ExpandEnvironmentVariables($crash.MinidumpDir)
+                page_file_mib = $page[0].AllocatedBaseSize; boot_utc = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o') }
+        }
+        $configuration | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $Output 'crash-capture.json') -Encoding utf8
+    } finally { if ($session) { Remove-PSSession $session } }
+}
+
+function Invoke-IntegrityReboot($Session, [guid]$VmId, [pscredential]$Credential, [string]$Name) {
+    $saved = Invoke-Command -Session $Session -ScriptBlock {
+        $path = 'V:\qualification-across-reboot.txt'
+        [IO.File]::WriteAllText($path, 'ntfs2refs acceptance across reboot')
+        [pscustomobject]@{ boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime; hash = (Get-FileHash -LiteralPath $path).Hash }
+    }
+    $next = Restart-IntegrityGuest $Session $VmId $Credential $saved.boot
     try {
         Invoke-Command -Session $next -ArgumentList $Name, $saved.hash -ScriptBlock {
             param($name, $hash)
@@ -138,6 +170,31 @@ function Save-IntegrityHostCrashes([guid]$VmId, [datetime]$Started, [string]$Out
     })
     ConvertTo-Json -InputObject $crashes -Depth 3 |
         Set-Content -LiteralPath (Join-Path $Output 'host-guest-crashes.json') -Encoding utf8
+    $crashes
+}
+
+function Save-IntegrityGuestDumps($Session, [datetime]$Started, [string]$Output) {
+    $dumps = @(Invoke-Command -Session $Session -ArgumentList $Started.ToUniversalTime() -ScriptBlock {
+        param($start)
+        $directory = Get-ItemPropertyValue -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl' -Name MinidumpDir
+        $directory = [Environment]::ExpandEnvironmentVariables($directory)
+        if (Test-Path -LiteralPath $directory) {
+            Get-ChildItem -LiteralPath $directory -Filter '*.dmp' -File |
+                Where-Object LastWriteTimeUtc -ge $start | Select-Object FullName, Name, Length, LastWriteTimeUtc
+        }
+    })
+    $receipts = @(foreach ($dump in $dumps) {
+        $destination = Join-Path $Output $dump.Name
+        Copy-Item -FromSession $Session -LiteralPath $dump.FullName -Destination $destination
+        if ((Get-Item -LiteralPath $destination).Length -ne $dump.Length) { throw "Guest dump copy length differs for $($dump.Name)" }
+        @{ name = $dump.Name; bytes = $dump.Length; sha256 = (Get-FileHash -LiteralPath $destination).Hash
+            last_write_utc = $dump.LastWriteTimeUtc }
+    })
+    @{
+        status = if ($receipts.Count) { 'saved' } else { 'no-dump-written' }
+        files = $receipts
+    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $Output 'guest-dumps.json') -Encoding utf8
+    $receipts.Count
 }
 
 function Save-IntegrityFailure($Session, [string]$Name, [string]$Output) {

@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\NativeRegressionCases.ps1"
 . "$PSScriptRoot/../../lab/QualificationInterruption.ps1"
 . "$PSScriptRoot/SeededSoakPlan.ps1"
+. "$PSScriptRoot/../../lab/IntegrityWindowProof.ps1"
 
 $cut = @{ hold_at = 'apply-mid-ranges'; hold_reported = $true; recovered_after_it = $true
     recovery_mode = Get-RunningRecoveryMode 'The recovery finished: the volume is converted.' }
@@ -230,7 +231,31 @@ try {
         $cases += $client
     }
     $eventFixture = $cases | Where-Object case_id -eq 'integrity-event-131'
-    $eventFixture.integrity_fixture = @{ content = 'lived-in'; directory_entries = 4000; check_agrees = $true }
+    $eventFixture.route = 'integrity'; $eventFixture.windows = 26300; $eventFixture.windows_edition = 48
+    $eventFixture.observed_target_format = 'dev-drive'; $eventFixture.observed_target_clusters = 4096
+    $eventFixture.integrity_fixture = @{
+        content = 'lived-in'; directory_entries = 4000; check_agrees = $true; source_bytes = 50GB
+        ntfs_sector_bytes = 512; ntfs_cluster_bytes = 4096; ntfs_record_bytes = 1024
+        mounted_refs_clusters = 4096; refs_version = '3.14'
+    }
+    $acceptance = @{ steps = @(
+        @{ step = 'fill the volume and free it'; ok = $true; started_utc = '2026-11-24T12:00:00Z'; finished_utc = '2026-11-24T12:00:30Z' }
+        @{ step = 'mount again'; ok = $true; started_utc = '2026-11-24T12:00:31Z'; finished_utc = '2026-11-24T12:00:36Z' }
+    ) }
+    $eventFixture.integrity_clock = @{
+        before = @{ host_before_utc = '2026-11-24T11:59:59Z'; guest_utc = '2026-11-24T11:59:58Z'; host_after_utc = '2026-11-24T11:59:59.025Z' }
+        after = @{ host_before_utc = '2026-11-24T12:00:38Z'; guest_utc = '2026-11-24T12:00:37Z'; host_after_utc = '2026-11-24T12:00:38.020Z' }
+    }
+    $cpuBatches = @(
+        @{ started_utc = '2026-11-24T11:59:00Z'; finished_utc = '2026-11-24T11:59:01Z'; hashes = 500 }
+        @{ started_utc = '2026-11-24T12:00:03Z'; finished_utc = '2026-11-24T12:00:04Z'; hashes = 200 }
+        @{ started_utc = '2026-11-24T12:00:32.100Z'; finished_utc = '2026-11-24T12:00:33Z'; hashes = 300 }
+    )
+    $eventFixture.integrity_windows = @(Get-Integrity131Windows $acceptance $cpuBatches $eventFixture.integrity_clock)
+    foreach ($loaded in $cases | Where-Object case_id -in @('integrity-native-loaded', 'integrity-converted-loaded', 'integrity-lived-in')) {
+        $loaded.integrity_clock = $eventFixture.integrity_clock
+        $loaded.integrity_windows = @(Get-Integrity131Windows $acceptance $cpuBatches $loaded.integrity_clock)
+    }
     $wide = $cases | Where-Object case_id -eq 'lived-in-64k'
     $wide.route = 'data'; $wide.windows = '26300'; $wide.windows_edition = 48; $wide.refs = '3.14'
     $wide.observed_target_format = 'dev-drive'; $wide.observed_target_clusters = 65536
@@ -344,6 +369,60 @@ try {
     Save-Json $lab $labPath
     Invoke-Gate 'missing-event-131-preflight' 'Incomplete ReFS event 131 fixture evidence'
     $eventFixture.integrity_fixture.check_agrees = $true
+    $eventFixture.observed_target_format = 'standard'
+    Save-Json $lab $labPath
+    Invoke-Gate 'wrong-event-131-format' 'Incomplete ReFS event 131 fixture evidence'
+    $eventFixture.observed_target_format = 'dev-drive'
+    $eventFixture.observed_target_clusters = 65536
+    Save-Json $lab $labPath
+    Invoke-Gate 'wrong-event-131-allocation-unit' 'Incomplete ReFS event 131 fixture evidence'
+    $eventFixture.observed_target_clusters = 4096
+    $eventFixture.windows = 26100
+    Save-Json $lab $labPath
+    Invoke-Gate 'wrong-event-131-windows' 'Incomplete ReFS event 131 fixture evidence'
+    $eventFixture.windows = 26300
+
+    $validClock = $eventFixture.integrity_clock
+    $eventFixture.integrity_clock = $null
+    Save-Json $lab $labPath
+    Invoke-Gate 'event-131-no-clock' 'Incomplete ReFS event 131 host and guest clock evidence'
+    $eventFixture.integrity_clock = @{
+        before = $validClock.after
+        after = $validClock.before
+    }
+    Save-Json $lab $labPath
+    Invoke-Gate 'event-131-reversed-clock' 'Incomplete ReFS event 131 host and guest clock evidence'
+    $eventFixture.integrity_clock = $validClock
+    $validWindows = $eventFixture.integrity_windows
+    $eventFixture.host_load = @{ loaded = $true; samples = 12 }
+    $eventFixture.integrity_windows = @(Get-Integrity131Windows $acceptance @($cpuBatches[0]) $eventFixture.integrity_clock)
+    Save-Json $lab $labPath
+    Invoke-Gate 'event-131-whole-run-load-only' 'Incomplete ReFS event 131 CPU load evidence for fill'
+    $eventFixture.integrity_windows = @(Get-Integrity131Windows $acceptance $cpuBatches[0..1] $eventFixture.integrity_clock)
+    Save-Json $lab $labPath
+    Invoke-Gate 'event-131-missing-remount-load' 'Incomplete ReFS event 131 CPU load evidence for mount again'
+    $eventFixture.integrity_windows = $validWindows
+    $eventFixture.integrity_windows[1].cpu = $cpuBatches[1]
+    Save-Json $lab $labPath
+    Invoke-Gate 'event-131-outside-remount' 'Incomplete ReFS event 131 CPU load evidence for mount again'
+    $eventFixture.integrity_windows = @(Get-Integrity131Windows $acceptance $cpuBatches $eventFixture.integrity_clock)
+    $eventFixture.integrity_windows[1].cpu = $eventFixture.integrity_windows[1].cpu.Clone()
+    $eventFixture.integrity_windows[1].cpu.hashes = 0
+    Save-Json $lab $labPath
+    Invoke-Gate 'event-131-idle-worker' 'Incomplete ReFS event 131 CPU load evidence for mount again'
+    $eventFixture.integrity_windows = @(Get-Integrity131Windows $acceptance $cpuBatches $eventFixture.integrity_clock)
+    $eventFixture.integrity_windows[1].finished_utc = '2026-11-24T12:00:30Z'
+    Save-Json $lab $labPath
+    Invoke-Gate 'event-131-reversed-remount' 'Incomplete ReFS event 131 CPU load evidence for mount again'
+    $eventFixture.integrity_windows = @(Get-Integrity131Windows $acceptance $cpuBatches $eventFixture.integrity_clock)
+    Save-Json $lab $labPath
+    $loadedControl = $cases | Where-Object case_id -eq 'integrity-native-loaded'
+    $controlWindows = $loadedControl.integrity_windows
+    $loadedControl.integrity_windows = @()
+    Save-Json $lab $labPath
+    Invoke-Gate 'native-loaded-missing-window' 'Incomplete integrity-native-loaded acceptance evidence'
+    $loadedControl.integrity_windows = $controlWindows
+    Save-Json $lab $labPath
     $record = Get-Content -LiteralPath (Join-Path $root 'all-valid/QUALIFICATION.json') -Raw | ConvertFrom-Json
     $bootProfile = $record.profiles | Where-Object case_id -CEQ 'full-system'
     if ($bootProfile.boot_files.winload_efi_sha256 -cne $boot.boot.signatures[0].sha256 -or
@@ -575,7 +654,7 @@ try {
                 $event
             }
         }
-        Save-IntegrityHostCrashes -VmId $vm -Started $started -Output $root
+        $null = Save-IntegrityHostCrashes -VmId $vm -Started $started -Output $root
         $crashes = Get-Content -LiteralPath (Join-Path $root 'host-guest-crashes.json') -Raw | ConvertFrom-Json -NoEnumerate
         if ($crashes -isnot [array] -or $crashes.Count -ne 1 -or $crashes[0].record -ne 42 -or
             $crashes[0].bugcheck -ne '0x139' -or ([datetimeoffset]$crashes[0].time_utc).UtcDateTime -ne $started.AddSeconds(1) -or

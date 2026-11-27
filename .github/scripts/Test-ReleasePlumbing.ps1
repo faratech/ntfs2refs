@@ -18,12 +18,16 @@ function Assert-WorkflowReferences([string]$Yaml, [string]$Name) {
 }
 
 function Assert-ReleaseDependencies([string]$Yaml) {
-    foreach ($job in 'package', 'publish') {
+    $requiredDependencies = [ordered]@{
+        package = 'build', 'native', 'soak', 'lab'
+        'verify-package' = 'build', 'package'
+        publish = 'build', 'verify-package'
+    }
+    foreach ($job in $requiredDependencies.Keys) {
         $block = [regex]::Match($Yaml, "(?ms)^  ${job}:\r?\n(.*?)(?=^  [\w-]+:\r?$|\z)").Groups[1].Value
         $match = [regex]::Match($block, '(?m)^    needs:[ \t]*\[([^\]]+)\]')
         $needs = @($match.Groups[1].Value -split ',' | ForEach-Object Trim)
-        $required = if ($job -eq 'package') { 'build', 'native', 'soak', 'lab' } else { 'build', 'package' }
-        foreach ($dependency in $required) {
+        foreach ($dependency in $requiredDependencies[$job]) {
             if ($dependency -cnotin $needs) { throw "$job must depend on $dependency" }
         }
         if ($job -eq 'publish' -and $block -notmatch '(?m)^    if:[ \t]+(?:\$\{\{[ \t]*)?inputs\.publish(?:[ \t]*\}\})?[ \t]*\r?$') {
@@ -47,6 +51,7 @@ Assert-ReleaseDependencies $release
 Assert-Fails { Assert-WorkflowReferences 'uses: actions/checkout@3d3c42e5aac5ba805da76410c181273ba90b1' 'bad-pin' } '40-hex action pin'
 Assert-Fails { Assert-WorkflowReferences 'uses: ./.github/workflows/not-present.yml' 'missing-workflow' } 'Missing or invalid local workflow'
 Assert-Fails { Assert-ReleaseDependencies ($release.Replace('[build, native, soak, lab]', '[build, native, soak]')) } 'package must depend on lab'
+Assert-Fails { Assert-ReleaseDependencies ($release.Replace('[build, verify-package]', '[build, package]')) } 'publish must depend on verify-package'
 Assert-Fails { Assert-ReleaseDependencies ($release.Replace('if: inputs.publish', 'if: always()')) } 'explicit publication input'
 
 $coordinator = Join-Path $PSScriptRoot 'Invoke-PrivateQualification.ps1'

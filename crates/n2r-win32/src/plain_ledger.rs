@@ -20,7 +20,10 @@
 //!   every ledger row to the listings taken before and after the run.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 /// The run's records: the ledger of what was converted to plain.
 pub const LEDGER_FILE: &str = "plain-conversions.json";
@@ -697,9 +700,11 @@ pub fn dropped_stream_names(kind: PlainKind) -> &'static [&'static str] {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeclaredDrops {
     by_object: BTreeMap<(u64, u16), Vec<Vec<u16>>>,
+    dropped_stream_count: u64,
     /// The objects left out of the new tree altogether (`cloud_left_out`),
     /// each declared by its own row.
     left_out: BTreeMap<(u64, u16), LedgerLeftOut>,
+    left_out_totals: LeftOutTotals,
 }
 
 impl DeclaredDrops {
@@ -805,9 +810,31 @@ impl DeclaredDrops {
                 "MFT record {record} is both left out and declared to drop a stream"
             ));
         }
+        let mut left_out_totals = LeftOutTotals::default();
+        for object in left_out.values() {
+            if object.directory {
+                left_out_totals.directories += 1;
+            } else {
+                left_out_totals.files += 1;
+            }
+            left_out_totals.streams = left_out_totals
+                .streams
+                .checked_add(object.streams)
+                .ok_or("left-out stream count overflow")?;
+            left_out_totals.bytes = left_out_totals
+                .bytes
+                .checked_add(object.bytes)
+                .ok_or("left-out logical bytes overflow")?;
+        }
+        let dropped_stream_count = by_object
+            .values()
+            .try_fold(0u64, |count, names| count.checked_add(names.len() as u64))
+            .ok_or("dropped stream count overflow")?;
         Ok(Self {
             by_object,
+            dropped_stream_count,
             left_out,
+            left_out_totals,
         })
     }
 
@@ -824,18 +851,7 @@ impl DeclaredDrops {
 
     /// What the left-out objects take in all.
     pub fn left_out_totals(&self) -> LeftOutTotals {
-        self.left_out
-            .values()
-            .fold(LeftOutTotals::default(), |mut totals, object| {
-                if object.directory {
-                    totals.directories += 1;
-                } else {
-                    totals.files += 1;
-                }
-                totals.streams += object.streams;
-                totals.bytes += object.bytes;
-                totals
-            })
+        self.left_out_totals
     }
 
     /// Every object declared left out has to have been met in the source,
@@ -911,10 +927,7 @@ impl DeclaredDrops {
 
     /// How many streams are declared dropped in all.
     pub fn total(&self) -> u64 {
-        self.by_object
-            .values()
-            .map(|names| names.len() as u64)
-            .sum()
+        self.dropped_stream_count
     }
 
     /// The streams declared dropped from one object of the new tree, given
@@ -953,7 +966,10 @@ impl DeclaredDrops {
     /// The admission's raw stream count less the declared drops and the
     /// streams of the objects left out: what the new volume holds.
     pub fn expected_streams(&self, admitted: u64) -> Result<u64, String> {
-        let gone = self.total() + self.left_out_totals().streams;
+        let gone = self
+            .total()
+            .checked_add(self.left_out_totals().streams)
+            .ok_or("dropped and left-out stream count overflow")?;
         admitted.checked_sub(gone).ok_or_else(|| {
             format!(
                 "{gone} streams are declared dropped or left out and the source holds {admitted}"
@@ -962,10 +978,10 @@ impl DeclaredDrops {
     }
 }
 
-static DECLARED: std::sync::Mutex<Option<DeclaredDrops>> = std::sync::Mutex::new(None);
+static DECLARED: Mutex<Option<Arc<DeclaredDrops>>> = Mutex::new(None);
 
 /// Scope the native count consumers to the facts held by one recovery owner.
-pub struct RecoveryDropsScope(Option<DeclaredDrops>);
+pub struct RecoveryDropsScope(Option<Arc<DeclaredDrops>>);
 
 impl Drop for RecoveryDropsScope {
     fn drop(&mut self) {
@@ -978,7 +994,7 @@ pub fn declare_recovery(drops: DeclaredDrops) -> RecoveryDropsScope {
         DECLARED
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .replace(drops),
+            .replace(Arc::new(drops)),
     )
 }
 
@@ -987,16 +1003,17 @@ pub fn declare_recovery(drops: DeclaredDrops) -> RecoveryDropsScope {
 pub fn declare(drops: DeclaredDrops) {
     *DECLARED
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(drops);
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::new(drops));
 }
 
-/// What this process declared; none where nothing was.
-pub fn declared() -> DeclaredDrops {
+/// An immutable snapshot of the active run's drops. Walking a source
+/// record can take this snapshot without copying any identities.
+pub fn declared() -> Arc<DeclaredDrops> {
     DECLARED
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get_or_insert_with(Arc::default)
         .clone()
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

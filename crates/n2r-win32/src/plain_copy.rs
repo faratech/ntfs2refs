@@ -12,20 +12,18 @@
 //! then supplied from this copy (`SupplyKind::PlainCopy`), never from the
 //! source's clusters.
 //!
-//! Each copy is hashed as it is written, read back once and then held open
-//! with no other writer or deleter allowed, as every working file of a run
-//! is. [`PlainCopyStore::reverify`] reads every copy again at the verify
+//! Each copy is hashed as it is appended to the held payload file and read
+//! back through the same handle. The file excludes other writers and
+//! deleters. [`PlainCopyStore::reverify`] reads every range again at the verify
 //! gate; [`PlainCopyStore::remove`] deletes the store when the run is
 //! finalized, cancelled or rolled back. A store that is dropped is left on
 //! the disk, so a run cut short keeps its working files for the way back.
-//!
-//! No feature is converted through this store yet: it is the mechanism, with
-//! its tests, for those that will be (WOF first).
 use sha2::{Digest, Sha256};
 use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 
 /// FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_SEQUENTIAL_SCAN |
@@ -45,29 +43,13 @@ pub struct PlainCopyKey {
     pub stream_name_utf16: Vec<u16>,
 }
 
-impl PlainCopyKey {
-    /// The copy's file name: the identity and the stream name in hex, so
-    /// that no two keys share one and no name needs escaping.
-    pub fn file_name(&self) -> String {
-        let mut name = format!("{:016x}-{:04x}", self.record_number, self.sequence_number);
-        if !self.stream_name_utf16.is_empty() {
-            name.push('-');
-            for unit in &self.stream_name_utf16 {
-                name.push_str(&format!("{unit:04x}"));
-            }
-        }
-        name.push_str(".plain");
-        name
-    }
-}
-
 /// One copy in the store.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct PlainCopyPin {
     pub record_number: u64,
     pub sequence_number: u16,
     pub stream_name_utf16: Vec<u16>,
-    pub file_name: String,
+    pub offset: u64,
     pub bytes: u64,
     pub sha256: String,
     /// The copy's [`crate::content_digest`] (XXH3-128): what the shadow's
@@ -75,15 +57,41 @@ pub struct PlainCopyPin {
     pub content_digest: String,
 }
 
-struct Held {
-    pin: PlainCopyPin,
-    file: File,
-}
+const PAYLOAD_FILE: &str = "payloads.plain";
 
 /// The run's plain copies, in a directory of their own.
 pub struct PlainCopyStore {
     directory: PathBuf,
-    copies: Vec<Held>,
+    payload: Mutex<File>,
+    bytes: u64,
+    copies: Vec<PlainCopyPin>,
+}
+
+struct PlainCopyReader<'a> {
+    file: &'a Mutex<File>,
+    position: u64,
+    remaining: u64,
+}
+
+impl Read for PlainCopyReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let limit = self.remaining.min(buffer.len() as u64) as usize;
+        if limit == 0 {
+            return Ok(0);
+        }
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| io::Error::other("plain payload lock poisoned"))?;
+        file.seek(SeekFrom::Start(self.position))?;
+        let count = file.read(&mut buffer[..limit])?;
+        if count == 0 {
+            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
+        }
+        self.position += count as u64;
+        self.remaining -= count as u64;
+        Ok(count)
+    }
 }
 
 fn invalid(message: String) -> io::Error {
@@ -116,8 +124,24 @@ impl PlainCopyStore {
                 ),
             )
         })?;
+        let path = directory.join(PAYLOAD_FILE);
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true).read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.share_mode(1); // FILE_SHARE_READ
+        }
+        let payload = options.open(&path).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("creating plain payload {}: {error}", path.display()),
+            )
+        })?;
         Ok(Self {
             directory: directory.to_owned(),
+            payload: Mutex::new(payload),
+            bytes: 0,
             copies: Vec::new(),
         })
     }
@@ -126,13 +150,11 @@ impl PlainCopyStore {
         &self.directory
     }
     pub fn pins(&self) -> impl Iterator<Item = &PlainCopyPin> {
-        self.copies.iter().map(|held| &held.pin)
+        self.copies.iter()
     }
     /// The bytes the store holds, for the working-storage account.
     pub fn bytes(&self) -> u64 {
-        self.copies
-            .iter()
-            .fold(0u64, |sum, held| sum.saturating_add(held.pin.bytes))
+        self.bytes
     }
 
     /// Copies what `source` reads into the store under `key`. `expected` is
@@ -144,24 +166,30 @@ impl PlainCopyStore {
         source: &mut impl Read,
         expected: u64,
     ) -> io::Result<&PlainCopyPin> {
-        if self.copies.iter().any(|held| {
-            held.pin.record_number == key.record_number
-                && held.pin.sequence_number == key.sequence_number
-                && held.pin.stream_name_utf16 == key.stream_name_utf16
-        }) {
-            return Err(invalid(format!(
-                "MFT record {} already has a plain copy of that stream",
-                key.record_number
-            )));
+        let index = match self.search(&key) {
+            Ok(_) => {
+                return Err(invalid(format!(
+                    "MFT record {} already has a plain copy of that stream",
+                    key.record_number
+                )));
+            }
+            Err(index) => index,
+        };
+        let offset = self.bytes;
+        let end = offset
+            .checked_add(expected)
+            .ok_or_else(|| invalid("plain payload length overflow".into()))?;
+        let file = self
+            .payload
+            .get_mut()
+            .map_err(|_| io::Error::other("plain payload lock poisoned"))?;
+        if file.metadata()?.len() != offset {
+            return Err(invalid(
+                "plain payload length differs from its completed copies".into(),
+            ));
         }
-        let file_name = key.file_name();
-        let path = self.directory.join(&file_name);
         let written = (|| {
-            let mut file = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .read(true)
-                .open(&path)?;
+            file.seek(SeekFrom::Start(offset))?;
             let mut buffer = vec![0u8; 1 << 20];
             let mut hash = Sha256::new();
             let mut content = crate::content_digest::Hasher::new();
@@ -171,10 +199,18 @@ impl PlainCopyStore {
                 if count == 0 {
                     break;
                 }
+                bytes = bytes
+                    .checked_add(count as u64)
+                    .ok_or_else(|| invalid("plain stream length overflow".into()))?;
+                if bytes > expected {
+                    return Err(invalid(format!(
+                        "the plain read of MFT record {} exceeded its {expected}-byte stream",
+                        key.record_number
+                    )));
+                }
                 hash.update(&buffer[..count]);
                 content.update(&buffer[..count]);
                 file.write_all(&buffer[..count])?;
-                bytes += count as u64;
             }
             if bytes != expected {
                 return Err(invalid(format!(
@@ -185,8 +221,8 @@ impl PlainCopyStore {
             file.sync_all()?;
             let sha256 = hex::encode(hash.finalize());
             // Read back once, through the handle it was written with.
-            file.seek(SeekFrom::Start(0))?;
-            let (read, read_sha256) = digest(&mut file, &mut buffer)?;
+            file.seek(SeekFrom::Start(offset))?;
+            let (read, read_sha256) = digest(&mut Read::by_ref(file).take(expected), &mut buffer)?;
             if read != bytes || read_sha256 != sha256 {
                 return Err(invalid(format!(
                     "the plain copy of MFT record {} did not read back as it was written",
@@ -199,38 +235,57 @@ impl PlainCopyStore {
             Ok(done) => done,
             Err(error) => {
                 // Nothing half-written stays in the store.
-                let _ = std::fs::remove_file(&path);
+                if let Err(truncate) = file.set_len(offset) {
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!(
+                            "{error}; truncating the failed copy at {offset} in {}: {truncate}",
+                            self.directory.display()
+                        ),
+                    ));
+                }
                 return Err(error);
             }
         };
-        let file = hold(&path)?;
-        self.copies.push(Held {
-            pin: PlainCopyPin {
+        self.bytes = end;
+        self.copies.insert(
+            index,
+            PlainCopyPin {
                 record_number: key.record_number,
                 sequence_number: key.sequence_number,
                 stream_name_utf16: key.stream_name_utf16,
-                file_name,
+                offset,
                 bytes,
                 sha256,
                 content_digest,
             },
-            file,
-        });
-        Ok(&self.copies.last().expect("just pushed").pin)
+        );
+        Ok(&self.copies[index])
     }
 
-    fn find(&self, key: &PlainCopyKey) -> Option<&Held> {
-        self.copies.iter().find(|held| {
-            held.pin.record_number == key.record_number
-                && held.pin.sequence_number == key.sequence_number
-                && held.pin.stream_name_utf16 == key.stream_name_utf16
+    fn search(&self, key: &PlainCopyKey) -> Result<usize, usize> {
+        self.copies.binary_search_by(|pin| {
+            (
+                pin.record_number,
+                pin.sequence_number,
+                pin.stream_name_utf16.as_slice(),
+            )
+                .cmp(&(
+                    key.record_number,
+                    key.sequence_number,
+                    key.stream_name_utf16.as_slice(),
+                ))
         })
+    }
+
+    fn find(&self, key: &PlainCopyKey) -> Option<&PlainCopyPin> {
+        self.search(key).ok().map(|index| &self.copies[index])
     }
 
     /// Reads `output.len()` bytes of one copy from `offset`; a range past
     /// its end is an error.
     pub fn read_at(&self, key: &PlainCopyKey, offset: u64, output: &mut [u8]) -> io::Result<()> {
-        let held = self.find(key).ok_or_else(|| {
+        let pin = self.find(key).ok_or_else(|| {
             invalid(format!(
                 "MFT record {} has no plain copy of that stream",
                 key.record_number
@@ -238,45 +293,61 @@ impl PlainCopyStore {
         })?;
         if offset
             .checked_add(output.len() as u64)
-            .is_none_or(|end| end > held.pin.bytes)
+            .is_none_or(|end| end > pin.bytes)
         {
             return Err(invalid(format!(
                 "a read of {} bytes at {offset} escapes the {}-byte plain copy of MFT record {}",
                 output.len(),
-                held.pin.bytes,
+                pin.bytes,
                 key.record_number
             )));
         }
-        let mut file = &held.file;
-        file.seek(SeekFrom::Start(offset))?;
+        let mut file = self
+            .payload
+            .lock()
+            .map_err(|_| io::Error::other("plain payload lock poisoned"))?;
+        file.seek(SeekFrom::Start(pin.offset + offset))?;
         file.read_exact(output)
     }
 
     /// Reads one copy from its start, for the shadow to be supplied from.
     pub fn reader(&self, key: &PlainCopyKey) -> io::Result<impl Read + '_> {
-        let held = self.find(key).ok_or_else(|| {
+        let pin = self.find(key).ok_or_else(|| {
             invalid(format!(
                 "MFT record {} has no plain copy of that stream",
                 key.record_number
             ))
         })?;
-        let mut file = &held.file;
-        file.seek(SeekFrom::Start(0))?;
-        Ok(file.take(held.pin.bytes))
+        Ok(PlainCopyReader {
+            file: &self.payload,
+            position: pin.offset,
+            remaining: pin.bytes,
+        })
     }
 
     /// Reads every copy again and holds it to what was written: the verify
     /// gate before the first write to the source.
     pub fn reverify(&self) -> io::Result<()> {
         let mut buffer = vec![0u8; 1 << 20];
-        for held in &self.copies {
-            let mut file = &held.file;
-            file.seek(SeekFrom::Start(0))?;
-            let (bytes, sha256) = digest(&mut file, &mut buffer)?;
-            if bytes != held.pin.bytes || sha256 != held.pin.sha256 {
+        let mut file = self
+            .payload
+            .lock()
+            .map_err(|_| io::Error::other("plain payload lock poisoned"))?;
+        if file.metadata()?.len() != self.bytes {
+            return Err(invalid("held plain payload length changed".into()));
+        }
+        for pin in &self.copies {
+            file.seek(SeekFrom::Start(pin.offset))?;
+            let (bytes, sha256) =
+                digest(&mut Read::by_ref(&mut *file).take(pin.bytes), &mut buffer)?;
+            if bytes != pin.bytes || sha256 != pin.sha256 {
                 return Err(invalid(format!(
-                    "the plain copy {} of MFT record {} changed: {bytes} bytes, sha256 {sha256}; it was {} bytes, sha256 {}",
-                    held.pin.file_name, held.pin.record_number, held.pin.bytes, held.pin.sha256
+                    "the plain copy at {}:{} of MFT record {} changed: {bytes} bytes, sha256 {sha256}; it was {} bytes, sha256 {}",
+                    self.directory.join(PAYLOAD_FILE).display(),
+                    pin.offset,
+                    pin.record_number,
+                    pin.bytes,
+                    pin.sha256
                 )));
             }
         }
@@ -288,11 +359,11 @@ impl PlainCopyStore {
     /// the store did not write is left, and the directory with it, and that
     /// is an error that names it.
     pub fn remove(self) -> io::Result<()> {
-        let Self { directory, copies } = self;
-        for held in copies {
-            drop(held.file);
-            std::fs::remove_file(directory.join(&held.pin.file_name))?;
-        }
+        let Self {
+            directory, payload, ..
+        } = self;
+        drop(payload);
+        std::fs::remove_file(directory.join(PAYLOAD_FILE))?;
         if let Some(entry) = std::fs::read_dir(&directory)?.next() {
             return Err(io::Error::other(format!(
                 "the plain copy store {} holds {} that it did not write; it is left",
@@ -359,7 +430,7 @@ fn lifecycle() -> std::sync::MutexGuard<'static, Lifecycle> {
 
 /// Names the streams this run copies at its read-only observation of the
 /// frozen source, into `directory` (made then; it must not exist).
-pub fn arm(directory: &Path, requests: Vec<PlainCopyRequest>) -> io::Result<()> {
+pub fn arm(directory: &Path, mut requests: Vec<PlainCopyRequest>) -> io::Result<()> {
     let mut state = lifecycle();
     if !matches!(*state, Lifecycle::Idle) {
         return Err(invalid(
@@ -367,6 +438,9 @@ pub fn arm(directory: &Path, requests: Vec<PlainCopyRequest>) -> io::Result<()> 
         ));
     }
     if !requests.is_empty() {
+        // Copying in key order appends to the sorted store without shifting
+        // existing pins or retaining a second per-stream lookup index.
+        requests.sort_unstable_by(|left, right| left.key.cmp(&right.key));
         *state = Lifecycle::Armed {
             directory: directory.to_owned(),
             requests,
@@ -469,7 +543,7 @@ pub fn require_taken() -> io::Result<()> {
 /// The copy of a stream, where this process holds one.
 pub fn taken_pin(key: &PlainCopyKey) -> Option<PlainCopyPin> {
     match &*lifecycle() {
-        Lifecycle::Taken(store) => store.find(key).map(|held| held.pin.clone()),
+        Lifecycle::Taken(store) => store.find(key).cloned(),
         _ => None,
     }
 }
@@ -638,21 +712,6 @@ pub fn open_by_id_with(volume: &File, record: u64, sequence: u16, flags: u32) ->
     Ok(unsafe { File::from_raw_handle(handle) })
 }
 
-/// Opens a written copy for reading only, with nobody else allowed to
-/// write, rename or delete it while it is held.
-fn hold(path: &Path) -> io::Result<File> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        // FILE_SHARE_READ only.
-        OpenOptions::new().read(true).share_mode(1).open(path)
-    }
-    #[cfg(not(windows))]
-    {
-        File::open(path)
-    }
-}
-
 /// Opens an object of a mounted volume for a plain read: through whatever
 /// filter owns it, without FILE_FLAG_OPEN_REPARSE_POINT, recalling nothing.
 /// `path` is a Win32 path, such as `\\?\Volume{...}\dir\file` or with a
@@ -693,17 +752,6 @@ mod tests {
     }
 
     #[test]
-    fn each_stream_has_a_name_of_its_own() {
-        assert_eq!(key(0x41, "").file_name(), "0000000000000041-0003.plain");
-        assert_eq!(
-            key(0x41, "ab").file_name(),
-            "0000000000000041-0003-00610062.plain"
-        );
-        assert_ne!(key(0x41, "").file_name(), key(0x42, "").file_name());
-        assert_ne!(key(0x41, "a").file_name(), key(0x41, "b").file_name());
-    }
-
-    #[test]
     fn a_copy_is_hashed_held_read_back_and_removed() {
         let parent = tempfile::tempdir().unwrap();
         let directory = parent.path().join("plain-copies");
@@ -725,13 +773,17 @@ mod tests {
         // The same stream twice is refused.
         assert!(store.copy(key(64, ""), &mut &b"x"[..], 1).is_err());
 
-        let mut back = Vec::new();
-        store
-            .reader(&key(64, ""))
-            .unwrap()
-            .read_to_end(&mut back)
-            .unwrap();
-        assert_eq!(back, data);
+        {
+            let mut unnamed = store.reader(&key(64, "")).unwrap();
+            let mut named = store.reader(&key(64, "s")).unwrap();
+            let mut back = vec![0; 64];
+            unnamed.read_exact(&mut back).unwrap();
+            let mut named_bytes = Vec::new();
+            named.read_to_end(&mut named_bytes).unwrap();
+            assert_eq!(named_bytes, b"named");
+            unnamed.read_to_end(&mut back).unwrap();
+            assert_eq!(back, data);
+        }
         assert!(store.reader(&key(65, "")).is_err());
         store.reverify().unwrap();
 
@@ -740,9 +792,10 @@ mod tests {
         assert!(
             OpenOptions::new()
                 .write(true)
-                .open(directory.join(&pin.file_name))
+                .open(directory.join(PAYLOAD_FILE))
                 .is_err()
         );
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
 
         store.remove().unwrap();
         assert!(!directory.exists());
@@ -763,7 +816,12 @@ mod tests {
         );
         assert!(store.copy(key(70, ""), &mut &b"abcde"[..], 4).is_err());
         assert_eq!(store.pins().count(), 0);
-        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::metadata(directory.join(PAYLOAD_FILE))
+                .unwrap()
+                .len(),
+            0
+        );
         store.remove().unwrap();
     }
 
@@ -777,7 +835,7 @@ mod tests {
         let error = store.remove().unwrap_err().to_string();
         assert!(error.contains("stranger.txt"), "{error}");
         assert!(directory.join("stranger.txt").exists());
-        assert!(!directory.join(key(80, "").file_name()).exists());
+        assert!(!directory.join(PAYLOAD_FILE).exists());
     }
 
     #[test]

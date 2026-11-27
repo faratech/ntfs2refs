@@ -62,6 +62,34 @@ sample. Native idle control `completion-native-control-032528-idle`
 also passed five remounts and the reboot checks. The historical event 131
 and earlier native control failures remain open.
 
+### Payload and resource evidence
+
+Windows 11 build 26300 converted all 500,511 objects in
+`completion-scale-client-500k-042355` to a 4 KiB Dev Drive with an identical
+listing. The baseline converter SHA-256 was
+`ad386e88ec2c9f388dbed77b2304eb729aefc5d177ea48211e261e3368040305`.
+Conversion took 1,809.6 seconds. Its samples reached 986,651 handles,
+4,024 MiB private bytes, 3,657 MiB working set and 17,871 MiB of logical
+working files. The host ran other engineering work during the experiment.
+The result confirms native correctness for this sample and records its
+resource use. Matched timing and explicit-ceiling recovery are still due.
+
+The single-file payload development build used SHA-256
+`68c28a9eab5e7ae3da27c1cd14e91dd95a88bcf83a181dbc1892603ab3e70d27`.
+Round `completion-payload-043148` passed WOF resume and rollback, Cloud
+Files resume, provider-down refusal and resume with two approved omissions.
+The recovered listings matched, including the cases with a malformed
+optional report. This build removes the per-copy handle and repeated
+disposition-map clones. Required namespace and constructor state still
+grow with the object count.
+
+Windows gate `pp0441` matched the listings for both baseline fixtures,
+the lived-in data case, 512-byte NTFS clusters and 4Kn sources to both
+target cluster sizes, and the full Windows volume. The original Windows
+installation reached the desktop from disk 0 alone with Secure Boot on.
+C: was partition 3 on ReFS 3.14 with 4 KiB clusters, and both the loader
+and ReFS driver had valid Microsoft signatures.
+
 ## Execution and verification
 
 - Preserve the Windows-built shadow, source ownership and read-only boundaries, prewrite checks, byte comparison, strict manifests, and journal flush and readback order. Use the authenticated marker bytes and recorded lifecycle to decide rollback eligibility.

@@ -10,6 +10,7 @@ param(
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\NativeRegressionCases.ps1"
 . "$PSScriptRoot/SeededSoakPlan.ps1"
+. "$PSScriptRoot/../../lab/GateRoundCases.ps1"
 function Read-Json([string]$Path) { Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable }
 $identity = Read-Json (Join-Path $Candidate 'candidate.json')
 $files = 'ntfs2refs.exe', 'ntfs2refs-recovery.exe', 'lab-volume-manifest.exe'
@@ -20,12 +21,10 @@ foreach ($file in $files) {
     if ((Get-FileHash -LiteralPath (Join-Path $Candidate "bin/$file")).Hash.ToLowerInvariant() -cne $identity.hashes[$file]) { throw "Signed candidate hash differs for $file" }
 }
 function Assert-HostedRow($Row, [string]$Label) {
-    if ($Row.converter_sha256 -cne $identity.hashes['ntfs2refs.exe'] -or $Row.listing_tool_sha256 -cne $identity.hashes['lab-volume-manifest.exe'] -or
-        $Row.outcome -notin 'converted', 'ntfs-as-before' -or -not $Row.manifest_matches -or -not $Row.cleanup_ok -or
-        ($Row.hold_at -and -not $Row.reached_hold) -or ($Row.outcome -eq 'converted' -and -not $Row.refs_version) -or
-        @($Row.events | Where-Object { $_.provider -match 'ReFS' -and $_.id -in 131, 134 }).Count) {
+    if ($Row.converter_sha256 -cne $identity.hashes['ntfs2refs.exe'] -or $Row.listing_tool_sha256 -cne $identity.hashes['lab-volume-manifest.exe']) {
         throw "Invalid hosted qualification verdict for $Label"
     }
+    Assert-HostedRoundPassed $Row $Label
 }
 function Assert-SeededSoakVerdict($Row, [string]$Profile) {
     $label = "soak $Profile seed $($Row.seed)"
@@ -65,10 +64,20 @@ $native = @(foreach ($case in $NativeRegressionCases.Keys) {
     $row
 })
 $soak = @(foreach ($profile in 'convert', 'many', 'resume', 'rollback', 'cancel') {
-    $path = Join-Path $Evidence "soak-records-$profile/rounds.jsonl"
+    $directory = Join-Path $Evidence "soak-records-$profile"
+    $path = Join-Path $directory 'rounds.jsonl'
     $rows = @(Get-Content -LiteralPath $path | ConvertFrom-Json -AsHashtable)
     if ($rows.Count -lt 1) { throw "Missing soak verdicts for $profile" }
-    foreach ($row in $rows) {
+    $receipt = Read-Json (Join-Path $directory 'campaign.json')
+    if ($receipt.schema -ne 1 -or "$($receipt.workflow_run)-$($receipt.workflow_attempt)" -cne $Request -or
+        @($receipt.profiles).Count -ne 1 -or @($receipt.profiles)[0] -cne $profile -or $receipt.minutes -ne 240 -or
+        $receipt.round_limit -ne 0 -or $receipt.stop_reason -cne 'duration' -or $receipt.elapsed_seconds -lt (240 * 60) -or
+        $receipt.rounds -ne $rows.Count -or $receipt.rows_sha256 -cne (Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant()) {
+        throw "Incomplete or mismatched soak campaign for $profile"
+    }
+    for ($index = 0; $index -lt $rows.Count; $index++) {
+        $row = $rows[$index]
+        if ($row.round -ne ($index + 1) -or $row.seed -ne ($receipt.first_seed + $index)) { throw "Missing or reordered soak round for $profile" }
         Assert-HostedRow $row "soak $profile seed $($row.seed)"
         if ($row.profile -cne $profile) { throw "Wrong soak profile for seed $($row.seed)" }
         Assert-SeededSoakVerdict $row $profile
@@ -78,6 +87,7 @@ $soak = @(foreach ($profile in 'convert', 'many', 'resume', 'rollback', 'cancel'
     }
 })
 $lab = Read-Json (Join-Path $Evidence 'release-lab/lab.json')
+if ($lab.failure) { throw "Private Hyper-V qualification failed: $($lab.failure)" }
 if ($lab.identity.schema -ne $identity.schema -or $lab.identity.tag -cne $Tag -or $lab.identity.commit -cne $Commit -or $lab.identity.request -cne $Request) {
     throw 'Hyper-V record does not identify this candidate'
 }
@@ -91,7 +101,9 @@ function Assert-CaseBinaryHash($Row, [string]$Field, [string]$File) {
 }
 $indexed = @{}
 foreach ($row in $lab.cases) {
-    if (-not $row.case_id -or $indexed.ContainsKey($row.case_id) -or -not $row.passed -or $row.outcome -cne $row.expected) { throw "Failed, duplicate or invalid Hyper-V case $($row.case_id)" }
+    if (-not $row.case_id -or $indexed.ContainsKey($row.case_id) -or $row.passed -isnot [bool] -or -not $row.passed -or $row.outcome -cne $row.expected) {
+        throw "Failed, duplicate or invalid Hyper-V case $($row.case_id)"
+    }
     $runningCase = $row.case_id -like 'c-*'
     $restartCase = $row.case_id -like 'restart-*'
     $bootOutcome = $row.outcome -cin 'converted-not-booted', 'RESUMED-NOT-BOOTED', 'ROLLED-BACK-NOT-BOOTED',
@@ -106,9 +118,9 @@ foreach ($row in $lab.cases) {
     $cleanupMatches = if ($restartCase) {
         $row.cleanup_outcome -ceq 'working storage retained by harness' -and
             ($null -eq $row.cleanup_ok -or ($row.cleanup_ok -is [bool] -and $row.cleanup_ok))
-    } elseif ($row.route -ceq 'boot') {
+    } elseif ($row.route -cin 'boot', 'data') {
         $row.cleanup_ok -is [bool] -and $row.cleanup_ok
-    } else { $true }
+    } else { $row.cleanup_ok -ne $false }
     if (-not $cleanupMatches) { throw "Incomplete Hyper-V cleanup evidence for $($row.case_id)" }
     $indexed[$row.case_id] = $row
 }
@@ -139,6 +151,14 @@ foreach ($case in $requiredLab.Keys) {
     if ($case -eq 'integrity-event-131' -and ($row.integrity_fixture.content -ne 'lived-in' -or
         $row.integrity_fixture.directory_entries -ne 4000 -or $row.integrity_fixture.check_agrees -ne $true)) {
         throw 'Incomplete ReFS event 131 fixture evidence'
+    }
+}
+$gateCases = Get-GateRoundExpectations @('fixtures', 'data', 'full', 'server', 'running')
+foreach ($case in $gateCases.Keys) {
+    if (-not $indexed.ContainsKey($case)) { throw "Missing required Hyper-V gate case $case" }
+    $row = $indexed[$case]
+    if ($row.outcome -cne $gateCases[$case] -or $row.route -cne (Get-GateRoundCaseRoute $case)) {
+        throw "Wrong outcome or route for Hyper-V gate case $case"
     }
 }
 $requiredRecovery = @{

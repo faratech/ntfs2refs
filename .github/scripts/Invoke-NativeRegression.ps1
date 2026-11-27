@@ -13,9 +13,9 @@ foreach ($key in $caseSpec.Soak.Keys) { $argsForSoak[$key] = $caseSpec.Soak[$key
 $global:LASTEXITCODE = 0
 & "$PSScriptRoot\Invoke-Soak.ps1" -Binaries $Binaries -Records $Records -Rounds 1 @argsForSoak
 if ($LASTEXITCODE -ne 0) { throw "Native regression $Case failed" }
-$rows = @(Get-Content -LiteralPath (Join-Path $Records 'rounds.jsonl') | ConvertFrom-Json)
+$rows = @(Get-Content -LiteralPath (Join-Path $Records 'rounds.jsonl') | ConvertFrom-Json -AsHashtable)
 if ($rows.Count -ne 1) { throw "$Case must produce exactly one result" }
 $row = $rows[0]
 Assert-NativeRegressionVerdict $Case $row
-$row | Add-Member -NotePropertyName case_id -NotePropertyValue $Case
+$row.case_id = $Case
 $row | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $Records 'regression.json') -Encoding utf8

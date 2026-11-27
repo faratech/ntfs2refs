@@ -2,19 +2,21 @@
 
 **GitHub Actions runs the checks** (the owner's decision of 18 November 2026,
 when the repository became public and hosted runners became free for it). A
-pull request is merged when its checks have passed on its head. Every job
-runs on `windows-2025`, Windows Server 2025 build 26100, a build the converter
-has been shown on, with the toolchain `rust-toolchain.toml` pins (Rust 1.100.0,
-x64 MSVC), installed by `scripts/Install-Toolchain.ps1`.
+pull request is merged when its checks have passed on its head. The x64
+checks run on `windows-2025`, Windows Server 2025 build 26100. A
+`windows-11-arm` job builds all workspace executables in release mode and
+starts the ARM64 converter with `--version`. Conversion and recovery on
+ARM64 still require a separate lab qualification. Both jobs use the Rust
+version pinned in `rust-toolchain.toml` through `scripts/Install-Toolchain.ps1`.
 
-`lab\Invoke-Checks.ps1 -Commit <commit>` runs the same checks locally, in a
+`lab\Invoke-Checks.ps1 -Commit <commit>` runs the x64 checks locally, in a
 worktree of its own, for a machine without the hosted runners.
 
 ## The workflows
 
 | Workflow | When | What |
 |---|---|---|
-| `workflows/ci.yml` | every push to main, every pull request, by hand | formatting and Clippy, all tests, release builds, and deterministic native conversions and recovery |
+| `workflows/ci.yml` | every push to main, every pull request, by hand | formatting and Clippy, all tests, x64 and ARM64 release builds, and deterministic x64 conversions and recovery |
 | `workflows/soak.yml` | every night at 03:17 UTC, by hand | real conversions on the runners, round after round (below) |
 | `workflows/release.yml` | dispatch from main for an existing version tag | builds, signs, qualifies, packages and optionally publishes |
 

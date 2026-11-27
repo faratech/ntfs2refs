@@ -1,11 +1,9 @@
 name: CI
 
 # Every push to main and every pull request: formatting and Clippy, all
-# tests, and the executables built in release mode, as three jobs side by
-# side on Windows Server 2025 (build 26100, a build the converter has been
-# shown on). The owner's decision of 18 November 2026, when the repository
-# became public: hosted runners are free for it, so these are the checks a
-# pull request is merged on (.github/CI.md).
+# tests, and release builds on Windows Server 2025 x64. A separate Windows
+# 11 ARM64 runner checks that the executables also build and link for ARM64.
+# Pull request checks are described in .github/CI.md.
 on:
   push:
     branches: [main]
@@ -135,3 +133,31 @@ jobs:
     uses: ./.github/workflows/native-regression.yml
     with:
       binaries: ntfs2refs-${{ github.sha }}
+
+  arm64-build:
+    name: Windows ARM64 build
+    runs-on: windows-11-arm
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned ARM64 toolchain
+        run: ./.github/scripts/Install-Toolchain.ps1 -HostArchitecture aarch64
+
+      - name: Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: release-arm64
+
+      - name: Build and start the ARM64 converter
+        run: |
+          cargo build --locked --release --workspace --bins --target aarch64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & target\aarch64-pc-windows-msvc\release\ntfs2refs.exe --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

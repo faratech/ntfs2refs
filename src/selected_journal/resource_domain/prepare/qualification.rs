@@ -43,6 +43,7 @@ pub(crate) struct ResourcePreparedConversion<'journal, 'domain, 'capture, 'proof
     windows_aliases:
         Option<std::sync::Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>>,
     _windows_alias_archive: Option<crate::boot_alias::recovery::PublishedWindowsAliasExpectations>,
+    transformations: Option<ArtifactLease>,
     // Covers publication path copies and the bounded serializer/IO workspace.
     // Drop after the corresponding owned values and their final revalidation.
     _memory: ArenaRamLease,
@@ -53,6 +54,14 @@ struct FilePin<'a> {
     path: &'a str,
     sha256: &'a str,
     bytes: u64,
+}
+
+#[derive(Serialize)]
+struct TransformationPin<'a> {
+    schema: u32,
+    file: FilePin<'a>,
+    volume_serial_number: u64,
+    file_id_128: [u8; 16],
 }
 #[derive(Serialize)]
 struct ExpectedPin<'a> {
@@ -155,6 +164,8 @@ struct Publication<'a> {
     /// Recovery accepts such a run's own states from this.
     #[serde(skip_serializing_if = "Option::is_none")]
     verify_before_handoff: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transformations: Option<TransformationPin<'a>>,
     serialized_publication_grants_authority: bool,
 }
 
@@ -333,6 +344,7 @@ pub(crate) fn persist_partition_metadata(
             review_before_handoff: None,
             // Nor the handoff after the verification (#148).
             verify_before_handoff: None,
+            transformations: None,
             serialized_publication_grants_authority: false,
         };
         source_scope
@@ -1020,6 +1032,19 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         let windows_alias_plan_sha256 = windows_aliases
             .as_deref()
             .map(|aliases| hex::encode(aliases.plan_digest()));
+        let transformations = prepared.context.publish_recovery_transformations(
+            group,
+            &path.with_file_name(n2r_win32::plain_ledger::RECOVERY_FACTS_FILE),
+        )?;
+        ensure!(
+            transformations.is_some() == !windows_source,
+            "dedicated recovery transformation facts do not match the live source route"
+        );
+        let (schema_version, kind) = if transformations.is_some() {
+            super::super::source_scope::TRANSFORMATION_ENVELOPE
+        } else {
+            super::super::source_scope::ResourceRecoverySourceScope::Dedicated.envelope_protocol()
+        };
         // Each owner check can issue dozens of native controls, while the
         // native event vector has a fixed 128-event limit. Stream complete
         // batches between checks; the caller must preserve them before it
@@ -1062,8 +1087,8 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                         )?;
                         let locator_sha = hex::encode(locator.external_sha256());
                         let publication = Publication {
-                            schema_version: 1,
-                            kind: "resource-allocation-recovery-envelope-v1",
+                            schema_version,
+                            kind,
                             source_scope:
                                 super::super::source_scope::ResourceRecoverySourceScope::Dedicated,
                             source: prepared.inner._facts.source,
@@ -1117,6 +1142,18 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                             target_refs_version: n2r_win32::target_refs_version::recorded(),
                             review_before_handoff: crate::review::recorded(),
                             verify_before_handoff: crate::verify_first::recorded(),
+                            transformations: transformations.as_ref().map(|lease| {
+                                TransformationPin {
+                                    schema: 1,
+                                    file: FilePin {
+                                        path: &lease.snapshot().final_path,
+                                        sha256: lease.sha256(),
+                                        bytes: lease.wire_bytes(),
+                                    },
+                                    volume_serial_number: lease.snapshot().volume_serial_number,
+                                    file_id_128: lease.snapshot().file_id_128,
+                                }
+                            }),
                             serialized_publication_grants_authority: false,
                         };
                         let artifacts = save_publication(
@@ -1195,6 +1232,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             closure,
             windows_aliases,
             _windows_alias_archive: windows_alias_archive,
+            transformations,
             _memory: memory,
         };
         result.revalidate(events)?;
@@ -1222,6 +1260,9 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         self.closure.with_revalidation(|arena| {
             self.publication.revalidate()?;
             self.checksum.revalidate()?;
+            if let Some(transformations) = &self.transformations {
+                transformations.revalidate()?;
+            }
             self.prepared.context.require_preparation_delegated(
                 Path::new(&self.publication.snapshot().final_path),
                 self.publication.sha256(),

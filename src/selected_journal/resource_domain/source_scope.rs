@@ -10,6 +10,13 @@ use n2r_win32::{
 use serde::{Deserialize, Serialize};
 
 pub(crate) const PRIVATE_TYPE: &str = "b627aadb-a893-48b6-aa0b-71e5f30ee370";
+pub(crate) const TRANSFORMATION_ENVELOPE: (u32, &str) =
+    (4, "resource-allocation-recovery-envelope-v4");
+
+pub(crate) fn dedicated_envelope_version(version: u32, kind: &str) -> bool {
+    (version, kind) == (1, "resource-allocation-recovery-envelope-v1")
+        || (version, kind) == TRANSFORMATION_ENVELOPE
+}
 const BASIC_TYPE: &str = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -429,8 +436,7 @@ impl ResourceRecoverySourceScope {
     pub(crate) fn require_envelope_version(&self, version: u32, kind: &str) -> Result<()> {
         ensure!(
             match self {
-                Self::Dedicated =>
-                    version == 1 && kind == "resource-allocation-recovery-envelope-v1",
+                Self::Dedicated => dedicated_envelope_version(version, kind),
                 Self::Partition(p) => {
                     p.validate()?;
                     version == 2 && kind == "resource-partition-recovery-envelope-v2"

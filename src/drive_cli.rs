@@ -1116,7 +1116,6 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             let checksum = args.recovery_sha256.context(
                 "--recover needs --recovery-sha256, the checksum printed with the conversion directory. Nothing was changed.",
             )?;
-            declare_ledger_drops(&directory)?;
             let has_preparation = directory.join("preparation-intent.json").exists()
                 || directory.join("resume-intent.json").exists();
             // A matching external pin selects the early-cancellation protocol,
@@ -2569,30 +2568,6 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                 run.join(n2r_win32::plain_copy::DIRECTORY).display()
             ),
         }
-    }
-
-    /// Before a recovery of the run whose conversion directory is
-    /// `directory`: the streams its plain-conversions ledger declares
-    /// dropped, which every count of the new tree against the source's
-    /// admission expects. A ledger that cannot be read stops the recovery
-    /// before it does anything.
-    fn declare_ledger_drops(directory: &std::path::Path) -> Result<()> {
-        let Some(path) = directory
-            .parent()
-            .map(|run| run.join(n2r_win32::plain_ledger::LEDGER_FILE))
-            .filter(|path| path.is_file())
-        else {
-            return Ok(());
-        };
-        let ledger: n2r_win32::plain_ledger::PlainLedger =
-            serde_json::from_slice(&std::fs::read(&path)?)
-                .with_context(|| format!("reading {}", path.display()))?;
-        n2r_win32::plain_ledger::declare(
-            n2r_win32::plain_ledger::DeclaredDrops::from_ledger(&ledger)
-                .map_err(anyhow::Error::msg)
-                .with_context(|| format!("the ledger {}", path.display()))?,
-        );
-        Ok(())
     }
 
     /// [`remove_plain_copies`] of the run whose conversion directory a

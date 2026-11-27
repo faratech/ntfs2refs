@@ -37,6 +37,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Check release workflow references and private dispatch
+        run: ./.github/scripts/Test-ReleasePlumbing.ps1
+
       - name: Install the pinned toolchain
         run: ./.github/scripts/Install-Toolchain.ps1 -Components rustfmt, clippy
 

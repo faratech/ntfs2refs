@@ -88,10 +88,17 @@ function Add-Case([string]$Name, [string]$Route, [string]$Expected, $Verdict, [b
     $rows.Add($row)
 }
 
+$failure = $null
 try {
-    & pwsh -NoProfile -File $gate -Build $binaries -Prefix $prefix
+    $gateLog = Join-Path $Output 'gate.log'
+    & pwsh -NoProfile -File $gate -Build $binaries -Prefix $prefix 2>&1 | Tee-Object -FilePath $gateLog
     $gateExit = $LASTEXITCODE
-    $gateRows = @(Get-Content -LiteralPath (Join-Path $binaries "gate-$prefix/round.json") -Raw | ConvertFrom-Json)
+    $round = Join-Path $binaries "gate-$prefix/round.json"
+    if (-not (Test-Path -LiteralPath $round -PathType Leaf)) {
+        $tail = (Get-Content -LiteralPath $gateLog -Tail 12) -join "`n"
+        throw "The Hyper-V gate round exited $gateExit without a verdict table. Last output:`n$tail"
+    }
+    $gateRows = @(Get-Content -LiteralPath $round -Raw | ConvertFrom-Json)
     foreach ($row in $gateRows) {
         $v = Read-Verdict $row.Case
         $case = $row.Case.Substring($prefix.Length + 1)
@@ -222,7 +229,12 @@ try {
         $vm = Get-VM -Id $vmId
         if ($vm.State -eq 'Running') { Stop-VM -VM $vm -Force -Confirm:$false }
     }
+} catch {
+    $failure = $_.Exception.Message
+    throw
 } finally {
-    @{ identity = $identity; cases = $rows.ToArray() } | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $Output 'lab.json') -Encoding utf8
+    $record = @{ identity = $identity; cases = $rows.ToArray() }
+    if ($failure) { $record.failure = $failure }
+    $record | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $Output 'lab.json') -Encoding utf8
 }
 if ($rows.Count -eq 0 -or @($rows | Where-Object { -not $_.passed }).Count) { throw 'Native lab qualification failed' }

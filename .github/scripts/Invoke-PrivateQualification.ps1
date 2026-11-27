@@ -22,7 +22,7 @@ Invoke-Gh workflow run $workflow --repo $Repository --ref main `
     -f "request=$request" -f "release_run=$env:GITHUB_RUN_ID" -f "commit=$Commit" -f "tag=$Tag"
 $deadline = (Get-Date).AddMinutes(15)
 do {
-    $runs = @(Invoke-Gh run list --repo $Repository --workflow $workflow --branch main --event workflow_dispatch --limit 30 --json databaseId,displayTitle | ConvertFrom-Json)
+    $runs = @(Invoke-Gh run list --repo $Repository --workflow $workflow --branch main --event workflow_dispatch --limit 30 --json 'databaseId,displayTitle' | ConvertFrom-Json)
     $match = @($runs | Where-Object displayTitle -CEQ "ntfs2refs qualification $request")
     if ($match.Count -gt 1) { throw "Multiple lab runs match $request" }
     if ($match.Count -eq 1) { break }
@@ -30,5 +30,10 @@ do {
 } while ((Get-Date) -lt $deadline)
 if ($match.Count -ne 1) { throw "No private qualification run for $request" }
 $run = $match[0].databaseId
-Invoke-Gh run watch $run --repo $Repository --interval 20 --exit-status
+if ("$run" -notmatch '^[1-9]\d*$') { throw "Private qualification run for $request has no valid run ID" }
+try {
+    Invoke-Gh run watch $run --repo $Repository --interval 20 --exit-status
+} catch {
+    throw "Private qualification run $run for $request failed. See https://github.com/$Repository/actions/runs/$run for its logs and private diagnostics. $($_.Exception.Message)"
+}
 Invoke-Gh run download $run --repo $Repository --name "lab-$request" --dir $Output

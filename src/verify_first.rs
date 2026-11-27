@@ -1,6 +1,5 @@
-//! Verify once (owner, 2026-11-19; #148 phase 2, #110): in `--verify fast` a
-//! run checks each thing once, and its handoff follows the one verification
-//! of the converted volume instead of preceding it.
+//! New ordinary whole-disk conversions, with `--verify fast` or
+//! `--verify thorough`, write the handoff after read-only verification.
 //!
 //! Such a run writes every new byte, flushes it and reads it back as any
 //! conversion does, then seals its source again (offline, read-only) under
@@ -13,9 +12,9 @@
 //!
 //! What such a run may do that another may not is decided by its recovery
 //! publication alone (`verify_before_handoff`), which is pinned by the
-//! checksum the run printed before it wrote anything. A `--verify thorough`
-//! run, and a run of a build before this, records nothing and keeps the
-//! flow it had: the handoff in the apply step, before anything is mounted.
+//! checksum the run printed before it wrote anything. Older publications
+//! without that field keep their recorded apply-time handoff. The partition
+//! backend and the existing preparation continuation also hand off in apply.
 //!
 //! The seal is recorded in `verification-seal.json` beside the publication.
 //! A recovery environment starts every disk offline and read-only, so there

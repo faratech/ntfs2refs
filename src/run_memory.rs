@@ -36,7 +36,9 @@ pub(crate) fn free_memory_for(ram: u64) -> u64 {
 /// held to a limit bear it out: the estimate asks a limit of 977 MiB; the
 /// run converts with 1,000 and with 850, where it could not do without 737,
 /// and with 700 it stops with the source unchanged, at the walk of the new
-/// volume, whose rows are what is held for every file today.
+/// volume in that build. Both current walk reports spill their rows to
+/// working storage. Identity directories, validation indexes and
+/// constructor handles still account for memory as object counts grow.
 ///
 /// And 256 MiB whatever the volume holds: the observation of the source
 /// through Windows keeps a window of 117 MiB and pays thirty-two times its

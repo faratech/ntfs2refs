@@ -6,7 +6,7 @@ The finish line is the owner's functional goal in [#148](https://github.com/fara
 
 `8249357cf492676204980bd82a95a25310fa9930` is the audited commit and the commit behind the existing `0.0.5` tag. The [main CI](https://github.com/faratech/ntfs2refs/actions/runs/45898738526) passed 16 jobs, including 13 deterministic native cases. That evidence applies to its own binaries.
 
-The [signed rehearsal](https://github.com/faratech/ntfs2refs/actions/runs/45937912198) passed signing and all deterministic native cases. The public coordinator dispatched the [private job](https://github.com/faratech/ntfs2refs-qualification/actions/runs/45939700725) before failing on an unquoted JSON field list. The private job separately stopped because `reference-b` was running. Preserve both failures under their original request. Verify the new candidate's tag, commit and executable hashes throughout a fresh rehearsal.
+The [signed rehearsal](https://github.com/faratech/ntfs2refs/actions/runs/45937912198) passed signing, all deterministic native cases, and all five soak profiles. The public coordinator dispatched the [private job](https://github.com/faratech/ntfs2refs-qualification/actions/runs/45939700725) before failing on an unquoted JSON field list. The private job separately stopped because `reference-b` was running. These failures prevented packaging. Verify the new candidate's tag, commit and executable hashes throughout a fresh rehearsal.
 
 The substantive work from #287, #288 and #291 is already on the audited `main`. Adapt the remaining integrity sampling change from [#301](https://github.com/faratech/ntfs2refs/pull/301) by its current diff. Keep the deterministic thorough-resume regression for seed `934383016`. Both ordinary verification modes already verify before handoff, and both major native walk reports already spill.
 
@@ -71,6 +71,23 @@ a system-volume pagefile. Actual dump retention still needs a bugcheck
 sample. Native idle control `completion-native-control-032528-idle`
 also passed five remounts and the reboot checks. The historical event 131
 and earlier native control failures remain open.
+## Scale fixture and Server availability
+
+Server attempt `completion-scale-015637-2m-preflight` built 2,000,000 files
+in 2,000 directories with 4,506 MiB of logical data. The guest's licensing
+service shut down Windows after creation and before preflight produced a
+verdict. The 50 GiB NTFS fixture was retained as a 7,319,060,480-byte VHDX.
+The guest reported an expired Server evaluation. Server activation work
+was deferred at the owner's direction.
+
+Windows 11 attempt `completion-scale-client-preflight-033455` checked a
+differencing child of that retained fixture. Converter SHA-256 was
+`ad386e88ec2c9f388dbed77b2304eb729aefc5d177ea48211e261e3368040305`.
+The check took 2,194 seconds and returned a resource admission refusal.
+It estimated 19,804 MiB of memory and 99,582 MiB of working storage, with
+6,941 MiB and 115,966 MiB respectively available at the final check.
+The sampled preflight worker used up to 3,209 MiB of private memory and
+338 handles. Conversion and recovery at this count remain unmeasured.
 
 ## Execution and verification
 

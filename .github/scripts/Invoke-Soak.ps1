@@ -388,7 +388,6 @@ function Save-SparseSourceLayout([string]$root, [string]$records) {
 # mounted afresh and listed once those files are there and two listings in a
 # row agree. Taking the disk offline also closes what had the new files open.
 function Capture-Settled([string]$path, [int]$diskNumber, [bool]$hasJunction) {
-    $indexer = [bool](Get-Service -Name WSearch -ErrorAction SilentlyContinue | Where-Object { "$($_.StartType)" -ne 'Disabled' })
     $afresh = {
         Set-Disk -Number $diskNumber -IsOffline $true; Set-Disk -Number $diskNumber -IsOffline $false
         # The harness's own remount: if the letter did not come back, it is given back.
@@ -412,11 +411,15 @@ function Capture-Settled([string]$path, [int]$diskNumber, [bool]$hasJunction) {
         # remain unchanged throughout that transition.
         $populated = [bool]($records | Where-Object { $_.path -eq '\System Volume Information\WPSettings.dat' -and $_.bytes -gt 0 })
         $current = ($own | Sort-Object -CaseSensitive) -join "`n"
-        $settled = $populated -and (-not $hasJunction -or (& $has 'MountPointManagerRemoteDatabase')) -and
-            (-not $indexer -or (& $has 'IndexerVolumeGuid')) -and $current -ceq $previous
+        # Search may be available without indexing this volume. Its records
+        # still participate in both comparisons whenever Windows writes them.
+        $initialized = $populated -and (-not $hasJunction -or (& $has 'MountPointManagerRemoteDatabase'))
+        $settled = $initialized -and $current -ceq $previous
         $previous = $current
         $now = Get-Date
-        if (-not $settled -and $now -lt $deadline -and $now -ge $remount) {
+        # A capture can itself take longer than the remount interval. Once
+        # the files exist, keep the mount so a second inventory can agree.
+        if (-not $initialized -and $now -lt $deadline -and $now -ge $remount) {
             & $afresh
             $remount = (Get-Date).AddSeconds(20)
             $previous = $null

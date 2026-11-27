@@ -44,6 +44,24 @@ Windows fixture round `arf0136` passed all five cases with the same converter.
 It included separate workers at mid-apply, the recorded apply seal, and
 the sealed handoff.
 
+Windows 11 attempts `rfacts-wof-015451-resume` and
+`rfacts-wof-015451-rollback` used the same build. They passed strict
+listing comparison with a malformed optional report. The resume verified
+all four WOF compression algorithms, and rollback restored exact NTFS.
+
+### Integrity evidence
+
+The development run `completion-integrity-020116-event-131` matched its
+independent listing, ran the 4,000-entry workload, remounted five times
+and verified post-reboot writes. Completed host hash batches fell inside
+both the fill-and-delete and remount windows after applying measured clock
+bounds. Windows reported no serious ReFS events or guest bugcheck in this
+run. The disposable guest rebooted with its small-dump configuration and
+a system-volume pagefile. Actual dump retention still needs a bugcheck
+sample. Native idle control `completion-native-control-032528-idle`
+also passed five remounts and the reboot checks. The historical event 131
+and earlier native control failures remain open.
+
 ## Execution and verification
 
 - Preserve the Windows-built shadow, source ownership and read-only boundaries, prewrite checks, byte comparison, strict manifests, and journal flush and readback order. Use the authenticated marker bytes and recorded lifecycle to decide rollback eligibility.

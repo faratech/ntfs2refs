@@ -434,15 +434,29 @@ function Add-WorkerLedgerEvidence([System.Collections.IDictionary]$Resources, [s
     }
 }
 
+function Measure-IntegrityGuestClock {
+    $before = [datetime]::UtcNow
+    $guest = Invoke-Command -Session $session -ScriptBlock { [datetime]::UtcNow.ToString('o') }
+    @{
+        host_before_utc = $before.ToString('o')
+        guest_utc = $guest
+        host_after_utc = [datetime]::UtcNow.ToString('o')
+    }
+}
+
 # Runs guest\Test-ConvertedVolumeUse.ps1 on V:, records every step and answers its result.
 function Invoke-UseTest([string]$Root) {
     Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Test-ConvertedVolumeUse.ps1') -Destination "$Root\use.ps1" -Force
+    $clockBefore = if ($IntegrityRecords) { Measure-IntegrityGuestClock }
     $useJson = Invoke-Command -Session $session -ArgumentList $Root -ScriptBlock {
         param($root)
         $block = [scriptblock]::Create((Get-Content -LiteralPath "$root\use.ps1" -Raw))
         & $block -Root 'V:\' -WorkDirectory "$root\use" -ProgressFile "$root\use-progress.log"
     }
     $use = ($useJson | Select-Object -Last 1) | ConvertFrom-Json
+    if ($IntegrityRecords) {
+        $verdict.integrity_clock = @{ before = $clockBefore; after = (Measure-IntegrityGuestClock) }
+    }
     Set-Content -LiteralPath (Join-Path $records 'acceptance.json') -Value ($useJson | Select-Object -Last 1) -Encoding UTF8
     $verdict.acceptance = $use
     foreach ($step in $use.steps) { Say ("use: {0}: {1} ({2} s): {3}" -f $step.step, $(if ($null -eq $step.ok) { 'skipped' } elseif ($step.ok) { 'ok' } else { 'FAILED' }), $step.seconds, $step.detail) }
@@ -2675,9 +2689,26 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     if ($worker) { Remove-PSSession $worker -ErrorAction SilentlyContinue }
     if ($IntegrityRecords) {
         try {
+            $crashes = @(Save-IntegrityHostCrashes -VmId $VmId -Started $integrityStarted -Output $integrityStorage)
+            $verdict.guest_bugchecks = $crashes.Count
+            if ($crashes.Count) {
+                $verdict.outcome = 'integrity-guest-bugcheck'
+                if ($session.State -ne 'Opened') {
+                    $deadline = (Get-Date).AddMinutes(2)
+                    do {
+                        $afterCrash = New-PSSession -VMId $VmId -Credential $credential -ErrorAction SilentlyContinue
+                        if ($afterCrash) { break }
+                        Start-Sleep -Seconds 2
+                    } while ((Get-Date) -lt $deadline)
+                    if (!$afterCrash) { throw 'Cannot collect the guest dump or disk after a recorded bugcheck' }
+                    if ($session) { Remove-PSSession $session -ErrorAction SilentlyContinue }
+                    $session = $afterCrash
+                }
+                $verdict.guest_dumps_saved = Save-IntegrityGuestDumps -Session $session -Started $integrityStarted -Output $integrityStorage
+            }
             $evidence = Save-IntegrityEvents -Session $session -Started $integrityStarted -Name $Name -Output $integrityStorage -Acceptance $verdict['acceptance']
             $verdict.integrity = $evidence
-            if ($evidence.serious_count) { $verdict.outcome = 'integrity-event' }
+            if ($evidence.serious_count -and !$crashes.Count) { $verdict.outcome = 'integrity-event' }
             if ($verdict.outcome -notin 'converted', 'control-passed') {
                 Save-IntegrityFailure -Session $session -Name $Name -Output $integrityStorage
             } else {
@@ -2687,11 +2718,6 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         } catch {
             $verdict.integrity_error = "$_"
             $verdict.outcome = 'integrity-capture-failed'
-            try {
-                Save-IntegrityHostCrashes -VmId $VmId -Started $integrityStarted -Output $integrityStorage
-            } catch {
-                $verdict.integrity_host_error = "$_"
-            }
             # Leave the live inputs attached for collection when a copy fails.
             $KeepVolume = $true
         }

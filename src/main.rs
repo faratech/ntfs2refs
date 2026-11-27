@@ -215,7 +215,7 @@ fn run() -> Result<u8> {
                             {"what": "an OFFLINE file with a reparse point (a hierarchical storage manager's) that could not be recalled before the freeze, or a folder with a storage manager's tag",
                              "remedy": "start the storage manager, or recall the file; or agree to leave it out (--leave-out-cloud), and it stays in the manager's store"},
                             {"what": "cloud placeholders (OneDrive and other Cloud Files API providers) that could not be downloaded before the freeze (each named; a provider serves only the account that runs it), of a folder the provider has not listed in full, or that the Cloud Files API cannot report on",
-                             "remedy": "start the provider, or make the files always available on this device; or agree to leave them out (--leave-out-cloud), and they stay in the cloud"},
+                             "remedy": "start the provider, make the files always available on this device, or agree to leave them out (--leave-out-cloud). Retrieval of omitted content depends on the provider"},
                             {"what": "reparse points other than symbolic links, junctions, app execution aliases and the files of the Windows Subsystem for Linux (Data Deduplication, compact /exe)",
                              "remedy": "named per kind"},
                             {"what": "a named data stream on the root directory, on a reparse-point directory, or one on a directory that is encrypted, compressed or sparse",

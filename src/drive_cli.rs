@@ -2164,10 +2164,9 @@ The machine restarts, possibly more than once. Do not switch it off while the co
                     .filter_map(|entry| entry.kind.family())
                     .collect();
                 println!(
-                    "{} {} cannot be brought onto the volume now (their provider is not running, or has not listed a folder in full). A conversion asks whether to leave them out (they stay {}, and are not on the new volume), or is refused; unattended, it takes --leave-out-cloud {} as well. The list: {}.",
+                    "{} {} cannot be brought onto the volume now. A conversion requires separate consent to omit them or will stop if it cannot retrieve them. Retrieval of omitted content depends on its provider or storage manager. For unattended consent, use --leave-out-cloud {}. The list is {}.",
                     left.len(),
-                    crate::plain_projection::placeholders_noun(families.iter().copied()),
-                    crate::plain_projection::left_out_stay(families),
+                    crate::plain_projection::placeholders_noun(families),
                     left.sha256(),
                     file.display()
                 );

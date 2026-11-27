@@ -156,7 +156,10 @@ try {
         }
         @{ case_id = $name; outcome = $outcome; expected = $outcome; passed = $true; manifest = 'identical'; exact_manifest = $true
             verify = 'fast'; reached_hold = $true; interruption = 'process-termination'; recovery = 'resume'
-            reboot_use = $true; cleanup_ok = $true; integrity_events = @() }
+            reboot_use = $true; cleanup_ok = $true; integrity_events = @(); guest_bugchecks = 0
+            integrity_event_scope = @{ completed = $true; started_utc = '2026-11-24T12:00:00Z'; ended_utc = '2026-11-24T12:01:00Z'
+                partition = '87480000-1234-1234-1234-000000000001'; aliases = @('\\?\Volume{87480000-1234-1234-1234-000000000002}\')
+                other_aliases = @('\\?\Volume{87480000-1234-1234-1234-000000000003}\') } }
     })
     $holds = @{'apply-mid-resume'='apply-mid-ranges'; 'apply-mid-rollback'='apply-mid-ranges'; 'seal-recorded-resume'='apply-seal-recorded';
         'handoff-sealed-resume'='handoff-sealed'; 'verify-readonly-rollback'='verify-source-readonly'; 'torn-handoff-resume'='verify-passed'; 'vm-verify-passed-rollback'='verify-passed';
@@ -422,6 +425,26 @@ try {
     Save-Json $lab $labPath
     Invoke-Gate 'native-loaded-missing-window' 'Incomplete integrity-native-loaded acceptance evidence'
     $loadedControl.integrity_windows = $controlWindows
+    Save-Json $lab $labPath
+    $idleControl = $cases | Where-Object case_id -eq 'integrity-native-idle'
+    foreach ($bugchecks in @($null, 1)) {
+        $idleControl.guest_bugchecks = $bugchecks
+        Save-Json $lab $labPath
+        Invoke-Gate "native-idle-bugchecks-$bugchecks" 'Incomplete integrity evidence for Hyper-V case integrity-native-idle'
+    }
+    $idleControl.guest_bugchecks = 0
+    $idleControl.integrity_event_scope.completed = $false
+    Save-Json $lab $labPath
+    Invoke-Gate 'native-idle-event-observation-incomplete' 'Incomplete integrity evidence for Hyper-V case integrity-native-idle'
+    $idleControl.integrity_event_scope.completed = $true
+    $otherVolume = $idleControl.integrity_event_scope.other_aliases[0]
+    $idleControl.integrity_events = @(@{ provider = 'ReFS'; id = 131; attribution = 'other'; volume = $otherVolume; phase = 'test-window' })
+    Save-Json $lab $labPath
+    Invoke-Gate 'native-idle-other-volume-event'
+    $idleControl.integrity_events[0].volume = $idleControl.integrity_event_scope.aliases[0]
+    Save-Json $lab $labPath
+    Invoke-Gate 'native-idle-misattributed-event' 'Incomplete integrity evidence for Hyper-V case integrity-native-idle'
+    $idleControl.integrity_events = @()
     Save-Json $lab $labPath
     $record = Get-Content -LiteralPath (Join-Path $root 'all-valid/QUALIFICATION.json') -Raw | ConvertFrom-Json
     $bootProfile = $record.profiles | Where-Object case_id -CEQ 'full-system'

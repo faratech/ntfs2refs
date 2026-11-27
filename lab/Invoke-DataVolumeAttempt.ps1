@@ -479,6 +479,7 @@ if ($vm.State -ne 'Running') { throw "VM $($vm.Name) is $($vm.State). Start its 
 if (-not $CredentialPath) { $CredentialPath = Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml' }
 $saved = Import-Clixml -LiteralPath $CredentialPath
 $credential = [pscredential]::new('LabAdmin', $saved.Password)
+$integrityBeforeVolumes = $null
 if ($IntegrityRecords) {
     if ((-not $Acceptance -and -not $NativeRefsControl) -or $SectorBytes -ne 512 -or $ClusterBytes -ne 4096 -or $TargetClusterBytes -ne 4096 -or $Siblings -or $WorkingMbr) {
         throw 'Integrity qualification needs an isolated 4 KiB acceptance volume in a guest VHDX'
@@ -880,6 +881,7 @@ try {
         Set-Content -LiteralPath (Join-Path $records 'features.json') -Value ($featureJson | Select-Object -Last 1) -Encoding UTF8
         Say "features: $($guestFeatures -join ', ')"
     }
+    if ($IntegrityRecords) { $integrityBeforeVolumes = Get-IntegrityVolumePaths $session }
     if ($NativeRefsControl) {
         # Nothing to convert: the volume is ReFS as Windows made it.
         $use = Invoke-UseTest $guestRoot
@@ -2742,26 +2744,27 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     }
     if ($IntegrityRecords) {
         try {
+            if ($verdict.outcome -in 'converted', 'control-passed' -and -not $verdict['reboot_use']) {
+                $verdict.outcome = 'integrity-reboot-incomplete'
+            }
             $crashes = @(Save-IntegrityHostCrashes -VmId $VmId -Started $integrityStarted -Output $integrityStorage)
             $verdict.guest_bugchecks = $crashes.Count
             if ($crashes.Count) {
                 $verdict.outcome = 'integrity-guest-bugcheck'
-                if ($session.State -ne 'Opened') {
-                    $deadline = (Get-Date).AddMinutes(2)
-                    do {
-                        $afterCrash = New-PSSession -VMId $VmId -Credential $credential -ErrorAction SilentlyContinue
-                        if ($afterCrash) { break }
-                        Start-Sleep -Seconds 2
-                    } while ((Get-Date) -lt $deadline)
-                    if (!$afterCrash) { throw 'Cannot collect the guest dump or disk after a recorded bugcheck' }
-                    if ($session) { Remove-PSSession $session -ErrorAction SilentlyContinue }
-                    $session = $afterCrash
-                }
+            }
+            if (!$session -or $session.State -ne 'Opened') {
+                if ($session) { Remove-PSSession $session -ErrorAction SilentlyContinue }
+                $session = Wait-IntegrityGuestSession $VmId $credential 2
+                if (!$session) { throw 'PowerShell Direct could not reconnect for integrity evidence retention' }
+                $verdict.integrity_reconnected_for_retention = $true
+            }
+            if ($crashes.Count) {
                 $verdict.guest_dumps_saved = Save-IntegrityGuestDumps -Session $session -Started $integrityStarted -Output $integrityStorage
             }
-            $evidence = Save-IntegrityEvents -Session $session -Started $integrityStarted -Name $Name -Output $integrityStorage -Acceptance $verdict['acceptance']
+            $evidence = Save-IntegrityEvents -Session $session -Started $integrityStarted -Name $Name -Output $integrityStorage -Acceptance $verdict['acceptance'] -BeforeVolumes $integrityBeforeVolumes
             $verdict.integrity = $evidence
             if ($evidence.serious_count -and !$crashes.Count) { $verdict.outcome = 'integrity-event' }
+            if (!$evidence.event_scope.completed -and $verdict.outcome -in 'converted', 'control-passed') { $verdict.outcome = 'integrity-observation-incomplete' }
             if ($verdict.outcome -notin 'converted', 'control-passed') {
                 Save-IntegrityFailure -Session $session -Name $Name -Output $integrityStorage
             } else {

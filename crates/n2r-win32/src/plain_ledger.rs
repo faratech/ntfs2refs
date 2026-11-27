@@ -24,6 +24,8 @@ use std::collections::BTreeMap;
 
 /// The run's records: the ledger of what was converted to plain.
 pub const LEDGER_FILE: &str = "plain-conversions.json";
+/// Immutable, publication-bound subset of the conversion ledger used by recovery.
+pub const RECOVERY_FACTS_FILE: &str = "recovery-transformations.json";
 /// The schema of [`PlainLedger`].
 pub const LEDGER_KIND: &str = "plain-conversions-v1";
 /// The first line of a list file, which names its format.
@@ -961,6 +963,24 @@ impl DeclaredDrops {
 }
 
 static DECLARED: std::sync::Mutex<Option<DeclaredDrops>> = std::sync::Mutex::new(None);
+
+/// Scope the native count consumers to the facts held by one recovery owner.
+pub struct RecoveryDropsScope(Option<DeclaredDrops>);
+
+impl Drop for RecoveryDropsScope {
+    fn drop(&mut self) {
+        *DECLARED.lock().unwrap_or_else(|e| e.into_inner()) = self.0.take();
+    }
+}
+
+pub fn declare_recovery(drops: DeclaredDrops) -> RecoveryDropsScope {
+    RecoveryDropsScope(
+        DECLARED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(drops),
+    )
+}
 
 /// This process's declared drops: those of the run it converts or
 /// recovers, from its ledger.

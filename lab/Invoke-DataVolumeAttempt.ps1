@@ -152,6 +152,15 @@ param(
     # run is then recovered with the command it printed.
     [string]$InterruptAt,
     [ValidateSet('resume', 'rollback')][string]$RecoverMode = 'resume',
+    # Damage the test's optional transformation report while the first
+    # worker is stopped, then restore it for independent listing comparison.
+    [switch]$CorruptPlainReportOnRecovery,
+    # Use a different converter for the recovery process to check that it
+    # can read a publication made by the original worker.
+    [string]$RecoveryTestBinary,
+    # Prove resume rejects a damaged publication-pinned transformation file,
+    # then restore the file and perform normal recovery of the same run.
+    [switch]$RejectDamagedRecoveryFacts,
     # Run the converter with --review (#110): it stops before its handoff with
     # the volume mounted read-only as ReFS and exits 0. The harness holds the
     # stop to that (a write to V: has to fail, and V: has to list as it did
@@ -345,6 +354,13 @@ foreach ($file in $Binary, $ManifestBinary) { if (-not (Test-Path -LiteralPath $
 if ($ClusterBytes -lt 512 -or $ClusterBytes -gt 2097152 -or ($ClusterBytes -band ($ClusterBytes - 1))) { throw "-ClusterBytes $ClusterBytes is not a power of two from 512 to 2097152" }
 if ($ClusterBytes -lt $SectorBytes) { throw "-ClusterBytes $ClusterBytes is smaller than the $SectorBytes-byte sector" }
 if ($StopDuringPreparation -and ($InterruptAt -or $Diagnose)) { throw '-StopDuringPreparation is a run of its own: not with -InterruptAt or -Diagnose' }
+if ($CorruptPlainReportOnRecovery -and (-not $InterruptAt -or $Review -or $Diagnose)) { throw '-CorruptPlainReportOnRecovery requires an interrupted conversion' }
+if ($RecoveryTestBinary -and (-not $InterruptAt -or $Review -or $Diagnose -or -not (Test-Path -LiteralPath $RecoveryTestBinary -PathType Leaf))) {
+    throw '-RecoveryTestBinary requires an existing binary and an interrupted conversion'
+}
+if ($RejectDamagedRecoveryFacts -and (-not $InterruptAt -or $RecoverMode -ne 'resume' -or $Review -or $Diagnose)) {
+    throw '-RejectDamagedRecoveryFacts requires an interrupted forward recovery'
+}
 if ($Tamper -and -not $Review) { throw '-Tamper writes to a volume that stopped for review: with -Review' }
 if ($Tamper -and ($InterruptAt -or $StopDuringPreparation)) { throw '-Tamper needs the run to reach its review stop: not with -InterruptAt or -StopDuringPreparation' }
 if ($Review -and ($NativeRefsControl -or $CheckOnly)) { throw '-Review is a conversion that stops for review: not with -NativeRefsControl or -CheckOnly' }
@@ -2060,9 +2076,75 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
             if ($includeSymbols) { $files += 'ntfs2refs.pdb' }
             foreach ($leaf in $files) { Copy-Item -LiteralPath (Join-Path (Split-Path $root) $leaf) -Destination $root }
         }
-        Start-Worker $guestRoot $recover $task
-        Say "recovery started: ntfs2refs $($recover -join ' ')"
-        $ended = (Wait-Worker $guestRoot '' '').ended
+        if ($RecoveryTestBinary) {
+            Copy-Item -ToSession $session -LiteralPath (Resolve-Path -LiteralPath $RecoveryTestBinary).Path -Destination "$guestRoot\ntfs2refs.exe" -Force
+            $verdict.recovery_test_converter_sha256 = (Get-FileHash -LiteralPath $RecoveryTestBinary).Hash.ToLowerInvariant()
+        }
+        if ($RejectDamagedRecoveryFacts) {
+            $faultRoot = "$guestRoot\fact-fault"
+            $facts = Invoke-Command -Session $session -ArgumentList $recover[1], $guestRoot, $faultRoot -ScriptBlock {
+                param($conversion, $root, $faultRoot)
+                $path = Join-Path $conversion 'recovery-transformations.json'
+                if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Expected publication-pinned transformation facts' }
+                $null = New-Item -ItemType Directory -Path $faultRoot
+                foreach ($file in 'ntfs2refs.exe', 'worker.ps1') { Copy-Item -LiteralPath (Join-Path $root $file) -Destination $faultRoot }
+                $backup = Join-Path $faultRoot 'original-facts.json'
+                Copy-Item -LiteralPath $path -Destination $backup
+                $original = (Get-FileHash -LiteralPath $path).Hash
+                [IO.File]::WriteAllText($path, '{')
+                [pscustomobject]@{ path = $path; backup = $backup; original_sha256 = $original; damaged_sha256 = (Get-FileHash -LiteralPath $path).Hash }
+            }
+            try {
+                Start-Worker $faultRoot $recover $task
+                $null = Wait-Worker $faultRoot '' ''
+                foreach ($leaf in 'stdout.log', 'stderr.log', 'native-terminal.json') {
+                    Copy-Item -FromSession $session -LiteralPath "$faultRoot\$leaf" -Destination (Join-Path $records "fact-fault-$leaf")
+                }
+                $terminal = Get-Content -LiteralPath (Join-Path $records 'fact-fault-native-terminal.json') -Raw | ConvertFrom-Json
+                if ($terminal.native_exit -eq 0 -or -not (Select-String -LiteralPath (Join-Path $records 'fact-fault-stderr.log') -SimpleMatch 'reopening authenticated recovery transformation facts' -Quiet)) {
+                    throw 'Forward recovery did not refuse the damaged transformation artifact as expected'
+                }
+                $verdict.transformation_facts_fault = @{ original_sha256 = $facts.original_sha256; damaged_sha256 = $facts.damaged_sha256; refused = $true }
+            } finally {
+                Invoke-Command -Session $session -ArgumentList $facts -ScriptBlock {
+                    param($facts)
+                    # Truncate the existing file in place to keep its pinned identity.
+                    [IO.File]::WriteAllBytes($facts.path, [IO.File]::ReadAllBytes($facts.backup))
+                    if ((Get-FileHash -LiteralPath $facts.path).Hash -cne $facts.original_sha256) { throw 'Restored transformation facts differ' }
+                }
+            }
+        }
+        $damagedReport = $null
+        if ($CorruptPlainReportOnRecovery) {
+            $damagedReport = Invoke-Command -Session $session -ArgumentList $recover[1] -ScriptBlock {
+                param($conversion)
+                $report = Join-Path (Split-Path -Parent $conversion) 'plain-conversions.json'
+                $backup = "$report.lab-original"
+                if (-not (Test-Path -LiteralPath $report -PathType Leaf) -or (Test-Path -LiteralPath $backup)) {
+                    throw 'Expected the interrupted fixture to have one original transformation report'
+                }
+                $before = (Get-FileHash -LiteralPath $report).Hash
+                Copy-Item -LiteralPath $report -Destination $backup
+                Set-Content -LiteralPath $report -Value '{' -Encoding ASCII
+                [pscustomobject]@{ path = $report; backup = $backup; original_sha256 = $before; damaged_sha256 = (Get-FileHash -LiteralPath $report).Hash }
+            }
+            $verdict.plain_report_fault = $damagedReport
+        }
+        try {
+            Start-Worker $guestRoot $recover $task
+            Say "recovery started: ntfs2refs $($recover -join ' ')"
+            $ended = (Wait-Worker $guestRoot '' '').ended
+        } finally {
+            if ($damagedReport) {
+                Invoke-Command -Session $session -ArgumentList $damagedReport -ScriptBlock {
+                    param($report)
+                    Copy-Item -LiteralPath $report.backup -Destination $report.path -Force
+                    if ((Get-FileHash -LiteralPath $report.path).Hash -cne $report.original_sha256) {
+                        throw 'Restored comparison report differs from its original'
+                    }
+                }
+            }
+        }
     }
     $reviewStopped = $false; $stop = $null
     if ($Review -and -not $InterruptAt -and -not $StopDuringPreparation -and $ended) {

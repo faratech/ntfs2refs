@@ -2093,9 +2093,8 @@ impl ResourceSourceContext {
             }
             if let Some(ledger) = plain.as_ref().filter(|ledger| !ledger.rows.is_empty()) {
                 ledger.validate().map_err(anyhow::Error::msg)?;
-                // In the run's own directory, which outlives the run: the
-                // copy below, among the source's working files, is a
-                // temporary file of the run's arena and is retired with it.
+                // In the run's own directory, which outlives the run: this
+                // copy is for the user and the independent listing tool.
                 let kept = crate::plain_consent::write_ledger(ledger)?;
                 let kept = kept.as_deref().map_or_else(
                     || n2r_win32::plain_ledger::LEDGER_FILE.to_owned(),
@@ -2121,9 +2120,21 @@ impl ResourceSourceContext {
                         "{not_carried} object(s) below the folders of System Volume Information are Windows' own and are not carried over; each is kept in the run's records ({kept})."
                     );
                 }
+            }
+            if let Some(ledger) = plain.as_mut() {
+                // Keep only rows that affect the authenticated target's
+                // domain. Save even an empty set for new data conversions.
+                ledger.rows.retain(|row| {
+                    row.left_out.is_some()
+                        || !row.dropped_streams.is_empty()
+                        || !n2r_win32::plain_ledger::dropped_stream_names(row.kind).is_empty()
+                });
+                ledger
+                    .rows
+                    .sort_unstable_by_key(|row| (row.record_number, row.sequence_number));
                 save(
                     output,
-                    n2r_win32::plain_ledger::LEDGER_FILE,
+                    n2r_win32::plain_ledger::RECOVERY_FACTS_FILE,
                     ledger,
                     &scratch,
                     &mut metadata,
@@ -3288,6 +3299,33 @@ impl ResourceSourceContext {
     }
     pub fn inspection_sha256(&self) -> &str {
         &self.inspection_sha
+    }
+
+    pub(crate) fn publish_recovery_transformations(
+        &self,
+        group: &ArtifactGroupPermit,
+        path: &Path,
+    ) -> Result<Option<ArtifactLease>> {
+        let Some(pin) = self._metadata.iter().find(|pin| {
+            pin.path
+                .file_name()
+                .is_some_and(|name| name == n2r_win32::plain_ledger::RECOVERY_FACTS_FILE)
+        }) else {
+            return Ok(None);
+        };
+        let _buffer = self.scratch.lease_ram(65536)?;
+        let permit = group.reserve_file(path, pin.bytes)?;
+        let mut source = pin.held.try_clone()?;
+        source.seek(SeekFrom::Start(0))?;
+        let mut output = OpenOptions::new().write(true).create_new(true).open(path)?;
+        ensure!(
+            io::copy(&mut source.take(pin.bytes), &mut output)? == pin.bytes,
+            "recovery transformation facts changed while copying {}",
+            pin.path.display()
+        );
+        output.sync_all()?;
+        drop(output);
+        Ok(Some(permit.verify_closed(&pin.sha256)?))
     }
     pub fn source_views_sha256(&self) -> &str {
         &self.source_views_sha

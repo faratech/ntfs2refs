@@ -51,6 +51,15 @@ struct FilePin {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct TransformationPin {
+    schema: u32,
+    file: FilePin,
+    volume_serial_number: u64,
+    file_id_128: [u8; 16],
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ExpectedPin {
     file: FilePin,
     semantic_sha256: String,
@@ -114,6 +123,8 @@ struct Publication {
     /// (#148), written only for such a run. Nothing else may be recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     verify_before_handoff: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transformations: Option<TransformationPin>,
     serialized_publication_grants_authority: bool,
 }
 
@@ -1074,6 +1085,9 @@ pub(crate) struct ReopenedResourceRecovery {
     expected: HeldFile,
     maps: Option<HeldFile>,
     windows_aliases: Option<HeldWindowsAliasFiles>,
+    _drops: n2r_win32::plain_ledger::RecoveryDropsScope,
+    transformations: Option<HeldFile>,
+    _transformation_memory: Option<SourceRamLease>,
     locator: DurableRecoveryLocator,
     // Declared, and so dropped, before the journal whose hold it stands for.
     _journal_body: Option<n2r_win32::bulk_digest::JournalBodyHold>,
@@ -2383,8 +2397,7 @@ impl<'a> VerifiedProtectedHandoff<'a> {
                     .checked_add(known.streams_without_content_baseline)
                     == Some(usize::try_from(
                         // The converted volume holds the admitted streams less
-                        // those the run's ledger declares dropped (a recovery
-                        // declares them from <run>\plain-conversions.json).
+                        // those proven omitted by the held publication facts.
                         n2r_win32::plain_ledger::declared()
                             .expected_streams(
                                 self.recovery.publication.resource_admission.data_streams
@@ -2520,6 +2533,7 @@ impl ReopenedResourceRecovery {
             maximum_index_bytes,
             events,
             false,
+            false,
         )
     }
 
@@ -2536,6 +2550,7 @@ impl ReopenedResourceRecovery {
         index_path: &Path,
         maximum_index_bytes: u64,
         events: &mut Vec<NativeEvent>,
+        rollback: bool,
     ) -> Result<Self> {
         Self::open_observed_impl(
             path,
@@ -2549,6 +2564,7 @@ impl ReopenedResourceRecovery {
             maximum_index_bytes,
             events,
             true,
+            rollback,
         )
     }
 
@@ -2564,6 +2580,7 @@ impl ReopenedResourceRecovery {
         maximum_index_bytes: u64,
         events: &mut Vec<NativeEvent>,
         allow_online_terminal: bool,
+        rollback: bool,
     ) -> Result<Self> {
         // What a recovery of this process parked for this reopening
         // (`park_recovery_files`) and it does not claim is closed when it
@@ -2637,13 +2654,15 @@ impl ReopenedResourceRecovery {
         ))))?;
         publication.expected_source_label.validate()?;
         ensure!(
-            publication.schema_version == 1
-                && publication.kind == "resource-allocation-recovery-envelope-v1"
+            super::super::source_scope::dedicated_envelope_version(
+                publication.schema_version,
+                &publication.kind
+            ) && ((publication.schema_version, publication.kind.as_str())
+                == super::super::source_scope::TRANSFORMATION_ENVELOPE)
+                == publication.transformations.is_some()
                 && !publication.serialized_publication_grants_authority
                 && publication.source_inspection_sha256
                     == hex::encode(publication.resource_admission.source_inspection_sha256)
-                && publication.expected.objects
-                    == publication.resource_admission.new_tree_objects()?
                 && publication.source_fingerprint_kind
                     == if publication.verification_policy.is_full_content() {
                         crate::source_fingerprint::resource::FULL_KIND
@@ -2702,6 +2721,119 @@ impl ReopenedResourceRecovery {
         );
         hold_expected_binding(&publication, &volume, &mut expected, scratch)
             .context("reopening the expected-tree binding")?;
+        let (transformations, transformation_memory, drops) = match &publication.transformations {
+            Some(pin) => {
+                ensure!(
+                    pin.schema == 1
+                        && pin.file_id_128 != [0; 16]
+                        && pin.file.bytes > 0
+                        && publication.source.layout_profile
+                            != n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows,
+                    "invalid recovery transformation facts pin"
+                );
+                if rollback {
+                    // The authenticated journal restores OLD bytes. It does
+                    // not consume target dispositions or their counts.
+                    (
+                        None,
+                        None,
+                        n2r_win32::plain_ledger::DeclaredDrops::default(),
+                    )
+                } else {
+                    let maximum = scratch.budget().scratch_bytes / 2;
+                    let mut artifact = HeldFile::open(
+                        Path::new(&pin.file.path),
+                        digest(&pin.file.sha256)?,
+                        Some(pin.file.bytes),
+                        maximum,
+                        scratch,
+                    )
+                    .context("reopening authenticated recovery transformation facts")?;
+                    ensure!(
+                        artifact
+                            .snapshot
+                            .final_path
+                            .eq_ignore_ascii_case(&pin.file.path)
+                            && on_volume(&artifact.snapshot.final_path, &volume)
+                            && artifact.snapshot.volume_serial_number == pin.volume_serial_number
+                            && artifact.snapshot.file_id_128 == pin.file_id_128,
+                        "reopened recovery transformation facts do not match their journal-volume identity"
+                    );
+                    let memory = scratch.lease_ram(
+                        pin.file
+                            .bytes
+                            .checked_mul(8)
+                            .context("recovery transformation facts memory overflow")?,
+                    )?;
+                    artifact.file.seek(SeekFrom::Start(0))?;
+                    let ledger: n2r_win32::plain_ledger::PlainLedger =
+                        serde_json::from_reader(&mut artifact.file)
+                            .context("decoding authenticated recovery transformation facts")?;
+                    ensure!(
+                        ledger.source_inspection_sha256 == publication.source_inspection_sha256,
+                        "recovery transformation facts bind to another source inspection"
+                    );
+                    digest(&ledger.agreed_list_sha256)?;
+                    digest(&ledger.frozen_list_sha256)?;
+                    let mut previous = None;
+                    for row in &ledger.rows {
+                        let key = (row.record_number, row.sequence_number);
+                        let streams = !row.dropped_streams.is_empty()
+                            || !n2r_win32::plain_ledger::dropped_stream_names(row.kind).is_empty();
+                        ensure!(
+                            previous.is_none_or(|last| last < key)
+                                && streams != row.left_out.is_some(),
+                            "noncanonical or contradictory disposition for MFT record {}",
+                            row.record_number
+                        );
+                        previous = Some(key);
+                        let names: std::collections::BTreeSet<_> = row
+                            .dropped_streams
+                            .iter()
+                            .map(|stream| &stream.name)
+                            .collect();
+                        ensure!(
+                            names.len() == row.dropped_streams.len(),
+                            "duplicate dropped stream for MFT record {}",
+                            row.record_number
+                        );
+                    }
+                    let drops = n2r_win32::plain_ledger::DeclaredDrops::from_ledger(&ledger)
+                        .map_err(anyhow::Error::msg)?;
+                    (Some(artifact), Some(memory), drops)
+                }
+            }
+            None => (
+                None,
+                None,
+                n2r_win32::plain_ledger::DeclaredDrops::default(),
+            ),
+        };
+        let drops = n2r_win32::plain_ledger::declare_recovery(drops);
+        if !rollback {
+            ensure!(
+                publication.expected.objects
+                    == publication.resource_admission.new_tree_objects()?,
+                "authenticated target object coverage differs; use --rollback where the journal permits it"
+            );
+            if publication.transformations.is_none()
+                && publication.source.layout_profile
+                    != n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+            {
+                // Legacy data publications never authenticated the optional
+                // report. Prove the complete unadjusted target coverage from
+                // held expected pages before replaying any journal ranges.
+                let tree = crate::shadow_tree::PagedExpectedTree::open_recovery_with_binding(
+                    &expected.file, &expected.snapshot, &publication.expected.file.sha256,
+                    &publication.expected.semantic_sha256, publication.resource_admission, group.arena(),
+                    publication.expected.binding.as_ref(),
+                ).context("legacy recovery cannot prove target coverage without authenticated transformation facts; use --rollback where the journal permits it")?;
+                ensure!(
+                    tree.len() as u64 == publication.expected.objects,
+                    "legacy expected tree count differs from the authenticated publication"
+                );
+            }
+        }
         let maps = if let Some(pin) = &publication.recovery_maps {
             ensure!(pin.records > 0, "empty V4 recovery map is invalid");
             let held = HeldFile::open(
@@ -2952,6 +3084,9 @@ impl ReopenedResourceRecovery {
             expected,
             maps,
             windows_aliases,
+            _drops: drops,
+            transformations,
+            _transformation_memory: transformation_memory,
             locator,
             _journal_body: journal_body,
             journal,
@@ -3003,6 +3138,7 @@ impl ReopenedResourceRecovery {
                 expected,
                 maps,
                 windows_aliases,
+                transformations,
                 ..
             } = self;
             let mut parked = Vec::new();
@@ -3014,6 +3150,9 @@ impl ReopenedResourceRecovery {
             if let Some(aliases) = windows_aliases {
                 aliases.data.park(&mut parked);
                 aliases.directory.park(&mut parked);
+            }
+            if let Some(artifact) = transformations {
+                artifact.park(&mut parked);
             }
             PARKED_FILES
                 .lock()
@@ -3027,6 +3166,9 @@ impl ReopenedResourceRecovery {
     pub(crate) fn revalidate(&mut self, events: &mut Vec<NativeEvent>) -> Result<()> {
         self.publication_file.revalidate(&self.scratch)?;
         self.expected.revalidate(&self.scratch)?;
+        if let Some(artifact) = &mut self.transformations {
+            artifact.revalidate(&self.scratch)?;
+        }
         if let Some(maps) = &mut self.maps {
             maps.revalidate(&self.scratch)?;
         }
@@ -3120,6 +3262,9 @@ impl ReopenedResourceRecovery {
         );
         self.publication_file.revalidate(&self.scratch)?;
         self.expected.revalidate(&self.scratch)?;
+        if let Some(artifact) = &mut self.transformations {
+            artifact.revalidate(&self.scratch)?;
+        }
         if let Some(maps) = &mut self.maps {
             maps.revalidate(&self.scratch)?;
         }

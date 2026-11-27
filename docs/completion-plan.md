@@ -29,6 +29,21 @@ The hosted-verdict change shares its pass policy across the runner and consumers
 | Platform and physical storage | Applicable feature, lifecycle, integrity and resource gates | Candidate-bound profile evidence, larger workloads, and controlled tests on owner-designated disposable physical devices. |
 | Product and release | All applicable prerequisite packages | Accurate user contract, generated candidate-specific matrices, complete signed gates, and a verified unpublished package. |
 
+### Transformation recovery evidence
+
+Server 2025 attempts `rfacts-013304-v4-svi-resume` and `rfacts-013304-v4-svi-rollback`
+matched their independent listings after new-process recovery with a malformed
+optional report. The v4 resume recorded three SVI omissions. A separate
+`rfacts-damage-014127` worker refused a truncated authoritative artifact and
+resumed after the original bytes were restored. Legacy publication attempts
+`rfacts-013304-v1-ordinary-resume` and `rfacts-013304-v1-svi-rollback` also matched
+their independent listings. The development converter SHA-256 was
+`ad386e88ec2c9f388dbed77b2304eb729aefc5d177ea48211e261e3368040305`.
+The Server fixture refused to create WOF content through `compact.exe`.
+Windows fixture round `arf0136` passed all five cases with the same converter.
+It included separate workers at mid-apply, the recorded apply seal, and
+the sealed handoff.
+
 ## Execution and verification
 
 - Preserve the Windows-built shadow, source ownership and read-only boundaries, prewrite checks, byte comparison, strict manifests, and journal flush and readback order. Use the authenticated marker bytes and recorded lifecycle to decide rollback eligibility.

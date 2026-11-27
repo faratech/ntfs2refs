@@ -68,6 +68,7 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
         &output.join("reopened-journal.index"),
         budget.scratch_bytes,
         &mut events,
+        rollback,
     )?;
     // What a conversion published with `--verify fast` left out of its own
     // run, its recovery may leave out as well; this is read from the

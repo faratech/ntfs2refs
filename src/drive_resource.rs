@@ -965,9 +965,10 @@ fn route_inputs(
     let mut publication = pin(path, expected, maximum)?;
     let route: PublicationRoutes = serde_json::from_reader(&mut publication)?;
     ensure!(
-        route.schema_version == 1
-            && route.kind == "resource-allocation-recovery-envelope-v1"
-            && !route.serialized_publication_grants_authority,
+        crate::selected_journal::resource_domain::source_scope::dedicated_envelope_version(
+            route.schema_version,
+            &route.kind,
+        ) && !route.serialized_publication_grants_authority,
         "not a resource recovery envelope"
     );
     // The run's ReFS allocation unit, before anything of it is read back:

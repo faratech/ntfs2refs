@@ -4,6 +4,7 @@ $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/../../lab/QualificationInterruption.ps1"
 . "$PSScriptRoot/SeededSoakPlan.ps1"
 . "$PSScriptRoot/../../lab/IntegrityWindowProof.ps1"
+. "$PSScriptRoot/../../lab/ReleaseArchiveDocuments.ps1"
 
 $cut = @{ hold_at = 'apply-mid-ranges'; hold_reported = $true; recovered_after_it = $true
     recovery_mode = Get-RunningRecoveryMode 'The recovery finished: the volume is converted.' }
@@ -55,8 +56,20 @@ function Test-ReleaseArchive([string]$Qualification) {
     $archive = Join-Path $distribution 'candidate.zip'
     $reports = 'QUALIFICATION.json', 'QUALIFICATION.md' | ForEach-Object { Join-Path $Qualification $_ }
     Copy-Item -LiteralPath $reports -Destination $distribution
+    $stage = Join-Path $root 'archive-stage'
+    $null = New-Item -ItemType Directory -Path (Join-Path $stage 'docs') -Force
     $files = @(Get-ChildItem -LiteralPath $bin -File | ForEach-Object FullName) + $reports
-    Compress-Archive -LiteralPath $files -DestinationPath $archive
+    Copy-Item -LiteralPath $files -Destination $stage
+    $source = Join-Path $PSScriptRoot '../..'
+    foreach ($name in Get-ReleaseArchiveSourceDocuments $source) {
+        Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $stage $name)
+    }
+    foreach ($name in 'RELEASE-NOTES.md', 'capabilities.json') {
+        $path = Join-Path $distribution $name
+        Set-Content -LiteralPath $path -Value $name
+        Copy-Item -LiteralPath $path -Destination $stage
+    }
+    Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $archive
 
     function Check-Archive([string]$ErrorPattern) {
         $failure = $null
@@ -89,6 +102,12 @@ function Test-ReleaseArchive([string]$Qualification) {
         $zip.GetEntry('QUALIFICATION.md').Delete()
         $null = [IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
             $zip, (Join-Path $Qualification 'QUALIFICATION.md'), 'QUALIFICATION.md')
+        $null = $zip.CreateEntry('extra.txt')
+    } finally { $zip.Dispose() }
+    Check-Archive 'Unexpected ZIP entry: extra\.txt'
+    $zip = [IO.Compression.ZipFile]::Open($archive, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $zip.GetEntry('extra.txt').Delete()
         $null = $zip.CreateEntry('Ntfs2refs.exe')
     } finally { $zip.Dispose() }
     Check-Archive 'Expected one ZIP entry named ntfs2refs\.exe'

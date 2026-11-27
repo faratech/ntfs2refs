@@ -6,6 +6,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$source = Join-Path $PSScriptRoot '../..'
+. "$source/lab/ReleaseArchiveDocuments.ps1"
 
 $archivePath = (Resolve-Path -LiteralPath $Archive).ProviderPath
 $distribution = Split-Path -Parent $archivePath
@@ -18,6 +20,12 @@ foreach ($name in 'QUALIFICATION.json', 'QUALIFICATION.md') {
     if ((Get-FileHash -LiteralPath $published -Algorithm SHA256).Hash.ToLowerInvariant() -cne $hashes[$name]) {
         throw "Published qualification file differs for $name"
     }
+}
+foreach ($name in Get-ReleaseArchiveSourceDocuments $source) {
+    $hashes[$name] = (Get-FileHash -LiteralPath (Join-Path $source $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+foreach ($name in 'RELEASE-NOTES.md', 'capabilities.json') {
+    $hashes[$name] = (Get-FileHash -LiteralPath (Join-Path $distribution $name) -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
 $zip = [IO.Compression.ZipFile]::OpenRead($archivePath)
@@ -35,4 +43,6 @@ try {
             }
         } finally { $stream.Dispose() }
     }
+    $extra = @($zip.Entries | Where-Object { $_.FullName -cnotin $hashes.Keys })
+    if ($extra.Count) { throw "Unexpected ZIP entry: $($extra[0].FullName)" }
 } finally { $zip.Dispose() }

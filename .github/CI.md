@@ -88,7 +88,10 @@ Dispatch a fresh run to retry qualification after a failure.
    adjacent `QUALIFICATION.json` when its schema, version and converter hash
    match. The profile table records the observed Windows build and edition
    (OS SKU), ReFS format, version and allocation unit for each listed case.
-6. With `publish` enabled, it publishes using the classification in
+6. A read-only job downloads the uploaded package and verifies both ZIP
+   attestations, the Windows ZIP checksum, and the separate report files
+   against their ZIP entries. It also runs during an unpublished rehearsal.
+7. With `publish` enabled, it publishes using the classification in
    `.github/release-channel.txt`. The stabilization candidate uses `prerelease`.
 
 Restrict the `release` and `lab-qualification` environments to main. The

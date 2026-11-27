@@ -185,6 +185,24 @@ $dataCases = @(
     "review-recorded-resume|$lived -Review -InterruptAt review-recorded"
     "review-recorded-rollback|$lived -Review -InterruptAt review-recorded -RecoverMode rollback"
 )
+
+# Each recovery worker reopens the journal with the optional human report
+# damaged, then the harness restores the report for the independent listing.
+$transformationRecoveryCases = [ordered]@{
+    'wof-report-resume' = '-Features wof -AcceptPlain -Unattended'
+    'wof-report-rollback' = '-Features wof -AcceptPlain -Unattended'
+    'efs-report-resume' = '-Features efs -AcceptPlain -Unattended -RunAs administrator'
+    'efs-report-rollback' = '-Features efs -AcceptPlain -Unattended -RunAs administrator'
+    'cloud-report-resume' = '-Features cloud -AcceptPlain -Unattended -RunAs administrator'
+    'cloud-report-rollback' = '-Features cloud -AcceptPlain -Unattended -RunAs administrator'
+    'svi-report-resume' = '-Features svi-deep'
+    'svi-report-rollback' = '-Features svi-deep'
+}
+$dataCases += @(foreach ($case in $transformationRecoveryCases.Keys) {
+    $action = ($case -split '-')[-1]
+    "$case|-Content minimal -Check $($transformationRecoveryCases[$case]) -InterruptAt apply-mid-ranges -RecoverMode $action -CorruptPlainReportOnRecovery"
+})
+
 $serverCases = @(
     # These ProjFS cases were qualified on the Server control OS with standard ReFS.
     'projfs-plain|-Content minimal -Features projfs -TargetFormat standard -Check -AcceptPlain -Unattended -RunAs administrator'

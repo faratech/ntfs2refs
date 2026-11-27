@@ -273,6 +273,12 @@ try {
         $cases += @{ case_id = $case; route = Get-GateRoundCaseRoute $case; passed = $true; expected = $gateCases[$case]
             outcome = $gateCases[$case]; manifest = 'identical'; cleanup_ok = $true }
     }
+    foreach ($row in $cases | Where-Object { $transformationRecoveryCases.Contains($_.case_id) }) {
+        $row.hold = 'apply-mid-ranges'; $row.reached_hold = $true; $row.interruption = 'process-termination'
+        $row.recovery = if ($row.outcome -eq 'rolled-back') { 'rollback' } else { 'resume' }
+        $row.exact_manifest = $row.recovery -eq 'rollback'
+        $row.plain_report_fault = @{ original_sha256 = '2' * 64; damaged_sha256 = '3' * 64; worker_sha256 = $hashes['ntfs2refs.exe'] }
+    }
     foreach ($row in $cases) {
         $row.converter_sha256 = $hashes['ntfs2refs.exe']
         if ($row.route -ne 'running') { $row.listing_tool_sha256 = $hashes['lab-volume-manifest.exe'] }
@@ -287,6 +293,16 @@ try {
     $withoutProviderCase.cases = @($cases | Where-Object case_id -ne 'projfs-plain')
     Save-Json $withoutProviderCase $labPath
     Invoke-Gate 'missing-required-provider-case' 'Missing required Hyper-V gate case projfs-plain'
+    $reportRollback = $cases | Where-Object case_id -eq 'cloud-report-rollback'
+    $damage = $reportRollback.plain_report_fault.damaged_sha256
+    $reportRollback.plain_report_fault.damaged_sha256 = $reportRollback.plain_report_fault.original_sha256
+    Save-Json $lab $labPath
+    Invoke-Gate 'unchanged-optional-transform-report' 'Incomplete transformation recovery evidence for Hyper-V case cloud-report-rollback'
+    $reportRollback.plain_report_fault.damaged_sha256 = $damage
+    $reportRollback.plain_report_fault.worker_sha256 = '4' * 64
+    Save-Json $lab $labPath
+    Invoke-Gate 'wrong-transform-recovery-worker' 'Incomplete transformation recovery evidence for Hyper-V case cloud-report-rollback'
+    $reportRollback.plain_report_fault.worker_sha256 = $hashes['ntfs2refs.exe']
     Save-Json $lab $labPath
     foreach ($test in @(
         @('resume', 'hold_at', '', 'Invalid interruption evidence'),

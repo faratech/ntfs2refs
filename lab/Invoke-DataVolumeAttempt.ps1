@@ -2173,17 +2173,20 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         }
         $damagedReport = $null
         if ($CorruptPlainReportOnRecovery) {
-            $damagedReport = Invoke-Command -Session $session -ArgumentList $recover[1] -ScriptBlock {
-                param($conversion)
+            $damagedReport = Invoke-Command -Session $session -ArgumentList $recover[1], $guestRoot -ScriptBlock {
+                param($conversion, $workerRoot)
                 $report = Join-Path (Split-Path -Parent $conversion) 'plain-conversions.json'
                 $backup = "$report.lab-original"
                 if (-not (Test-Path -LiteralPath $report -PathType Leaf) -or (Test-Path -LiteralPath $backup)) {
                     throw 'Expected the interrupted fixture to have one original transformation report'
                 }
                 $before = (Get-FileHash -LiteralPath $report).Hash
+                $workerSha = (Get-FileHash -LiteralPath (Join-Path $workerRoot 'ntfs2refs.exe')).Hash.ToLowerInvariant()
                 Copy-Item -LiteralPath $report -Destination $backup
                 Set-Content -LiteralPath $report -Value '{' -Encoding ASCII
-                [pscustomobject]@{ path = $report; backup = $backup; original_sha256 = $before; damaged_sha256 = (Get-FileHash -LiteralPath $report).Hash }
+                [pscustomobject]@{ path = $report; backup = $backup; original_sha256 = $before
+                    damaged_sha256 = (Get-FileHash -LiteralPath $report).Hash
+                    worker_sha256 = $workerSha }
             }
             $verdict.plain_report_fault = $damagedReport
         }
